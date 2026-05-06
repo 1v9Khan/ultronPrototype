@@ -15,7 +15,17 @@ import sys
 import urllib.request
 from pathlib import Path
 
+# On Windows + Python 3.11, sys.stdout defaults to cp1252 which can't encode ✓/✗.
+# Force UTF-8 so the status glyphs print without UnicodeEncodeError.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, OSError):
+    pass
+
 # Make `config` importable when running this file directly.
+# Importing `config.settings` also redirects the HF cache to a writable path
+# if the user's HF_HOME points somewhere broken — see settings._ensure_writable_hf_cache.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -128,6 +138,17 @@ def main() -> int:
         print("  ✓ pretrained models cached")
     except Exception as e:
         print(f"  ✗ failed: {e}")
+
+    print("\n[5/5] RVC voice-conversion model (user-provided)")
+    if settings.RVC_MODEL_PATH.is_file() and settings.RVC_INDEX_PATH.is_file():
+        print(f"  ✓ found: {settings.RVC_MODEL_PATH.name}")
+        print(f"  ✓ found: {settings.RVC_INDEX_PATH.name}")
+    else:
+        print(f"  ! RVC model not found at {settings.RVC_MODEL_DIR}")
+        print(f"    Expected: {settings.RVC_MODEL_PATH.name}")
+        print(f"    Expected: {settings.RVC_INDEX_PATH.name}")
+        print("    Set RVC_ENABLED=False in config/settings.py to disable, "
+              "or drop the .pth + .index files into that directory.")
 
     print("\nNote: the custom Ultron wake-word model is not auto-downloaded.")
     print("Train your own and place at:")

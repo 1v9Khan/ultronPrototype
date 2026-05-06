@@ -40,7 +40,7 @@ from ultron.audio import (
 from ultron.audio.vad import SpeechEvent
 from ultron.llm import LLMEngine
 from ultron.transcription import WhisperEngine
-from ultron.tts import TextToSpeech
+from ultron.tts import RvcConverter, TextToSpeech
 from ultron.utils.logging import get_logger
 
 logger = get_logger("pipeline.orchestrator")
@@ -70,12 +70,30 @@ class Orchestrator:
         self.vad = VoiceActivityDetector()
         self.stt = WhisperEngine()
         self.llm = LLMEngine()
-        self.tts = TextToSpeech()
+        self.rvc = self._load_rvc_if_enabled()
+        self.tts = TextToSpeech(rvc=self.rvc)
 
         self._shutdown = threading.Event()
         self._interrupt = threading.Event()
         self._pending_capture = threading.Event()
         self._state: State = State.IDLE
+
+    @staticmethod
+    def _load_rvc_if_enabled() -> RvcConverter | None:
+        """Try to load RVC; warn and continue with plain Piper on failure."""
+        if not settings.RVC_ENABLED:
+            return None
+        if not settings.RVC_MODEL_PATH.is_file():
+            logger.warning(
+                "RVC enabled but model missing at %s — falling back to plain Piper",
+                settings.RVC_MODEL_PATH,
+            )
+            return None
+        try:
+            return RvcConverter()
+        except Exception as e:
+            logger.warning("RVC load failed (%s) — falling back to plain Piper", e)
+            return None
 
     # --- context manager -----------------------------------------------------
 
@@ -94,14 +112,16 @@ class Orchestrator:
         logger.info("Shutdown requested")
         self._shutdown.set()
         self._interrupt.set()
-        try:
-            self.tts.stop()
-        except Exception:
-            pass
-        try:
-            self.audio.stop()
-        except Exception:
-            pass
+        for action in (self.tts.stop, self.audio.stop):
+            try:
+                action()
+            except Exception:
+                pass
+        if self.rvc is not None:
+            try:
+                self.rvc.close()
+            except Exception:
+                pass
 
     # --- main loop -----------------------------------------------------------
 

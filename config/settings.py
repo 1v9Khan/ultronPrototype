@@ -27,6 +27,36 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
+# HuggingFace cache: redirect to project-local if the existing HF_HOME points
+# at an unwritable path (e.g. a stale env var pointing at a removed drive).
+# Respects a working user setup; only overrides when the existing path is
+# actually broken. Must run before any `huggingface_hub` / `faster_whisper`
+# import so those libraries pick up the override.
+# ---------------------------------------------------------------------------
+
+
+def _ensure_writable_hf_cache() -> None:
+    project_cache = (MODELS_DIR / ".hf-cache").resolve()
+    candidate = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+
+    if candidate:
+        try:
+            Path(candidate).mkdir(parents=True, exist_ok=True)
+            return  # existing setting is fine; don't override
+        except OSError:
+            pass  # fall through to project-local override
+
+    project_cache.mkdir(parents=True, exist_ok=True)
+    (project_cache / "xet" / "logs").mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(project_cache)
+    os.environ["HF_HUB_CACHE"] = str(project_cache / "hub")
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(project_cache / "hub")
+    os.environ["XET_CACHE_DIR"] = str(project_cache / "xet")
+
+
+_ensure_writable_hf_cache()
+
+# ---------------------------------------------------------------------------
 # Audio capture
 # ---------------------------------------------------------------------------
 
@@ -35,6 +65,9 @@ CHANNELS = 1                 # mono
 BLOCKSIZE = 512              # frames per callback (~32 ms at 16 kHz)
 DTYPE = "float32"
 AUDIO_DEVICE = os.getenv("ULTRON_AUDIO_DEVICE")  # None → system default
+AUDIO_OUTPUT_DEVICE = os.getenv(
+    "ULTRON_AUDIO_OUTPUT_DEVICE"
+)  # None -> system default output
 
 # Ring buffer of pre-speech audio so VAD-detected utterances aren't clipped.
 RING_BUFFER_SECONDS = 0.5
@@ -101,6 +134,28 @@ TTS_VOICE_PATH = MODELS_DIR / "piper" / "en_US-ryan-medium.onnx"
 TTS_VOICE_CONFIG_PATH = MODELS_DIR / "piper" / "en_US-ryan-medium.onnx.json"
 TTS_OUTPUT_SAMPLE_RATE = 22050      # Piper's native rate for medium voices
 TTS_SENTENCE_FLUSH_CHARS = ".!?\n"  # tokens that flush a partial sentence
+TTS_LENGTH_SCALE = 1.25             # >1.0 slows Piper down; Ultron is measured
+
+# ---------------------------------------------------------------------------
+# RVC (voice conversion: paint Piper output as Ultron)
+# ---------------------------------------------------------------------------
+
+# When enabled, every Piper sentence is run through the RVC model before
+# playback. Adds ~300 ms / sentence and ~900 MB VRAM. Set RVC_ENABLED=False
+# (or remove the .pth) to fall back to plain Piper.
+RVC_ENABLED = True
+RVC_MODEL_DIR = PROJECT_ROOT / "ultron_james_spader_mcu_6941"
+RVC_MODEL_PATH = RVC_MODEL_DIR / "Ultron.pth"
+RVC_INDEX_PATH = RVC_MODEL_DIR / "added_IVF301_Flat_nprobe_1_Ultron_v2.index"
+RVC_DEVICE = "cuda:0"
+
+# Inference knobs — edit these to taste, no retraining needed.
+RVC_PITCH_SHIFT = 0          # semitones; -2 deepens, +2 raises
+RVC_INDEX_RATE = 0.75        # 0-1; higher = stricter match to trained timbre
+RVC_PROTECT = 0.33           # 0-0.5; protects voiceless consonants from artifacts
+RVC_F0_METHOD = "rmvpe"      # rmvpe is the most accurate pitch extractor
+RVC_RMS_MIX_RATE = 0.25      # how much of source loudness envelope to keep
+RVC_FILTER_RADIUS = 3        # median filter on F0 to smooth pitch jumps
 
 # ---------------------------------------------------------------------------
 # System prompt

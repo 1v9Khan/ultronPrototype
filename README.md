@@ -44,12 +44,16 @@ fix that first — nothing else will work.
 
 ### 2. Clone & create a virtual environment
 
+**Important:** the RVC stack requires **Python 3.11** (not 3.12). `infer-rvc-python`
+hard-pins `faiss-cpu==1.7.3`, which has no Python 3.12 wheel.
+
 ```powershell
-git clone <this-repo> ultronPrototype
+git clone https://github.com/1v9Khan/ultronPrototype.git ultronPrototype
 cd ultronPrototype
-python -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\activate
-pip install -U pip wheel
+# pip 24.1+ rejects fairseq's old omegaconf metadata — pin pip to 24.0:
+pip install "pip<24.1" wheel
 ```
 
 ### 3. Install dependencies
@@ -58,21 +62,31 @@ pip install -U pip wheel
 pip install -e .
 ```
 
-Then install `llama-cpp-python` **with CUDA support** (the wheels on PyPI
-default to CPU-only). Pick the wheel matching your CUDA toolkit:
+`pip install -e .` pulls **CPU** wheels for both PyTorch and llama-cpp-python.
+You need to force-replace both with their CUDA equivalents:
 
 ```powershell
-# CUDA 13.x driver (May 2026 default — recommended):
-pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
+# CUDA-enabled PyTorch (also brings cudart64_12.dll, cublas64_12.dll, cudnn)
+pip install --force-reinstall --no-cache-dir `
+  --index-url https://download.pytorch.org/whl/cu124 `
+  torch torchaudio
 
-# CUDA 12.x driver:
-pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+# CUDA-enabled llama-cpp-python (~454 MB wheel)
+pip install --force-reinstall --no-deps --no-cache-dir `
+  --index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 `
+  llama-cpp-python
 ```
 
-Run `nvidia-smi` — the "CUDA Version" in the top right is your driver's
-max supported toolkit. Match the wheel suffix to that. Check
-[the wheel index](https://abetlen.github.io/llama-cpp-python/whl/) for
-other versions.
+Note `--index-url` (not `--extra-index-url`) — without it, pip prefers the
+cached CPU wheel from PyPI.
+
+`cu124` is the latest available wheel set as of May 2026 (cu125 has a 404,
+cu126+ don't exist yet). The CUDA 12.4 builds run fine on CUDA 13.x drivers
+via NVIDIA forward compatibility.
+
+The `ultron/__init__.py` bootstrap registers `torch/lib/` on the Windows DLL
+search path, so llama-cpp's `ggml-cuda.dll` finds the CUDA runtime DLLs that
+ship with PyTorch — no separate CUDA Toolkit install required.
 
 ### CUDA 13 compatibility note
 
@@ -191,12 +205,32 @@ warning at startup. To get true `ultron` detection:
 
 ### Voice
 
-Browse [Piper voices](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US)
-and put any `.onnx` + `.onnx.json` pair under `models/piper/`. Update
-`TTS_VOICE_PATH` and `TTS_VOICE_CONFIG_PATH` in `config/settings.py`.
+The default pipeline is **Piper → RVC**: Piper synthesizes neutral speech,
+then an RVC v2 model re-paints it as the trained target voice (Ultron / James
+Spader by default). Drop your trained `.pth` + `.index` pair into
+`ultron_james_spader_mcu_6941/` (or update `RVC_MODEL_DIR` in
+`config/settings.py`).
 
-For Ultron's character, low and slow voices (e.g. `en_US-ryan-low`,
-`en_GB-alan-medium`) work better than bright ones.
+To swap the **base** Piper voice, browse
+[Piper voices](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US)
+and put any `.onnx` + `.onnx.json` pair under `models/piper/`. Update
+`TTS_VOICE_PATH` and `TTS_VOICE_CONFIG_PATH` in `config/settings.py`. Since
+RVC re-skins the timbre, the upstream voice mostly affects **pacing** —
+slower base voices like `en_US-lessac-medium` give a more deliberate Ultron.
+
+To **disable RVC** and hear plain Piper, set `RVC_ENABLED = False`.
+
+#### Tuning the voice
+
+Edit these in `config/settings.py` and restart — no retraining needed:
+
+| Setting | Effect |
+|---|---|
+| `TTS_LENGTH_SCALE` | Piper pacing. >1.0 = slower (default 1.25). The main lever for "talks too fast." |
+| `RVC_PITCH_SHIFT` | Semitones. Negative = deeper (more menacing). |
+| `RVC_INDEX_RATE` | 0–1. Higher = stricter adherence to the trained voice's exact tone. |
+| `RVC_PROTECT` | 0–0.5. Prevents artifacts on consonants; raise if you hear chirps. |
+| `RVC_F0_METHOD` | `"rmvpe"` (default, best), `"crepe"`, `"harvest"`, `"pm"`. |
 
 ### LLM
 
@@ -214,12 +248,15 @@ the measured/dry character described in the spec.
 ## Troubleshooting
 
 **`nvidia-smi` works but llama-cpp says CPU-only.**
-You installed the default wheel from PyPI. Reinstall with the CUDA index
-matching your driver (cu130 for CUDA 13.x, cu124 for CUDA 12.x):
+The default `pip install -e .` pulled the CPU wheel. You must `--force-reinstall`
+with `--index-url` (not `--extra-index-url`) to make pip use the CUDA build:
 ```powershell
-pip uninstall llama-cpp-python
-pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
+pip install --force-reinstall --no-deps --no-cache-dir `
+  --index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 `
+  llama-cpp-python
 ```
+Verify the install picked the right wheel: it should be ~454 MB
+(`llama_cpp_python-0.3.22-py3-none-win_amd64.whl` from the cu124 release tag).
 
 **Whisper crashes with cuBLAS or cuDNN errors on Windows.**
 faster-whisper (via CTranslate2) is built against **CUDA 12 / cuDNN 9**.
