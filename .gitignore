@@ -47,6 +47,10 @@ logs/*.log
 *.mp3
 *.ogg
 
+# Training datasets (kept off GitHub due to size — regenerated via training scripts)
+training/data/
+*.npy
+
 # Testing
 .pytest_cache/
 .coverage
