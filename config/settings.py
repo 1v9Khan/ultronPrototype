@@ -36,22 +36,47 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _ensure_writable_hf_cache() -> None:
+    """Force every HF cache env var into a writable project-local location.
+
+    Some users' shells have stale ``HF_*`` env vars pointing at drives that
+    don't exist on this machine (e.g. ``D:\\…``). HuggingFace libraries cache
+    their cache-root constants at import time, so we have to override **all**
+    of them up-front and unconditionally drop anything pointing at a missing
+    drive — including the ones we don't read directly, since transitive deps
+    (huggingface_hub, transformers, datasets) read their own subset.
+    """
     project_cache = (MODELS_DIR / ".hf-cache").resolve()
-    candidate = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
 
-    if candidate:
+    # Drop any stale env var that points at a non-existent drive.
+    for name in (
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_DATASETS_CACHE",
+        "TRANSFORMERS_CACHE",
+        "XET_CACHE_DIR",
+    ):
+        value = os.environ.get(name)
+        if not value:
+            continue
         try:
-            Path(candidate).mkdir(parents=True, exist_ok=True)
-            return  # existing setting is fine; don't override
+            Path(value).mkdir(parents=True, exist_ok=True)
         except OSError:
-            pass  # fall through to project-local override
+            os.environ.pop(name, None)
 
-    project_cache.mkdir(parents=True, exist_ok=True)
-    (project_cache / "xet" / "logs").mkdir(parents=True, exist_ok=True)
-    os.environ["HF_HOME"] = str(project_cache)
-    os.environ["HF_HUB_CACHE"] = str(project_cache / "hub")
-    os.environ["HUGGINGFACE_HUB_CACHE"] = str(project_cache / "hub")
-    os.environ["XET_CACHE_DIR"] = str(project_cache / "xet")
+    # If HF_HOME is still set to a writable path after the cleanup, we'll
+    # respect it; otherwise we point everything at the project-local cache.
+    home = os.environ.get("HF_HOME")
+    if not home:
+        project_cache.mkdir(parents=True, exist_ok=True)
+        (project_cache / "xet" / "logs").mkdir(parents=True, exist_ok=True)
+        os.environ["HF_HOME"] = str(project_cache)
+        home = str(project_cache)
+
+    home_path = Path(home)
+    os.environ.setdefault("HF_HUB_CACHE", str(home_path / "hub"))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(home_path / "hub"))
+    os.environ.setdefault("XET_CACHE_DIR", str(home_path / "xet"))
 
 
 _ensure_writable_hf_cache()
@@ -153,7 +178,39 @@ LLM_TEMPERATURE = 0.7
 LLM_TOP_P = 0.9
 LLM_MAX_TOKENS = 512
 LLM_REPEAT_PENALTY = 1.1
-LLM_HISTORY_TURNS = 6               # user/assistant turn pairs to retain
+LLM_HISTORY_TURNS = 6               # legacy fallback if memory module is disabled
+
+# ---------------------------------------------------------------------------
+# Conversation memory + RAG
+# ---------------------------------------------------------------------------
+# Hybrid persistence: every turn appends to a JSONL on disk; embeddings live
+# in memory and are recomputed at startup. The LLM is fed
+# ``MEMORY_RECENT_TURNS`` most-recent turns plus ``MEMORY_RAG_TOP_K``
+# semantically-similar older snippets per request.
+MEMORY_ENABLED = _env_bool("ULTRON_MEMORY_ENABLED", True)
+MEMORY_PATH = PROJECT_ROOT / "data" / "memory.jsonl"
+MEMORY_EMBEDDING_MODEL = os.getenv(
+    "ULTRON_MEMORY_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+)
+MEMORY_RECENT_TURNS = _env_int("ULTRON_MEMORY_RECENT_TURNS", 20)
+MEMORY_RAG_TOP_K = _env_int("ULTRON_MEMORY_RAG_TOP_K", 5)
+MEMORY_RAG_EXCLUDE_RECENT = _env_int(
+    "ULTRON_MEMORY_RAG_EXCLUDE_RECENT", 20
+)  # don't surface RAG hits already in the recent-turns window
+
+# ---------------------------------------------------------------------------
+# Follow-up listening
+# ---------------------------------------------------------------------------
+# After Ultron speaks, listen for ``FOLLOW_UP_TIMEOUT_SECONDS`` of additional
+# speech without requiring the wake word. Each VAD-bounded utterance is run
+# through an LLM addressee classifier; only YES responses are answered.
+FOLLOW_UP_ENABLED = _env_bool("ULTRON_FOLLOW_UP_ENABLED", True)
+FOLLOW_UP_TIMEOUT_SECONDS = _env_float("ULTRON_FOLLOW_UP_TIMEOUT_SECONDS", 30.0)
+ADDRESSEE_DEFAULT_SILENT = _env_bool("ULTRON_ADDRESSEE_DEFAULT_SILENT", True)
+ADDRESSEE_CLASSIFIER_TEMPERATURE = _env_float(
+    "ULTRON_ADDRESSEE_CLASSIFIER_TEMPERATURE", 0.0
+)
+ADDRESSEE_CLASSIFIER_MAX_TOKENS = _env_int("ULTRON_ADDRESSEE_CLASSIFIER_MAX_TOKENS", 8)
 
 # ---------------------------------------------------------------------------
 # TTS
@@ -162,10 +219,23 @@ LLM_HISTORY_TURNS = 6               # user/assistant turn pairs to retain
 TTS_VOICE_PATH = MODELS_DIR / "piper" / "en_US-ryan-medium.onnx"
 TTS_VOICE_CONFIG_PATH = MODELS_DIR / "piper" / "en_US-ryan-medium.onnx.json"
 TTS_OUTPUT_SAMPLE_RATE = 22050      # Piper's native rate for medium voices
-TTS_SENTENCE_FLUSH_CHARS = ".!?\n"  # tokens that flush a partial sentence
+# Only flush at strong sentence terminators. Splitting on commas/colons made
+# Piper synthesize fragments without prosodic context, and split LLM tokens
+# like "1,000" or "3:30" mid-word. Piper handles intra-sentence pauses
+# naturally; we only insert explicit silence at sentence boundaries.
+TTS_SENTENCE_FLUSH_CHARS = ".!?\n"
+TTS_INTER_SENTENCE_PAUSE_MS = _env_int(
+    "ULTRON_TTS_INTER_SENTENCE_PAUSE_MS", 250
+)  # silence inserted between sentence clips so speech doesn't run together
 TTS_LENGTH_SCALE = _env_float(
     "ULTRON_TTS_LENGTH_SCALE", 1.15
 )  # >1.0 = slower / more deliberate; main lever for "talks too fast / slurred"
+# Silence inserted between consecutive clips at sentence boundaries.
+TTS_PAUSE_MS = _env_int("ULTRON_TTS_PAUSE_MS", 180)
+# Edge fades applied to every clip so silence-gaps don't have discontinuities.
+# Short enough (~3 ms) that they're inaudible as volume modulation but long
+# enough to zero-out boundary samples and prevent clicks.
+TTS_EDGE_FADE_MS = _env_int("ULTRON_TTS_EDGE_FADE_MS", 4)
 
 # ---------------------------------------------------------------------------
 # RVC (voice conversion: paint Piper output as Ultron)

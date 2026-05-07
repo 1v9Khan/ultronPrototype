@@ -1,6 +1,6 @@
 """Main event loop.
 
-The orchestrator owns every component and runs a small state machine:
+The orchestrator owns every component and runs the state machine:
 
     IDLE
       └─ wake word fires ──► CAPTURING
@@ -9,16 +9,24 @@ The orchestrator owns every component and runs a small state machine:
                                                              ├─ LLM (streaming)
                                                              └─ TTS (streaming)
                                                                  │
-                                                                 │ wake word fires
+                                                                 │ wake word
+                                                                 │ during TTS
                                                                  ▼
                                                               CAPTURING (next turn)
+                                                                 │
+                                                                 │ TTS done
+                                                                 ▼
+                                                          FOLLOW_UP_LISTENING
+                                                          (no wake word required;
+                                                           VAD-bounded; LLM gates
+                                                           each utterance; 30 s
+                                                           silence drops to IDLE)
 
-Two threads matter:
+Three threads matter:
 - The audio thread (inside :class:`AudioCapture`) only enqueues chunks.
 - The orchestrator's own thread does everything else.
-
-During TTS playback an *interrupt watcher* thread also runs the wake-word
-detector on incoming audio so the user can barge in.
+- During TTS playback an *interrupt watcher* thread runs the wake-word
+  detector for barge-in.
 """
 
 from __future__ import annotations
@@ -26,7 +34,7 @@ from __future__ import annotations
 import threading
 import time
 from enum import Enum
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
@@ -50,6 +58,12 @@ class State(Enum):
     IDLE = "idle"
     CAPTURING = "capturing"
     PROCESSING = "processing"
+    FOLLOW_UP_LISTENING = "follow_up"
+
+
+# Sentinel values returned by :meth:`Orchestrator._follow_up_listen`.
+_FU_TIMEOUT = "timeout"
+_FU_WAKE = "wake"
 
 
 class Orchestrator:
@@ -69,7 +83,8 @@ class Orchestrator:
         self.wake = WakeWordDetector()
         self.vad = VoiceActivityDetector()
         self.stt = WhisperEngine()
-        self.llm = LLMEngine()
+        self.memory = self._load_memory_if_enabled()
+        self.llm = LLMEngine(memory=self.memory)
         self.rvc = self._load_rvc_if_enabled()
         self.tts = TextToSpeech(rvc=self.rvc)
         self.tts.warmup()
@@ -78,6 +93,37 @@ class Orchestrator:
         self._interrupt = threading.Event()
         self._pending_capture = threading.Event()
         self._state: State = State.IDLE
+
+    @staticmethod
+    def _load_memory_if_enabled():
+        """Build a :class:`ConversationMemory` (with embedder) if enabled.
+
+        Failures degrade gracefully: missing deps → memory disabled, missing
+        embedder → memory persists turns but RAG retrieval returns empty.
+        """
+        if not settings.MEMORY_ENABLED:
+            return None
+        try:
+            from ultron.memory import ConversationMemory
+            from ultron.memory.embeddings import Embedder
+        except Exception as e:
+            logger.warning("Memory module import failed (%s) — disabling memory", e)
+            return None
+
+        embedder = None
+        try:
+            embedder = Embedder()
+        except Exception as e:
+            logger.warning(
+                "Embedder load failed (%s) — memory will persist turns but "
+                "RAG retrieval will be disabled.", e
+            )
+
+        try:
+            return ConversationMemory(embedder=embedder)
+        except Exception as e:
+            logger.warning("ConversationMemory init failed (%s) — disabling memory", e)
+            return None
 
     @staticmethod
     def _load_rvc_if_enabled() -> RvcConverter | None:
@@ -123,6 +169,11 @@ class Orchestrator:
                 self.rvc.close()
             except Exception:
                 pass
+        if self.memory is not None:
+            try:
+                self.memory.close()
+            except Exception:
+                pass
 
     # --- main loop -----------------------------------------------------------
 
@@ -136,31 +187,92 @@ class Orchestrator:
                 f"  (Wake word currently fallback='{word}'. "
                 f"Train a custom model for true 'ultron' detection — see README.)\n"
             )
+        if self.memory is not None:
+            print(f"  Memory: {len(self.memory)} prior turns loaded.\n")
+
+        # When the follow-up window is open this holds the deadline (monotonic
+        # time). ``None`` means we're in plain wake-word-gated IDLE mode.
+        follow_up_until: Optional[float] = None
 
         try:
             while not self._shutdown.is_set():
+                speech: Optional[np.ndarray] = None
+                came_from_follow_up = False
+
                 if self._pending_capture.is_set():
+                    # Barge-in or wake-during-follow-up → fresh wake-gated capture.
                     self._pending_capture.clear()
+                    self._state = State.CAPTURING
+                    print(f"  [{self._state.value}] capturing your request…")
+                    speech = self._capture_utterance()
+                    follow_up_until = None
+                elif (
+                    follow_up_until is not None
+                    and settings.FOLLOW_UP_ENABLED
+                    and time.monotonic() < follow_up_until
+                ):
+                    self._state = State.FOLLOW_UP_LISTENING
+                    outcome = self._follow_up_listen(deadline=follow_up_until)
+                    # outcome is either an ndarray (audio captured) or a
+                    # sentinel string. Type-check first — comparing an ndarray
+                    # to a string with `==` gives an element-wise array, which
+                    # raises in a boolean context.
+                    if isinstance(outcome, str):
+                        if outcome == _FU_TIMEOUT:
+                            print("  (follow-up window closed; waiting for wake word)")
+                            follow_up_until = None
+                            continue
+                        if outcome == _FU_WAKE:
+                            self._state = State.CAPTURING
+                            print(f"  [{self._state.value}] capturing your request…")
+                            speech = self._capture_utterance()
+                            follow_up_until = None
+                    else:
+                        # Got a VAD-bounded utterance during follow-up.
+                        speech = outcome
+                        came_from_follow_up = True
                 else:
                     self._state = State.IDLE
+                    follow_up_until = None
                     if not self._wait_for_wake_word():
                         break
+                    self._state = State.CAPTURING
+                    print(f"  [{self._state.value}] capturing your request…")
+                    speech = self._capture_utterance()
 
-                self._state = State.CAPTURING
-                print(f"  [{self._state.value}] capturing your request…")
-                speech = self._capture_utterance()
-                if speech.size == 0:
-                    print("  (heard nothing; standing down)")
+                if speech is None or speech.size == 0:
+                    if not came_from_follow_up:
+                        print("  (heard nothing; standing down)")
                     continue
 
                 self._state = State.PROCESSING
                 user_text = self.stt.transcribe(speech)
                 if not user_text.strip():
-                    print("  (no transcription; standing down)")
+                    if not came_from_follow_up:
+                        print("  (no transcription; standing down)")
                     continue
 
-                print(f"  you: {user_text}")
+                # In the follow-up window, gate every utterance through the
+                # addressee classifier. Don't reset the deadline on rejected
+                # speech — we measure 30 s from the *last response*, not from
+                # the last sound in the room.
+                if came_from_follow_up:
+                    if not self.llm.should_respond(user_text):
+                        print(f"  (heard: {user_text!r} — not for me)")
+                        continue
+                    print(f"  (follow-up) you: {user_text}")
+                else:
+                    print(f"  you: {user_text}")
+
                 self._respond(user_text)
+                if settings.FOLLOW_UP_ENABLED:
+                    follow_up_until = time.monotonic() + settings.FOLLOW_UP_TIMEOUT_SECONDS
+                    print(
+                        f"  (still listening for ~{int(settings.FOLLOW_UP_TIMEOUT_SECONDS)} s — "
+                        f"keep talking or stay silent to drop back to wake-word mode)"
+                    )
+                else:
+                    follow_up_until = None
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
         finally:
@@ -216,6 +328,65 @@ class Orchestrator:
                     return np.zeros(0, dtype=np.float32)
 
         return np.concatenate(chunks).astype(np.float32, copy=False)
+
+    # --- phase: follow-up listening -----------------------------------------
+
+    def _follow_up_listen(self, deadline: float) -> Union[str, np.ndarray]:
+        """Wait for either the wake word or a VAD-bounded utterance.
+
+        Returns one of:
+        - ``_FU_TIMEOUT`` when the deadline elapses without either firing
+        - ``_FU_WAKE`` when the wake word fires (orchestrator should re-arm
+          for a fresh wake-gated capture)
+        - an ``np.ndarray`` containing the captured utterance audio when VAD
+          reports SPEECH_END
+        """
+        self.audio.drain()
+        self.wake.reset()
+        self.vad.reset()
+        # Don't clear the ring — we want pre-roll continuity from the moment
+        # TTS finished.
+
+        speech_started = False
+        speech_chunks: list[np.ndarray] = []
+        pre_roll: Optional[np.ndarray] = None
+        speech_samples = 0
+        max_samples = int(self.MAX_UTTERANCE_SECONDS * settings.SAMPLE_RATE)
+
+        while not self._shutdown.is_set() and time.monotonic() < deadline:
+            chunk = self.audio.get_chunk(timeout=0.1)
+            if chunk is None:
+                continue
+            self.ring.write(chunk)
+
+            # Wake word always wins — even if we're mid-utterance.
+            if self.wake.process(chunk):
+                return _FU_WAKE
+
+            result = self.vad.process(chunk)
+
+            if not speech_started:
+                if result.event == SpeechEvent.SPEECH_START:
+                    pre_roll = self.ring.snapshot()
+                    speech_chunks.append(chunk)
+                    speech_started = True
+                    speech_samples = chunk.shape[0]
+                # else: still waiting for speech — keep ticking.
+                continue
+
+            speech_chunks.append(chunk)
+            speech_samples += chunk.shape[0]
+
+            if result.event == SpeechEvent.SPEECH_END:
+                pieces = ([pre_roll] if pre_roll is not None else []) + speech_chunks
+                return np.concatenate(pieces).astype(np.float32, copy=False)
+
+            if speech_samples >= max_samples:
+                # Hard cap — return what we have, classifier can still gate it.
+                pieces = ([pre_roll] if pre_roll is not None else []) + speech_chunks
+                return np.concatenate(pieces).astype(np.float32, copy=False)
+
+        return _FU_TIMEOUT
 
     # --- phase: process ------------------------------------------------------
 

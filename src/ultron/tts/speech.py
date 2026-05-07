@@ -131,8 +131,11 @@ class TextToSpeech:
 
         A worker thread reads the token iterator, accumulates a sentence,
         synthesizes (and converts via RVC if configured), and pushes the
-        resulting clip onto a playback queue. The calling thread drains
-        the queue and plays each clip in order.
+        resulting clip onto a playback queue. The calling thread holds a
+        single :class:`sounddevice.OutputStream` open for the entire
+        utterance, eliminating the per-sentence open/close clicks that
+        Windows audio drivers produce, and applies brief edge fades + a
+        pre-roll silence so the first sample doesn't pop.
         """
         self._stop_event.clear()
         audio_q: queue.Queue[Optional[Clip]] = queue.Queue(maxsize=8)
@@ -166,19 +169,105 @@ class TextToSpeech:
         worker = threading.Thread(target=synth_worker, daemon=True)
         worker.start()
 
-        while True:
-            if self._stop_event.is_set():
-                break
-            try:
-                clip = audio_q.get(timeout=10.0)
-            except queue.Empty:
-                logger.warning("TTS playback queue starved; aborting")
-                break
-            if clip is None:
-                break
-            self._play(clip)
+        # Pull one clip up-front so we know the playback sample rate (RVC may
+        # output at a different rate than Piper) before opening the stream.
+        first_clip: Optional[Clip] = None
+        try:
+            first_clip = audio_q.get(timeout=10.0)
+        except queue.Empty:
+            logger.warning("TTS playback queue starved before first clip")
+            worker.join(timeout=2.0)
+            return
+        if first_clip is None:
+            worker.join(timeout=2.0)
+            return
 
-        worker.join(timeout=2.0)
+        sr = first_clip[1]
+        block_frames = max(1, int(sr * 0.05))
+        stream: Optional[sd.OutputStream] = None
+        last_clip = first_clip
+        try:
+            with self._playback_lock:
+                if self._stop_event.is_set():
+                    return
+                stream = sd.OutputStream(
+                    samplerate=sr,
+                    channels=2,
+                    dtype="int16",
+                    device=self.output_device,
+                )
+                stream.start()
+                logger.info(
+                    "TTS stream opened: %d Hz via %s",
+                    sr,
+                    describe_device(self.output_device, "output"),
+                )
+
+                # 50 ms silence pre-roll lets the audio device spin up before
+                # real samples land — kills the cold-start pop.
+                self._write_silence(stream, sr, 0.05)
+
+                # One-clip lookahead so we know which clip is last in time
+                # to fade out its tail before writing.
+                clip = first_clip
+                is_first = True
+                while True:
+                    try:
+                        nxt = audio_q.get(timeout=10.0)
+                    except queue.Empty:
+                        logger.warning("TTS playback queue starved; aborting")
+                        nxt = None
+                    is_last = nxt is None
+
+                    audio = self._stereo_pcm(clip[0])
+                    # Tiny fade on every clip edge so the inter-clip silence
+                    # gap doesn't introduce a click. Short enough (~4 ms) to
+                    # be inaudible as volume modulation.
+                    edge_ms = settings.TTS_EDGE_FADE_MS
+                    if edge_ms > 0:
+                        audio = self._apply_fade_in(audio, sr, ms=edge_ms)
+                        audio = self._apply_fade_out(audio, sr, ms=edge_ms)
+
+                    for start in range(0, audio.shape[0], block_frames):
+                        if self._stop_event.is_set():
+                            return
+                        stream.write(audio[start : start + block_frames])
+
+                    if is_last:
+                        # Brief silence tail for clean driver flush.
+                        self._write_silence(stream, sr, 0.05)
+                        break
+
+                    # Inter-sentence pause.
+                    pause_ms = settings.TTS_PAUSE_MS
+                    if pause_ms > 0 and not self._stop_event.is_set():
+                        self._write_silence(stream, sr, pause_ms / 1000.0)
+
+                    if nxt[1] != sr:
+                        # Sample-rate change between clips is rare. Reopen.
+                        stream.stop()
+                        stream.close()
+                        sr = nxt[1]
+                        block_frames = max(1, int(sr * 0.05))
+                        stream = sd.OutputStream(
+                            samplerate=sr,
+                            channels=2,
+                            dtype="int16",
+                            device=self.output_device,
+                        )
+                        stream.start()
+                        self._write_silence(stream, sr, 0.05)
+                    clip = nxt
+        except Exception as e:
+            logger.warning("TTS streaming playback error: %s", e)
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
+            worker.join(timeout=2.0)
 
     # --- internals -----------------------------------------------------------
 
@@ -280,3 +369,39 @@ class TextToSpeech:
         if mono.size == 0:
             return np.zeros((0, 2), dtype=np.int16)
         return np.column_stack((mono, mono)).astype(np.int16, copy=False)
+
+    @staticmethod
+    def _apply_fade_in(audio: np.ndarray, sr: int, ms: float = 4.0) -> np.ndarray:
+        """Linear ramp from 0 to full amplitude across the first ``ms``."""
+        n = audio.shape[0]
+        if n == 0:
+            return audio
+        fade = min(n, max(1, int(sr * ms / 1000.0)))
+        ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32).reshape(-1, 1)
+        out = audio.copy()
+        out[:fade] = (out[:fade].astype(np.float32) * ramp).astype(np.int16)
+        return out
+
+    @staticmethod
+    def _apply_fade_out(audio: np.ndarray, sr: int, ms: float = 8.0) -> np.ndarray:
+        """Linear ramp from full amplitude to 0 across the last ``ms``."""
+        n = audio.shape[0]
+        if n == 0:
+            return audio
+        fade = min(n, max(1, int(sr * ms / 1000.0)))
+        ramp = np.linspace(1.0, 0.0, fade, dtype=np.float32).reshape(-1, 1)
+        out = audio.copy()
+        out[-fade:] = (out[-fade:].astype(np.float32) * ramp).astype(np.int16)
+        return out
+
+    @staticmethod
+    def _write_silence(stream: sd.OutputStream, sr: int, duration_s: float) -> None:
+        """Write a brief block of zeros to ``stream`` (driver underrun guard)."""
+        n = max(0, int(sr * duration_s))
+        if n == 0:
+            return
+        silence = np.zeros((n, 2), dtype=np.int16)
+        try:
+            stream.write(silence)
+        except Exception as e:
+            logger.debug("Silence write failed (likely closing stream): %s", e)

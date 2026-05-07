@@ -24,6 +24,7 @@ dependencies = [
     "torch>=2.1",
     "infer-rvc-python>=1.0",
     "scipy>=1.10",
+    "sentence-transformers>=2.7",
 ]
 
 [project.optional-dependencies]
