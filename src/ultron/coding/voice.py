@@ -152,7 +152,7 @@ class CodingVoiceController:
             return None
         intent = classify_intent(
             text,
-            has_active_task=self.runner.has_active_task(),
+            has_active_task=self._has_active_task_or_session(),
             has_pending_clarification=self.has_pending_clarification(),
         )
         logger.info(
@@ -255,8 +255,51 @@ class CodingVoiceController:
         return VoiceResponse(text="Cancelled.", cancelled=True)
 
     def _handle_progress(self) -> VoiceResponse:
-        narration = self.runner.progress_narration()
+        # Phase 5: when the coordinator (and therefore the session store)
+        # is wired, look up the most-recent active session and route the
+        # rich session-aware narration through the runner. Falls back to
+        # legacy bridge-state narration when no session is found -- which
+        # is what the pre-Phase-5 tests rely on.
+        session = self._current_session()
+        narration = self.runner.progress_narration(session=session)
         return VoiceResponse(text=narration)
+
+    def _current_session(self):
+        """Resolve the most-recent active :class:`ProjectSession`, or None.
+
+        Pulls the session from the coordinator's shared store. Returns
+        ``None`` when no coordinator is wired (legacy / unit-test path)
+        or no session is active. Mirrors the heuristic the MCP server
+        uses on the Claude side -- pick the most-recently-started active
+        session.
+        """
+        coordinator = self.coordinator
+        if coordinator is None:
+            return None
+        store = getattr(coordinator, "store", None)
+        if store is None:
+            return None
+        try:
+            active = store.list_active()
+        except Exception:
+            return None
+        if not active:
+            return None
+        return max(active, key=lambda s: s.started_at)
+
+    def _has_active_task_or_session(self) -> bool:
+        """True if the runner has an in-flight task OR the coordinator's
+        store has an active :class:`ProjectSession`.
+
+        Phase 5: an active session counts as "the project is running"
+        from the user's perspective. This lets progress queries and
+        cancel/adjustment intents fire even when the legacy bridge state
+        is empty (e.g., when state lives in the session store, not the
+        bridge handle).
+        """
+        if self.runner.has_active_task():
+            return True
+        return self._current_session() is not None
 
     def _handle_code_task(self, intent: CodingIntent) -> VoiceResponse:
         # Refuse to start a second task while one is running -- the user

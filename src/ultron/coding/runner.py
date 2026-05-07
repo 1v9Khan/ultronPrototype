@@ -34,6 +34,8 @@ from ultron.coding.bridge import (
     TaskResult,
     TaskState,
 )
+from ultron.coding.narration import StatusNarrator
+from ultron.coding.session import ProjectSession, SessionStore
 from ultron.utils.logging import get_logger
 
 logger = get_logger("coding.runner")
@@ -96,6 +98,8 @@ class CodingTaskRunner:
         self,
         bridge: Optional[CodingBridge] = None,
         log_path: Optional[Path] = None,
+        narrator: Optional[StatusNarrator] = None,
+        store: Optional[SessionStore] = None,
     ) -> None:
         self.bridge: CodingBridge = bridge or build_default_bridge()
         self._handle: Optional[TaskHandle] = None
@@ -112,10 +116,21 @@ class CodingTaskRunner:
         self._mcp_config_path: Optional[Path] = None
 
         # Tracking state for delta-narration ("since you last asked").
+        # Used by the legacy bridge-only narration path. The Phase 5
+        # session-aware path reads its delta off the ProjectSession's
+        # last_user_status_query timestamp instead.
         self._last_seen_step_index = 0
         self._last_seen_files_created = 0
         self._last_seen_files_modified = 0
         self._delta_lock = threading.Lock()
+
+        # Phase 5 wiring. When both a narrator and a store are provided,
+        # progress_narration(session=...) routes through the rich
+        # session-aware delta narration. Both are optional -- existing
+        # callers / tests that construct the runner without these still
+        # get the legacy bridge-only narration.
+        self._narrator = narrator
+        self._store = store
 
     # --- task lifecycle -----------------------------------------------------
 
@@ -237,13 +252,47 @@ class CodingTaskRunner:
 
     # --- voice-friendly narration ------------------------------------------
 
-    def progress_narration(self) -> str:
+    def progress_narration(
+        self, session: Optional[ProjectSession] = None,
+    ) -> str:
         """One-or-two sentence Ultron-character status string.
 
-        Reports current step + what's been done since the last poll. Safe
-        to call from any thread. Returns a string suitable for streaming
-        to TTS.
+        Phase 5: when a :class:`ProjectSession` is passed in, the
+        narration is delta-aware (it reports only what's changed since
+        the user's last query) and runs through the configured
+        :class:`StatusNarrator` -- which voices the EXECUTING path via
+        the LLM and handles every other status with deterministic
+        edge-case lines.
+
+        After a session-driven narration, the runner stamps
+        ``session.last_user_status_query`` to ``now`` so the next call
+        computes its delta against this point. The voice controller can
+        also do this directly via ``store.touch_status_query()``;
+        whichever path runs first wins (the timestamp is monotonic).
+
+        When ``session`` is ``None`` the legacy bridge-state path runs:
+        it inspects the active :class:`TaskState` and produces a
+        bridge-derived line. Existing tests construct the runner without
+        a narrator/store, so they exercise this path.
+
+        Safe to call from any thread.
         """
+        if session is not None:
+            narrator = self._narrator or StatusNarrator(llm=None)
+            text = narrator.narrate(session)
+            # Stamp the timestamp through the store when one is wired so
+            # the update is taken under the store's lock. Falling back
+            # to direct mutation when the store is absent keeps the
+            # narrator usable in pure unit tests.
+            if self._store is not None:
+                try:
+                    self._store.touch_status_query(session.session_id)
+                except Exception as e:
+                    logger.debug("touch_status_query failed: %s", e)
+            else:
+                session.last_user_status_query = time.time()
+            return text
+
         state = self.active_state()
         if state is None:
             return "No coding task is currently active."

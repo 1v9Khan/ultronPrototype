@@ -33,6 +33,7 @@ from ultron.coding.mcp_server import (
     remove_mcp_config,
     write_mcp_config,
 )
+from ultron.coding.narration import NarrationDelta, StatusNarrator
 from ultron.coding.projects import (
     Project,
     ProjectRegistry,
@@ -77,6 +78,7 @@ __all__ = [
     "EventKind",
     "FileChangeKind",
     "FileRecord",
+    "NarrationDelta",
     "Project",
     "ProjectRegistry",
     "ProjectResolution",
@@ -88,6 +90,7 @@ __all__ = [
     "SessionStatus",
     "SessionStore",
     "StageRecord",
+    "StatusNarrator",
     "StateTransitionError",
     "TaskEvent",
     "TaskHandle",

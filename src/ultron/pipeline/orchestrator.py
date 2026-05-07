@@ -59,6 +59,7 @@ from ultron.coding import (
     UltronMCPServer,
 )
 from ultron.coding.coordinator import ConversationCoordinator
+from ultron.coding.narration import StatusNarrator
 from ultron.uncertainty import apply as apply_uncertainty
 from ultron.web_search import (
     AcknowledgmentSource,
@@ -182,7 +183,15 @@ class Orchestrator:
         if not settings.CODING_ENABLED:
             return None
         try:
-            runner = CodingTaskRunner()
+            # Phase 5: wire the status narrator + shared session store
+            # into the runner so progress queries get delta-aware,
+            # in-voice narration. Both are optional -- the runner falls
+            # back to bridge-state narration when neither is wired.
+            narrator = StatusNarrator(llm=self.llm)
+            store = (
+                self.mcp_server.store if self.mcp_server is not None else None
+            )
+            runner = CodingTaskRunner(narrator=narrator, store=store)
             registry = ProjectRegistry()
             embedder = None
             if self.memory is not None:
