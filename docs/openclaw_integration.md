@@ -84,27 +84,121 @@ Stock OpenClaw boilerplate exists at the workspace dir — six prompt-named file
 | VRAM during OpenClaw turn equals VRAM during Ultron voice turn (proves sharing) | ⏸ **needs user** (depends on the smoke-test loads above) |
 | `docs/system_inventory.md` and `baselines.json` updated | ✅ Inventory cross-checked; `phase_0_openclaw_integration` block added (partial) |
 
-## Outstanding Phase 0 work (interactive; needs user authorization)
+## Patch applied — OpenClaw points at local llama-cpp-server
 
-1. **Install llama-cpp-server extras** in the venv:
-   ```
-   C:\STC\ultronPrototype\.venv\Scripts\pip.exe install "llama-cpp-python[server]"
-   ```
-2. **Start llama-cpp-server** pointing at the existing GGUF (loads ~5.7 GB VRAM). Suggested invocation (mirroring [src/ultron/llm/inference.py](../src/ultron/llm/inference.py) params for character preservation):
-   ```
-   python -m llama_cpp.server \
-     --model C:\STC\ultronPrototype\models\Qwen3.5-9B-Q4_K_M.gguf \
-     --n_gpu_layers -1 --n_ctx 8192 --port 8080 --api_key local-ultron
-   ```
-3. **Configure OpenClaw** to point at the local server. Approach: define a model entry under `models.providers.openai` with `baseURL: http://127.0.0.1:8080/v1` and `apiKey: ${LLAMACPP_API_KEY}`, then a model definition like `qwen3.5-9b-local` referencing that provider. Then set the agent's default model to `qwen3.5-9b-local`. (Exact schema to verify against current OpenClaw docs.)
-4. **Start the Gateway** (`gateway.cmd` is at `C:\Users\alecf\.openclaw\gateway.cmd`).
-5. **Run `openclaw agent --agent main -m "Reply with exactly OPENCLAW-LLAMACPP-OK."`** — verify the response.
-6. **Run a representative voice query** through the Ultron orchestrator (interactive) and capture VRAM peak + first-token latency.
-7. **Compare** OpenClaw-turn VRAM vs voice-query VRAM — should be within a few hundred MB (proves sharing).
+**Provider plugin chosen:** `@openclaw/lmstudio-provider`. Plug-compatible
+with the OpenAI-compat endpoint llama-cpp-server exposes; supports
+custom `baseUrl`; already enabled in OpenClaw 2026.5.7. The
+`@openclaw/openai-provider` plugin is hardcoded for `gpt-/o1/o3/o4`
+prefixes against `api.openai.com`, so it's the wrong tool here. The
+Ollama provider is excluded per the runtime decision.
 
-## Open questions for the user
+**Files changed (outside the worktree):**
 
-1. **OK to install `llama-cpp-python[server]` extras now?** This adds `starlette_context`, `pydantic-settings`, `sse-starlette` to the venv.
-2. **OK to register the Ultron MCP server (`UltronMCPServer`) with OpenClaw via `openclaw mcp set ultron-mcp …`?** The MCP server currently runs over SSE on its own port (Foundation Phase A); this would write to `C:\Users\alecf\.openclaw\openclaw.json`.
-3. **Should I draft the OpenClaw config patch as a JSON diff so you can apply it manually**, instead of editing `openclaw.json` directly? Given there's an auth token already in that file, I'd prefer not to handle it directly.
-4. **OK to commit the Phase 4 deferred wrapper work + Phase 0 inventory doc to a feature branch on origin?** The Phase 4 wrappers are still uncommitted in this worktree.
+| Path | Change |
+|------|--------|
+| `C:\Users\alecf\.openclaw\openclaw.json.pre-llamacpp-bak` | Backup of the pre-patch config (created before edit). |
+| `C:\Users\alecf\.openclaw\openclaw.json` | Added `models.providers.lmstudio.{baseUrl,apiKey,models}` and `agents.defaults.model`. Existing `gateway`/`wizard`/`meta` keys untouched. |
+
+**Patch shape** (auth token redacted; what's reproducible from this
+repo):
+
+```json
+{
+  "models": {
+    "providers": {
+      "lmstudio": {
+        "baseUrl": "http://127.0.0.1:8080",
+        "apiKey": "local-ultron",
+        "models": [
+          {
+            "id": "qwen3.5-9b-local",
+            "name": "Qwen3.5 9B (local llama-cpp-server)",
+            "contextWindow": 8192,
+            "input": ["text"]
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "lmstudio/qwen3.5-9b-local"
+    }
+  }
+}
+```
+
+The placeholder API key `local-ultron` is intentionally non-secret —
+the loopback-only server is gated by the same value end-to-end. Rotate
+to a real token + env-var reference (`apiKey: "${LM_API_TOKEN}"`) if
+hardening for non-loopback exposure later.
+
+**Verification done:**
+
+```
+$ openclaw models list
+Model                                      Input      Ctx         Local Auth  Tags
+lmstudio/qwen3.5-9b-local                  text       8k          yes   yes   default
+```
+
+The placeholder `openai/gpt-5.5` is gone; the local model is the
+default. `Local: yes` confirms the provider knows it's a self-hosted
+endpoint.
+
+**Agent design choice deferred:** kept the existing `main` agent as
+the default. Did NOT create a separate `ultron` agent yet — that's a
+Phase 2 design decision. Both routes work for the Phase 0 reachability
+test; a dedicated `ultron` agent only matters once we want
+agent-specific config (different system prompt, different tools, etc.).
+
+## Server launcher
+
+[scripts/start_llamacpp_server.py](../scripts/start_llamacpp_server.py)
+is the canonical way to run the server, mirroring Ultron voice-pipeline
+llama-cpp params (n_ctx=8192, n_gpu_layers=-1, flash_attn=on,
+type_k=type_v=8 / Q8_0 KV cache) so character + VRAM behaviour stay
+identical when we eventually switch the voice path off in-process
+loading.
+
+```
+cd C:\STC\ultronPrototype
+.venv\Scripts\python.exe scripts/start_llamacpp_server.py
+```
+
+The wrapper imports `ultron` first so the bundled torch CUDA DLLs are
+discovered before `llama_cpp` initialises. Running
+`python -m llama_cpp.server` directly fails on Windows with
+"Could not find module 'llama.dll'" because of this.
+
+## Outstanding Phase 0 work (interactive; needs user)
+
+1. **Run the voice-pipeline smoke test from main checkout** (interactive
+   mic + speaker, capture first-token latency). The smoke test procedure
+   is in [docs/smoke_test.md](smoke_test.md) — only the first 2-3 steps
+   are needed for Phase 0 (cold start + one voice query + VRAM during).
+2. **Start llama-cpp-server** with the launcher above, then start the
+   OpenClaw Gateway:
+   ```
+   C:\Users\alecf\.openclaw\gateway.cmd
+   ```
+   Run them in two separate shells. The server takes ~30 s to load
+   (loads ~5.7 GB VRAM); the Gateway is fast to start.
+3. **Reachability test:**
+   ```
+   "C:\Users\alecf\AppData\Roaming\npm\openclaw.cmd" agent --agent main \
+     -m "Reply with exactly OPENCLAW-LLAMACPP-OK."
+   ```
+   Pass criterion: response contains the exact token. If not, capture
+   the Gateway log (`tail -f ~/.openclaw/logs/...`) and the server
+   stderr.
+4. **VRAM-during-OpenClaw-turn measurement.** Capture
+   `python scripts/check_vram.py` while the OpenClaw turn is running.
+   Then capture again during a voice query (still using in-process
+   loader for now). Compare: shared VRAM means the difference is small;
+   the Foundation voice-path peak baseline is 10368 MB. Sharing won't
+   be fully realised until the voice pipeline switches to HTTP-client
+   mode, which is a later phase. For Phase 0 we just need to confirm
+   OpenClaw can reach the server without doubling the VRAM cost.
+5. **Append the measurements** to `baselines.json`'s
+   `phase_0_openclaw_integration` block (replace the `null` fields).
