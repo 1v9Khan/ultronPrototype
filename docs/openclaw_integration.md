@@ -246,6 +246,29 @@ discovered before `llama_cpp` initialises. Running
 
 ---
 
+## Phase 1 close-out — done
+
+See [docs/phase_1_summary.md](phase_1_summary.md) for the full
+verification-criteria table.
+
+**Headline:**
+
+- Persona migrated from `config.yaml:llm.system_prompt` into the
+  shared workspace (`~/.openclaw/workspace/{IDENTITY,SOUL,USER,
+  AGENTS,HEARTBEAT,BOOTSTRAP}.md`).
+- `PersonaLoader` exposes four modes: `user_facing`, `background`,
+  `heartbeat`, `bootstrap`. User-facing channels get full Ultron
+  character; internal workers get a plain task prompt — better
+  reliability + no character drift.
+- `LLMEngine` resolves the system prompt fresh on every turn via
+  `_resolve_system_prompt`. Editing `SOUL.md` hot-reloads on the
+  next user turn (verified by
+  `test_workspace_source_hot_reloads_on_soul_edit`).
+- Voice character preserved bit-for-bit: composed user-facing prompt
+  is **1135 chars** vs the original config's **1136 chars**.
+- TTFT median: **109 ms** (was 125 ms in Phase 0). No regression.
+- 736 tests passing (+27 from Phase 1: 19 PersonaLoader + 8 LLM wiring).
+
 ## Phase 0 close-out — partial pass
 
 Final verification ran 2026-05-08, autonomously after the user

@@ -131,18 +131,33 @@ class LLMEngine:
         runtime: Optional[str] = None,
     ) -> None:
         cfg = get_config().llm
-        if system_prompt is None:
-            system_prompt = cfg.system_prompt
         if history_turns is None:
             history_turns = cfg.history_turns
         runtime = runtime or cfg.runtime
 
-        self.system_prompt = system_prompt
+        # Phase 1: persona source can be the shared workspace files
+        # (loaded fresh each turn so SOUL.md edits hot-reload) OR the
+        # legacy hardcoded ``llm.system_prompt`` string.
+        #
+        # When ``system_prompt=`` is passed explicitly to the
+        # constructor we honor it as-is — that's the test path and the
+        # explicit override path. Otherwise we resolve per
+        # ``llm.persona.source``.
+        self._explicit_system_prompt: Optional[str] = system_prompt
+        self._persona_loader = self._maybe_build_persona_loader(cfg)
+        # Cached static prompt for ``persona.source == "config"``.
+        self._static_system_prompt: str = (
+            system_prompt if system_prompt is not None else cfg.system_prompt
+        )
+        # ``self.system_prompt`` is kept for backward compat (existing
+        # tests read it). It reflects the most recently resolved value.
+        self.system_prompt = self._resolve_system_prompt()
         self.history_turns = history_turns
         self._history: Deque[Turn] = deque(maxlen=history_turns * 2)
         self._memory = memory
         self._cancel = Event()
         self._runtime = runtime
+        self._logged_initial_persona = False
 
         if runtime == "in_process":
             self._init_in_process(cfg, model_path, n_ctx, n_gpu_layers)
@@ -210,6 +225,64 @@ class LLMEngine:
                     time.monotonic() - t0,
                     "on" if self._memory is not None else "off")
 
+    @staticmethod
+    def _maybe_build_persona_loader(cfg):
+        """Construct a PersonaLoader if config asks for the workspace
+        source. Returns ``None`` for the legacy ``config`` source.
+
+        Importing PersonaLoader is deferred so test environments that
+        don't need it never pay the import cost.
+        """
+        persona_cfg = getattr(cfg, "persona", None)
+        if persona_cfg is None or persona_cfg.source != "workspace":
+            return None
+        # Lazy import: PersonaLoader is in the openclaw_bridge package
+        # which has no runtime deps, but we still avoid importing it
+        # when the config doesn't ask for it.
+        from ultron.openclaw_bridge.persona import (
+            PersonaLoader, default_workspace_dir,
+        )
+        ws = persona_cfg.workspace_dir
+        return PersonaLoader(
+            Path(ws) if ws else default_workspace_dir()
+        )
+
+    def _resolve_system_prompt(self) -> str:
+        """Resolve the system prompt for this turn.
+
+        Order:
+        1. Explicit constructor override (``system_prompt=`` arg).
+        2. Workspace persona via PersonaLoader (``persona.source == "workspace"``).
+           Hot-reloads via ``refresh_if_stale``.
+        3. Fallback to ``cfg.system_prompt`` (the legacy hardcoded string)
+           when workspace returned empty AND
+           ``persona.fallback_to_config_on_empty`` is True.
+        4. Otherwise the static prompt captured at construction.
+        """
+        if self._explicit_system_prompt is not None:
+            return self._explicit_system_prompt
+        loader = self._persona_loader
+        if loader is None:
+            return self._static_system_prompt
+        try:
+            prompt = loader.get_system_prompt("user_facing")
+        except Exception as e:
+            logger.warning(
+                "PersonaLoader failed (%s); falling back to config", e,
+            )
+            return self._static_system_prompt
+        if prompt:
+            return prompt
+        # Workspace was empty / unset.
+        cfg = get_config().llm
+        if cfg.persona.fallback_to_config_on_empty:
+            logger.warning(
+                "Persona workspace empty; falling back to "
+                "llm.system_prompt config value"
+            )
+            return self._static_system_prompt
+        return ""
+
     def _init_http_server(self, cfg) -> None:
         """Configure the HTTP-client path. No model load happens here —
         the server (started separately) holds the weights."""
@@ -251,11 +324,31 @@ class LLMEngine:
             self._history.append(("assistant", assistant_message))
 
     def _build_messages(self, user_message: str) -> List[dict]:
+        # Resolve the system prompt fresh each turn. When the persona
+        # source is the workspace, this is what makes hot reload work:
+        # PersonaLoader's refresh_if_stale catches mtime/size changes
+        # so a SOUL.md edit takes effect on the next user turn without
+        # restart. Cost is ~6 stat() calls (sub-millisecond).
+        system_content = self._resolve_system_prompt()
+        # Keep ``self.system_prompt`` in sync with the resolved value
+        # so external readers (tests, debug log dumps) see the live
+        # prompt, not the construction-time snapshot.
+        self.system_prompt = system_content
+        if not self._logged_initial_persona:
+            self._logged_initial_persona = True
+            logger.debug(
+                "system prompt (%d chars, source=%s):\n%s",
+                len(system_content),
+                "explicit" if self._explicit_system_prompt is not None
+                else ("workspace" if self._persona_loader is not None
+                      else "config"),
+                system_content,
+            )
+
         # RAG snippets are folded into the leading system message rather than
         # emitted as a second `system`-role entry: Qwen3's chat template
         # rejects a second system message with "System message must be at
         # the beginning."
-        system_content = self.system_prompt
 
         if self._memory is not None:
             mem_cfg = get_config().memory

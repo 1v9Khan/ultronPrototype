@@ -119,8 +119,24 @@ class OllamaUnavailableError(DependencyUnavailableError):
 
 
 class OpenClawGatewayError(DependencyUnavailableError):
-    """OpenClaw Gateway HTTP unreachable. Filled in by Part 5+ when
-    OpenClaw integration arrives."""
+    """OpenClaw Gateway HTTP unreachable / unhealthy. Generic transport
+    failure for the bridge — connection refused, timeout, 5xx, malformed
+    response. The bridge logs and continues; voice pipeline is unaffected
+    (``openclaw.fail_open: true``)."""
+
+
+class OpenClawAuthError(OpenClawGatewayError):
+    """Gateway rejected our credentials. 401/403 from the Gateway HTTP
+    API, typically because the auth token in ``~/.openclaw/openclaw.json``
+    has rotated. The bridge stops trying until the user reauths; voice
+    pipeline keeps working."""
+
+
+class OpenClawToolError(UltronError):
+    """An OpenClaw tool invocation failed at the application layer (the
+    Gateway responded, but the tool returned an error result). Distinct
+    from transport failures (``OpenClawGatewayError``) — this means the
+    Gateway is healthy but the requested action couldn't complete."""
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +210,8 @@ __all__ = [
     "AnthropicAPIError",
     "OllamaUnavailableError",
     "OpenClawGatewayError",
+    "OpenClawAuthError",
+    "OpenClawToolError",
     "ClaudeCodeError",
     "AudioPipelineError",
     "WhisperTranscriptionError",

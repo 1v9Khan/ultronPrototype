@@ -126,9 +126,12 @@ def test_current_returns_none_before_first_load(workspace):
 
 
 def test_user_facing_mode_default_composition(workspace):
-    """Default mode (user_facing): IDENTITY → SOUL → USER → AGENTS.
+    """Default mode (user_facing): IDENTITY → SOUL → USER.
 
-    No HEARTBEAT, no BOOTSTRAP, no internal-worker prefix.
+    AGENTS.md is deliberately NOT in user_facing — operating rules
+    bloat the voice-path system prompt and cost ~+200 ms TTFT.
+    Voice-relevant rules (do-not-lecture, uncertainty handling) live
+    in SOUL.md instead.
     """
     loader = PersonaLoader(workspace)
     prompt = loader.get_system_prompt()
@@ -138,11 +141,10 @@ def test_user_facing_mode_default_composition(workspace):
         "identity body",
         "soul body",
         "user body",
-        "agents body",
     ]
+    assert "agents body" not in prompt
     assert "heartbeat body" not in prompt
     assert "bootstrap body" not in prompt
-    # No background prefix on user_facing.
     assert not prompt.startswith("You are an internal worker")
 
 
@@ -191,7 +193,11 @@ def test_unknown_mode_raises_value_error(workspace):
 
 
 def test_user_facing_skips_empty_soul_but_renders_other_sections(tmp_path):
-    """Empty SOUL.md doesn't break user_facing — IDENTITY/USER/AGENTS still render."""
+    """Empty SOUL.md doesn't break user_facing — IDENTITY/USER still render.
+
+    AGENTS.md is not in user_facing's file list, so it's never
+    included regardless of content.
+    """
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / "IDENTITY.md").write_text("identity body", encoding="utf-8")
@@ -206,11 +212,36 @@ def test_user_facing_skips_empty_soul_but_renders_other_sections(tmp_path):
 
     assert "identity body" in prompt
     assert "user body" in prompt
-    assert "agents body" in prompt
+    assert "agents body" not in prompt  # not in user_facing's mode
     # Soul should be skipped because content is whitespace-only.
     assert prompt.split("\n\n") == [
-        "identity body", "user body", "agents body",
+        "identity body", "user body",
     ]
+
+
+def test_html_comment_only_files_are_treated_as_empty(tmp_path):
+    """A file whose content is nothing but HTML comments (used for
+    human-reader documentation) must not bloat the rendered prompt."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "IDENTITY.md").write_text("identity body", encoding="utf-8")
+    (ws / "SOUL.md").write_text("soul body", encoding="utf-8")
+    (ws / "USER.md").write_text(
+        "<!-- auto-populated from facts; empty for now -->",
+        encoding="utf-8",
+    )
+    (ws / "AGENTS.md").write_text("agents body", encoding="utf-8")
+    (ws / "HEARTBEAT.md").write_text("", encoding="utf-8")
+    (ws / "BOOTSTRAP.md").write_text("", encoding="utf-8")
+
+    loader = PersonaLoader(ws)
+    prompt = loader.get_system_prompt()
+
+    assert "identity body" in prompt
+    assert "soul body" in prompt
+    # The HTML comment is stripped; USER.md effectively renders empty.
+    assert "auto-populated" not in prompt
+    assert "<!--" not in prompt
 
 
 def test_background_mode_with_missing_agents_still_emits_prefix(tmp_path):

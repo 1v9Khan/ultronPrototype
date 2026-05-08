@@ -11,9 +11,10 @@
 > current — see "Maintenance contract" at the bottom.
 
 Last validated against HEAD: Foundation Phase 7 close + Phase 4 deferred
-wrappers (ClaudeCodeError / AnthropicAPIError / MCPServerError /
-FilesystemError call-site wiring) — 699 passing tests, 15 skipped,
-0 failed.
+wrappers + OpenClaw integration Phase 0 + 1 (llama-cpp-server launcher
++ supervisor, persona migration, PersonaLoader with mode-based
+composition + hot reload, LLMEngine HTTP-client opt-in, OpenClaw bridge
+foundations) — 736 passing tests, 15 skipped, 0 failed.
 
 ---
 
@@ -142,6 +143,10 @@ For the current decisions and Foundation phase status see
 │       │   ├── intents.py          ← RoutingIntentKind enum, RoutingIntent + per-category dataclasses
 │       │   └── runner.py           ← AutomationTaskRunner (mirror of CodingTaskRunner)
 │       │
+│       ├── openclaw_bridge/        ← OpenClaw integration Phase 1 + 3 foundations
+│       │   ├── persona.py          ← PersonaLoader (mode-based: user_facing/background/heartbeat/bootstrap) + hot reload
+│       │   └── lifecycle.py        ← OpenClawLifecycle (health probes; never raises)
+│       │
 │       ├── resilience/             ← Phase 4 resilience primitives
 │       │   ├── circuit_breaker.py  ← CircuitBreaker (3-state: CLOSED/OPEN/HALF_OPEN)
 │       │   ├── error_log.py        ← ErrorLog (logs/errors.jsonl writer + singleton)
@@ -174,6 +179,10 @@ For the current decisions and Foundation phase status see
 │   ├── system_inventory.md         ← Phase 1 verification snapshot
 │   ├── phase3_5_followup.md        ← Punch list: remaining unified-config migrations
 │   ├── smoke_test.md               ← 16-step real-stack walkthrough procedure
+│   ├── openclaw_integration.md     ← OpenClaw integration architecture + Phase 0/1
+│   ├── openclaw_runtime.md         ← OpenClaw runtime ops (agents, supervisor, locks)
+│   ├── phase_1_summary.md          ← Phase 1 close-out report (persona migration)
+│   ├── 4b_optimization_plan.md     ← Deferred 4B-model migration plan
 │   └── codebase_structure.md       ← THIS FILE
 │
 ├── scripts/                        ← Operational scripts (CLI tools)
@@ -189,7 +198,12 @@ For the current decisions and Foundation phase status see
 │   ├── review_addressing.py        ← Read addressing.jsonl, print verdicts
 │   ├── run_integration_tests.py    ← pytest wrapper for tests/integration|routing|error_recovery
 │   ├── run_orchestration_tests.py  ← Run 10 orchestration scenarios with reporting
-│   └── validate_config.py          ← Schema-validate config.yaml without starting Ultron
+│   ├── validate_config.py          ← Schema-validate config.yaml without starting Ultron
+│   ├── start_llamacpp_server.py    ← OpenClaw Phase 0: launch llama-cpp-server with voice-pipeline params
+│   ├── supervised_llamacpp_server.py ← OpenClaw Phase 0: supervisor wrapper with auto-restart
+│   ├── smoke_test_llamacpp.ps1     ← OpenClaw Phase 0: PowerShell health probe for llama-cpp-server
+│   ├── _bench_llm_http.py          ← OpenClaw Phase 0: HTTP-mode TTFT benchmark
+│   └── _log_proxy.py               ← OpenClaw Phase 0: tee proxy for debugging Gateway → server traffic
 │
 ├── tests/
 │   ├── conftest.py                 ← Path setup so `from ultron.*` works
@@ -563,12 +577,16 @@ pre-flight gate's uncertainty signals.
 ### `src/ultron/llm/inference.py`
 
 - `_strip_thinking_blocks(stream)` — filter `<think>...</think>` from token stream
-- `class LLMEngine` — llama-cpp-python wrapper
-  - `__init__(model_path?, n_ctx?, n_gpu_layers?, system_prompt?, history_turns?, memory=None)`
+- `class LLMEngine` — LLM client with two backends, selected by `llm.runtime`:
+  - `in_process` (default): loads the GGUF via llama-cpp-python in this process. Voice-path mode.
+  - `http_server` (opt-in): talks to llama-cpp-server over OpenAI-compat HTTP. For the OpenClaw + voice migration. Latency is +71 ms median TTFT vs in-process — kept opt-in so the voice path isn't regressed.
+  - `__init__(model_path?, n_ctx?, n_gpu_layers?, system_prompt?, history_turns?, memory=None, runtime?)`
   - `generate(user_message) -> str` — blocking
   - `generate_stream(user_message) -> Iterator[str]` — token streaming
   - `cancel()` — signal to stop
-  - `_build_messages(user_message)` — assembles system prompt + RAG snippets + recent + user
+  - `_build_messages(user_message)` — resolves system prompt fresh each turn (Phase 1 hot-reload), assembles RAG snippets + recent + user
+  - `_resolve_system_prompt()` (Phase 1) — sources from `PersonaLoader.get_system_prompt("user_facing")` when `llm.persona.source == "workspace"` (default), else `cfg.system_prompt`. Falls back to config when workspace is empty.
+  - `_http_chat_completion(...)` / `_http_stream(...)` — OpenAI-compat HTTP client (uses `requests`, SSE for streaming, cancel-aware).
 
 **In:** user text + (optional) `ConversationMemory` for RAG. **Out:** generated text.
 
@@ -810,6 +828,50 @@ pre-flight gate's uncertainty signals.
 - `get_routing_log() -> RoutingDecisionLog` — singleton
 - `set_routing_log(log)` — test injection
 
+### `src/ultron/openclaw_bridge/` (OpenClaw Phase 1 + 3 foundations)
+
+The bridge layer between Ultron and the OpenClaw Gateway peer. Voice
+pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
+
+#### `openclaw_bridge/persona.py` (Phase 1)
+
+- `class PersonaLoader` — reads the six workspace files
+  (IDENTITY/SOUL/USER/AGENTS/HEARTBEAT/BOOTSTRAP) and composes a
+  system prompt for the requested mode. Hot reload via `refresh_if_stale`
+  (mtime+size check on each call).
+  - `load() -> PersonaBundle` — force a fresh read.
+  - `refresh_if_stale() -> PersonaBundle` — reload only if anything
+    changed; cheap.
+  - `get_system_prompt(mode="user_facing") -> str` — composes per mode.
+- `PromptMode = Literal["user_facing", "background", "heartbeat", "bootstrap"]`
+  - `user_facing` — IDENTITY + SOUL + USER. Voice path; full Ultron
+    character.
+  - `background` — AGENTS only, prefixed with internal-worker framing.
+    For heartbeat preflight, cron, summarization, tool selection.
+  - `heartbeat` — HEARTBEAT only.
+  - `bootstrap` — BOOTSTRAP only.
+- `default_workspace_dir() -> Path` — resolves
+  `~/.openclaw/workspace/` or `ULTRON_OPENCLAW_WORKSPACE` env override.
+- `class PersonaBundle` / `PersonaFile` — dataclasses with
+  fingerprint (`(name, mtime_ns, size)`) for change detection.
+- HTML-comment-only files (e.g., a placeholder USER.md with
+  `<!-- auto-populated by maintenance -->`) are treated as empty so
+  they don't bloat the prompt.
+
+#### `openclaw_bridge/lifecycle.py` (Phase 3 foundation)
+
+- `class OpenClawLifecycle` — health probes for the OpenClaw Gateway.
+  Never raises; voice path keeps working when Gateway is unreachable.
+  - `is_reachable() -> bool` — sub-second probe against
+    `/__openclaw__/canvas/`.
+  - `wait_for_ready(timeout_s, poll_interval_s) -> bool` — startup
+    block.
+  - `get_status() -> OpenClawStatus` — snapshot (version, default
+    agent, configured channels).
+  - `auth_token` property — reads `gateway.auth.token` from
+    `~/.openclaw/openclaw.json` lazily; never logs the token.
+- `class OpenClawStatus` — frozen dataclass.
+
 ### `src/ultron/pipeline/orchestrator.py`
 
 - `class State(Enum)` — IDLE / CAPTURING / PROCESSING / FOLLOW_UP_LISTENING
@@ -997,6 +1059,34 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 **Run:** `python scripts/validate_config.py [path] [--print]`
 **Out:** stdout — "Configuration is valid." or detailed `ConfigurationError` with path + message + context. Exit 0 = valid, 1 = invalid.
 
+### `scripts/start_llamacpp_server.py` (OpenClaw integration Phase 0)
+
+**Purpose:** launch llama-cpp-server on `127.0.0.1:8765` with the same params as the in-process voice loader (n_ctx=8192, flash_attn, Q8_0 KV cache). Imports `ultron` first so bundled torch CUDA DLLs are found before `llama_cpp` initialises (Windows-specific quirk).
+**Run:** `python scripts/start_llamacpp_server.py [--n-ctx N] [--port P] [--api-key K] [--chat-format F]`
+**Out:** uvicorn HTTP server on `--port` (default 8765); stays in foreground.
+
+### `scripts/supervised_llamacpp_server.py` (OpenClaw integration Phase 0)
+
+**Purpose:** Python supervisor wrapper for `start_llamacpp_server.py`. Spawns the launcher as a subprocess, restarts on death with exponential backoff (2 s → 60 s cap, healthy_after_s=30 resets). Lighter alternative to NSSM.
+**Run:** `python scripts/supervised_llamacpp_server.py [--cwd ...] [--max-restarts N] [--child-arg ...]`
+**Out:** tee'd stdout/stderr from the child + supervisor restart events to stderr.
+
+### `scripts/_bench_llm_http.py` (OpenClaw integration Phase 0)
+
+**Purpose:** TTFT benchmark for the HTTP-runtime LLMEngine. Same 10 representative queries as `measure_baseline.py`, hits llama-cpp-server over HTTP.
+**Run:** `python scripts/_bench_llm_http.py` (server must be running on the configured base URL).
+**Out:** writes `baselines.json` `llm_http_runtime` block (median, p95, per-query). Used to compare HTTP-mode vs in-process mode latency.
+
+### `scripts/_log_proxy.py` (OpenClaw integration Phase 0; debug only)
+
+**Purpose:** tee proxy on `127.0.0.1:8766` that forwards to `127.0.0.1:8765` and logs every request body + SSE stream to stdout. Used to debug what OpenClaw actually sends to llama-cpp-server.
+**Run:** `python scripts/_log_proxy.py` (point OpenClaw's `models.providers.litellm.baseUrl` at the proxy port instead of the server port).
+
+### `scripts/smoke_test_llamacpp.ps1` (OpenClaw integration Phase 0)
+
+**Purpose:** PowerShell smoke test for llama-cpp-server. Hits `/v1/models` and `/v1/chat/completions` with a tiny prompt; prints timing + completion text. Used to verify the server is healthy before involving OpenClaw.
+**Run:** `pwsh scripts/smoke_test_llamacpp.ps1`
+
 ---
 
 ## Tests
@@ -1031,6 +1121,9 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 - `test_uncertainty.py` — uncertainty signal application
 - `test_verification.py` — six verification checks
 - `test_web_gating.py` — two-stage gating
+- `test_persona_loader.py` (20, OpenClaw Phase 1) — `PersonaLoader` modes / hot-reload / HTML-comment-only files
+- `test_llm_persona_source.py` (8, OpenClaw Phase 1) — `LLMEngine` persona-source wiring + hot-reload + fallback
+- `test_llm_http_runtime.py` (9, OpenClaw Phase 0) — HTTP-runtime construction, request shape, SSE streaming, cancel mid-stream
 
 **`tests/coding/`:**
 - `mock_bridge.py` — `ScriptedClaudeBridge` + `ClaudeScript` DSL
@@ -1139,6 +1232,10 @@ For specific tasks:
 - 16-step end-to-end smoke test: [docs/smoke_test.md](smoke_test.md)
 - Foundation Phase 1 inventory snapshot: [docs/system_inventory.md](system_inventory.md)
 - Phase 3 discovery catalog: [docs/config_discovery.md](config_discovery.md)
+- **OpenClaw integration architecture + Phase 0/1 status:** [docs/openclaw_integration.md](openclaw_integration.md)
+- **OpenClaw runtime ops (agents, supervisor, locked-in constraints):** [docs/openclaw_runtime.md](openclaw_runtime.md)
+- **Phase 1 close-out report (persona migration):** [docs/phase_1_summary.md](phase_1_summary.md)
+- **4B-model optimization plan (deferred to next session):** [docs/4b_optimization_plan.md](4b_optimization_plan.md)
 
 ---
 

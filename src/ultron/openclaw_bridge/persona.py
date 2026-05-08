@@ -68,8 +68,16 @@ PromptMode = Literal["user_facing", "background", "heartbeat", "bootstrap"]
 _DEFAULT_MODE: PromptMode = "user_facing"
 
 # Per-mode file inclusion lists (in render order).
+#
+# user_facing deliberately omits AGENTS.md: the operating rules
+# there (tool selection, memory ops, escalation policy) are for
+# internal workers, not the voice path. Including them on the voice
+# hot path adds ~900 tokens of prefill per turn — measured +218 ms
+# TTFT regression vs the original config prompt. Voice-relevant
+# rules ("complete what is asked", "do not lecture", uncertainty
+# handling) live in SOUL.md alongside the voice/tone content.
 _MODE_FILES: Dict[PromptMode, Tuple[str, ...]] = {
-    "user_facing": ("IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"),
+    "user_facing": ("IDENTITY.md", "SOUL.md", "USER.md"),
     "background": ("AGENTS.md",),
     "heartbeat": ("HEARTBEAT.md",),
     "bootstrap": ("BOOTSTRAP.md",),
@@ -111,6 +119,11 @@ def default_workspace_dir() -> Path:
     return Path.home() / ".openclaw" / "workspace"
 
 
+_HTML_COMMENT_RE = __import__("re").compile(
+    r"<!--.*?-->", flags=__import__("re").DOTALL,
+)
+
+
 @dataclass(frozen=True)
 class PersonaFile:
     """One persona file's content + on-disk fingerprint."""
@@ -122,7 +135,16 @@ class PersonaFile:
 
     @property
     def is_empty(self) -> bool:
-        return not self.content.strip()
+        """True if the file has no content the LLM should see.
+
+        Whitespace-only content is empty. Files that are nothing but
+        HTML comments are also treated as empty — the comment is
+        useful documentation for the human reader (e.g., "auto-
+        populated by maintenance"), but injecting it into a system
+        prompt wastes tokens.
+        """
+        without_comments = _HTML_COMMENT_RE.sub("", self.content)
+        return not without_comments.strip()
 
 
 @dataclass(frozen=True)
@@ -270,7 +292,13 @@ class PersonaLoader:
             f = bundle.files.get(name)
             if f is None or f.is_empty:
                 continue
-            sections.append(f.content.strip())
+            # Strip HTML comments from the rendered output. Files use
+            # them for human-reader documentation (e.g.,
+            # "<!-- auto-populated by maintenance -->") that the LLM
+            # doesn't need to see.
+            cleaned = _HTML_COMMENT_RE.sub("", f.content).strip()
+            if cleaned:
+                sections.append(cleaned)
         return "\n\n".join(sections)
 
     # --- internals ---------------------------------------------------------

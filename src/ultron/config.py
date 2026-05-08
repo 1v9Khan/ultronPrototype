@@ -139,6 +139,31 @@ class LLMServerConfig(_Strict):
     connect_timeout_s: float = 5.0
 
 
+class LLMPersonaConfig(_Strict):
+    """Where the voice-path system prompt comes from.
+
+    Phase 1 of the OpenClaw integration migrated Ultron's persona
+    out of ``config.yaml:llm.system_prompt`` and into the shared
+    workspace files (``SOUL.md``, ``IDENTITY.md``, ``USER.md``,
+    ``AGENTS.md``). Both Ultron's voice pipeline and OpenClaw read
+    from the same workspace so a SOUL.md edit is reflected in both.
+
+    Defaults to ``workspace`` (the migrated path). Set to ``config``
+    to revert to the hardcoded ``llm.system_prompt`` string — useful
+    for tests and for environments without a workspace.
+
+    Hot reload: when source is ``workspace``, the loader's
+    ``refresh_if_stale`` is called on every LLM turn so SOUL.md edits
+    land without restart. The cost is ~6 stat() calls per turn,
+    sub-millisecond.
+    """
+
+    source: Literal["workspace", "config"] = "workspace"
+    workspace_dir: Optional[str] = None  # None -> default_workspace_dir()
+    fallback_to_config_on_empty: bool = True
+    hot_reload: bool = True
+
+
 class LLMConfig(_Strict):
     # Pinned to llama_cpp per feedback_llm_runtime_decision.md (2026-05-08).
     provider: Literal["llama_cpp"] = "llama_cpp"
@@ -165,6 +190,7 @@ class LLMConfig(_Strict):
     kv_cache_type: int = 8                    # 8=q8_0, 1=F16
     system_prompt: str = ""
     server: LLMServerConfig = Field(default_factory=LLMServerConfig)
+    persona: LLMPersonaConfig = Field(default_factory=LLMPersonaConfig)
 
 
 class EmbeddingsConfig(_Strict):

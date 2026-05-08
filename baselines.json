@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "timestamp": "2026-05-08T20:08:33.988694+00:00",
+    "timestamp": "2026-05-08T22:29:38.251213+00:00",
     "main_repo": "C:\\STC\\ultronPrototype",
     "queries_count": 10,
     "queries": [
@@ -18,780 +18,155 @@
     "notes": "TTS measured through synth (Piper + RVC) without playback. VRAM is total GPU 0 used (includes desktop apps); deltas are the meaningful figures."
   },
   "vram_mb": {
-    "before_load": 3214,
-    "after_whisper": 3990,
-    "after_embedder": 3990,
-    "after_llm": 9541,
-    "after_rvc": 9538,
-    "full_stack_loaded": 10124,
-    "peak_under_load": 10363
+    "before_load": 3243,
+    "after_whisper": 4010,
+    "after_embedder": 4010,
+    "after_llm": 9560,
+    "after_rvc": 9560,
+    "full_stack_loaded": 10138,
+    "peak_under_load": 10370
   },
   "latency_ms": {
     "whisper_2_5s_sample": {
       "min": 77.9999999795109,
-      "median": 92.99999999348074,
-      "max": 93.99999998277053,
+      "median": 93.99999998277053,
+      "max": 94.0000000409782,
       "samples": [
-        93.99999998277053,
-        78.00000003771856,
-        93.99999998277053,
+        94.0000000409782,
         77.9999999795109,
-        92.99999999348074
+        77.9999999795109,
+        94.0000000409782,
+        93.99999998277053
       ]
     },
     "per_query": [
       {
         "query": "What is the boiling point of water?",
-        "first_token_ms": 94.0000000409782,
-        "first_sentence_complete_ms": 485.0000000442378,
+        "first_token_ms": 92.99999999348074,
+        "first_sentence_complete_ms": 406.00000001722947,
         "first_sentence_text": "At standard atmospheric pressure, water boils at 100 degrees Celsius (212 degrees Fahrenheit).",
-        "tts_synth_first_sentence_ms": 547.0000000204891,
-        "tts_pcm_samples": 296640,
+        "tts_synth_first_sentence_ms": 516.0000000032596,
+        "tts_pcm_samples": 310080,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 734.000000054948,
-        "vram_mb_after": 10256
+        "ttfa_estimate_ms": 702.9999999795109,
+        "vram_mb_after": 10271
       },
       {
         "query": "Walk me through how a transistor works.",
-        "first_token_ms": 125.0,
-        "first_sentence_complete_ms": 608.9999999967404,
+        "first_token_ms": 93.99999998277053,
+        "first_sentence_complete_ms": 547.0000000204891,
         "first_sentence_text": "A transistor functions as a semiconductor switch or amplifier, controlling current flow between its source and drain terminals via an electric field applied to a gate. In a",
-        "tts_synth_first_sentence_ms": 795.9999999729916,
-        "tts_pcm_samples": 466560,
+        "tts_synth_first_sentence_ms": 718.9999999827705,
+        "tts_pcm_samples": 472320,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 1013.9999999664724,
-        "vram_mb_after": 10338
+        "ttfa_estimate_ms": 906.9999999483116,
+        "vram_mb_after": 10359
       },
       {
         "query": "Who was Nikola Tesla?",
         "first_token_ms": 125.0,
-        "first_sentence_complete_ms": 578.0000000377186,
+        "first_sentence_complete_ms": 532.0000000065193,
         "first_sentence_text": "Nikola Tesla was a Serbian-American electrical engineer and physicist who pioneered alternating current (AC) electricity, wireless communication, and radio technology. He",
-        "tts_synth_first_sentence_ms": 641.0000000032596,
-        "tts_pcm_samples": 493440,
+        "tts_synth_first_sentence_ms": 577.9999999795109,
+        "tts_pcm_samples": 489600,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 858.9999999967404,
-        "vram_mb_after": 10355
+        "ttfa_estimate_ms": 796.9999999622814,
+        "vram_mb_after": 10345
       },
       {
         "query": "What's nineteen times forty-three?",
-        "first_token_ms": 139.99999995576218,
-        "first_sentence_complete_ms": 139.99999995576218,
+        "first_token_ms": 125.0,
+        "first_sentence_complete_ms": 125.0,
         "first_sentence_text": "817.",
-        "tts_synth_first_sentence_ms": 219.0000000409782,
-        "tts_pcm_samples": 52800,
+        "tts_synth_first_sentence_ms": 234.99999998603016,
+        "tts_pcm_samples": 53760,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 451.9999999902211,
-        "vram_mb_after": 10215
+        "ttfa_estimate_ms": 453.9999999688007,
+        "vram_mb_after": 10255
       },
       {
         "query": "Explain what a hash table is.",
-        "first_token_ms": 125.0,
-        "first_sentence_complete_ms": 453.00000003771856,
+        "first_token_ms": 108.99999999674037,
+        "first_sentence_complete_ms": 483.99999999674037,
         "first_sentence_text": "A hash table is a data structure that stores key-value pairs, enabling near-constant time access.",
-        "tts_synth_first_sentence_ms": 389.9999999557622,
-        "tts_pcm_samples": 281280,
+        "tts_synth_first_sentence_ms": 391.00000000325963,
+        "tts_pcm_samples": 285120,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 607.9999999492429,
-        "vram_mb_after": 10261
+        "ttfa_estimate_ms": 593.9999999827705,
+        "vram_mb_after": 10301
       },
       {
         "query": "Are you afraid of death?",
-        "first_token_ms": 125.0,
-        "first_sentence_complete_ms": 141.00000000325963,
+        "first_token_ms": 110.00000004423782,
+        "first_sentence_complete_ms": 110.00000004423782,
         "first_sentence_text": "No.",
-        "tts_synth_first_sentence_ms": 186.99999997625127,
+        "tts_synth_first_sentence_ms": 172.0000000204891,
         "tts_pcm_samples": 17280,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 404.999999969732,
-        "vram_mb_after": 10209
+        "ttfa_estimate_ms": 376.00000004749745,
+        "vram_mb_after": 10245
       },
       {
         "query": "What's a good book to read on a flight?",
         "first_token_ms": 125.0,
-        "first_sentence_complete_ms": 327.9999999795109,
+        "first_sentence_complete_ms": 296.99999996228144,
         "first_sentence_text": "For a flight, efficiency and engagement are paramount. *",
-        "tts_synth_first_sentence_ms": 328.00000003771856,
-        "tts_pcm_samples": 185280,
+        "tts_synth_first_sentence_ms": 311.9999999762513,
+        "tts_pcm_samples": 192000,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 546.0000000311993,
-        "vram_mb_after": 10209
+        "ttfa_estimate_ms": 530.9999999590218,
+        "vram_mb_after": 10233
       },
       {
         "query": "What do you think about meditation?",
-        "first_token_ms": 108.99999999674037,
-        "first_sentence_complete_ms": 358.99999999674037,
+        "first_token_ms": 109.99999998603016,
+        "first_sentence_complete_ms": 343.99999998277053,
         "first_sentence_text": "Meditation aligns neural pathways to optimize focus and suppress emotional volatility. For a s",
-        "tts_synth_first_sentence_ms": 422.0000000204891,
-        "tts_pcm_samples": 272640,
+        "tts_synth_first_sentence_ms": 375.0,
+        "tts_pcm_samples": 284160,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 624.0000000107102,
-        "vram_mb_after": 10245
+        "ttfa_estimate_ms": 578.9999999688007,
+        "vram_mb_after": 10303
       },
       {
         "query": "And what about the Mariana Trench?",
-        "first_token_ms": 125.0,
-        "first_sentence_complete_ms": 577.9999999795109,
+        "first_token_ms": 92.99999999348074,
+        "first_sentence_complete_ms": 500.0,
         "first_sentence_text": "The Challenger Deep, the deepest known point in the Mariana Trench, sits at approximately 10,935 meters.",
-        "tts_synth_first_sentence_ms": 467.99999999348074,
-        "tts_pcm_samples": 354240,
+        "tts_synth_first_sentence_ms": 437.99999996554106,
+        "tts_pcm_samples": 344640,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 685.9999999869615,
-        "vram_mb_after": 10231
+        "ttfa_estimate_ms": 624.9999999417923,
+        "vram_mb_after": 10301
       },
       {
         "query": "Tell me something interesting about black holes.",
-        "first_token_ms": 125.0,
-        "first_sentence_complete_ms": 782.0000000065193,
+        "first_token_ms": 108.99999999674037,
+        "first_sentence_complete_ms": 718.9999999827705,
         "first_sentence_text": "A black hole's event horizon is not a surface but a boundary in spacetime; crossing it is irreversible, yet from an outside observer's perspective, time dilation prevents anything from ever appearing ",
-        "tts_synth_first_sentence_ms": 672.0000000204891,
-        "tts_pcm_samples": 587520,
+        "tts_synth_first_sentence_ms": 641.0000000032596,
+        "tts_pcm_samples": 590400,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 890.0000000139698,
-        "vram_mb_after": 10363
+        "ttfa_estimate_ms": 843.9999999827705,
+        "vram_mb_after": 10370
       }
     ],
     "aggregate": {
       "ttft_ms": {
-        "min": 94.0000000409782,
-        "median": 125.0,
-        "max": 139.99999995576218
+        "min": 92.99999999348074,
+        "median": 109.49999999138527,
+        "max": 125.0
       },
       "tts_synth_ms": {
-        "min": 186.99999997625127,
-        "median": 445.0000000069849,
-        "max": 795.9999999729916
+        "min": 172.0000000204891,
+        "median": 414.49999998440035,
+        "max": 718.9999999827705
       },
       "ttfa_estimate_ms": {
-        "min": 404.999999969732,
-        "median": 654.9999999988358,
-        "max": 1013.9999999664724
+        "min": 376.00000004749745,
+        "median": 609.4999999622814,
+        "max": 906.9999999483116
       }
-    }
-  },
-  "phase_foundation_start": {
-    "scope": {
-      "git_head": "4ecc7ec",
-      "git_head_subject": "Phase C / Phase 1: context projection refactor",
-      "captured_at_phase_start": "2026-05-08T04:14:51.253246+00:00",
-      "voice_path_baseline_source": "Most recent run of scripts/measure_baseline.py (timestamp 2026-05-08T01:21:22 UTC) -- captured before this Foundation phase began. Re-using rather than re-running keeps GPU idle for ongoing development; the data is < 1 day old and HEAD has not changed since.",
-      "current_gpu0_idle_mb_at_phase_start": 2580,
-      "vram_ceiling_check": {
-        "spec_target_peak_mb": 9216,
-        "spec_hard_cap_mb": 11776,
-        "voice_path_peak_mb_observed": 10368,
-        "search_hop_peak_mb_observed": 9802,
-        "coding_session_peak_mb_observed": 9802,
-        "interpretation": "voice_path_peak_mb_observed is ABOVE the 9.2 GB target but UNDER the 11.5 GB hard cap. This was the established baseline before the Foundation phase; this phase's no-regression rule is read against this number, not 9.2 GB. Search and coding-session measurements both stayed under the voice-path peak, confirming neither path adds local GPU load beyond what the LLM keeps resident for any voice query."
-      },
-      "ollama_compat_test": {
-        "tested_at": "2026-05-08T05:05:00Z",
-        "ollama_version": "0.22.1",
-        "model_imported": "ultron-cpp-mirror (from Qwen3.5-9B-Q4_K_M.gguf via Modelfile)",
-        "modelfile_location": "data/ollama_compat_test/Modelfile",
-        "modelfile_mirrors": [
-          "LLM_CONTEXT_LENGTH=8192 -> num_ctx 8192",
-          "LLM_GPU_LAYERS=-1 -> num_gpu 999",
-          "LLM_TEMPERATURE=0.7 -> temperature 0.7",
-          "LLM_TOP_P=0.9 -> top_p 0.9",
-          "LLM_MAX_TOKENS=512 -> num_predict 512",
-          "LLM_REPEAT_PENALTY=1.1 -> repeat_penalty 1.1",
-          "stop '<|im_end|>' -> PARAMETER stop \"<|im_end|>\"",
-          "ULTRON_SYSTEM_PROMPT verbatim in SYSTEM directive"
-        ],
-        "daemon_env_vars_tested": {
-          "OLLAMA_FLASH_ATTENTION": "true",
-          "OLLAMA_KV_CACHE_TYPE": "q8_0",
-          "OLLAMA_KEEP_ALIVE": "-1 (never unload; observed as max int64 ns sentinel)",
-          "OLLAMA_MAX_LOADED_MODELS": "1",
-          "OLLAMA_NUM_PARALLEL": "1",
-          "OLLAMA_NEW_ENGINE": "tested both false and true"
-        },
-        "results": {
-          "architecture_qwen35_loads": true,
-          "flash_attn_engaged": true,
-          "q8_0_kv_engaged": true,
-          "keep_alive_permanent": true,
-          "vram_observation": {
-            "ollama_total_local_memory_GiB": 6.9,
-            "ollama_breakdown": {
-              "model_weights_CUDA0_GiB": 4.7,
-              "model_weights_CPU_MiB": 545.6,
-              "kv_cache_CUDA0_GiB": 1.4,
-              "compute_graph_CUDA0_MiB": 210.1
-            },
-            "ollama_vram_delta_mb_observed": 6716,
-            "llama_cpp_baseline_llm_delta_mb": 5550,
-            "regression_mb": 1166,
-            "regression_pct": 21,
-            "interpretation": "Ollama uses ~1.2 GiB more local VRAM for the same GGUF, even with flash-attn + q8_0 KV both on. Likely SSM-state allocation overhead specific to this hybrid qwen35 architecture. With Whisper + RVC + Piper added, projected voice-stack peak ~11534 MB, marginally over the 11500 MB hard cap."
-          },
-          "latency_observation": {
-            "old_engine_ttft_ms_median": 142,
-            "new_engine_ttft_ms_median": 141,
-            "llama_cpp_ttft_ms_median": 125,
-            "regression_pct": 14,
-            "interpretation": "Small TTFT regression attributable to localhost HTTP + JSON encoding. Generation throughput comparable (~50-58 tok/s in either engine)."
-          },
-          "behavior_observation": {
-            "ollama_done_reason_histogram_5_queries": {
-              "length": 5
-            },
-            "llama_cpp_done_reason_typical": "stop (model emits EOS at end of answer)",
-            "ultron_voice_preserved": false,
-            "evidence": [
-              "llama-cpp '817.' vs Ollama '\n\nTo find the product of 19 and 43, we can use the standard multiplication method...'",
-              "llama-cpp 'No.' vs Ollama '\n\n1. **Understanding the question** ...numbered breakdown'",
-              "Every Ollama response generated past assistant turn boundary, none stopped at EOS naturally"
-            ],
-            "root_cause": "GGUF eos_token_id=248046 (<|im_end|>) but Unsloth-quantized model emits <|endoftext|> (id 248044) at turn ends. Ollama respects metadata EOS but model bypasses it. llama-cpp's create_chat_completion handles this differently (template-aware stops in OpenAI-compat wrapper). Multi-stop API parameter does NOT fix; old engine and new engine both exhibit the same broken stop behavior."
-          }
-        },
-        "conclusion": "Ollama mechanically loads the qwen35 GGUF and runs it, but cannot reproduce llama-cpp-python's runtime behavior with this specific model. Migrating the voice pipeline to Ollama would change Ultron's voice character (verbose vs terse), break stop handling (every response hits length cap), and add ~1.2 GiB of local VRAM that puts the voice stack marginally over the 11.5 GB hard cap.",
-        "decision": {
-          "voice_pipeline_llm_runtime": "stay on llama-cpp-python in-process",
-          "openclaw_sharing_strategy": "use llama-cpp-python's built-in OpenAI-compatible server (python -m llama_cpp.server) when OpenClaw integration arrives. Same loader, same model file, same Ultron behavior, both consumers share weights.",
-          "config_implication_phase_3": "Phase 3 unified config will use llm.provider='llama_cpp' (in-process) for this Foundation phase. Phase 3 may add llm.server.* keys for the future llama-cpp-server transition; voice pipeline keeps in-process loader until the OpenClaw integration prompt actually needs sharing."
-        },
-        "machine_state_after_test": {
-          "test_daemon_stopped": true,
-          "tray_app_daemon_stopped": true,
-          "user_action_needed": "relaunch Ollama tray from Start menu if you want the original setup back",
-          "ultron-cpp-mirror_model_remains_in_ollama": true,
-          "approx_disk_kept": "~5.7 GB under ~/.ollama/models/blobs",
-          "remove_with": "ollama rm ultron-cpp-mirror"
-        }
-      }
-    },
-    "metadata": {
-      "timestamp": "2026-05-08T01:21:22.663350+00:00",
-      "main_repo": "C:\\STC\\ultronPrototype",
-      "queries_count": 10,
-      "queries": [
-        "What is the boiling point of water?",
-        "Walk me through how a transistor works.",
-        "Who was Nikola Tesla?",
-        "What's nineteen times forty-three?",
-        "Explain what a hash table is.",
-        "Are you afraid of death?",
-        "What's a good book to read on a flight?",
-        "What do you think about meditation?",
-        "And what about the Mariana Trench?",
-        "Tell me something interesting about black holes."
-      ],
-      "notes": "TTS measured through synth (Piper + RVC) without playback. VRAM is total GPU 0 used (includes desktop apps); deltas are the meaningful figures."
-    },
-    "vram_mb": {
-      "before_load": 3176,
-      "after_whisper": 3946,
-      "after_embedder": 3946,
-      "after_llm": 9497,
-      "after_rvc": 9490,
-      "full_stack_loaded": 10107,
-      "peak_under_load": 10368
-    },
-    "latency_ms": {
-      "whisper_2_5s_sample": {
-        "min": 93.99999998277053,
-        "median": 108.99999999674037,
-        "max": 109.99999998603016,
-        "samples": [
-          108.99999999674037,
-          93.99999998277053,
-          109.0000000258442,
-          109.99999998603016,
-          108.99999999674037
-        ]
-      },
-      "per_query": [
-        {
-          "query": "What is the boiling point of water?",
-          "first_token_ms": 94.00000001187436,
-          "first_sentence_complete_ms": 453.00000000861473,
-          "first_sentence_text": "At standard atmospheric pressure, water boils at 100 degrees Celsius (212 degrees Fahrenheit).",
-          "tts_synth_first_sentence_ms": 625.0,
-          "tts_pcm_samples": 304320,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 828.0000000086147,
-          "vram_mb_after": 10250
-        },
-        {
-          "query": "Walk me through how a transistor works.",
-          "first_token_ms": 92.99999999348074,
-          "first_sentence_complete_ms": 592.9999999934807,
-          "first_sentence_text": "A transistor functions as a semiconductor switch or amplifier, controlling current flow between its source and drain terminals via an electric field applied to a gate. In a",
-          "tts_synth_first_sentence_ms": 937.0000000053551,
-          "tts_pcm_samples": 467520,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 1138.9999999955762,
-          "vram_mb_after": 10275
-        },
-        {
-          "query": "Who was Nikola Tesla?",
-          "first_token_ms": 125.0,
-          "first_sentence_complete_ms": 578.0000000086147,
-          "first_sentence_text": "Nikola Tesla was a Serbian-American electrical engineer and physicist who pioneered alternating current (AC) electricity, wireless communication, and radio technology. He",
-          "tts_synth_first_sentence_ms": 733.9999999967404,
-          "tts_pcm_samples": 492480,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 967.9999999934807,
-          "vram_mb_after": 10368
-        },
-        {
-          "query": "What's nineteen times forty-three?",
-          "first_token_ms": 156.00000001722947,
-          "first_sentence_complete_ms": 156.00000001722947,
-          "first_sentence_text": "817.",
-          "tts_synth_first_sentence_ms": 250.0,
-          "tts_pcm_samples": 54720,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 515.0000000139698,
-          "vram_mb_after": 10238
-        },
-        {
-          "query": "Explain what a hash table is.",
-          "first_token_ms": 125.0,
-          "first_sentence_complete_ms": 437.9999999946449,
-          "first_sentence_text": "A hash table is a data structure that stores key-value pairs, enabling near-constant time access.",
-          "tts_synth_first_sentence_ms": 452.9999999795109,
-          "tts_pcm_samples": 280320,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 686.9999999762513,
-          "vram_mb_after": 10226
-        },
-        {
-          "query": "Are you afraid of death?",
-          "first_token_ms": 125.0,
-          "first_sentence_complete_ms": 140.9999999741558,
-          "first_sentence_text": "No.",
-          "tts_synth_first_sentence_ms": 219.00000001187436,
-          "tts_pcm_samples": 19200,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 453.00000000861473,
-          "vram_mb_after": 10206
-        },
-        {
-          "query": "What's a good book to read on a flight?",
-          "first_token_ms": 125.0,
-          "first_sentence_complete_ms": 312.9999999946449,
-          "first_sentence_text": "For a flight, efficiency and engagement are paramount. *",
-          "tts_synth_first_sentence_ms": 375.0,
-          "tts_pcm_samples": 182400,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 608.9999999967404,
-          "vram_mb_after": 10208
-        },
-        {
-          "query": "What do you think about meditation?",
-          "first_token_ms": 125.0,
-          "first_sentence_complete_ms": 375.0,
-          "first_sentence_text": "Meditation aligns neural pathways to optimize focus and suppress emotional volatility. For a s",
-          "tts_synth_first_sentence_ms": 468.99999998277053,
-          "tts_pcm_samples": 278400,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 702.9999999795109,
-          "vram_mb_after": 10204
-        },
-        {
-          "query": "And what about the Mariana Trench?",
-          "first_token_ms": 125.0,
-          "first_sentence_complete_ms": 562.0000000053551,
-          "first_sentence_text": "The Challenger Deep, the deepest known point in the Mariana Trench, sits at approximately 10,935 meters.",
-          "tts_synth_first_sentence_ms": 546.9999999913853,
-          "tts_pcm_samples": 358080,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 780.9999999881256,
-          "vram_mb_after": 10266
-        },
-        {
-          "query": "Tell me something interesting about black holes.",
-          "first_token_ms": 125.0,
-          "first_sentence_complete_ms": 780.9999999881256,
-          "first_sentence_text": "A black hole's event horizon is not a surface but a boundary in spacetime; crossing it is irreversible, yet from an outside observer's perspective, time dilation prevents anything from ever appearing ",
-          "tts_synth_first_sentence_ms": 812.9999999946449,
-          "tts_pcm_samples": 590400,
-          "tts_pcm_sr": 48000,
-          "ttfa_estimate_ms": 1046.9999999913853,
-          "vram_mb_after": 10262
-        }
-      ],
-      "aggregate": {
-        "ttft_ms": {
-          "min": 92.99999999348074,
-          "median": 125.0,
-          "max": 156.00000001722947
-        },
-        "tts_synth_ms": {
-          "min": 219.00000001187436,
-          "median": 507.9999999870779,
-          "max": 937.0000000053551
-        },
-        "ttfa_estimate_ms": {
-          "min": 453.00000000861473,
-          "median": 741.9999999838183,
-          "max": 1138.9999999955762
-        }
-      }
-    },
-    "test_suite": {
-      "command": "pytest tests/ --tb=short -q",
-      "result": "385 passed, 16 skipped, 28 warnings in 30.26s",
-      "passed": 385,
-      "skipped": 16,
-      "failed": 0,
-      "warnings_summary": "All warnings are DeprecationWarning for get_session_state(); the projection refactor (commit 4ecc7ec) deprecated this MCP tool but kept it for backward compat. Removal scheduled for a later phase.",
-      "skipped_tests_note": "Skipped tests are gated on PYTEST_RUN_GPU_TESTS=1 (load real models) or PYTEST_RUN_MIC_TESTS=1 (real microphone). Not run in this baseline pass to avoid blocking GPU and metering Claude API."
-    },
-    "measurements_NOT_yet_captured": [],
-    "measurements_extended": {
-      "captured_at": "2026-05-08T17:07:32.340754+00:00",
-      "modes_run": {
-        "lite": true,
-        "full": false
-      },
-      "voice_stack_load_checkpoints_mb": {
-        "before_load_mb": 2851,
-        "after_whisper_mb": 3611,
-        "after_llm_mb": 9156,
-        "after_rvc_mb": 9159,
-        "full_stack_loaded_mb": 9742
-      },
-      "search_query_vram": {
-        "user_query": "What are the latest features in Python 3.13?",
-        "vram_mb_before_search": 9760,
-        "vram_mb_after_search": 9802,
-        "vram_mb_delta": 42,
-        "executor_elapsed_ms": 375.0,
-        "executor_internal_elapsed_ms": 375.0,
-        "sources_returned": 3,
-        "cache_hit": false,
-        "notes": "Brave and Jina are mocked (no network). VRAM cost of the search hop is the LLM ranking call (one short prompt, ~128 max_tokens). The orchestrator would also issue a final-response LLM call afterward (not measured here -- already captured in voice-path per-query VRAM)."
-      },
-      "coding_session_vram": {
-        "vram_mb_before_session": 9802,
-        "vram_mb_peak_during_session": 9802,
-        "vram_mb_after_session": 9802,
-        "vram_mb_delta_peak": 0,
-        "samples_taken": 8,
-        "task_succeeded": true,
-        "notes": "Voice stack remains loaded throughout. The scripted mock bridge runs in a worker thread (no Claude subprocess). Real Claude Code runs as a SUBPROCESS and consumes negligible local GPU; the LLM hosting the answer is at Anthropic, not local. So this measurement validates that the orchestration machinery itself doesn't spike local VRAM."
-      },
-      "time_to_acknowledgment": {
-        "n_samples": 1000,
-        "min_us": 0.09994255378842354,
-        "median_us": 0.200001522898674,
-        "p95_us": 1.300009898841381,
-        "p99_us": 1.500011421740055,
-        "max_us": 4.699977580457926,
-        "mean_us": 0.34710002364590764,
-        "notes": "Microbenchmark of AcknowledgmentSource.next_phrase() in isolation. End-to-end TTA also includes TTS synth (see phase_foundation_start.latency_ms.aggregate.tts_synth_ms; ~219-937 ms) and audio device output latency. The 200 ms Part-0.1 target is for the phrase being EMITTED to the TTS pipeline, not audible to user; phrase-selection is several orders of magnitude under the budget."
-      },
-      "first_token_from_end_of_speech": {
-        "available": true,
-        "computed_as": "whisper_2_5s_sample + LLM TTFT (per-query aggregate)",
-        "median_ms": 233.99999999674037,
-        "min_ms": 186.99999997625127,
-        "max_ms": 266.00000000325963,
-        "components": {
-          "whisper_p50_ms": 108.99999999674037,
-          "llm_ttft_p50_ms": 125.0
-        },
-        "notes": "Composite estimate only. True end-of-speech-to-first-token needs VAD + Whisper + pre-flight + LLM streaming through the live orchestrator with mic input; this script runs headless. Composite ignores VAD silence-detection delay (MIN_SILENCE_DURATION_MS=500) and pre-flight latency (~50-200 ms when search-triggering). The number is therefore a LOWER BOUND for real-world TTFA."
-      },
-      "coding_orchestration_scenarios": {
-        "command": "C:\\STC\\ultronPrototype\\.venv\\Scripts\\python.exe -m pytest C:\\STC\\ultronPrototype\\tests\\coding\\test_orchestration.py --durations=0 -q --tb=no -p no:cacheprovider",
-        "wall_clock_s": 9.69,
-        "pytest_summary": "11 passed, 14 warnings in 8.39s",
-        "exit_code": 0,
-        "scenarios": [
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_10_project_root_outside_sandbox_rejected",
-            "total_s": 0.01
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_1_new_project_smooth_completion",
-            "total_s": 1.14
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_2_existing_project_edit_isolates_changes",
-            "total_s": 0.61
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_3_clarification_answered_without_escalation",
-            "total_s": 0.66
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_4_clarification_escalated_and_resolved_by_voice",
-            "total_s": 0.89
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_5_verification_failure_then_correction_succeeds",
-            "total_s": 0.73
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_6_mid_project_adjustment_via_voice",
-            "total_s": 0.52
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_7_status_query_during_execution",
-            "total_s": 0.02
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_7b_status_query_delta_tracking",
-            "total_s": 0.02
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_8_cancellation_terminates_session",
-            "total_s": 2.02
-          },
-          {
-            "test": "tests/coding/test_orchestration.py::test_scenario_9_model_escalation_after_haiku_threshold",
-            "total_s": 0.05
-          }
-        ],
-        "scenario_count": 11,
-        "raw_durations": [
-          {
-            "duration_s": 2.02,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_8_cancellation_terminates_session"
-          },
-          {
-            "duration_s": 1.13,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_1_new_project_smooth_completion"
-          },
-          {
-            "duration_s": 0.89,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_4_clarification_escalated_and_resolved_by_voice"
-          },
-          {
-            "duration_s": 0.73,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_5_verification_failure_then_correction_succeeds"
-          },
-          {
-            "duration_s": 0.66,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_3_clarification_answered_without_escalation"
-          },
-          {
-            "duration_s": 0.61,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_2_existing_project_edit_isolates_changes"
-          },
-          {
-            "duration_s": 0.52,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_6_mid_project_adjustment_via_voice"
-          },
-          {
-            "duration_s": 0.05,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_9_model_escalation_after_haiku_threshold"
-          },
-          {
-            "duration_s": 0.02,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_7b_status_query_delta_tracking"
-          },
-          {
-            "duration_s": 0.02,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_7_status_query_during_execution"
-          },
-          {
-            "duration_s": 0.01,
-            "phase": "call",
-            "test": "tests/coding/test_orchestration.py::test_scenario_10_project_root_outside_sandbox_rejected"
-          },
-          {
-            "duration_s": 0.01,
-            "phase": "setup",
-            "test": "tests/coding/test_orchestration.py::test_scenario_1_new_project_smooth_completion"
-          }
-        ],
-        "notes": "Times are pytest's setup+call+teardown summed per test. Each scenario uses the scripted mock bridge (no Claude API). Variance run-to-run is dominated by Qdrant-embedded init (loaded once per scenario via UltronMCPServer constructor)."
-      }
-    },
-    "measurements_captured_via_option_B": [
-      {
-        "metric": "VRAM during search-triggering query (Brave + Jina active)",
-        "spec_section": "Part 0.1",
-        "reason_skipped": "Not part of measure_baseline.py; would require instrumented search hop with mocked or real API calls.",
-        "captured_in": "phase_foundation_start.measurements_extended.search_query_vram"
-      },
-      {
-        "metric": "VRAM during coding session (Claude Code subprocess active)",
-        "spec_section": "Part 0.1",
-        "reason_skipped": "Requires invoking Claude Code subprocess (metered against user's API budget).",
-        "captured_in": "phase_foundation_start.measurements_extended.coding_session_vram"
-      },
-      {
-        "metric": "Time-to-acknowledgment for search-triggering queries (target <=200ms)",
-        "spec_section": "Part 0.1",
-        "reason_skipped": "Requires instrumented voice pipeline run with search-trigger query.",
-        "captured_in": "phase_foundation_start.measurements_extended.time_to_acknowledgment"
-      },
-      {
-        "metric": "Coding orchestration scenario timing (10 scenarios)",
-        "spec_section": "Part 0.1",
-        "reason_skipped": "tests/coding/test_orchestration.py runs the 10 scenarios but does not currently emit per-scenario timing into a baseline file. Needs instrumentation OR the user can authorize running tests/coding/test_orchestration_real.py with PYTEST_RUN_GPU_TESTS=1 (metered via Claude API).",
-        "captured_in": "phase_foundation_start.measurements_extended.coding_orchestration_scenarios"
-      },
-      {
-        "metric": "First-token-from-end-of-user-speech latency",
-        "spec_section": "Part 0.1",
-        "reason_skipped": "Existing baselines measure first_token_ms from the moment the LLM stream is invoked (post-Whisper). The end-of-speech-to-first-token timing requires the real audio VAD path -- runs through the orchestrator with mic input.",
-        "captured_in": "phase_foundation_start.measurements_extended.first_token_from_end_of_speech"
-      }
-    ]
-  },
-  "phase_0_openclaw_integration": {
-    "timestamp": "2026-05-08T20:17:54.116901+00:00",
-    "scope": "openclaw_integration_phase_0",
-    "outcome": "partial_pass",
-    "summary": "llama-cpp-server reachable and serving inference; voice pipeline baseline matches Foundation phase. OpenClaw can reach the local LLM and runs inference (VRAM peak 9082 MB). Final response-format compatibility with Qwen3.5's <think> scaffolding when invoked through OpenClaw's agent runner is deferred to Phase 1 along with replacing stock workspace persona files.",
-    "vram_idle_mb": 3214,
-    "vram_during_voice_query_mb": 10363,
-    "vram_during_openclaw_turn_mb": 9082,
-    "vram_resident_model_only_mb": 9104,
-    "first_token_latency_ms_p50": 125.0,
-    "first_token_latency_ms_p95": 125.0,
-    "llama_cpp_server_direct_wall_ms": 463,
-    "llama_cpp_server_direct_prompt_tokens": 38,
-    "llama_cpp_server_direct_completion_tokens": 10,
-    "openclaw": {
-      "version": "2026.5.7",
-      "build": "eeef486",
-      "config_file": "C:\\Users\\alecf\\.openclaw\\openclaw.json",
-      "workspace_dir": "C:\\Users\\alecf\\.openclaw\\workspace",
-      "gateway_url": "ws://127.0.0.1:18789",
-      "gateway_mode": "local",
-      "channels_configured": [],
-      "mcp_servers_configured": [],
-      "provider_configured": "litellm",
-      "provider_baseUrl": "http://127.0.0.1:8765/v1",
-      "provider_api": "openai-completions",
-      "model_id": "litellm/qwen3.5-9b-local",
-      "model_reasoning": true,
-      "test_agent_id": "ultron-test",
-      "test_agent_tools_profile": "messaging",
-      "default_agent_id": "ultron-test",
-      "plugins_enabled": [
-        "litellm"
-      ],
-      "config_backups": [
-        "openclaw.json.pre-llamacpp-bak",
-        "openclaw.json.pre-test-agent-bak",
-        "openclaw.json.pre-litellm-bak"
-      ]
-    },
-    "llama_cpp_server": {
-      "host": "127.0.0.1",
-      "port": 8765,
-      "api_path_prefix": "/v1",
-      "api_key": "local-ultron",
-      "launcher": "scripts/start_llamacpp_server.py",
-      "model": "models/Qwen3.5-9B-Q4_K_M.gguf",
-      "n_ctx": 8192,
-      "n_gpu_layers": -1,
-      "flash_attn": true,
-      "type_k_v": 8,
-      "model_alias": "qwen3.5-9b-local"
-    },
-    "deferred_to_phase_1_or_later": [
-      "Replace stock workspace persona files (SOUL.md, AGENTS.md, IDENTITY.md, USER.md, HEARTBEAT.md, BOOTSTRAP.md) with content migrated from config.yaml:llm.system_prompt — the stock OpenClaw boilerplate confuses Qwen3.5 about its role.",
-      "OpenClaw response-format with Qwen3.5's <think>...</think> scaffolding produces empty visible content (model emits thinking only). Need to either (a) configure OpenClaw to treat the think block as reasoning_content and continue, or (b) override server-side chat_format to plain chatml (may shift voice character; verify first).",
-      "OpenClaw Gateway became unstable after multiple failed agent runs (1006 abnormal closures). Need a clean Gateway restart procedure documented + maybe a watchdog. The user's Gateway should be Ctrl+C'd and restarted via gateway.cmd before Phase 1 work begins.",
-      "llama-cpp-server crashed once during the OpenClaw retry storm (VRAM dropped to idle, /v1/models returned HTTP 000). Cause unconfirmed. Phase 1 should monitor the server for stability under OpenClaw's request patterns; consider wrapping the server in a supervisor (e.g. NSSM service) with auto-restart.",
-      "OpenAI-compat client SDK in OpenClaw caps single-request timeout at 30 s (dist/client-DZ1aRkVL.js:257). With a full tool bundle that exceeds Qwen3.5-9B prefill time. Mitigated via tools.profile='messaging' on the test agent; should be preserved as the default for any agent that uses the local Qwen until prompt-budget work in a later phase.",
-      "Voice pipeline currently still uses llama-cpp-python in-process (config.yaml: llm.provider='llama_cpp'). Migrating it to HTTP-client of llama-cpp-server is the actual sharing deliverable — Phase 0 only proved the server-side path works. Migration has its own latency-regression-test gate."
-    ],
-    "test_results": {
-      "ultron_test_suite": {
-        "passed": 699,
-        "skipped": 15,
-        "failed": 0,
-        "note": "Snapshot from previous turn before any Phase 0 interactive work. Re-run as part of Phase 0 close-out."
-      },
-      "llama_cpp_server_direct": {
-        "models_endpoint": "ok",
-        "chat_completion_tiny_prompt_wall_ms": 463,
-        "completion_text": "OPENCLAW-LLAMACPP-OK"
-      },
-      "openclaw_agent_test": {
-        "outcome": "incomplete_terminal_response",
-        "reached_server": true,
-        "ran_inference": true,
-        "vram_peak_mb": 9082,
-        "blocker": "Empty visible content in agent response. Documented as a Phase 1 deferred item."
-      }
-    }
-  },
-  "llm_http_runtime": {
-    "timestamp": "2026-05-08T21:02:25.498779+00:00",
-    "runtime": "http_server",
-    "base_url": "http://127.0.0.1:8765/v1",
-    "model_alias": "qwen3.5-9b-local",
-    "per_query": [
-      {
-        "query": "What is the boiling point of water?",
-        "first_token_ms": 204.0,
-        "first_text": "At "
-      },
-      {
-        "query": "Walk me through how a transistor works.",
-        "first_token_ms": 203.0,
-        "first_text": "A tr"
-      },
-      {
-        "query": "Who was Nikola Tesla?",
-        "first_token_ms": 172.0,
-        "first_text": "Niko"
-      },
-      {
-        "query": "What's nineteen times forty-three?",
-        "first_token_ms": 344.0,
-        "first_text": "1"
-      },
-      {
-        "query": "Explain what a hash table is.",
-        "first_token_ms": 235.0,
-        "first_text": "A ha"
-      },
-      {
-        "query": "Are you afraid of death?",
-        "first_token_ms": 234.0,
-        "first_text": "De"
-      },
-      {
-        "query": "What's a good book to read on a flight?",
-        "first_token_ms": 188.0,
-        "first_text": "A flight"
-      },
-      {
-        "query": "What do you think about meditation?",
-        "first_token_ms": 187.0,
-        "first_text": "Me"
-      },
-      {
-        "query": "And what about the Mariana Trench?",
-        "first_token_ms": 141.0,
-        "first_text": "The"
-      },
-      {
-        "query": "Tell me something interesting about black holes.",
-        "first_token_ms": 140.0,
-        "first_text": "Bla"
-      }
-    ],
-    "ttft_ms": {
-      "min": 140.0,
-      "median": 195.5,
-      "p95": 235.0,
-      "max": 344.0
     }
   }
 }

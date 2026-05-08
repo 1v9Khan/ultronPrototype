@@ -37,15 +37,18 @@ except Exception:
     pass
 
 # ---------------------------------------------------------------------------
-# Path setup: import code + load models from the main checkout, regardless of
-# where this script lives or where it's run from.
+# Path setup: import code from this script's own ``src/`` (the worktree it
+# lives in) so a measurement always exercises the version of the code we're
+# evaluating. Models still live in the main checkout, so we add main's repo
+# root for ``config/`` shim + relative ``models/`` paths to resolve via cwd.
+# Run with ``cwd=C:\STC\ultronPrototype`` so ``models/...`` is found.
 # ---------------------------------------------------------------------------
-MAIN_REPO_PATH = Path(r"C:\STC\ultronPrototype")
-sys.path.insert(0, str(MAIN_REPO_PATH / "src"))
-sys.path.insert(0, str(MAIN_REPO_PATH))
-
-# Output: baselines.json at the worktree root (this script's grandparent).
 WORKTREE_ROOT = Path(__file__).resolve().parent.parent
+MAIN_REPO_PATH = Path(r"C:\STC\ultronPrototype")
+sys.path.insert(0, str(MAIN_REPO_PATH))            # config/ shim
+sys.path.insert(0, str(WORKTREE_ROOT / "src"))     # newest ultron code
+
+# Output: baselines.json at the worktree root.
 OUTPUT_PATH = WORKTREE_ROOT / "baselines.json"
 
 REPRESENTATIVE_QUERIES = [

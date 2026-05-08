@@ -4,11 +4,25 @@ A continuously-listening voice assistant that runs entirely on your hardware.
 Says "ultron" → captures your request → transcribes → asks a local LLM →
 speaks the response. No cloud round-trips, no telemetry.
 
-The Foundation phase has shipped: Qdrant memory + RAG, Brave web search
-with circuit-breaker resilience, addressing classifier (rule-based +
+**Foundation phase shipped:** Qdrant memory + RAG, Brave web search with
+circuit-breaker resilience, addressing classifier (rule-based +
 flan-t5-small), context projections for long coding sessions, unified
-config.yaml, typed error handling, and a capability-routing layer with
-stubbed OpenClaw integration ready for the next phase.
+config.yaml, typed error handling, capability-routing layer.
+
+**OpenClaw integration in progress** (peer Gateway on the same hardware,
+sharing the local Qwen via `llama-cpp-server`):
+- Phase 0 (verification + reachability) — done
+- Phase 1 (persona migration to shared workspace files) — done
+- Phase 3 (bridge layer) — in progress; lifecycle/error scaffolds in place
+- Phases 2, 4–13 — pending
+
+Persona is now sourced from the OpenClaw workspace
+(`~/.openclaw/workspace/`: `IDENTITY.md`, `SOUL.md`, `USER.md`,
+`AGENTS.md`, `HEARTBEAT.md`, `BOOTSTRAP.md`). Edits hot-reload on the
+next voice turn — no restart. Full Ultron character renders to user-
+facing channels; internal worker calls (heartbeat, cron, classification)
+use a plain task-focused prompt. See [docs/openclaw_runtime.md](docs/openclaw_runtime.md)
+and [docs/phase_1_summary.md](docs/phase_1_summary.md).
 
 ---
 
@@ -28,6 +42,10 @@ stubbed OpenClaw integration ready for the next phase.
 | System inventory snapshot (Foundation Phase 1) | [docs/system_inventory.md](docs/system_inventory.md) |
 | Smoke-test procedure (16 steps, real-stack) | [docs/smoke_test.md](docs/smoke_test.md) |
 | Phase 3.5 followup (unfinished migrations) | [docs/phase3_5_followup.md](docs/phase3_5_followup.md) |
+| **OpenClaw integration — Phase 0 + 1** | **[docs/openclaw_integration.md](docs/openclaw_integration.md)** |
+| OpenClaw runtime: agents, supervisor, lock-in constraints | [docs/openclaw_runtime.md](docs/openclaw_runtime.md) |
+| Phase 1 close-out report (persona migration) | [docs/phase_1_summary.md](docs/phase_1_summary.md) |
+| 4B-model optimization plan (deferred to next session) | [docs/4b_optimization_plan.md](docs/4b_optimization_plan.md) |
 
 ---
 
