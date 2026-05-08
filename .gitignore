@@ -62,3 +62,4 @@ htmlcov/
 # Type checking
 .mypy_cache/
 .pyre/
+baselines.json.*-bak

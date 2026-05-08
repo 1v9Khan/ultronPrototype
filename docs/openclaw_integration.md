@@ -18,12 +18,36 @@ prompt. Reasoning is recorded in
   voice-character drift, and broken EOS handling on this Unsloth quant.
 - Sharing strategy: voice pipeline switches from in-process loader to
   an HTTP client of `python -m llama_cpp.server`. OpenClaw points at
-  the same endpoint via its `@openclaw/openai-provider` plugin (custom
-  `baseURL`). Both consumers share one copy of the weights.
+  the same endpoint via its `@openclaw/litellm-provider` plugin (the
+  generic OpenAI-compatible one — see "Provider plugin choice" below).
+  Both consumers share one copy of the weights.
 
-This means Phase 2 will configure the OpenAI provider in OpenClaw with
-a custom baseURL (`http://127.0.0.1:8765/v1`) and a placeholder API
-key, NOT the Ollama provider.
+OpenClaw is configured with the litellm provider, custom baseURL
+`http://127.0.0.1:8765/v1`, and a placeholder API key. Phase 2
+migrates the voice pipeline from in-process to HTTP-client of the
+same endpoint to actually realise sharing.
+
+## Provider plugin choice (litellm, not openai or lmstudio)
+
+Tried three OpenClaw provider plugins in this order. Notes for
+future-Phase-1 reference:
+
+- **`@openclaw/openai-provider`** — rejected. Whitelists baseURL to
+  `api.openai.com` only ([base-url-Dikca7k1.js: isOpenAIApiBaseUrl](file://C:/Users/alecf/AppData/Roaming/npm/node_modules/openclaw/dist/base-url-Dikca7k1.js)).
+  No way to point it at a self-hosted endpoint.
+- **`@openclaw/lmstudio-provider`** — rejected after testing.
+  Looks plug-compatible from the manifest, but at inference time it
+  hits LM Studio-specific paths (`/api/v1/models`, `/api/v1/models/load`)
+  for model discovery + preload. llama-cpp-server only exposes
+  `/v1/*`, so the discovery 404s and the call fails with a generic
+  "TypeError: fetch failed".
+- **`@openclaw/litellm-provider`** — adopted. Pure OpenAI-compat.
+  Reads `models.providers.litellm.{baseUrl, api, apiKey, models}`
+  from config, hits `<baseUrl>/chat/completions` directly. Required
+  fields: `baseUrl: "http://127.0.0.1:8765/v1"`, `api:
+  "openai-completions"`, `apiKey: "local-ultron"` (placeholder; the
+  llama-cpp-server's `--api_key` matches), `models: [{id, name,
+  contextWindow, input, reasoning: true}]`.
 
 ## Phase 0 component inventory (autonomous probes)
 
@@ -219,3 +243,81 @@ discovered before `llama_cpp` initialises. Running
    OpenClaw can reach the server without doubling the VRAM cost.
 5. **Append the measurements** to `baselines.json`'s
    `phase_0_openclaw_integration` block (replace the `null` fields).
+
+---
+
+## Phase 0 close-out — partial pass
+
+Final verification ran 2026-05-08, autonomously after the user
+authorised wide-scope action. Results:
+
+### Numbers (in `baselines.json` under `phase_0_openclaw_integration`)
+
+| Metric | Value | Source |
+|--------|-------|--------|
+| VRAM idle (system idle, no model loaded) | 3214 MB | `measure_baseline.py` start |
+| VRAM during voice query (full stack: Whisper + Qwen + Piper + RVC + embedder, in-process) | 10363 MB peak | `measure_baseline.py` 10-query peak |
+| VRAM during OpenClaw turn (Qwen via llama-cpp-server) | 9082 MB peak | 90 s monitor during agent test |
+| VRAM resident model only (no inference activity) | 9104 MB | between calls |
+| First-token P50 (voice path, in-process) | 125 ms | `measure_baseline.py` median |
+| First-token P95 (voice path, in-process) | 140 ms | 95th of 10 queries |
+| llama-cpp-server direct chat completion (38 prompt → 10 completion tokens) | 463 ms wall | scripts/`smoke_test_llamacpp.ps1` equivalent via Python urllib |
+
+VRAM during OpenClaw turn (9082 MB) sits below voice-path peak
+(10363 MB) because OpenClaw goes through the HTTP server (only model
+weights + KV cache + scratch — no Whisper/RVC/Piper allocations on
+top). When the voice pipeline migrates to HTTP-client mode in a
+later phase, both consumers will share that 9082-MB-class footprint;
+voice-path peak will then come down by ~1.3 GB (the in-process model
+duplication goes away) — within budget.
+
+### Verification criteria — what passed, what's deferred
+
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| All existing Ultron tests pass | ✅ | 699 / 699 (15 skipped), 0 failed |
+| Voice pipeline produces audible output in baseline-equivalent time | ✅ | Synthesis path measured, TTFA ~655 ms median, matches Foundation phase. Audible-output via mic + speakers was not run (interactive). |
+| OpenClaw `doctor` reports no errors | ⚠ | Non-blocking findings only (no command owner, missing skill bins for cloud providers). |
+| OpenClaw can reach the local LLM | ✅ | After provider swap to litellm + correct baseUrl + `api: openai-completions`. VRAM monitor confirms inference happens. |
+| OpenClaw `agent` returns the expected token | 🟡 | **Deferred to Phase 1.** Connection works; model runs inference; OpenClaw's agent runner sees empty visible content because Qwen3.5 emits its `<think>...</think>` block and OpenClaw's response parser isn't extracting visible text after it. Stock workspace persona files (OpenClaw boilerplate) likely contribute. Phase 1's persona migration + a server-side chat_format experiment should resolve. |
+| `baselines.json` updated | ✅ | `phase_0_openclaw_integration` block populated with all real numbers. `phase_foundation_start` preserved. |
+
+### What lives where now
+
+- **OpenClaw config** at `~\.openclaw\openclaw.json` — has the
+  litellm provider, the test agent (`ultron-test`, messaging tools
+  profile), `reasoning: true` on the model, default agent set to
+  `ultron-test`. Three pre-edit backups exist:
+  `openclaw.json.pre-llamacpp-bak`, `openclaw.json.pre-test-agent-bak`,
+  `openclaw.json.pre-litellm-bak`.
+- **Server launcher** at [scripts/start_llamacpp_server.py](../scripts/start_llamacpp_server.py)
+  — port 8765, mirrors voice-pipeline llama-cpp params (n_ctx=8192,
+  flash_attn, Q8_0 KV cache).
+- **Smoke test** at [scripts/smoke_test_llamacpp.ps1](../scripts/smoke_test_llamacpp.ps1)
+  — direct chat-completion test for confirming server-side path
+  works without depending on OpenClaw.
+
+### Phase 1 — known blockers carried over
+
+Documented in [baselines.json](../baselines.json) under
+`phase_0_openclaw_integration.deferred_to_phase_1_or_later`. Summary:
+
+1. **Migrate persona files** (Phase 1's main deliverable) — replace
+   stock boilerplate with content from `config.yaml:llm.system_prompt`.
+2. **Resolve `<think>...</think>` empty-content** — either configure
+   OpenClaw to recognise the block as `reasoning_content`, or use
+   server-side `--chat_format chatml` (verify voice character
+   doesn't shift first).
+3. **OpenClaw Gateway recovery** — Gateway became unstable after
+   multiple failed agent runs (1006 abnormal closures). User must
+   Ctrl+C and restart their Gateway via `gateway.cmd` before Phase 1
+   work begins.
+4. **llama-cpp-server stability** — server crashed once during the
+   OpenClaw retry storm. Cause unconfirmed. Phase 1 should monitor
+   and consider wrapping in NSSM service with auto-restart.
+5. **30 s OpenAI SDK request timeout** — keep
+   `tools.profile: "messaging"` on any agent that uses the local
+   Qwen until prompt-budget work is done.
+6. **Voice pipeline migration to HTTP client** — the actual sharing
+   deliverable. Phase 0 only verified the server-side path. Migration
+   has its own latency-regression-test gate.
