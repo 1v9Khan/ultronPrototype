@@ -63,3 +63,4 @@ htmlcov/
 .mypy_cache/
 .pyre/
 baselines.json.*-bak
+baselines.json.*_bak
