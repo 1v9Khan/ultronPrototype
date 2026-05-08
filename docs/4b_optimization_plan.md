@@ -55,18 +55,44 @@ users). Verification:
   integrity story).
 - 9B kept intact in `models/` for swap-back.
 
-### Stage C — Speculative decoding launcher
-`scripts/start_llamacpp_server.py` gets `--model-draft`, `--draft-max`,
-`--draft-min` flags. Mirrors the user's pasted recipe:
+### Stage C — Speculative decoding launcher ✅ DONE
+[`scripts/start_llamacpp_server.py`](../scripts/start_llamacpp_server.py)
+gained three new flags:
+- `--model-draft <path>` — optional draft GGUF for speculative
+  decoding. Default: None (no spec decoding; back-compat).
+- `--draft-num-pred-tokens N` — how many tokens the draft predicts
+  before the target verifies. Default: 8 (matches the recipe's
+  `--draft-max 8`). Ignored when `--model-draft` is unset.
+- `--from-config` — overlay launcher params from `config.yaml:llm`
+  via `LLMConfig` (so the active preset's `model_path`, `n_ctx`, and
+  `draft_model_path` are picked up automatically). CLI flags still
+  override the overlay for ad-hoc swaps without editing YAML.
 
-```
-llama-server -m models/Qwen3.5-4B-Q4_K_M.gguf \
-  --model-draft models/Qwen3.5-0.8B-Q4_K_M.gguf \
-  --draft-max 8 --draft-min 4 \
-  -ngl 99 -fa --jinja -c 16384
-```
+**API discrepancy from the recipe:** the upstream `llama.cpp` CLI
+exposes both `--draft-max` and `--draft-min`, but
+`llama-cpp-python==0.3.22` only surfaces a single combined parameter
+(`draft_model_num_pred_tokens`). I mapped `--draft-num-pred-tokens`
+to that and dropped `--draft-min` (no equivalent in the Python
+server). This is documented in the launcher docstring + this plan.
+If a future llama-cpp-python version exposes the min/max pair, we can
+add `--draft-min` then.
 
-Tests for both single-model and spec-decoding launches.
+Refactor: `_build_arg_parser`, `_resolve_kwargs`, and `_config_overlay`
+were extracted from `main()` so the CLI logic is testable without
+loading CUDA DLLs or starting uvicorn.
+
+Verification:
+- 13 new tests in
+  [tests/test_start_llamacpp_server.py](../tests/test_start_llamacpp_server.py)
+  cover help-render, default-args back-compat, draft flags,
+  draft-num-pred-tokens override, draft-num-pred-tokens-ignored-without-draft,
+  --from-config overlay (4b + 9b), and CLI-override-wins.
+- `python scripts/start_llamacpp_server.py --help` renders without errors.
+- Full pytest sweep: 762 passed (+13 from Stage B's 749), 16 skipped,
+  0 failed.
+
+Tests for both single-model and spec-decoding launches in place. Stage D
+will measure the actual TTFT delta on the live stack.
 
 ### Stage D — 4B+spec baseline
 `scripts/measure_baseline.py` against the 4B + spec setup. Compare

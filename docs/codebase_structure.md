@@ -15,8 +15,11 @@ wrappers + OpenClaw integration Phase 0 + 1 (llama-cpp-server launcher
 + supervisor, persona migration, PersonaLoader with mode-based
 composition + hot reload, LLMEngine HTTP-client opt-in, OpenClaw bridge
 foundations) + 4B optimization plan Stage A (LLMConfig preset +
-draft_model_path with model_validator) — 749 passing tests, 16 skipped,
-0 failed.
+draft_model_path with model_validator) + Stage B (4B + 0.8B GGUFs
+downloaded, structurally validated, SHA256 recorded) + Stage C
+(start_llamacpp_server.py: --model-draft, --draft-num-pred-tokens,
+--from-config flags + testable CLI helpers) — 762 passing tests, 16
+skipped, 0 failed.
 
 ---
 
@@ -1068,10 +1071,10 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 **Run:** `python scripts/validate_config.py [path] [--print]`
 **Out:** stdout — "Configuration is valid." or detailed `ConfigurationError` with path + message + context. Exit 0 = valid, 1 = invalid.
 
-### `scripts/start_llamacpp_server.py` (OpenClaw integration Phase 0)
+### `scripts/start_llamacpp_server.py` (OpenClaw integration Phase 0 + 4B plan Stage C)
 
 **Purpose:** launch llama-cpp-server on `127.0.0.1:8765` with the same params as the in-process voice loader (n_ctx=8192, flash_attn, Q8_0 KV cache). Imports `ultron` first so bundled torch CUDA DLLs are found before `llama_cpp` initialises (Windows-specific quirk).
-**Run:** `python scripts/start_llamacpp_server.py [--n-ctx N] [--port P] [--api-key K] [--chat-format F]`
+**Run:** `python scripts/start_llamacpp_server.py [--n-ctx N] [--port P] [--api-key K] [--chat-format F] [--model-draft <path>] [--draft-num-pred-tokens N] [--from-config]`. The Stage C flags add speculative decoding (`--model-draft` + `--draft-num-pred-tokens`, mapped to llama-cpp-python's `draft_model` / `draft_model_num_pred_tokens`) and a `--from-config` overlay that reads model/draft/n_ctx from `config.yaml:llm` (preset-aware). CLI flags override the overlay. Pure-Python helpers `_build_arg_parser`, `_resolve_kwargs`, `_config_overlay` factor out the testable pieces.
 **Out:** uvicorn HTTP server on `--port` (default 8765); stays in foreground.
 
 ### `scripts/supervised_llamacpp_server.py` (OpenClaw integration Phase 0)
@@ -1102,7 +1105,7 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 
 ### `tests/conftest.py` — Path setup so `from ultron.*` works.
 
-### Default suite (no env gate) — 749 tests, ~30 s wall
+### Default suite (no env gate) — 762 tests, ~30 s wall
 
 **Top-level (~25 files):**
 - `test_addressing.py` — rule-based addressing classifier
@@ -1134,6 +1137,7 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 - `test_llm_persona_source.py` (8, OpenClaw Phase 1) — `LLMEngine` persona-source wiring + hot-reload + fallback
 - `test_llm_http_runtime.py` (9, OpenClaw Phase 0) — HTTP-runtime construction, request shape, SSE streaming, cancel mid-stream
 - `test_llm_preset.py` (13, 4B plan Stage A) — `LLMConfig.preset` resolution: 9b/4b/custom defaults, explicit-override wins, YAML round-trip, invalid preset rejected
+- `test_start_llamacpp_server.py` (13, 4B plan Stage C) — launcher CLI: --help renders, default args back-compat, --model-draft attaches speculative decoding, --draft-num-pred-tokens override, --from-config overlay (4b/9b), CLI flags override overlay
 
 **`tests/coding/`:**
 - `mock_bridge.py` — `ScriptedClaudeBridge` + `ClaudeScript` DSL

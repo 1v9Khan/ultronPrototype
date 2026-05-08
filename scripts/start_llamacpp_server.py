@@ -1,11 +1,10 @@
 """Start the shared llama-cpp-server for Ultron + OpenClaw.
 
-This is the OpenAI-compatible HTTP server that exposes
-``models/Qwen3.5-9B-Q4_K_M.gguf`` to both consumers, replacing the
-in-process llama-cpp-python load currently used by Ultron's voice
-pipeline. The OpenClaw Gateway connects via ``@openclaw/lmstudio-provider``
-configured with ``baseUrl: http://127.0.0.1:8080`` (see
-``~/.openclaw/openclaw.json``).
+This is the OpenAI-compatible HTTP server that exposes the active LLM
+GGUF to both consumers, replacing the in-process llama-cpp-python load
+currently used by Ultron's voice pipeline. The OpenClaw Gateway
+connects via ``@openclaw/lmstudio-provider`` configured with
+``baseUrl: http://127.0.0.1:8765`` (see ``~/.openclaw/openclaw.json``).
 
 Why a Python wrapper rather than ``python -m llama_cpp.server``:
 ``llama_cpp`` needs the bundled torch CUDA DLL directory on PATH on
@@ -25,6 +24,20 @@ matches the OpenClaw config; rotate later if hardening for non-loopback.
 Flags mirror Ultron voice-pipeline llama-cpp config (see
 [config.yaml:llm](../config.yaml)) so character + VRAM behaviour are
 preserved when we switch the voice path off in-process loading.
+
+4B optimization plan Stage C — speculative decoding:
+``--model-draft <path>`` enables speculative decoding by pairing the
+target model with a small draft model (the 4B + 0.8B preset
+recommended in [docs/4b_optimization_plan.md](../docs/4b_optimization_plan.md)).
+``--draft-num-pred-tokens N`` controls how many tokens the draft
+predicts ahead before the target verifies (default 8). Note: the
+upstream ``llama.cpp`` CLI exposes both ``--draft-max`` and
+``--draft-min``, but ``llama-cpp-python==0.3.22`` only surfaces a
+single combined parameter (mapped here from ``--draft-num-pred-tokens``).
+
+``--from-config`` loads the values from ``config.yaml:llm`` so a
+``preset: "qwen3.5-4b"`` config switches the launched model + draft +
+n_ctx without command-line flags.
 """
 
 from __future__ import annotations
@@ -32,15 +45,52 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, Optional
 
 
-def main() -> int:
+# ---------------------------------------------------------------------------
+# CLI parsing + kwargs resolution (pure Python — no llama_cpp / uvicorn import,
+# so this is independently testable without GPU or DLL loading).
+# ---------------------------------------------------------------------------
+
+
+def _default_model_path() -> Path:
+    return Path("models") / "Qwen3.5-9B-Q4_K_M.gguf"
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
         type=str,
         default=str(_default_model_path()),
-        help="Path to the Qwen GGUF (default: ./models/Qwen3.5-9B-Q4_K_M.gguf)",
+        help="Path to the target GGUF (default: ./models/Qwen3.5-9B-Q4_K_M.gguf)",
+    )
+    parser.add_argument(
+        "--model-draft",
+        dest="model_draft",
+        type=str,
+        default=None,
+        help=(
+            "Optional path to a draft GGUF for speculative decoding. "
+            "Default: None (no spec decoding). The 4B optimization plan "
+            "pairs Qwen3.5-4B (target) with Qwen3.5-0.8B (draft). The "
+            "draft must share the target's tokenizer/vocab — verified by "
+            "Stage B's vocab_only check (n_vocab=248320 for both)."
+        ),
+    )
+    parser.add_argument(
+        "--draft-num-pred-tokens",
+        dest="draft_num_pred_tokens",
+        type=int,
+        default=8,
+        help=(
+            "How many tokens the draft predicts before the target "
+            "verifies (default 8; recipe says 8 for conversational, "
+            "higher for predictable code output). Maps to "
+            "llama-cpp-python's draft_model_num_pred_tokens. "
+            "Ignored when --model-draft is unset."
+        ),
     )
     parser.add_argument(
         "--port", type=int, default=8765,
@@ -83,16 +133,141 @@ def main() -> int:
             "Other values: see llama_cpp.llama_chat_format.LlamaChatCompletionHandlerRegistry."
         ),
     )
+    parser.add_argument(
+        "--from-config",
+        dest="from_config",
+        action="store_true",
+        help=(
+            "Load model / draft / n_ctx from config.yaml:llm (resolves the "
+            "active preset via LLMConfig). CLI flags still override what "
+            "the config provides — useful for ad-hoc swaps without editing "
+            "YAML. The 4B plan flips 'preset: qwen3.5-4b' in config.yaml; "
+            "running with --from-config picks up the change automatically."
+        ),
+    )
     parser.set_defaults(flash_attn=True)
-    args = parser.parse_args()
+    return parser
 
-    model_path = Path(args.model).resolve()
+
+def _config_overlay() -> dict[str, Any]:
+    """Read ``config.yaml:llm`` and return launcher-relevant fields.
+
+    Imports are deferred so the launcher's CLI parsing + tests don't
+    require the ultron package to be importable.
+    """
+    # Make the worktree's src/ importable from any cwd (the launcher is
+    # often run from main checkout).
+    here = Path(__file__).resolve().parent.parent
+    src = here / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    from ultron.config import get_config, resolve_path
+
+    cfg = get_config().llm
+    overlay: dict[str, Any] = {
+        "model": str(resolve_path(cfg.model_path)),
+        "n_ctx": cfg.n_ctx,
+    }
+    if cfg.draft_model_path:
+        overlay["model_draft"] = str(resolve_path(cfg.draft_model_path))
+    return overlay
+
+
+def _resolve_kwargs(args: argparse.Namespace, *, overlay: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Build the ModelSettings kwargs dict.
+
+    The overlay (from ``--from-config``) provides defaults that the
+    CLI flags can still override. Tests inject ``overlay`` directly to
+    avoid importing the ultron package.
+    """
+    parser = _build_arg_parser()
+    cli_set: set[str] = set()
+    # Walk argparse to learn which dest names exist + which were
+    # explicitly supplied on the command line. ``args`` always carries
+    # all destinations (filled with defaults), so we need a separate
+    # pass to know which were *explicit* — argparse doesn't track that.
+    # Approach: re-parse with no defaults, see which actions hit.
+    if overlay:
+        no_default_parser = argparse.ArgumentParser(add_help=False)
+        for action in parser._actions:
+            if not action.option_strings or action.dest in ("help",):
+                continue
+            kw: dict[str, Any] = {}
+            if isinstance(action, argparse._StoreFalseAction):
+                kw["action"] = "store_false"
+                kw["default"] = None
+            elif isinstance(action, argparse._StoreTrueAction):
+                kw["action"] = "store_true"
+                kw["default"] = None
+            else:
+                kw["type"] = action.type
+                kw["default"] = None
+            no_default_parser.add_argument(*action.option_strings, dest=action.dest, **kw)
+        # Reconstruct argv from sys.argv at parse time? Tests pass
+        # argv directly; main() uses sys.argv. We track via the
+        # presence of ``_explicit_argv`` attached to args by the
+        # caller (parse_args does not).
+        explicit_argv = getattr(args, "_explicit_argv", sys.argv[1:])
+        no_default_args, _ = no_default_parser.parse_known_args(explicit_argv)
+        for k, v in vars(no_default_args).items():
+            if v is not None:
+                cli_set.add(k)
+
+    model = args.model
+    n_ctx = args.n_ctx
+    model_draft = args.model_draft
+
+    if overlay:
+        if "model" not in cli_set and "model" in overlay:
+            model = overlay["model"]
+        if "n_ctx" not in cli_set and "n_ctx" in overlay:
+            n_ctx = overlay["n_ctx"]
+        if "model_draft" not in cli_set and "model_draft" in overlay:
+            model_draft = overlay["model_draft"]
+
+    kwargs: dict[str, Any] = dict(
+        model=str(Path(model).resolve()) if model else model,
+        model_alias=args.model_alias,
+        n_ctx=n_ctx,
+        n_gpu_layers=args.n_gpu_layers,
+        flash_attn=args.flash_attn,
+        type_k=args.type_k,
+        type_v=args.type_v,
+    )
+    if args.chat_format:
+        kwargs["chat_format"] = args.chat_format
+    if model_draft:
+        kwargs["draft_model"] = str(Path(model_draft).resolve())
+        kwargs["draft_model_num_pred_tokens"] = args.draft_num_pred_tokens
+    return kwargs
+
+
+# ---------------------------------------------------------------------------
+# Entry point (DLL-loading + uvicorn live here, not imported by tests)
+# ---------------------------------------------------------------------------
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    args._explicit_argv = list(argv) if argv is not None else sys.argv[1:]
+
+    overlay = _config_overlay() if args.from_config else None
+    kwargs = _resolve_kwargs(args, overlay=overlay)
+
+    model_path = Path(kwargs["model"])
     if not model_path.is_file():
         sys.stderr.write(
             f"error: model file not found at {model_path}\n"
             f"hint: run from C:\\STC\\ultronPrototype (main checkout) "
             f"so the relative ./models path resolves, or pass --model "
             f"with an absolute path.\n"
+        )
+        return 2
+    if "draft_model" in kwargs and not Path(kwargs["draft_model"]).is_file():
+        sys.stderr.write(
+            f"error: draft model file not found at {kwargs['draft_model']}\n"
+            f"hint: run scripts/download_models.py to fetch the draft GGUF.\n"
         )
         return 2
 
@@ -113,30 +288,26 @@ def main() -> int:
         port=args.port,
         api_key=args.api_key,
     )
-    ms_kwargs = dict(
-        model=str(model_path),
-        model_alias=args.model_alias,
-        n_ctx=args.n_ctx,
-        n_gpu_layers=args.n_gpu_layers,
-        flash_attn=args.flash_attn,
-        type_k=args.type_k,
-        type_v=args.type_v,
-    )
-    if args.chat_format:
-        ms_kwargs["chat_format"] = args.chat_format
-    model_settings = [ModelSettings(**ms_kwargs)]
-    config = ConfigFileSettings(
+    model_settings = [ModelSettings(**kwargs)]
+    config = ConfigFileSettings(  # noqa: F841 — kept for future config-file mode
         host=server_settings.host,
         port=server_settings.port,
         api_key=server_settings.api_key,
         models=model_settings,
     )
 
+    spec_msg = ""
+    if "draft_model" in kwargs:
+        spec_msg = (
+            f" speculative=on draft={Path(kwargs['draft_model']).name} "
+            f"draft_num_pred={kwargs['draft_model_num_pred_tokens']}"
+        )
+
     sys.stderr.write(
         f"[start_llamacpp_server] starting on http://{args.host}:{args.port} "
-        f"model_alias={args.model_alias} kv_q8=true "
-        f"flash_attn={args.flash_attn} "
-        f"chat_format={args.chat_format or 'gguf-default'}\n"
+        f"model={Path(kwargs['model']).name} model_alias={args.model_alias} "
+        f"n_ctx={kwargs['n_ctx']} kv_q8=true flash_attn={args.flash_attn} "
+        f"chat_format={args.chat_format or 'gguf-default'}{spec_msg}\n"
     )
 
     app = create_app(server_settings=server_settings, model_settings=model_settings)
@@ -147,10 +318,6 @@ def main() -> int:
         log_level="warning",
     )
     return 0
-
-
-def _default_model_path() -> Path:
-    return Path("models") / "Qwen3.5-9B-Q4_K_M.gguf"
 
 
 if __name__ == "__main__":
