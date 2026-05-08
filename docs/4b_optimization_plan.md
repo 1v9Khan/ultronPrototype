@@ -129,9 +129,24 @@ confirm the spec-decoding throughput gain is additive on top.)
 Five representative voice queries through the live stack with the 4B.
 User confirms Ultron sounds unchanged.
 
-### Stage F — Selective thinking mode
-Add `enable_thinking: bool` parameter to `LLMEngine.generate*`. Map
-intent types to thinking on/off:
+### Stage F — Selective thinking mode ✅ DONE (parameter wired; per-call routing in Stages G/H)
+Added `enable_thinking: Optional[bool] = None` parameter to
+`LLMEngine.generate(...)` and `LLMEngine.generate_stream(...)`. Plumbs
+through to llama-cpp-python's
+`chat_template_kwargs={"enable_thinking": <bool>}` (in-process) and to
+the OpenAI-compat HTTP payload's `chat_template_kwargs` field
+(http_server runtime). The 4B GGUF's chat template was verified to
+support both `enable_thinking` and the `/think` / `/no_think`
+soft-switch directives — we use the cleaner `chat_template_kwargs`
+route.
+
+`None` (default) preserves bit-for-bit back-compat — no extra kwarg is
+set, so today's behaviour ("thinking on" via Qwen3.5's template
+default) is unchanged. Per-call routing (which intent types pass
+`False` vs `True`) is wired into the orchestrator and projection-driven
+callers in Stage G + Stage H — this stage is just the parameter plumbing.
+
+Map (applied incrementally in Stage G/H):
 
 | Intent | Thinking |
 |--------|----------|
@@ -145,6 +160,12 @@ intent types to thinking on/off:
 | Adjustment context processing | ON |
 
 Voice path defaults OFF (latency matters). Background workers can opt in.
+
+Verification: 11 new tests in
+[tests/test_llm_enable_thinking.py](../tests/test_llm_enable_thinking.py)
+cover the helper, both runtimes, both methods, and back-compat
+(default omits the kwarg). Full pytest sweep: 773 passed (+11 from
+Stage D 762), 16 skipped, 0 failed.
 
 ### Stage G — Position-aware RAG injection
 Move retrieved Qdrant memories from the system-prompt fold-in

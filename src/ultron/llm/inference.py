@@ -389,21 +389,37 @@ class LLMEngine:
         """
         self._cancel.set()
 
-    def generate(self, user_message: str) -> str:
-        """Blocking generation. Returns the full response string."""
+    def generate(self, user_message: str, *, enable_thinking: Optional[bool] = None) -> str:
+        """Blocking generation. Returns the full response string.
+
+        ``enable_thinking`` (4B optimization plan Stage F):
+        - ``None`` (default): inherit the chat template's default. Today
+          that's "thinking on" for Qwen3.5 — the model emits a
+          ``<think>...</think>`` block before the answer, which
+          :func:`_strip_thinking_blocks` filters out before tokens reach
+          TTS.
+        - ``False``: disable thinking via Qwen3.5's
+          ``chat_template_kwargs={"enable_thinking": False}``. Recovers
+          the 2-5x token-output overhead the thinking block adds. Use
+          for: simple conversation, voice path on 4B, acknowledgment
+          phrases, pre-flight uncertainty pass.
+        - ``True``: explicitly request thinking on. Use for: tool-routing
+          decisions, clarification, correction-prompt generation,
+          HYBRID_TASK decomposition, adjustment context processing.
+
+        See [docs/4b_optimization_plan.md](../../docs/4b_optimization_plan.md)
+        for the per-intent thinking-mode table.
+        """
         messages = self._build_messages(user_message)
         _llm_cfg = get_config().llm
         t0 = time.monotonic()
         if self._runtime == "in_process":
-            out = self._llm.create_chat_completion(
-                messages=messages,
-                temperature=_llm_cfg.default_temperature,
-                top_p=_llm_cfg.default_top_p,
-                max_tokens=_llm_cfg.default_max_tokens,
-                repeat_penalty=_llm_cfg.default_repeat_penalty,
-            )
+            kwargs = self._chat_completion_kwargs(_llm_cfg, enable_thinking, stream=False)
+            out = self._llm.create_chat_completion(messages=messages, **kwargs)
         else:
-            out = self._http_chat_completion(messages, _llm_cfg, stream=False)
+            out = self._http_chat_completion(
+                messages, _llm_cfg, stream=False, enable_thinking=enable_thinking,
+            )
         text = out["choices"][0]["message"]["content"].strip()
         logger.info(
             "LLM: %d chars in %.2fs (%d tokens)",
@@ -414,8 +430,15 @@ class LLMEngine:
         self._record_turn(user_message, text)
         return text
 
-    def generate_stream(self, user_message: str) -> Iterator[str]:
+    def generate_stream(
+        self,
+        user_message: str,
+        *,
+        enable_thinking: Optional[bool] = None,
+    ) -> Iterator[str]:
         """Yield response tokens as they arrive.
+
+        See :meth:`generate` for the ``enable_thinking`` semantics.
 
         The full response is appended to history once the stream completes
         normally; on cancel, partial output is recorded so the model
@@ -431,17 +454,13 @@ class LLMEngine:
         canceled = False
 
         if self._runtime == "in_process":
-            stream = self._llm.create_chat_completion(
-                messages=messages,
-                temperature=_llm_cfg.default_temperature,
-                top_p=_llm_cfg.default_top_p,
-                max_tokens=_llm_cfg.default_max_tokens,
-                repeat_penalty=_llm_cfg.default_repeat_penalty,
-                stream=True,
-            )
+            kwargs = self._chat_completion_kwargs(_llm_cfg, enable_thinking, stream=True)
+            stream = self._llm.create_chat_completion(messages=messages, **kwargs)
             stream_iter = stream
         else:
-            stream_iter = self._http_chat_completion(messages, _llm_cfg, stream=True)
+            stream_iter = self._http_chat_completion(
+                messages, _llm_cfg, stream=True, enable_thinking=enable_thinking,
+            )
 
         def _raw_deltas():
             nonlocal canceled, first_token_time, completed
@@ -476,9 +495,44 @@ class LLMEngine:
                 time.monotonic() - t0,
             )
 
+    # --- 4B plan Stage F: selective thinking mode ---------------------------
+
+    @staticmethod
+    def _chat_completion_kwargs(
+        _llm_cfg, enable_thinking: Optional[bool], *, stream: bool,
+    ) -> dict:
+        """Build the kwargs dict for ``Llama.create_chat_completion``.
+
+        Centralised so both ``generate`` and ``generate_stream`` produce
+        identical request shape (only ``stream`` differs), and so the
+        Stage F ``enable_thinking`` toggle is set in exactly one place.
+
+        Returns a fresh dict — the caller is free to mutate without
+        affecting other calls.
+        """
+        kwargs: dict = {
+            "temperature": _llm_cfg.default_temperature,
+            "top_p": _llm_cfg.default_top_p,
+            "max_tokens": _llm_cfg.default_max_tokens,
+            "repeat_penalty": _llm_cfg.default_repeat_penalty,
+        }
+        if stream:
+            kwargs["stream"] = True
+        if enable_thinking is not None:
+            # Qwen3.5's chat template reads ``enable_thinking`` to decide
+            # whether to emit a ``<think>...</think>`` block. ``False``
+            # cuts the 2-5x token-output overhead the thinking block
+            # adds — meaningful on the 4B (smaller model = relatively
+            # bigger latency cost from thinking).
+            kwargs["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+        return kwargs
+
     # --- HTTP runtime helpers ----------------------------------------------
 
-    def _http_chat_completion(self, messages, _llm_cfg, *, stream: bool):
+    def _http_chat_completion(
+        self, messages, _llm_cfg, *, stream: bool,
+        enable_thinking: Optional[bool] = None,
+    ):
         """OpenAI-compat chat-completion request to llama-cpp-server.
 
         Returns either a single response dict (``stream=False``) or an
@@ -505,6 +559,11 @@ class LLMEngine:
             "repeat_penalty": _llm_cfg.default_repeat_penalty,
             "stream": stream,
         }
+        if enable_thinking is not None:
+            # llama-cpp-server passes chat_template_kwargs through to its
+            # underlying create_chat_completion call. Same Qwen3.5 toggle
+            # as the in-process path.
+            payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         if not stream:
             resp = requests.post(
                 url, headers=headers, json=payload,

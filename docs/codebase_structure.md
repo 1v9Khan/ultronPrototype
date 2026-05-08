@@ -20,7 +20,9 @@ downloaded, structurally validated, SHA256 recorded) + Stage C
 (start_llamacpp_server.py: --model-draft, --draft-num-pred-tokens,
 --from-config flags + testable CLI helpers) + Stage D (4B in-process
 baseline measured: TTFT 86 ms vs 9B's 109 ms; VRAM peak 7825 MB vs
-9B's 10370 MB; gate passed) — 762 passing tests, 16 skipped, 0 failed.
+9B's 10370 MB; gate passed) + Stage F (LLMEngine.generate*:
+enable_thinking parameter wired through to chat_template_kwargs in both
+runtimes) — 773 passing tests, 16 skipped, 0 failed.
 
 ---
 
@@ -601,6 +603,8 @@ pre-flight gate's uncertainty signals.
   - `_build_messages(user_message)` — resolves system prompt fresh each turn (Phase 1 hot-reload), assembles RAG snippets + recent + user
   - `_resolve_system_prompt()` (Phase 1) — sources from `PersonaLoader.get_system_prompt("user_facing")` when `llm.persona.source == "workspace"` (default), else `cfg.system_prompt`. Falls back to config when workspace is empty.
   - `_http_chat_completion(...)` / `_http_stream(...)` — OpenAI-compat HTTP client (uses `requests`, SSE for streaming, cancel-aware).
+  - `_chat_completion_kwargs(_llm_cfg, enable_thinking, *, stream)` (4B plan Stage F) — static helper that builds the kwargs dict for `Llama.create_chat_completion`. When `enable_thinking` is `None` (default), no `chat_template_kwargs` is emitted (back-compat). When `True` / `False`, sets `chat_template_kwargs={"enable_thinking": <value>}` — Qwen3.5's template toggle that suppresses or requests the `<think>...</think>` block. Applied to both in-process and HTTP runtimes via the same helper.
+  - `generate(user_message, *, enable_thinking=None)` and `generate_stream(user_message, *, enable_thinking=None)` (4B plan Stage F) — per-call thinking mode parameter.
 
 **In:** user text + (optional) `ConversationMemory` for RAG. **Out:** generated text.
 
@@ -1107,7 +1111,7 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 
 ### `tests/conftest.py` — Path setup so `from ultron.*` works.
 
-### Default suite (no env gate) — 762 tests, ~30 s wall
+### Default suite (no env gate) — 773 tests, ~30 s wall
 
 **Top-level (~25 files):**
 - `test_addressing.py` — rule-based addressing classifier
@@ -1140,6 +1144,7 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 - `test_llm_http_runtime.py` (9, OpenClaw Phase 0) — HTTP-runtime construction, request shape, SSE streaming, cancel mid-stream
 - `test_llm_preset.py` (13, 4B plan Stage A) — `LLMConfig.preset` resolution: 9b/4b/custom defaults, explicit-override wins, YAML round-trip, invalid preset rejected
 - `test_start_llamacpp_server.py` (13, 4B plan Stage C) — launcher CLI: --help renders, default args back-compat, --model-draft attaches speculative decoding, --draft-num-pred-tokens override, --from-config overlay (4b/9b), CLI flags override overlay
+- `test_llm_enable_thinking.py` (11, 4B plan Stage F) — `enable_thinking` parameter plumbing: helper kwargs, in-process generate/generate_stream pass-through, HTTP payload pass-through, back-compat when default
 
 **`tests/coding/`:**
 - `mock_bridge.py` — `ScriptedClaudeBridge` + `ClaudeScript` DSL
