@@ -42,7 +42,13 @@ def main() -> int:
         default=str(_default_model_path()),
         help="Path to the Qwen GGUF (default: ./models/Qwen3.5-9B-Q4_K_M.gguf)",
     )
-    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument(
+        "--port", type=int, default=8765,
+        help=(
+            "Listen port (default: 8765). 8080 is commonly in a Windows "
+            "Hyper-V / HNS reserved range — bind fails with WinError 13."
+        ),
+    )
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--api-key", dest="api_key", type=str, default="local-ultron")
     parser.add_argument(

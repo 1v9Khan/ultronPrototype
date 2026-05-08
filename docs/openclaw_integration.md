@@ -22,7 +22,7 @@ prompt. Reasoning is recorded in
   `baseURL`). Both consumers share one copy of the weights.
 
 This means Phase 2 will configure the OpenAI provider in OpenClaw with
-a custom baseURL (`http://127.0.0.1:8080/v1`) and a placeholder API
+a custom baseURL (`http://127.0.0.1:8765/v1`) and a placeholder API
 key, NOT the Ollama provider.
 
 ## Phase 0 component inventory (autonomous probes)
@@ -108,7 +108,7 @@ repo):
   "models": {
     "providers": {
       "lmstudio": {
-        "baseUrl": "http://127.0.0.1:8080",
+        "baseUrl": "http://127.0.0.1:8765",
         "apiKey": "local-ultron",
         "models": [
           {
@@ -151,6 +151,23 @@ the default. Did NOT create a separate `ultron` agent yet — that's a
 Phase 2 design decision. Both routes work for the Phase 0 reachability
 test; a dedicated `ultron` agent only matters once we want
 agent-specific config (different system prompt, different tools, etc.).
+
+## Port choice (8765, not 8080)
+
+First attempt used 8080. Bind failed with `WinError 13: An attempt was
+made to access a socket in a way forbidden by its access permissions`
+— Windows Hyper-V / HNS reserves port ranges that often include 8080
+even when no service is using it. We swapped to **8765**, which probed
+free on this machine. The launcher and the OpenClaw config both
+default to 8765. If 8765 is also in a reserved range on a future
+install, run this probe to find a free port and update both ends:
+
+```
+python -c "import socket; s=socket.socket(); s.bind(('127.0.0.1', 8765)); print('FREE')"
+```
+
+To see the full reserved range on Windows:
+`netsh int ipv4 show excludedportrange protocol=tcp`.
 
 ## Server launcher
 
