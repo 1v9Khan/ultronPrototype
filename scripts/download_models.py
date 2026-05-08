@@ -41,6 +41,16 @@ from config import settings  # noqa: E402
 LLM_REPO = "unsloth/Qwen3.5-9B-GGUF"
 LLM_FILE = "Qwen3.5-9B-Q4_K_M.gguf"
 
+# 4B optimization plan Stage B — additional GGUFs for the 4B + 0.8B
+# speculative-decoding setup. The 9B above stays in models/ for swap-back;
+# these are downloaded alongside it. Quants are Q4_K_M to match the 9B
+# baseline and keep the LLM_PRESETS table coherent. See
+# docs/4b_optimization_plan.md.
+LLM_4B_REPO = "unsloth/Qwen3.5-4B-GGUF"
+LLM_4B_FILE = "Qwen3.5-4B-Q4_K_M.gguf"
+LLM_DRAFT_REPO = "unsloth/Qwen3.5-0.8B-GGUF"
+LLM_DRAFT_FILE = "Qwen3.5-0.8B-Q4_K_M.gguf"
+
 # Piper voice files
 PIPER_VOICE_URL = (
     "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
@@ -112,14 +122,20 @@ def main() -> int:
 
     settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("\n[1/4] LLM (Qwen3.5-9B Q4_K_M)")
+    print("\n[1/7] LLM (Qwen3.5-9B Q4_K_M) — current default voice-path model")
     _hf_download(LLM_REPO, LLM_FILE, settings.MODELS_DIR)
 
-    print("\n[2/4] Piper voice (en_US-ryan-medium)")
+    print("\n[2/7] LLM (Qwen3.5-4B Q4_K_M) — 4B optimization plan target")
+    _hf_download(LLM_4B_REPO, LLM_4B_FILE, settings.MODELS_DIR)
+
+    print("\n[3/7] LLM (Qwen3.5-0.8B Q4_K_M) — speculative-decoding draft for 4B")
+    _hf_download(LLM_DRAFT_REPO, LLM_DRAFT_FILE, settings.MODELS_DIR)
+
+    print("\n[4/7] Piper voice (en_US-ryan-medium)")
     _download(PIPER_VOICE_URL, settings.TTS_VOICE_PATH)
     _download(PIPER_CONFIG_URL, settings.TTS_VOICE_CONFIG_PATH)
 
-    print("\n[3/4] faster-whisper (downloads on first transcription)")
+    print("\n[5/7] faster-whisper (downloads on first transcription)")
     print("  → triggering pre-fetch…")
     try:
         from faster_whisper import WhisperModel
@@ -133,7 +149,7 @@ def main() -> int:
     except Exception as e:
         print(f"  ✗ failed: {e}")
 
-    print("\n[4/6] openWakeWord pretrained models (downloads on first use)")
+    print("\n[6/7] openWakeWord pretrained models (downloads on first use)")
     try:
         import openwakeword.utils as ow_utils
 
@@ -142,11 +158,9 @@ def main() -> int:
     except Exception as e:
         print(f"  ✗ failed: {e}")
 
-    print("\n[5/6] RVC support models")
+    print("\n[7/7] RVC support models + voice-conversion model")
     _download(RVC_SUPPORT_BASE_URL + "hubert_base.pt", settings.RVC_HUBERT_PATH)
     _download(RVC_SUPPORT_BASE_URL + "rmvpe.pt", settings.RVC_RMVPE_PATH)
-
-    print("\n[6/6] RVC voice-conversion model (user-provided)")
     if settings.RVC_MODEL_PATH.is_file() and settings.RVC_INDEX_PATH.is_file():
         print(f"  ✓ found: {settings.RVC_MODEL_PATH.name}")
         print(f"  ✓ found: {settings.RVC_INDEX_PATH.name}")

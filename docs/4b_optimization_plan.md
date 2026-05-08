@@ -38,12 +38,22 @@ users). Verification:
   `config.yaml` (which now includes an explicit `preset: "qwen3.5-9b"`
   key for clarity).
 
-### Stage B — Download GGUFs
-Add to `scripts/download_models.py`:
-- `Qwen3.5-4B-Q4_K_M.gguf` from `unsloth/Qwen3.5-4B-GGUF`
-- `Qwen3.5-0.8B-Q4_K_M.gguf` from `unsloth/Qwen3.5-0.8B-GGUF` (draft model)
-
-Verify SHA256 against Unsloth's release. Keep 9B intact.
+### Stage B — Download GGUFs ✅ DONE
+- Added 4B + 0.8B sections to
+  [scripts/download_models.py](../scripts/download_models.py) (sections
+  [2/7] and [3/7]; idempotent, skips files already on disk).
+- Pulled both files into `C:\STC\ultronPrototype\models\`:
+  - `Qwen3.5-4B-Q4_K_M.gguf` — 2,740,937,888 bytes
+  - `Qwen3.5-0.8B-Q4_K_M.gguf` — 532,517,120 bytes
+- Validated structurally via `vocab_only` load — both report
+  `arch=qwen35`, `n_vocab=248320` (same as 9B, which is required for
+  the 0.8B to serve as a speculative draft for the 4B).
+- Recorded SHA256 of all three GGUFs in
+  [docs/model_checksums.md](model_checksums.md) for re-pull
+  verification (Unsloth doesn't publish a centralised checksum file;
+  HF Hub's content-addressed transfer plus this local record is the
+  integrity story).
+- 9B kept intact in `models/` for swap-back.
 
 ### Stage C — Speculative decoding launcher
 `scripts/start_llamacpp_server.py` gets `--model-draft`, `--draft-max`,

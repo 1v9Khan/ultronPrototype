@@ -1206,7 +1206,9 @@ Set `$env:PYTEST_RUN_GPU_TESTS = "1"` before pytest. Includes real Claude API ca
 
 | File | Used by | Size |
 |---|---|---|
-| `Qwen3.5-9B-Q4_K_M.gguf` | `LLMEngine` | 5.29 GB |
+| `Qwen3.5-9B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-9b"`, current default) | 5.29 GB |
+| `Qwen3.5-4B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-4b"`, primary after Stage H) | 2.55 GB |
+| `Qwen3.5-0.8B-Q4_K_M.gguf` | speculative-decoding draft for 4B (paired by `qwen3.5-4b` preset; Stage C wires into `start_llamacpp_server.py`) | 0.50 GB |
 | `openwakeword/ultron.onnx` | `WakeWordDetector` | small |
 | `piper/en_US-ryan-medium.onnx[.json]` | `TextToSpeech` | ~60 MB |
 | `rvc/hubert_base.pt` | `RvcConverter` | ~362 MB |
@@ -1245,7 +1247,8 @@ For specific tasks:
 - **OpenClaw integration architecture + Phase 0/1 status:** [docs/openclaw_integration.md](openclaw_integration.md)
 - **OpenClaw runtime ops (agents, supervisor, locked-in constraints):** [docs/openclaw_runtime.md](openclaw_runtime.md)
 - **Phase 1 close-out report (persona migration):** [docs/phase_1_summary.md](phase_1_summary.md)
-- **4B-model optimization plan (deferred to next session):** [docs/4b_optimization_plan.md](4b_optimization_plan.md)
+- **4B-model optimization plan (Stages A + B done; C in flight):** [docs/4b_optimization_plan.md](4b_optimization_plan.md)
+- **GGUF SHA256 reference:** [docs/model_checksums.md](model_checksums.md)
 
 ---
 
