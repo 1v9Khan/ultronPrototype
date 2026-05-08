@@ -211,7 +211,8 @@ For the current decisions and Foundation phase status see
 │   ├── run_integration_tests.py    ← pytest wrapper for tests/integration|routing|error_recovery
 │   ├── run_orchestration_tests.py  ← Run 10 orchestration scenarios with reporting
 │   ├── validate_config.py          ← Schema-validate config.yaml without starting Ultron
-│   ├── start_llamacpp_server.py    ← OpenClaw Phase 0: launch llama-cpp-server with voice-pipeline params
+│   ├── verify_voice_character_4b.py ← 4B plan Stage E: A/B voice-character helper (5 queries × 4B/9B)
+│   ├── start_llamacpp_server.py    ← OpenClaw Phase 0 + 4B plan Stage C: launch llama-cpp-server with voice-pipeline params (+ --model-draft / --draft-num-pred-tokens / --from-config)
 │   ├── supervised_llamacpp_server.py ← OpenClaw Phase 0: supervisor wrapper with auto-restart
 │   ├── smoke_test_llamacpp.ps1     ← OpenClaw Phase 0: PowerShell health probe for llama-cpp-server
 │   ├── _bench_llm_http.py          ← OpenClaw Phase 0: HTTP-mode TTFT benchmark

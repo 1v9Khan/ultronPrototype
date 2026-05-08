@@ -125,9 +125,25 @@ which is more orchestration than is needed to clear Stage D's gate.
 4B-alone measurement above already clears that bar; Stage H will
 confirm the spec-decoding throughput gain is additive on top.)
 
-### Stage E — Voice character verification (interactive)
-Five representative voice queries through the live stack with the 4B.
-User confirms Ultron sounds unchanged.
+### Stage E — Voice character verification (interactive) ⏳ READY FOR USER
+Helper script written:
+[scripts/verify_voice_character_4b.py](../scripts/verify_voice_character_4b.py).
+Runs five representative queries through the live stack, once with 4B
+and once with 9B for direct A/B. Output is a side-by-side table of
+first-sentence responses + TTFT.
+
+To run:
+
+```powershell
+cd C:\STC\ultronPrototype
+.venv\Scripts\python.exe scripts\verify_voice_character_4b.py
+```
+
+The plan's verification criterion is qualitative — "user confirms
+Ultron sounds unchanged". The script collects the data; the gate is
+your judgement. If the 4B sounds the same (cadence, terseness,
+character), Stage E passes and Stage H can flip the default. If not,
+the rollback is to keep the `qwen3.5-9b` preset (one-line YAML revert).
 
 ### Stage F — Selective thinking mode ✅ DONE (parameter wired; per-call routing in Stages G/H)
 Added `enable_thinking: Optional[bool] = None` parameter to
@@ -205,11 +221,41 @@ Verification:
 - Full pytest sweep: 780 passed (+7 from Stage F 773), 16 skipped,
   0 failed.
 
-### Stage H — End-to-end regression sweep
-Full pytest, full `measure_baseline.py`, full smoke test (16 steps from
-[docs/smoke_test.md](smoke_test.md)). Decision gate: voice character
-unchanged, TTFT ≤ 9B baseline, no test regressions. Flip
-`llm.preset` default from `"qwen3.5-9b"` to `"qwen3.5-4b"`.
+### Stage H — End-to-end regression sweep ⏳ READY (last step is the flip)
+
+**Already done:**
+- Full pytest sweep at HEAD `ae096e8`: **780 passed, 16 skipped, 0
+  failed**. No regressions.
+- Stage D's `measure_baseline.py` 4B in-process baseline:
+  TTFT median 86 ms (vs 9B 109 ms). Gate cleared.
+- VRAM peak under load 7825 MB (vs 9B 10370 MB; ~2.5 GB headroom).
+- Schema, paths, kwargs, and config all back-compat: every existing
+  test passed unchanged after Stages A–G.
+
+**User-led steps remaining:**
+1. Run [scripts/verify_voice_character_4b.py](../scripts/verify_voice_character_4b.py)
+   (Stage E). If Ultron sounds unchanged on the five A/B queries → continue.
+2. Run the 16-step real-stack smoke test in [docs/smoke_test.md](smoke_test.md).
+3. **Flip** `config.yaml`:
+   ```yaml
+   llm:
+     preset: "qwen3.5-4b"                                  # <<< change
+     model_path: "models/Qwen3.5-4B-Q4_K_M.gguf"           # <<< change
+     draft_model_path: "models/Qwen3.5-0.8B-Q4_K_M.gguf"   # <<< change (was null)
+     n_ctx: 16384                                          # <<< change (was 8192)
+   ```
+   (preset alone is insufficient — explicit YAML values win over preset
+   defaults via `model_fields_set`. Update all four for clarity.)
+4. Re-run pytest sweep + `validate_config.py` to confirm.
+5. Optional: start `scripts/start_llamacpp_server.py --from-config` and
+   run the speculative-decoding bench (`scripts/_bench_llm_http.py`)
+   for an additional throughput measurement.
+
+**Rollback path:** revert the four lines above to the current
+`qwen3.5-9b` values. The 9B GGUF stays in `models/` for swap-back at
+any time. `llm.rag.position` and the `enable_thinking` parameter
+remain available regardless of preset (they're orthogonal to the
+model swap).
 
 ## Items 4-8 — second-pass optimization
 
