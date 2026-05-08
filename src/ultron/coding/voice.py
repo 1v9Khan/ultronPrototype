@@ -195,15 +195,24 @@ class CodingVoiceController:
             return VoiceResponse(
                 text="Coordinator not available; cannot route adjustment."
             )
+        # Phase 6 wiring: resolve the actual ProjectSession from the
+        # coordinator's store (replaces the Phase 2 label-as-id stand-in).
+        # Falls back to the runner's bridge label only when no session is
+        # registered.
+        session = self._current_session()
         active = self.runner.active_state()
-        if active is None:
+        if session is None and active is None:
             return VoiceResponse(
                 text="There's no active coding task to adjust."
             )
+        session_id = (
+            session.session_id if session is not None
+            else (active.label or "current")
+        )
         # Bridge the async coordinator call into our sync caller.
         decision = self._await_coordinator_call(
             self.coordinator.decide_adjustment,
-            active.label or "current",  # session id stand-in until runner-coordinator wiring lands
+            session_id,
             text,
         )
         if decision is None:
