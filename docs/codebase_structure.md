@@ -10,8 +10,10 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
-Last validated against HEAD: Foundation Phase 7 close
-(673 passing tests, 16 skipped, 0 failed).
+Last validated against HEAD: Foundation Phase 7 close + Phase 4 deferred
+wrappers (ClaudeCodeError / AnthropicAPIError / MCPServerError /
+FilesystemError call-site wiring) — 699 passing tests, 15 skipped,
+0 failed.
 
 ---
 
@@ -199,7 +201,7 @@ For the current decisions and Foundation phase status see
 │   │   ├── test_orchestration_real.py ← Same scenarios with real Claude (PYTEST_RUN_GPU_TESTS=1)
 │   │   ├── test_mock_bridge_smoke.py
 │   │   └── sandbox/                ← test fixture sandbox
-│   ├── error_recovery/             ← Phase 4: per-dependency failure modes (52 tests)
+│   ├── error_recovery/             ← Phase 4: per-dependency failure modes (78 tests)
 │   │   ├── conftest.py
 │   │   ├── test_brave_failures.py
 │   │   ├── test_jina_failures.py
@@ -208,7 +210,10 @@ For the current decisions and Foundation phase status see
 │   │   ├── test_addressing_failures.py
 │   │   ├── test_config_failures.py
 │   │   ├── test_circuit_breaker.py
-│   │   └── test_error_log.py
+│   │   ├── test_error_log.py
+│   │   ├── test_claude_code_failures.py    ← Phase 4 deferred wrappers
+│   │   ├── test_mcp_server_failures.py     ← Phase 4 deferred wrappers
+│   │   └── test_filesystem_failures.py     ← Phase 4 deferred wrappers
 │   ├── routing/                    ← Phase 5: classifier + dispatcher + decomposer (148 tests)
 │   │   ├── conftest.py
 │   │   ├── test_classifier.py
@@ -472,6 +477,21 @@ the loader path so llama-cpp / ctranslate2 find `cudart64_12.dll`,
 
 **In:** raised from external-dep wrappers.
 **Out:** caught by orchestrator + structured-logged via `ErrorLog`.
+
+**Wired call sites (Phase 4 deferred wrappers, complete):**
+- `ClaudeCodeError` + `AnthropicAPIError`: [coding/direct_bridge.py](../src/ultron/coding/direct_bridge.py)
+  — launch failure, subprocess timeout, nonzero exit, stream-json error
+  events. The pattern detector `_looks_like_anthropic_api_error` decides
+  between the two based on error text (rate_limit / overloaded /
+  invalid_api_key / etc.).
+- `MCPServerError`: [coding/mcp_server.py](../src/ultron/coding/mcp_server.py)
+  — bind failure (`raise … from OSError`), startup timeout, no-active-session
+  on Claude tool call. `FilesystemError` covers the audit-log write path.
+- `FilesystemError`: [coding/audit.py](../src/ultron/coding/audit.py),
+  [coding/projects.py](../src/ultron/coding/projects.py),
+  [coding/runner.py](../src/ultron/coding/runner.py) — session audit
+  mkdir/write, project registry load/save, coding-tasks audit-log
+  (first-failure dedup via `_AUDIT_WRITE_FAILURE_LOGGED` flag).
 
 ### `src/ultron/uncertainty.py`
 
@@ -1019,10 +1039,13 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 - `test_mock_bridge_smoke.py` — mock-bridge sanity
 - `sandbox/` — fixture sandbox
 
-**`tests/error_recovery/`** (Phase 4) — 52 tests:
+**`tests/error_recovery/`** (Phase 4) — 78 tests:
 - `test_brave_failures.py`, `test_jina_failures.py`, `test_qdrant_failures.py`
 - `test_audio_failures.py`, `test_addressing_failures.py`, `test_config_failures.py`
 - `test_circuit_breaker.py`, `test_error_log.py`
+- `test_claude_code_failures.py` (18) — launch fail / timeout / nonzero exit / stream-json error events with API-pattern detection
+- `test_mcp_server_failures.py` (3) — bind failure / no active session / audit-log write failure
+- `test_filesystem_failures.py` (5) — session audit / project registry / coding tasks audit-log dedup
 
 **`tests/routing/`** (Phase 5) — 148 tests:
 - `test_classifier.py` (90: 20 BROWSER, 10 each MEDIA/MESSAGING/FILE/SHELL/HYBRID/CONVERSATIONAL, 8 CODE_TASK, 2 edge)

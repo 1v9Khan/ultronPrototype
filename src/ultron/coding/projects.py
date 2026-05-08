@@ -35,6 +35,8 @@ from typing import List, Optional
 import numpy as np
 
 from config import settings
+from ultron.errors import FilesystemError
+from ultron.resilience import get_error_log
 from ultron.utils.logging import get_logger
 
 logger = get_logger("coding.projects")
@@ -104,6 +106,18 @@ class ProjectRegistry:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Project registry unreadable (%s) -- starting empty", e)
+            get_error_log().record(
+                FilesystemError(
+                    f"project registry unreadable: {e}",
+                    context={
+                        "path": str(self.path),
+                        "underlying": type(e).__name__,
+                    },
+                    recovery="started with empty registry; user must re-register",
+                ),
+                dependency="filesystem",
+                include_traceback=False,
+            )
             self._projects = []
             return
         rows = data.get("projects") if isinstance(data, dict) else data
@@ -115,9 +129,21 @@ class ProjectRegistry:
     def _save(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         payload = {"projects": [p.to_dict() for p in self._projects]}
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        tmp.replace(self.path)
+        try:
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            tmp.replace(self.path)
+        except OSError as e:
+            get_error_log().record(
+                FilesystemError(
+                    f"project registry write failed: {e}",
+                    context={"path": str(self.path)},
+                    recovery="in-memory registry retained; save will retry next time",
+                ),
+                dependency="filesystem",
+                include_traceback=False,
+            )
+            raise
 
     # --- CRUD ---------------------------------------------------------------
 

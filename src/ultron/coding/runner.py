@@ -36,9 +36,17 @@ from ultron.coding.bridge import (
 )
 from ultron.coding.narration import StatusNarrator
 from ultron.coding.session import ProjectSession, SessionStore
+from ultron.errors import FilesystemError
+from ultron.resilience import get_error_log
 from ultron.utils.logging import get_logger
 
 logger = get_logger("coding.runner")
+
+# True once we've already logged a coding-tasks audit-write failure to
+# errors.jsonl during this process. Subsequent failures still skip the
+# write but don't spam the log -- the first occurrence captures the
+# actionable signal (path, errno, traceback).
+_AUDIT_WRITE_FAILURE_LOGGED = False
 
 
 # ---------------------------------------------------------------------------
@@ -586,5 +594,16 @@ class CodingTaskRunner:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
             with self._log_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        except OSError:
-            pass
+        except OSError as e:
+            global _AUDIT_WRITE_FAILURE_LOGGED
+            if not _AUDIT_WRITE_FAILURE_LOGGED:
+                _AUDIT_WRITE_FAILURE_LOGGED = True
+                get_error_log().record(
+                    FilesystemError(
+                        f"coding tasks audit-log write failed: {e}",
+                        context={"path": str(self._log_path)},
+                        recovery="audit write skipped; system continues",
+                    ),
+                    dependency="filesystem",
+                    include_traceback=False,
+                )

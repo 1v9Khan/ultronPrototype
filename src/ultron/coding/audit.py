@@ -31,6 +31,9 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from ultron.errors import FilesystemError
+from ultron.resilience import get_error_log
+
 
 class SessionAuditWriter:
     """Thread-safe append-only writer for per-session JSONL logs."""
@@ -40,8 +43,17 @@ class SessionAuditWriter:
         if self.log_dir is not None:
             try:
                 self.log_dir.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                # Bad path; disable logging gracefully.
+            except OSError as e:
+                # Bad path; disable logging gracefully + record once.
+                get_error_log().record(
+                    FilesystemError(
+                        f"session-audit log_dir mkdir failed: {e}",
+                        context={"log_dir": str(self.log_dir)},
+                        recovery="per-session audit logging disabled",
+                    ),
+                    dependency="filesystem",
+                    include_traceback=False,
+                )
                 self.log_dir = None
         self._lock = threading.Lock()
 
@@ -64,10 +76,23 @@ class SessionAuditWriter:
         try:
             with self._lock, path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-        except OSError:
+        except OSError as e:
             # Disk full / permission issue / etc. -- audit logging is
-            # best-effort and must never break the supervisor.
-            pass
+            # best-effort and must never break the supervisor. We do
+            # log the typed error so triage can spot the problem.
+            get_error_log().record(
+                FilesystemError(
+                    f"session-audit write failed: {e}",
+                    context={
+                        "path": str(path),
+                        "session_id": session_id,
+                        "event": event,
+                    },
+                    recovery="audit write skipped; system continues",
+                ),
+                dependency="filesystem",
+                include_traceback=False,
+            )
 
     def path_for(self, session_id: str) -> Optional[Path]:
         """Return the on-disk path for a session's log, or None if disabled."""

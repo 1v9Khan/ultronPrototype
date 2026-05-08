@@ -40,6 +40,8 @@ from ultron.coding.session import (
     SessionStatus,
     SessionStore,
 )
+from ultron.errors import FilesystemError, MCPServerError
+from ultron.resilience import get_error_log
 from ultron.utils.logging import get_logger
 
 logger = get_logger("coding.mcp_server")
@@ -68,6 +70,15 @@ class _AuditLog:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         except OSError as e:
             logger.debug("audit log write failed: %s", e)
+            get_error_log().record(
+                FilesystemError(
+                    f"MCP audit-log write failed: {e}",
+                    context={"path": str(self.path)},
+                    recovery="audit write skipped; system continues",
+                ),
+                dependency="filesystem",
+                include_traceback=False,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -679,10 +690,14 @@ class UltronMCPServer:
         connection / URL path so multi-session is supported."""
         active = self.store.list_active()
         if not active:
-            raise RuntimeError(
+            err = MCPServerError(
                 "Claude called an MCP tool but no session is active. "
-                "Did the runner forget to call create_session?"
+                "Did the runner forget to call create_session?",
+                context={"active_session_count": 0},
+                recovery="MCP call rejected; runner should retry with a session",
             )
+            get_error_log().record(err, dependency="mcp_server")
+            raise err
         # Pick the most recent active session.
         return max(active, key=lambda s: s.started_at)
 
@@ -733,11 +748,32 @@ class UltronMCPServer:
         )
         self._server_thread.start()
         if not self._started.wait(timeout=ready_timeout_s):
-            raise RuntimeError(
-                f"MCP server failed to start within {ready_timeout_s}s"
+            err = MCPServerError(
+                f"MCP server failed to start within {ready_timeout_s}s",
+                context={
+                    "host": self.host,
+                    "port": self.port,
+                    "sse_path": self.sse_path,
+                    "ready_timeout_s": ready_timeout_s,
+                },
+                recovery="coding tasks unavailable until MCP server starts",
             )
+            get_error_log().record(err, dependency="mcp_server")
+            raise err
         if bind_error:
-            raise bind_error[0]
+            original = bind_error[0]
+            err = MCPServerError(
+                f"MCP server bind failed: {original}",
+                context={
+                    "host": self.host,
+                    "port": self.port,
+                    "sse_path": self.sse_path,
+                    "underlying": type(original).__name__,
+                },
+                recovery="coding tasks unavailable until bind succeeds",
+            )
+            get_error_log().record(err, dependency="mcp_server")
+            raise err from original
         logger.info(
             "Ultron MCP server listening on http://%s:%d%s",
             self.host, self.port, self.sse_path,

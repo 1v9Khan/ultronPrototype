@@ -39,9 +39,38 @@ from ultron.coding.bridge import (
     directory_snapshot,
     render_prompt,
 )
+from ultron.errors import AnthropicAPIError, ClaudeCodeError
+from ultron.resilience import get_error_log
 from ultron.utils.logging import get_logger
 
 logger = get_logger("coding.direct_bridge")
+
+
+# Substrings in stream-json error payloads / Claude Code stderr that
+# indicate the failure originated in the Anthropic API rather than the
+# subprocess itself. Matched case-insensitively against error text.
+_ANTHROPIC_API_ERROR_SIGNS = (
+    "rate_limit",
+    "rate limit",
+    "overloaded",
+    "invalid_api_key",
+    "invalid api key",
+    "authentication_error",
+    "api_error",
+    "anthropic",
+    "529",
+    "529 ",
+    "529)",
+)
+
+
+def _looks_like_anthropic_api_error(text: str) -> bool:
+    """True if ``text`` smells like an Anthropic API failure surfaced
+    by Claude Code (rate-limited / overloaded / auth / etc.)."""
+    if not text:
+        return False
+    low = text.lower()
+    return any(sign in low for sign in _ANTHROPIC_API_ERROR_SIGNS)
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +321,19 @@ class DirectTaskHandle(TaskHandle):
             )
         except Exception as e:
             logger.error("Failed to launch claude: %s", e)
+            get_error_log().record(
+                ClaudeCodeError(
+                    f"failed to launch claude subprocess: {e}",
+                    context={
+                        "task_id": self._task_id,
+                        "argv0": self._argv[0] if self._argv else "",
+                        "cwd": str(self._cwd),
+                        "label": self._request.label or "",
+                    },
+                    recovery="task aborted before subprocess started; user notified",
+                ),
+                dependency="claude_code",
+            )
             self._finalize(success=False, exit_status=-1, error=str(e), summary="")
             return
 
@@ -350,6 +392,18 @@ class DirectTaskHandle(TaskHandle):
             exit_status = proc.wait(timeout=self._request.timeout_s)
         except subprocess.TimeoutExpired:
             logger.warning("Task %s exceeded timeout; cancelling", self._task_id)
+            get_error_log().record(
+                ClaudeCodeError(
+                    f"subprocess exceeded {self._request.timeout_s:.0f}s timeout",
+                    context={
+                        "task_id": self._task_id,
+                        "label": self._request.label or "",
+                        "timeout_s": self._request.timeout_s,
+                    },
+                    recovery="cancelled subprocess; task marked failed",
+                ),
+                dependency="claude_code",
+            )
             self.cancel()
             try:
                 exit_status = proc.wait(timeout=10)
@@ -394,6 +448,46 @@ class DirectTaskHandle(TaskHandle):
         snapshot = self._state.snapshot()
         success = (exit_status == 0) and not snapshot.is_cancelled
         summary = (snapshot.final_summary or snapshot.last_text_snippet or "").strip()
+        # Log nonzero-exit subprocess failures to errors.jsonl.
+        # Skip cancellation (user-initiated), timeout (-2; already logged
+        # above), and stream-json errors (snapshot.error set; logged by
+        # the per-event handler).
+        should_log_exit = (
+            not success
+            and not snapshot.is_cancelled
+            and exit_status not in (0, -2)
+            and snapshot.error is None
+        )
+        if should_log_exit:
+            err_text = snapshot.last_text_snippet or ""
+            if _looks_like_anthropic_api_error(err_text):
+                get_error_log().record(
+                    AnthropicAPIError(
+                        f"Anthropic API failure during Claude Code session "
+                        f"(exit {exit_status})",
+                        context={
+                            "task_id": self._task_id,
+                            "label": self._request.label or "",
+                            "exit_status": exit_status,
+                            "snippet": err_text[:200],
+                        },
+                        recovery="task marked failed; user notified",
+                    ),
+                    dependency="anthropic_api",
+                )
+            else:
+                get_error_log().record(
+                    ClaudeCodeError(
+                        f"subprocess exited nonzero ({exit_status})",
+                        context={
+                            "task_id": self._task_id,
+                            "label": self._request.label or "",
+                            "exit_status": exit_status,
+                        },
+                        recovery="task marked failed; user notified",
+                    ),
+                    dependency="claude_code",
+                )
         self._finalize(
             success=success,
             exit_status=exit_status,
@@ -489,6 +583,36 @@ class DirectTaskHandle(TaskHandle):
             err = str(raw.get("error") or raw.get("message") or "unknown")
             self._state.mutate(lambda s: setattr(s, "error", err))
             self._emit(TaskEvent(kind=EventKind.ERROR, error=err, raw=raw))
+            # Pattern-match the error text: if it looks like an Anthropic
+            # API failure, log as AnthropicAPIError; otherwise as a
+            # generic ClaudeCodeError. Either way the typed entry lands
+            # in logs/errors.jsonl for triage.
+            if _looks_like_anthropic_api_error(err):
+                get_error_log().record(
+                    AnthropicAPIError(
+                        "Anthropic API error reported by Claude Code stream",
+                        context={
+                            "task_id": self._task_id,
+                            "label": self._request.label or "",
+                            "snippet": err[:200],
+                        },
+                        recovery="task will fail; user notified",
+                    ),
+                    dependency="anthropic_api",
+                )
+            else:
+                get_error_log().record(
+                    ClaudeCodeError(
+                        "Claude Code stream-json error event",
+                        context={
+                            "task_id": self._task_id,
+                            "label": self._request.label or "",
+                            "snippet": err[:200],
+                        },
+                        recovery="task will fail; user notified",
+                    ),
+                    dependency="claude_code",
+                )
 
     def _handle_assistant(self, raw: Dict[str, Any]) -> None:
         message = raw.get("message") or {}
