@@ -166,6 +166,20 @@ class CodingTaskRunner:
         """
         self._bound_session_id = session_id
 
+    def _session_audit(self, event: str, **fields) -> None:
+        """Phase 7: write to the bound session's per-session JSONL log.
+        Used to record prompts sent to Claude (initial + followups) so
+        the session log is the single retrospective view."""
+        if self._bound_session_id is None or self._store is None:
+            return
+        writer = getattr(self._store, "audit_writer", None)
+        if writer is None:
+            return
+        try:
+            writer.write(self._bound_session_id, event, **fields)
+        except Exception as e:
+            logger.debug("session audit write failed: %s", e)
+
     def start_task(self, request: TaskRequest) -> TaskHandle:
         # Budget check: refuse to start a new task if the bound session's
         # budget is exhausted. The voice layer surfaces the same warning
@@ -210,6 +224,21 @@ class CodingTaskRunner:
             "prompt_chars": len(request.task_prompt),
             "bridge": self.bridge.name(),
         })
+        # Phase 7: persist the prompt text into the per-session log so the
+        # JSONL is the single retrospective view of what Claude was told.
+        # Truncate at 8000 chars -- enough to reconstruct intent + scope
+        # without bloating the file when prompts include big templates.
+        self._session_audit(
+            "claude_prompt_sent",
+            kind="initial",
+            task_id=handle.task_id(),
+            label=request.label or "",
+            cwd=str(request.cwd),
+            model=request.model,
+            prompt_chars=len(request.task_prompt),
+            prompt=request.task_prompt[:8000],
+            claude_session_id=getattr(handle, "claude_session_id", None),
+        )
         return handle
 
     def cancel_active(self) -> None:
@@ -275,6 +304,15 @@ class CodingTaskRunner:
             "claude_session_id": self._claude_session_id,
             "prompt_chars": len(prompt),
         })
+        # Phase 7: persist the follow-up prompt to the per-session log too.
+        self._session_audit(
+            "claude_prompt_sent",
+            kind=f"followup_{kind}",
+            task_id=handle.task_id(),
+            claude_session_id=self._claude_session_id,
+            prompt_chars=len(prompt),
+            prompt=prompt[:8000],
+        )
         return handle
 
     @property

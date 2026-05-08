@@ -368,6 +368,92 @@ def test_runner_halts_at_100_percent_budget(tmp_path: Path, monkeypatch):
     assert result is None
 
 
+def test_runner_logs_initial_prompt_to_session_log(tmp_path: Path):
+    """Phase 7 spec: the per-session log captures every prompt sent to
+    Claude. start_task -> claude_prompt_sent (kind=initial)."""
+    from ultron.coding.mcp_server import UltronMCPServer
+
+    log_dir = tmp_path / "sessions"
+    server = UltronMCPServer(host="127.0.0.1", port=0)
+    # Wire in our own audit writer so the per-session log lands here.
+    server.session_audit = SessionAuditWriter(log_dir=log_dir)
+    server.store._audit = server.session_audit
+    s = server.create_session(
+        project_root=tmp_path / "p", initial_prompt="build a hello world script",
+    )
+    (tmp_path / "p").mkdir()
+    server.store.transition(s.session_id, SessionStatus.EXECUTING)
+
+    runner = CodingTaskRunner(
+        bridge=ScriptedClaudeBridge(server, ClaudeScript(), session_id=s.session_id),
+        log_path=tmp_path / "audit.jsonl",
+        store=server.store,
+    )
+    runner.bind_session(s.session_id)
+
+    script = ClaudeScript().declare_complete(summary="ok", files_created=[])
+    runner.bridge = ScriptedClaudeBridge(server, script, session_id=s.session_id)
+    runner.start_task(TaskRequest(
+        task_prompt="please write hello world", cwd=tmp_path / "p",
+        model="haiku", timeout_s=10.0, label="prompt-log",
+    )).wait(timeout=10.0)
+
+    events = _read_events(log_dir, s.session_id)
+    types = [e["event"] for e in events]
+    assert "claude_prompt_sent" in types, types
+    prompt_events = [e for e in events if e["event"] == "claude_prompt_sent"]
+    initial = next(e for e in prompt_events if e["kind"] == "initial")
+    assert initial["prompt"] == "please write hello world"
+    assert initial["model"] == "haiku"
+    assert initial["label"] == "prompt-log"
+
+
+def test_runner_logs_followup_prompts_to_session_log(tmp_path: Path):
+    """Each send_followup also lands in the per-session log with its kind."""
+    from ultron.coding.mcp_server import UltronMCPServer
+
+    log_dir = tmp_path / "sessions"
+    server = UltronMCPServer(host="127.0.0.1", port=0)
+    server.session_audit = SessionAuditWriter(log_dir=log_dir)
+    server.store._audit = server.session_audit
+    s = server.create_session(
+        project_root=tmp_path / "p", initial_prompt="hi",
+    )
+    (tmp_path / "p").mkdir()
+    server.store.transition(s.session_id, SessionStatus.EXECUTING)
+
+    runner = CodingTaskRunner(
+        bridge=ScriptedClaudeBridge(server, ClaudeScript(), session_id=s.session_id),
+        log_path=tmp_path / "audit.jsonl",
+        store=server.store,
+    )
+    runner.bind_session(s.session_id)
+
+    # Run an initial task that finishes.
+    script1 = ClaudeScript().declare_complete(summary="ok", files_created=[])
+    runner.bridge = ScriptedClaudeBridge(server, script1, session_id=s.session_id)
+    runner.start_task(TaskRequest(
+        task_prompt="initial work", cwd=tmp_path / "p",
+        model="haiku", timeout_s=10.0, label="initial",
+    )).wait(timeout=10.0)
+    # Now a follow-up. The runner needs another scripted bridge for the resume
+    # path; reusing the same bridge instance is fine, swap the script.
+    runner.bridge = ScriptedClaudeBridge(
+        server,
+        ClaudeScript().declare_complete(summary="ok-2", files_created=[]),
+        session_id=s.session_id,
+    )
+    runner.send_followup("Try a different approach", kind="adjustment")
+
+    events = _read_events(log_dir, s.session_id)
+    prompt_events = [e for e in events if e["event"] == "claude_prompt_sent"]
+    kinds = sorted(e["kind"] for e in prompt_events)
+    assert "initial" in kinds
+    assert "followup_adjustment" in kinds
+    followup = next(e for e in prompt_events if e["kind"] == "followup_adjustment")
+    assert followup["prompt"] == "Try a different approach"
+
+
 def test_runner_pop_budget_warning_consumes_once(tmp_path: Path, monkeypatch):
     from config import settings as _settings
     from ultron.coding.mcp_server import UltronMCPServer
