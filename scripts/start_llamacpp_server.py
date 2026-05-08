@@ -72,6 +72,17 @@ def main() -> int:
         "--type-v", dest="type_v", type=int, default=8,
         help="GGML KV cache type for V (default: 8 = Q8_0; matches voice)",
     )
+    parser.add_argument(
+        "--chat-format", dest="chat_format", type=str, default=None,
+        help=(
+            "Override the chat format. Default: None (use the GGUF's metadata "
+            "template — Qwen3.5's full template with <think> scaffolding). "
+            "Pass 'chatml' to bypass <think> handling for OpenClaw "
+            "compatibility (the voice path uses the GGUF metadata template "
+            "directly via in-process llama-cpp-python and is unaffected). "
+            "Other values: see llama_cpp.llama_chat_format.LlamaChatCompletionHandlerRegistry."
+        ),
+    )
     parser.set_defaults(flash_attn=True)
     args = parser.parse_args()
 
@@ -102,17 +113,18 @@ def main() -> int:
         port=args.port,
         api_key=args.api_key,
     )
-    model_settings = [
-        ModelSettings(
-            model=str(model_path),
-            model_alias=args.model_alias,
-            n_ctx=args.n_ctx,
-            n_gpu_layers=args.n_gpu_layers,
-            flash_attn=args.flash_attn,
-            type_k=args.type_k,
-            type_v=args.type_v,
-        ),
-    ]
+    ms_kwargs = dict(
+        model=str(model_path),
+        model_alias=args.model_alias,
+        n_ctx=args.n_ctx,
+        n_gpu_layers=args.n_gpu_layers,
+        flash_attn=args.flash_attn,
+        type_k=args.type_k,
+        type_v=args.type_v,
+    )
+    if args.chat_format:
+        ms_kwargs["chat_format"] = args.chat_format
+    model_settings = [ModelSettings(**ms_kwargs)]
     config = ConfigFileSettings(
         host=server_settings.host,
         port=server_settings.port,
@@ -122,7 +134,9 @@ def main() -> int:
 
     sys.stderr.write(
         f"[start_llamacpp_server] starting on http://{args.host}:{args.port} "
-        f"model_alias={args.model_alias} kv_q8=true flash_attn={args.flash_attn}\n"
+        f"model_alias={args.model_alias} kv_q8=true "
+        f"flash_attn={args.flash_attn} "
+        f"chat_format={args.chat_format or 'gguf-default'}\n"
     )
 
     app = create_app(server_settings=server_settings, model_settings=model_settings)

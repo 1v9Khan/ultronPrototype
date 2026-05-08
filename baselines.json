@@ -729,5 +729,69 @@
         "blocker": "Empty visible content in agent response. Documented as a Phase 1 deferred item."
       }
     }
+  },
+  "llm_http_runtime": {
+    "timestamp": "2026-05-08T21:02:25.498779+00:00",
+    "runtime": "http_server",
+    "base_url": "http://127.0.0.1:8765/v1",
+    "model_alias": "qwen3.5-9b-local",
+    "per_query": [
+      {
+        "query": "What is the boiling point of water?",
+        "first_token_ms": 204.0,
+        "first_text": "At "
+      },
+      {
+        "query": "Walk me through how a transistor works.",
+        "first_token_ms": 203.0,
+        "first_text": "A tr"
+      },
+      {
+        "query": "Who was Nikola Tesla?",
+        "first_token_ms": 172.0,
+        "first_text": "Niko"
+      },
+      {
+        "query": "What's nineteen times forty-three?",
+        "first_token_ms": 344.0,
+        "first_text": "1"
+      },
+      {
+        "query": "Explain what a hash table is.",
+        "first_token_ms": 235.0,
+        "first_text": "A ha"
+      },
+      {
+        "query": "Are you afraid of death?",
+        "first_token_ms": 234.0,
+        "first_text": "De"
+      },
+      {
+        "query": "What's a good book to read on a flight?",
+        "first_token_ms": 188.0,
+        "first_text": "A flight"
+      },
+      {
+        "query": "What do you think about meditation?",
+        "first_token_ms": 187.0,
+        "first_text": "Me"
+      },
+      {
+        "query": "And what about the Mariana Trench?",
+        "first_token_ms": 141.0,
+        "first_text": "The"
+      },
+      {
+        "query": "Tell me something interesting about black holes.",
+        "first_token_ms": 140.0,
+        "first_text": "Bla"
+      }
+    ],
+    "ttft_ms": {
+      "min": 140.0,
+      "median": 195.5,
+      "p95": 235.0,
+      "max": 344.0
+    }
   }
 }

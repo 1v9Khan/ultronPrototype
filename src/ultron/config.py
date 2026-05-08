@@ -120,9 +120,39 @@ class STTConfig(_Strict):
     vad_filter: bool = False
 
 
+class LLMServerConfig(_Strict):
+    """OpenAI-compat HTTP server endpoint for the shared local Qwen.
+
+    Used when ``llm.runtime == "http_server"``. Mirrors the
+    llama-cpp-python ``llama_cpp.server`` we run via
+    ``scripts/start_llamacpp_server.py``. Both Ultron's voice
+    pipeline (when migrated) and OpenClaw point at this endpoint —
+    one model load, one VRAM allocation.
+
+    Defaults match the launcher and the OpenClaw provider config.
+    """
+
+    base_url: str = "http://127.0.0.1:8765/v1"
+    api_key: str = "local-ultron"
+    model_alias: str = "qwen3.5-9b-local"
+    request_timeout_s: float = 120.0
+    connect_timeout_s: float = 5.0
+
+
 class LLMConfig(_Strict):
-    # Pinned to llama_cpp per feedback_llm_runtime_decision.md (2026-05-08)
+    # Pinned to llama_cpp per feedback_llm_runtime_decision.md (2026-05-08).
     provider: Literal["llama_cpp"] = "llama_cpp"
+    # Where the model actually runs:
+    #   "in_process"  — load via llama-cpp-python in this Python process
+    #                   (current default; what the voice pipeline uses today).
+    #   "http_server" — talk to a separately-run llama-cpp-server over HTTP
+    #                   (OpenAI-compat /v1/chat/completions). Use this once
+    #                   the server is running and verified.
+    # The HTTP path is opt-in: existing behaviour stays unchanged unless
+    # this flag is flipped. Phase 0 of the OpenClaw integration verified
+    # the HTTP server exists; Phase 2 / Item 6 wires the voice path
+    # through it.
+    runtime: Literal["in_process", "http_server"] = "in_process"
     model_path: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
     n_ctx: int = Field(default=8192, ge=1)
     gpu_layers: int = -1
@@ -134,6 +164,7 @@ class LLMConfig(_Strict):
     flash_attn: bool = True
     kv_cache_type: int = 8                    # 8=q8_0, 1=F16
     system_prompt: str = ""
+    server: LLMServerConfig = Field(default_factory=LLMServerConfig)
 
 
 class EmbeddingsConfig(_Strict):
