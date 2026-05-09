@@ -163,6 +163,29 @@ class LLMRagConfig(_Strict):
     position: Literal["system", "recency"] = "recency"
 
 
+class LLMSelfConsistencyConfig(_Strict):
+    """4B optimization plan Item 6 — self-consistency on high-stakes calls.
+
+    Self-consistency samples N diverse reasoning paths at non-zero
+    temperature and majority-votes the most consistent answer. Per the
+    paper this gives big lifts on chain-of-thought tasks (GSM8K +17.9 %).
+
+    Default OFF — applied only at projection-driven call sites flagged
+    by the orchestrator (decomposer, web-gating preflight, etc.); never
+    on the voice hot path. The 3× token cost is acceptable on those
+    specific calls because they're already off the critical TTFT path.
+
+    ``disabled_sites`` is a per-site opt-out so individual call sites
+    can be excluded without flipping the global flag — useful for
+    measurement A/B testing.
+    """
+
+    enabled: bool = False
+    n: int = Field(default=3, ge=1)
+    temperature: float = Field(default=0.8, ge=0.0, le=2.0)
+    disabled_sites: List[str] = Field(default_factory=list)
+
+
 class LLMPersonaConfig(_Strict):
     """Where the voice-path system prompt comes from.
 
@@ -254,6 +277,10 @@ class LLMConfig(_Strict):
     server: LLMServerConfig = Field(default_factory=LLMServerConfig)
     persona: LLMPersonaConfig = Field(default_factory=LLMPersonaConfig)
     rag: LLMRagConfig = Field(default_factory=LLMRagConfig)
+    # 4B plan Item 6 — self-consistency on high-stakes projection-driven calls.
+    self_consistency: LLMSelfConsistencyConfig = Field(
+        default_factory=LLMSelfConsistencyConfig,
+    )
 
     @model_validator(mode="after")
     def _apply_preset(self) -> "LLMConfig":

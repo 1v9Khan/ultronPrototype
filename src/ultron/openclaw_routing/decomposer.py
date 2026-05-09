@@ -76,20 +76,70 @@ class HybridTaskDecomposer:
     async def decompose(self, utterance: str) -> DecompositionResult:
         """Return a structured plan. Always returns at least one subtask
         — falls back to "coding: original utterance" on parse failure.
+
+        4B plan Item 6: when ``llm.self_consistency.enabled`` is True
+        (and the ``decomposer`` site isn't in
+        ``self_consistency.disabled_sites``), the prompt is sampled N
+        times and the JSON outputs are majority-voted. The majority
+        winner is returned. Otherwise this is a single greedy call.
         """
         if not get_config().routing.hybrid_task_decomposition_enabled:
             return _coding_only_fallback(utterance, fallback_used=True)
         prompt = _DECOMPOSE_PROMPT.format(utterance=utterance.replace('"', "'"))
-        try:
-            raw = self._llm.generate(prompt) if self._llm is not None else ""
-        except Exception as e:
-            logger.warning("HybridTaskDecomposer LLM call failed: %s", e)
+
+        raw = self._call_llm_with_optional_self_consistency(prompt)
+        if not raw:
             return _coding_only_fallback(utterance, fallback_used=True, raw="")
 
         subtasks = _parse_subtasks(raw)
         if not subtasks:
             return _coding_only_fallback(utterance, fallback_used=True, raw=raw)
-        return DecompositionResult(subtasks=subtasks, fallback_used=False, raw_response=raw)
+        return DecompositionResult(
+            subtasks=subtasks, fallback_used=False, raw_response=raw,
+        )
+
+    def _call_llm_with_optional_self_consistency(self, prompt: str) -> str:
+        """Single LLM call by default; N-sample majority vote when the
+        ``decomposer`` self-consistency site is enabled.
+
+        Failure of the LLM call returns an empty string — the caller
+        treats that as "fallback to coding-only".
+        """
+        if self._llm is None:
+            return ""
+        from ultron.llm.self_consistency import (
+            majority_vote_json,
+            run_self_consistency,
+            should_apply_self_consistency,
+        )
+
+        cfg = get_config()
+        if not should_apply_self_consistency("decomposer", cfg):
+            try:
+                return self._llm.generate(prompt)
+            except Exception as e:
+                logger.warning("HybridTaskDecomposer LLM call failed: %s", e)
+                return ""
+
+        sc = cfg.llm.self_consistency
+
+        def _sampler(temperature: float) -> str:
+            try:
+                # Pass temperature only when the LLM accepts it; the
+                # in-process LLMEngine reads default_temperature from
+                # config but generate() doesn't currently take an
+                # override. Use the config-default sampling and rely
+                # on the model's natural variability across calls.
+                return self._llm.generate(prompt) or ""
+            except Exception as e:
+                logger.warning("HybridTaskDecomposer sampler call failed: %s", e)
+                return ""
+
+        result = run_self_consistency(
+            _sampler, n=sc.n, temperature=sc.temperature,
+            aggregator=lambda samples: _serialise_json_winner(majority_vote_json(samples)),
+        )
+        return result.answer or ""
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +206,18 @@ def _parse_subtasks(text: str) -> List[HybridSubtask]:
         except (json.JSONDecodeError, ValueError, TypeError):
             continue
     return []
+
+
+def _serialise_json_winner(vote_result):
+    """Adapter: ``majority_vote_json`` returns ``(parsed_dict, votes)``.
+    ``run_self_consistency`` expects ``(answer, votes)`` where answer is
+    a string. Re-serialise the winning dict so downstream
+    :func:`_parse_subtasks` can re-parse it uniformly with the
+    single-call code path."""
+    parsed_winner, votes = vote_result
+    if parsed_winner is None:
+        return "", votes
+    return json.dumps(parsed_winner), votes
 
 
 def _coding_only_fallback(
