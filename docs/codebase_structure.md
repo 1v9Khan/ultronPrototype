@@ -10,7 +10,7 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
-Last validated against HEAD `b1a6f41` (`claude/pensive-engelbart-2ba3e5` worktree; main pending merge of Phase 3 finish work).
+Last validated against HEAD `bb08a65` (`claude/pensive-engelbart-2ba3e5` worktree; closes OpenClaw integration Phases 3–13 + Phase 13 finish).
 
 State at this validation:
 - Foundation phase complete (Parts 0–7); Part 3.5 unified-config migration intentionally deferred; 16-step real-stack smoke test still pending (interactive).
