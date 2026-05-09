@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "timestamp": "2026-05-09T01:28:56.659546+00:00",
+    "timestamp": "2026-05-09T16:11:46.619455+00:00",
     "main_repo": "C:\\STC\\ultronPrototype",
     "queries_count": 10,
     "queries": [
@@ -18,25 +18,25 @@
     "notes": "TTS measured through synth (Piper + RVC) without playback. VRAM is total GPU 0 used (includes desktop apps); deltas are the meaningful figures."
   },
   "vram_mb": {
-    "before_load": 3151,
-    "after_whisper": 3915,
-    "after_embedder": 3915,
-    "after_llm": 7197,
-    "after_rvc": 7187,
-    "full_stack_loaded": 7765,
-    "peak_under_load": 7913
+    "before_load": 3075,
+    "after_whisper": 3844,
+    "after_embedder": 3844,
+    "after_llm": 7126,
+    "after_rvc": 7121,
+    "full_stack_loaded": 7709,
+    "peak_under_load": 7889
   },
   "latency_ms": {
     "whisper_2_5s_sample": {
-      "min": 93.99999998277053,
-      "median": 94.0000000409782,
-      "max": 108.99999999674037,
+      "min": 92.99999999348074,
+      "median": 93.99999998277053,
+      "max": 110.00000004423782,
       "samples": [
-        93.99999998277053,
         108.99999999674037,
-        94.0000000409782,
         93.99999998277053,
-        108.99999999674037
+        92.99999999348074,
+        110.00000004423782,
+        93.99999998277053
       ]
     },
     "per_query": [
@@ -45,127 +45,127 @@
         "first_token_ms": 77.9999999795109,
         "first_sentence_complete_ms": 156.00000001722947,
         "first_sentence_text": "100 degrees Celsius at standard atmospheric pressure.",
-        "tts_synth_first_sentence_ms": 437.99999996554106,
-        "tts_pcm_samples": 161280,
+        "tts_synth_first_sentence_ms": 375.0,
+        "tts_pcm_samples": 157440,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 609.9999999860302,
-        "vram_mb_after": 7845
+        "ttfa_estimate_ms": 546.9999999622814,
+        "vram_mb_after": 7819
       },
       {
         "query": "Walk me through how a transistor works.",
-        "first_token_ms": 77.9999999795109,
+        "first_token_ms": 78.00000003771856,
         "first_sentence_complete_ms": 172.0000000204891,
         "first_sentence_text": "A transistor is a semiconductor switch or amplifier. It t",
-        "tts_synth_first_sentence_ms": 530.9999999590218,
-        "tts_pcm_samples": 170880,
+        "tts_synth_first_sentence_ms": 500.0,
+        "tts_pcm_samples": 180480,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 702.9999999795109,
-        "vram_mb_after": 7873
+        "ttfa_estimate_ms": 672.0000000204891,
+        "vram_mb_after": 7817
       },
       {
         "query": "Who was Nikola Tesla?",
-        "first_token_ms": 93.99999998277053,
+        "first_token_ms": 94.0000000409782,
         "first_sentence_complete_ms": 250.0,
         "first_sentence_text": "Nikola Tesla was a Serbian-American inventor, electrical engineer, and futurist. He re",
-        "tts_synth_first_sentence_ms": 452.9999999795109,
-        "tts_pcm_samples": 279360,
+        "tts_synth_first_sentence_ms": 438.0000000237487,
+        "tts_pcm_samples": 273600,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 641.0000000032596,
-        "vram_mb_after": 7899
+        "ttfa_estimate_ms": 626.0000000474975,
+        "vram_mb_after": 7817
       },
       {
         "query": "What's nineteen times forty-three?",
-        "first_token_ms": 92.99999999348074,
-        "first_sentence_complete_ms": 92.99999999348074,
+        "first_token_ms": 109.99999998603016,
+        "first_sentence_complete_ms": 109.99999998603016,
         "first_sentence_text": "817.",
-        "tts_synth_first_sentence_ms": 234.99999998603016,
-        "tts_pcm_samples": 53760,
+        "tts_synth_first_sentence_ms": 202.9999999795109,
+        "tts_pcm_samples": 51840,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 422.0000000204891,
-        "vram_mb_after": 7873
+        "ttfa_estimate_ms": 406.9999999483116,
+        "vram_mb_after": 7789
       },
       {
         "query": "Explain what a hash table is.",
         "first_token_ms": 77.9999999795109,
         "first_sentence_complete_ms": 250.0,
         "first_sentence_text": "A hash table is a data structure that maps keys to values using a hash function. I",
-        "tts_synth_first_sentence_ms": 391.00000000325963,
-        "tts_pcm_samples": 215040,
+        "tts_synth_first_sentence_ms": 375.0,
+        "tts_pcm_samples": 219840,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 563.0000000237487,
-        "vram_mb_after": 7899
+        "ttfa_estimate_ms": 546.9999999622814,
+        "vram_mb_after": 7815
       },
       {
         "query": "Are you afraid of death?",
-        "first_token_ms": 78.00000003771856,
-        "first_sentence_complete_ms": 92.99999999348074,
+        "first_token_ms": 79.00000002700835,
+        "first_sentence_complete_ms": 94.0000000409782,
         "first_sentence_text": "No.",
-        "tts_synth_first_sentence_ms": 203.00000003771856,
-        "tts_pcm_samples": 17280,
+        "tts_synth_first_sentence_ms": 155.9999999590218,
+        "tts_pcm_samples": 20160,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 375.0000001164153,
-        "vram_mb_after": 7855
+        "ttfa_estimate_ms": 328.9999999688007,
+        "vram_mb_after": 7801
       },
       {
         "query": "What's a good book to read on a flight?",
-        "first_token_ms": 79.00000002700835,
-        "first_sentence_complete_ms": 141.00000000325963,
+        "first_token_ms": 61.999999976251274,
+        "first_sentence_complete_ms": 125.0,
         "first_sentence_text": "It depends on your endurance. For s",
-        "tts_synth_first_sentence_ms": 265.00000001396984,
-        "tts_pcm_samples": 87360,
+        "tts_synth_first_sentence_ms": 250.0,
+        "tts_pcm_samples": 92160,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 438.0000000819564,
-        "vram_mb_after": 7855
+        "ttfa_estimate_ms": 405.9999999590218,
+        "vram_mb_after": 7801
       },
       {
         "query": "What do you think about meditation?",
-        "first_token_ms": 108.99999999674037,
-        "first_sentence_complete_ms": 217.99999999348074,
+        "first_token_ms": 94.0000000409782,
+        "first_sentence_complete_ms": 219.0000000409782,
         "first_sentence_text": "It is a tool for stilling the noise, not escaping reality. M",
-        "tts_synth_first_sentence_ms": 266.00000000325963,
-        "tts_pcm_samples": 161280,
+        "tts_synth_first_sentence_ms": 280.9999999590218,
+        "tts_pcm_samples": 168000,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 469.0000000409782,
-        "vram_mb_after": 7867
+        "ttfa_estimate_ms": 468.99999998277053,
+        "vram_mb_after": 7815
       },
       {
         "query": "And what about the Mariana Trench?",
-        "first_token_ms": 79.00000002700835,
-        "first_sentence_complete_ms": 344.0000000409782,
+        "first_token_ms": 61.999999976251274,
+        "first_sentence_complete_ms": 327.9999999795109,
         "first_sentence_text": "The Challenger Deep reaches approximately 10,935 meters (35,876 feet) below sea level.",
-        "tts_synth_first_sentence_ms": 514.9999999557622,
-        "tts_pcm_samples": 361920,
+        "tts_synth_first_sentence_ms": 469.0000000409782,
+        "tts_pcm_samples": 369600,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 688.0000000237487,
-        "vram_mb_after": 7913
+        "ttfa_estimate_ms": 625.0,
+        "vram_mb_after": 7889
       },
       {
         "query": "Tell me something interesting about black holes.",
         "first_token_ms": 92.99999999348074,
         "first_sentence_complete_ms": 217.99999999348074,
         "first_sentence_text": "A black hole's event horizon is a point of no return. Light",
-        "tts_synth_first_sentence_ms": 311.9999999762513,
-        "tts_pcm_samples": 168960,
+        "tts_synth_first_sentence_ms": 297.0000000204891,
+        "tts_pcm_samples": 164160,
         "tts_pcm_sr": 48000,
-        "ttfa_estimate_ms": 499.0000000107102,
-        "vram_mb_after": 7895
+        "ttfa_estimate_ms": 483.99999999674037,
+        "vram_mb_after": 7811
       }
     ],
     "aggregate": {
       "ttft_ms": {
-        "min": 77.9999999795109,
-        "median": 79.00000002700835,
-        "max": 108.99999999674037
+        "min": 61.999999976251274,
+        "median": 78.50000003236346,
+        "max": 109.99999998603016
       },
       "tts_synth_ms": {
-        "min": 203.00000003771856,
-        "median": 351.49999998975545,
-        "max": 530.9999999590218
+        "min": 155.9999999590218,
+        "median": 336.00000001024455,
+        "max": 500.0
       },
       "ttfa_estimate_ms": {
-        "min": 375.0000001164153,
-        "median": 531.0000000172295,
-        "max": 702.9999999795109
+        "min": 328.9999999688007,
+        "median": 515.4999999795109,
+        "max": 672.0000000204891
       }
     }
   }
