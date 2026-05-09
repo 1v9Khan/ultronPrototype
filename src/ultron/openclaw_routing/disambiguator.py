@@ -39,6 +39,27 @@ optional question
 """
 
 
+# 4B plan Item 5 — IRMA-enriched prompt. Used when
+# ``routing.irma.enabled`` is True. The reformulator already produces a
+# multi-line block that includes the original utterance and any
+# context; we just frame the question around it.
+_DISAMBIG_PROMPT_IRMA = """\
+{enriched}
+
+Given the above context, the user's request could be:
+- A coding task (writing or editing code)
+- A PC automation task (controlling existing applications, files, browser)
+- Both (hybrid task)
+
+Which is it? Output ONE of: CODING | AUTOMATION | HYBRID | UNCLEAR
+
+If UNCLEAR, also output a one-sentence clarifying question on the next line.
+Format:
+VERDICT
+optional question
+"""
+
+
 @dataclass
 class DisambiguationResult:
     """Output of a disambiguation attempt.
@@ -63,13 +84,27 @@ class DisambiguationResult:
 class IntentDisambiguator:
     """Two-shot question to the local LLM. Falls back to UNCLEAR on any
     parse failure so the orchestrator's safety net (asking the user)
-    always engages."""
+    always engages.
 
-    def __init__(self, llm: Any) -> None:
+    Optional ``reformulator`` (4B plan Item 5): when supplied AND
+    ``routing.irma.enabled`` is True, the disambiguator wraps the raw
+    utterance with relevant context (recent intents, active session,
+    routing hints) before the LLM call. Default behaviour (no
+    reformulator OR irma.enabled = False) is unchanged from before.
+    """
+
+    def __init__(self, llm: Any, *, reformulator: Optional[Any] = None) -> None:
         self._llm = llm
+        self._reformulator = reformulator
 
-    async def disambiguate(self, utterance: str) -> DisambiguationResult:
-        if not get_config().routing.llm_disambiguation_enabled:
+    async def disambiguate(
+        self,
+        utterance: str,
+        *,
+        irma_context: Optional[Any] = None,
+    ) -> DisambiguationResult:
+        cfg = get_config().routing
+        if not cfg.llm_disambiguation_enabled:
             # Disambiguation disabled in config -> always escalate to user.
             return DisambiguationResult(
                 kind=None,
@@ -79,7 +114,26 @@ class IntentDisambiguator:
                 ),
                 raw_verdict="",
             )
-        prompt = _DISAMBIG_PROMPT.format(utterance=utterance.replace('"', "'"))
+
+        # 4B plan Item 5 — optionally enrich the prompt with IRMA context.
+        irma_enabled = (
+            cfg.irma.enabled
+            and self._reformulator is not None
+        )
+        if irma_enabled:
+            try:
+                enriched = self._reformulator.reformulate(utterance, irma_context)
+                prompt = _DISAMBIG_PROMPT_IRMA.format(enriched=enriched)
+            except Exception as e:
+                # Reformulation must not break the disambiguator — fall
+                # back to the unenriched prompt.
+                logger.warning("IRMA reformulation failed: %s", e)
+                prompt = _DISAMBIG_PROMPT.format(
+                    utterance=utterance.replace('"', "'"),
+                )
+        else:
+            prompt = _DISAMBIG_PROMPT.format(utterance=utterance.replace('"', "'"))
+
         try:
             raw = self._llm.generate(prompt) if self._llm is not None else ""
         except Exception as e:

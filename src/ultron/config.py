@@ -454,6 +454,24 @@ class RoutingClassifierConfig(_Strict):
     confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
+class RoutingIRMAConfig(_Strict):
+    """4B optimization plan Item 5 — IRMA-style input reformulation.
+
+    When enabled, the IntentDisambiguator wraps the raw utterance with
+    relevant context (recent intent decisions, active session, routing
+    hints) before sending it to the LLM. Per the IRMA paper, this
+    significantly outperforms ReAct / Function-Calling / Self-Reflection
+    on ambiguous tool calls — but the gain is on the disambiguator
+    pass only; the voice-path hot loop is unaffected.
+
+    Default OFF — flip when the live disambiguator stats show enough
+    "wrong-side" decisions to justify the extra context tokens.
+    """
+
+    enabled: bool = False
+    max_recent_decisions: int = Field(default=5, ge=0)
+
+
 class RoutingConfig(_Strict):
     """Phase 5 capability routing knobs."""
     llm_disambiguation_enabled: bool = True
@@ -463,6 +481,8 @@ class RoutingConfig(_Strict):
     )
     routing_log_path: str = "logs/routing_decisions.jsonl"
     classifier: RoutingClassifierConfig = Field(default_factory=RoutingClassifierConfig)
+    # 4B plan Item 5 — IRMA-style input reformulation for the disambiguator.
+    irma: RoutingIRMAConfig = Field(default_factory=RoutingIRMAConfig)
     # Stub responses are emitted while the OpenClaw integration is incomplete;
     # the OpenClaw integration prompt sets this to false.
     stub_responses_enabled: bool = True
