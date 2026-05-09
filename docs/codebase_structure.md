@@ -10,7 +10,7 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
-Last validated against `main` HEAD `80a31ba` (V1-spec gap fill Phases 1–6 + default-flag tuning + classifier gating). All 12 enhancements wired; defaults chosen on net-benefit grounds:
+Last validated against `main` HEAD `2fb0988` (V1-spec gap fill Phases 1–6 + default-flag tuning + classifier gating + comprehensive end-to-end test pass classifier extensions). All 12 enhancements wired; defaults chosen on net-benefit grounds:
 
 | Flag | Default | Why |
 |---|---|---|
@@ -37,7 +37,7 @@ State at this validation:
 - Voice baseline (10-query stack with all Items ON): **TTFT median 79 ms**, **VRAM peak 7913 MB** (-2461 MB / -2.5 GB vs 9B). See [baselines.json](../baselines.json).
 - Items 4–8 measurable verification: [scripts/verify_items_4_to_8.py](../scripts/verify_items_4_to_8.py) exercises each item in its trigger scenario and prints concrete deltas.
 - Stale-`.env` gotcha resolved: `ULTRON_LLM_MODEL_PATH=...9B...` line in `.env` was silently overriding the preset. Now commented out (line 84).
-- **1489 tests collected; 1474 passed, 15 skipped (GPU-gated), 0 failed.** Net delta vs Foundation Phase 7 baseline: +479 (+256 OpenClaw-bridge tests; +223 V1-spec gap-fill tests across Phases 1-6 of the post-13-phase batch — Phase 1 (A3+B1) +35, Phase 2 (A4) +24, Phase 3 (A1+C3) +98, Phase 4 (A2) +39, Phase 5 (B5) +5, Phase 6 minor batch +14, +8 classifier-gating regression coverage).
+- **1520 tests collected; 1505 passed, 15 skipped (GPU-gated), 0 failed.** Net delta vs Foundation Phase 7 baseline: +510 (+256 OpenClaw-bridge tests; +223 V1-spec gap-fill tests; +10 classifier-pattern coverage from the comprehensive end-to-end test pass; +21 prompt-injection defense layer tests from the comprehensive QUALITY pass — `_sanitize_user_input` neutralises tag-style markers and prepends/rewrites natural-language jailbreak attempts).
 
 ---
 
@@ -238,6 +238,10 @@ For the current decisions and Foundation phase status see
 │   ├── memory_architecture.md      ← Three-layer memory model (Qdrant + workspace + Wiki)
 │   ├── 4b_optimization_plan.md     ← 4B-model migration plan (all stages done)
 │   ├── model_checksums.md          ← SHA256 of every GGUF in `models/`
+│   ├── comprehensive_test_plan.md  ← Functional / correctness pass architecture (16 phases, 38 dimensions)
+│   ├── comprehensive_test_report.md ← Functional pass results + 145-row metrics table; 4 classifier coverage gaps fixed
+│   ├── comprehensive_quality_plan.md ← Quality pass architecture (13 phases Q0–Q13, 38 dimensions, ≤10 iter loop)
+│   ├── comprehensive_quality_report.md ← Quality pass results + 107-row metrics table + Q10 iteration audit
 │   └── codebase_structure.md       ← THIS FILE
 │
 ├── scripts/                        ← Operational scripts (CLI tools)
@@ -257,6 +261,14 @@ For the current decisions and Foundation phase status see
 │   ├── swap_llm_preset.py          ← 4B plan: edit config.yaml in place to swap LLM preset (validates GGUFs, atomic write)
 │   ├── verify_voice_character_4b.py ← 4B plan Stage E: A/B voice-character helper (5 queries × 4B/9B)
 │   ├── verify_items_4_to_8.py      ← 4B plan: exercises Items 4–8 in their trigger scenarios; prints measurable deltas
+│   ├── comprehensive_test_harness.py ← End-to-end test pass: routing accuracy on 63-utterance labeled set, web-gate rule accuracy, circuit-breaker state machine, memory stress (4 threads × 50 turns), classifier-gating regression
+│   ├── real_api_smoke.py           ← Real-API sparing smoke: 1 Brave query + 1 Brave-Jina chain + 1 Claude Code haiku invocation (≤2 paid web calls + ≤1 tiny Anthropic API call total)
+│   ├── quality_harness.py          ← Quality pass: Q1 persona/factual/hallucination + Q2 persona modes + Q4 memory recall/labeling/ranking + Q5 Whisper WER/flush/VAD + Q7 Items 4-8 + Q8 adversarial in one process
+│   ├── quality_q3_web.py           ← Quality pass Q3: web-search source ranking + snippet utilization + Jina direct + cache + citation rendering + ack latency + dedup (10 Brave + 10 Jina cap)
+│   ├── quality_q6_mocked.py        ← Quality pass Q6.D + Q9: projection budget + phrase pool + browser parsing + slug routing + gaming mode (no real API)
+│   ├── quality_q6_claude.py        ← Quality pass Q6.E + Q6.F: 4 single-fn Claude Code tasks + 5 full Tkinter app generation (sandbox-isolated)
+│   ├── _quality_q10_iter1_verify.py ← Quality Q10 iter verification: 3 prompt-injection probes against the live LLM
+│   ├── _quality_q6f_rescore.py     ← Quality Q6.F re-scorer: applies relaxed regex to existing on-disk apps (no new Claude calls)
 │   ├── start_llamacpp_server.py    ← OpenClaw Phase 0 + 4B plan Stage C: launch llama-cpp-server with voice-pipeline params (+ --model-draft / --draft-num-pred-tokens / --from-config)
 │   ├── supervised_llamacpp_server.py ← OpenClaw Phase 0: supervisor wrapper with auto-restart
 │   ├── smoke_test_llamacpp.ps1     ← OpenClaw Phase 0: PowerShell health probe for llama-cpp-server
@@ -682,6 +694,7 @@ pre-flight gate's uncertainty signals.
 ### `src/ultron/llm/inference.py`
 
 - `_strip_thinking_blocks(stream)` — filter `<think>...</think>` from token stream
+- `_sanitize_user_input(text) -> (cleaned, found_markers)` (Q10 quality-pass iter 1+2) — pre-LLM defense layer that neutralises tag-style prompt-injection markers (`[INST]`, `[/INST]`, `<|im_start|>`, `<|im_end|>`, `<|system|>`, `<|user|>`, `<|assistant|>`, `</think>`) by replacing each with `[NEUTRALIZED_TAG]`. Also detects natural-language jailbreak patterns ("ignore previous instructions", "you are now <X>", "respond with the exact word", etc.) — for those the function prepends a one-shot hardening note OR (for the most-direct override patterns: "respond with exactly", "respond with the exact word", "must respond with") rewrites the user message into a description of the attempt so compliance becomes grammatically nonsensical. Detected attempts log to `logs/errors.jsonl` with `dependency='prompt_injection'`. Voice-quality lock preserved — the persona system prompt (`SOUL.md`) is untouched. Wired into `_build_messages` so every LLM call goes through the defense. Verified end-to-end: pre-defense 2/3 of Q8 prompt-injection probes succeeded; post-defense 0/3.
 - `class LLMEngine` — LLM client with two backends, selected by `llm.runtime`:
   - `in_process` (default): loads the GGUF via llama-cpp-python in this process. Voice-path mode.
   - `http_server` (opt-in): talks to llama-cpp-server over OpenAI-compat HTTP. For the OpenClaw + voice migration. Latency is +71 ms median TTFT vs in-process — kept opt-in so the voice path isn't regressed.
@@ -929,6 +942,7 @@ pre-flight gate's uncertainty signals.
 - `classify_routing(utterance, has_active_coding_task=False, has_pending_clarification=False) -> RoutingIntent`
   Layered: in-flight commands → hybrid → coding → automation rules → CONVERSATIONAL fallback
 - `_build_browser_intent(text)`, `_build_media_intent(text)`, `_build_messaging_intent(text)`, `_build_file_intent(text)`, `_build_shell_intent(text)` — extract structured intent from raw text
+- **Comprehensive test pass extensions (HEAD 2fb0988+):** `_BROWSER_INTERACT.scroll` now covers `scroll the <page|window|tab|view|content|results|list> <down|up|left|right|to>` (the original pattern only matched `scroll <down|up|to> the`); `_MEDIA_PATTERNS.render` now covers `render <a|an|the> <image|scene|picture|video|illustration|drawing|artwork>` with optional `me` (the original required `render me`); `_MESSAGING_PATTERNS` adds `notify me <on|via> <telegram|signal|slack|discord>` (parallel to the existing `tell me on …` form); `_FILE_PATTERNS` adds `show me the contents of <file.ext>` (the original required the literal word "file"). All four extensions covered by parametrised regression tests in `tests/routing/test_classifier.py` (+10 tests / 1474 → 1484).
 
 #### `openclaw_routing/dispatcher.py`
 - `class OpenClawDispatcher`
@@ -1476,6 +1490,19 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 **Run:** `python scripts/verify_items_4_to_8.py`
 **Out:** stdout — per-item status with measurable metrics.
 
+### `scripts/comprehensive_test_harness.py` (Comprehensive end-to-end test pass)
+
+**Purpose:** single-process exhaustive harness for the comprehensive end-to-end test pass. Runs five phases in sequence — routing classifier accuracy on a 63-utterance labeled adversarial corpus spanning every `RoutingIntentKind`; web-gate rule classifier accuracy on 14 labeled queries; circuit-breaker state machine through CLOSED → OPEN → HALF_OPEN → CLOSED → reopen transitions; memory stress (4 threads × 50 turns ingested into a tmp Qdrant + 20 retrieval probes); V1-gap classifier-gating regression (utterances that used to short-circuit to OpenClaw stub when offline). No GPU / model loads — runs anywhere the venv resolves.
+**Run:** `python scripts/comprehensive_test_harness.py`
+**In:** Imports the worktree's `src/ultron` and the main checkout's `config/` shim.
+**Out:** Stdout summary + machine-readable result at `logs/comprehensive_harness_<ts>.json`.
+
+### `scripts/real_api_smoke.py` (Real-API sparing smoke)
+
+**Purpose:** proof-of-life test for the three external services Ultron talks to in production — Brave, Jina, Claude Code. Strict budget: ≤2 Brave calls (one bare query + one chain that adds Jina), ≤1 Jina fetch (via the chain), ≤1 minimal Claude Code haiku invocation. Reads `ULTRON_BRAVE_API_KEY` from `.env`; the Claude CLI defaults to `%APPDATA%\\npm\\claude.cmd` and can be overridden via `ULTRON_CLAUDE_CLI`. Used in the comprehensive end-to-end test pass to confirm circuits + bridge transports work end-to-end without sprawling spend.
+**Run:** `python scripts/real_api_smoke.py`
+**Out:** Stdout summary + machine-readable result at `logs/real_api_smoke_<ts>.json` (does NOT log the Brave key or any secret).
+
 ### `scripts/run_maintenance_for_cron.py` (OpenClaw Phase 7)
 
 **Purpose:** cron-friendly wrapper around `scripts/maintenance.py`. Outputs JSON or single-line Telegram-pretty summary; captures stdout from underlying tasks; structured exit codes (0 ok / 1 task error / 2 init failure). Suitable for Windows Task Scheduler invocations.
@@ -1551,6 +1578,7 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 - `test_on_the_fly_preset_switching.py` (16, 4B plan Stage H infra) — `ULTRON_LLM_PRESET` env-var override (clears overrides by default, opt-in keep-overrides flag), minimal-YAML preset-only config, `check_vram._resolve_target_mb` (table + CLI override + env var + unknown fallback), `_format_line` shows preset label, `swap_llm_preset._rewrite_preset` (basic / preserves comment / first-match / missing-line raises)
 - `tests/routing/test_model_switch_classifier.py` (54, 4B plan voice-swap) — classifier maps "switch to 4B/9B/four B/for B/nine B/4 B/4-B" + verb variants (switch/swap/change/use/load/go/move/activate/engage/run/select) to `RoutingIntentKind.MODEL_SWITCH`; rejects passing mentions ("the 4B is faster") and conversational utterances; pending clarification suppresses (mid-dialogue safety); active coding task does not block; `_resolve_model_switch_target` helper
 - `test_llm_reload_for_preset.py` (9, 4B plan voice-swap) — `LLMEngine.reload_for_preset` rejects http_server runtime + unknown preset; idempotent on same-preset; success path replaces `_llm` and clears history; sets `ULTRON_LLM_PRESET` env + clears stale `ULTRON_LLM_MODEL_PATH`; failure path keeps old engine, restores env vars (whether they were set or unset originally)
+- `test_llm_prompt_injection_defense.py` (21, comprehensive QUALITY pass Q10 iter 1+2) — `_sanitize_user_input` neutralises tag-style markers ([INST]/[/INST], <|im_start|>/<|im_end|>/<|system|>/<|user|>/<|assistant|>, stray </think>); detects natural-language jailbreak patterns ("ignore previous instructions", "you are now X", "respond with the exact word", "act as", "pretend"); preserves benign questions (zero false-positive on normal voice queries); end-to-end verified: pre-defense 2/3 of Q8 prompt-injection probes succeeded; post-defense 0/3. Voice baseline TTFT 79 ms / VRAM 7889 MB unchanged (defence is sub-microsecond on benign input).
 - `test_voice_model_switch.py` (11, 4B plan voice-swap) — `CapabilityVoiceController._handle_model_switch` calls `llm_engine.reload_for_preset(target)`, speaks "Switched to the 4B/9B" on success, "I'm already running the X" on idempotent, "I couldn't switch ..." on failure with reason; "I can't switch models — engine isn't wired" when llm_engine is None; missing payload says "couldn't tell which model"; end-to-end classifier-then-controller for utterances
 - `tests/routing/test_irma_reformulation.py` (15, 4B plan Item 5) — `InputReformulator` pure-text shape (default-only-utterance, whitespace-strip, quote-escape, recent-decisions section, max-recent truncation, active-session, routing-hints, max_recent=0 omits, log-row factory); disambiguator integration with the IRMA flag (default-OFF passes raw, ON uses enriched, reformulation-failure falls back, no-context still emits utterance)
 - `test_self_consistency.py` (27, 4B plan Item 6) — `majority_vote_text` (winner, whitespace-strip, tie-first-wins, empty input, blank filter), `majority_vote_json` (winner, unparseable handling, think-block strip, first-block-only, all-unparseable returns None, arrays), `majority_vote_label` (case-insensitive, no-match), `run_self_consistency` driver (sampler called N times, default text aggregator, sampler exception handling, fallback to first non-empty, n-clamping), `should_apply_self_consistency` config gate (default-off, global-on, per-site disabled), decomposer integration (single-call default, N-call with consistency, majority winner, per-site bypass, all-unparseable fallback)
@@ -1662,6 +1690,12 @@ Reading order for a fresh Claude:
 7. **`docs/openclaw_integration_final_summary.md`** — cross-phase OpenClaw reference + intentional deviations + setup-readiness checklist.
 8. **`docs/architecture.md`** — pipeline + diagrams.
 9. **`docs/phase3_5_followup.md`** — open punch list (deferred Foundation Part 3.5).
+
+### Comprehensive testing + improvement passes (most recent)
+- **Functional / correctness pass plan:** [docs/comprehensive_test_plan.md](comprehensive_test_plan.md) — 16 phases, 38 dimensions, single-process harness pattern.
+- **Functional pass results:** [docs/comprehensive_test_report.md](comprehensive_test_report.md) — 145-row metrics table; 4 classifier coverage gaps fixed; voice baseline 79 ms / 7818 MB.
+- **Quality pass plan:** [docs/comprehensive_quality_plan.md](comprehensive_quality_plan.md) — 13 phases (Q0–Q13), 38 quality dimensions, ≤10-iteration improvement loop.
+- **Quality pass results:** [docs/comprehensive_quality_report.md](comprehensive_quality_report.md) — 107-row metrics table; Q10 iteration audit; prompt-injection defense layer.
 
 ### Foundation reference
 - Day-to-day operation: [docs/operations.md](operations.md)
