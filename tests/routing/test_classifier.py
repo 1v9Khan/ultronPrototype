@@ -75,6 +75,11 @@ _BROWSER = [
     "sign into gmail",
     "submit the form",
     "scroll down the page",
+    # Comprehensive harness regression — "scroll the <noun> <direction>" was
+    # missed by the original `scroll\s+(?:down|up|to)\s+the` pattern.
+    "scroll the page down",
+    "scroll the window up",
+    "scroll the tab to the bottom",
 ]
 
 
@@ -102,6 +107,12 @@ _MEDIA = [
     "generate a short video of a flag waving",
     "draw me a logo for the project",
     "render me an image of a robot in a forest",
+    # Comprehensive harness regression — "render <det> <media-noun>" without
+    # the "me" reflexive was missed by the original `render\s+me\s+...`
+    # pattern.
+    "render an image of a dragon in flight",
+    "render the picture of a sunset",
+    "render a video of waves",
 ]
 
 
@@ -129,6 +140,9 @@ _MESSAGING = [
     "shoot me a message when you're done",
     "alert me when the script crashes",
     "send me a push notification when memory is low",
+    # Comprehensive harness regression — "notify me on <channel>" missed.
+    "notify me on telegram if anything alerts",
+    "notify me via signal when the build is done",
 ]
 
 
@@ -156,6 +170,10 @@ _FILE = [
     "remove the file at /tmp/old.log",
     "list the files in C:/users/me/Downloads",
     "what's in the directory C:/Projects",
+    # Comprehensive harness regression — "show me the contents of <file.ext>"
+    # missed when the literal word "file" was absent.
+    "show me the contents of config.yaml",
+    "show me the contents of README.md",
 ]
 
 

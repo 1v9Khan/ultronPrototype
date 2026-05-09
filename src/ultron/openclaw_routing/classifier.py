@@ -421,7 +421,10 @@ _BROWSER_INTERACT = re.compile(
     r"log\s+(?:in)to\s+(?:my\s+)?(?:account|github|gmail)|"
     r"sign\s+(?:in)to\s+|"
     r"submit\s+(?:the\s+)?form|"
-    r"scroll\s+(?:down|up|to)\s+the"
+    r"scroll\s+(?:"
+    r"(?:down|up|to)\s+the|"
+    r"the\s+(?:page|window|tab|view|content|results|list)\s+(?:down|up|left|right|to)"
+    r")"
     r")\b",
     re.IGNORECASE,
 )
@@ -455,7 +458,7 @@ _MEDIA_PATTERNS = re.compile(
     r"create\s+(?:an?\s+)?(?:song|track|tune)\s+(?:about|that)|"
     r"compose\s+(?:a\s+)?(?:song|track|tune|piece|melody|beat|music)|"
     r"draw\s+me\s+|"
-    r"render\s+me\s+(?:an?\s+)?(?:image|scene|picture)|"
+    r"render\s+(?:me\s+)?(?:an?|the)\s+(?:image|scene|picture|video|illustration|drawing|artwork)\b|"
     r"paint\s+me\s+(?:an?\s+)?(?:image|picture)|"
     r"give\s+me\s+(?:an?\s+)?(?:image|picture|video|song)\s+of"
     r")",
@@ -474,6 +477,7 @@ _MESSAGING_PATTERNS = re.compile(
     r"send\s+(?:me\s+)?(?:a\s+)?push\s+(?:notification|notif)\b|"
     r"text\s+me\b|"
     r"notify\s+me\s+when\b|"
+    r"notify\s+me\s+(?:on|via)\s+(?:telegram|signal|slack|discord)\b|"
     r"tell\s+me\s+on\s+(?:telegram|signal|slack|discord)|"
     r"send\s+(?:to\s+)?telegram|"
     r"ping\s+me\s+(?:on|when)|"
@@ -493,6 +497,7 @@ _FILE_PATTERNS = re.compile(
     r"\b(?:"
     r"read\s+(?:the\s+)?file\s+at\s+|"
     r"show\s+me\s+(?:the\s+)?contents\s+of\s+(?:the\s+)?file\s+|"
+    r"show\s+me\s+(?:the\s+)?contents\s+of\s+[\w./\\-]+\.[a-z]{1,5}\b|"
     r"open\s+(?:the\s+)?file\s+at\s+|"
     r"write\s+(?:to\s+)?(?:the\s+)?file\s+at\s+|"
     r"save\s+(?:to\s+)?(?:a\s+)?file\s+at\s+|"
