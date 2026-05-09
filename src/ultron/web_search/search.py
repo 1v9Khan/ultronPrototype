@@ -8,7 +8,12 @@ the gate said SEARCH. The executor:
   2. On miss, calls Brave for each query, dedupes by URL.
   3. Asks the LLM to rank the snippets for relevance to the original
      user question. Top N are kept.
-  4. Fetches the top 1-3 via Jina Reader for clean markdown extraction.
+  4. Fetches the top ``max_fetch`` snippets via Jina Reader IN PARALLEL
+     for clean markdown extraction. A collective deadline caps the
+     total wait; any fetch still in flight at deadline degrades to
+     snippet-only. (2026-05-09 latency fix -- this loop was sequential
+     before; one slow page could block the entire search path for
+     10+ seconds while the TTS playback queue starved.)
   5. Caches the (url, snippet, full_text) bundles into ``web_results``.
   6. Hands back a structured :class:`SearchPayload` ready for the LLM
      prompt-augmentation step.
@@ -16,17 +21,21 @@ the gate said SEARCH. The executor:
 Failures degrade gracefully:
   - Brave failure -> empty result; caller falls back to base knowledge.
   - Jina failure -> we keep the snippet but skip full extraction.
+  - Jina collective-deadline expiry -> abandoned fetches degrade to
+    snippet-only; the executor returns immediately so the LLM can
+    start streaming with whatever pages did come back in time.
   - Cache write failure -> log and continue; the user-visible flow
     still completes.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ultron.config import get_config
 from ultron.utils.logging import get_logger
@@ -264,15 +273,28 @@ class WebSearchExecutor:
         llm,
         cache: Optional[WebResultsCache] = None,
         max_fetch: Optional[int] = None,
+        collective_deadline_seconds: Optional[float] = None,
     ) -> None:
         self.brave = brave
         self.jina = jina
         self.llm = llm
         self.cache = cache
+        cfg_jina = get_config().web_search.jina
         self.max_fetch = (
             max_fetch
             if max_fetch is not None
-            else get_config().web_search.jina.max_fetch
+            else cfg_jina.max_fetch
+        )
+        # Collective Jina-fetch deadline (seconds). After this many
+        # seconds since the fetch fan-out started, any fetch still in
+        # flight is abandoned and its source degrades to snippet-only.
+        # Independent of per-fetch timeout. ``None`` -> read from
+        # config; ``0.0`` disables (no collective cap; per-fetch
+        # timeout is the only ceiling).
+        self.collective_deadline_seconds = (
+            collective_deadline_seconds
+            if collective_deadline_seconds is not None
+            else getattr(cfg_jina, "collective_deadline_seconds", 6.0)
         )
 
     def run(
@@ -355,19 +377,76 @@ class WebSearchExecutor:
             ranked = all_results[:top_n]
             notes.append("ranking returned empty; using Brave order")
 
-        # Fetch full content for the top ``max_fetch`` ranked snippets.
+        # Fetch full content for the top ``max_fetch`` ranked snippets
+        # IN PARALLEL with a collective deadline.
+        #
+        # Pre-2026-05-09: this loop was sequential. A single pathological
+        # page (e.g. a slow Quora result at ~10 s) blocked the entire
+        # search path while the user heard silence after the ack phrase.
+        # Worst observed: 3 sequential fetches summed to 13.5 s; the TTS
+        # playback queue starved waiting for tokens.
+        #
+        # New shape: every targeted URL gets its own daemon fetch thread.
+        # ``concurrent.futures.wait`` returns once everything finishes
+        # OR the collective deadline elapses. Anything still in flight
+        # at deadline is abandoned (the source falls back to
+        # snippet-only). Threads continue running in the background and
+        # exit naturally on the per-fetch timeout -- ``pool.shutdown(
+        # wait=False)`` ensures the executor returns immediately.
         rows: List[Tuple[BraveResult, Optional[str]]] = []
+        to_fetch: List[Tuple[int, BraveResult]] = [
+            (i, r) for i, r in enumerate(ranked) if i < self.max_fetch
+        ]
+        fetched: Dict[int, Optional[str]] = {}
+        if to_fetch:
+            pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, len(to_fetch)),
+                thread_name_prefix="jina-fetch",
+            )
+            future_to_index: Dict[concurrent.futures.Future, Tuple[int, str]] = {
+                pool.submit(self.jina.fetch, r.url): (i, r.url)
+                for i, r in to_fetch
+            }
+            try:
+                deadline = (
+                    self.collective_deadline_seconds
+                    if self.collective_deadline_seconds > 0
+                    else None
+                )
+                done, not_done = concurrent.futures.wait(
+                    future_to_index.keys(),
+                    timeout=deadline,
+                    return_when=concurrent.futures.ALL_COMPLETED,
+                )
+                for fut in done:
+                    idx, url = future_to_index[fut]
+                    try:
+                        result = fut.result()
+                    except Exception as e:
+                        logger.warning("Jina fetch failed for %s: %s", url, e)
+                        notes.append(f"jina_error:{url}")
+                        result = None
+                    fetched[idx] = result
+                    if not result:
+                        notes.append(f"snippet_only:{url}")
+                for fut in not_done:
+                    idx, url = future_to_index[fut]
+                    # Don't record a result for not_done futures; they
+                    # implicitly degrade to snippet-only via the
+                    # ``fetched.get(idx)`` lookup below.
+                    notes.append(f"jina_deadline:{url}")
+                    notes.append(f"snippet_only:{url}")
+                    # Best-effort cancel; in-flight requests can't be
+                    # aborted, but cancel() prevents queued futures from
+                    # starting.
+                    fut.cancel()
+            finally:
+                # wait=False so the executor doesn't block on slow
+                # fetches still finishing in the background. Threads
+                # exit on the per-fetch HTTP timeout.
+                pool.shutdown(wait=False)
         for i, r in enumerate(ranked):
-            full_text = None
-            if i < self.max_fetch:
-                try:
-                    full_text = self.jina.fetch(r.url)
-                except Exception as e:
-                    logger.warning("Jina fetch failed for %s: %s", r.url, e)
-                    notes.append(f"jina_error:{r.url}")
-                if not full_text:
-                    notes.append(f"snippet_only:{r.url}")
-            rows.append((r, full_text))
+            rows.append((r, fetched.get(i)))
 
         # Cache write -- best-effort; failure doesn't block the response.
         if self.cache is not None and rows:

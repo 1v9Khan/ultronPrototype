@@ -329,8 +329,21 @@ class ConversationMemory:
         """Top-``k`` turns by hybrid (dense + BM25, RRF-fused), excluding the
         last ``exclude_recent`` turn ids (the recent window the LLM already sees).
 
-        Returns ``[]`` for empty query, empty store, or when everything is in
-        the recent window.
+        2026-05-09 nuanced-retrieval pass: candidates are scored by a
+        composite blend (cosine-similarity to query + RRF + recency
+        boost) and FILTERED by ``memory.rag_min_relevance``. Candidates
+        whose cosine similarity to the query is below the threshold
+        are dropped entirely, not just downranked. This is what stops
+        a "what's the weather in Paris?" query from pulling in
+        apex-predator chatter from prior conversation -- low-relevance
+        memory is treated as noise rather than always-included
+        context. Recent-and-relevant items rank ahead of
+        old-and-relevant via the recency boost.
+
+        Returns ``[]`` for empty query, empty store, or when no
+        candidate survives the relevance threshold. Setting
+        ``rag_min_relevance`` to 0.0 disables the filter (legacy
+        behaviour).
         """
         if not query.strip():
             return []
@@ -339,6 +352,7 @@ class ConversationMemory:
             k = mem_cfg.rag_top_k
         if exclude_recent is None:
             exclude_recent = mem_cfg.rag_exclude_recent
+        min_relevance = float(getattr(mem_cfg, "rag_min_relevance", 0.0))
         with self._lock:
             cutoff_id = max(0, self._next_id - exclude_recent)
         if cutoff_id <= 0:
@@ -395,9 +409,15 @@ class ConversationMemory:
                     ),
                 ],
                 query=FusionQuery(fusion=Fusion.RRF),
-                limit=max(1, k),
+                # Pull more than k so the post-filter has candidates to
+                # work with; the relevance threshold prunes back down
+                # to <= k before we return.
+                limit=max(k * 4, 20) if min_relevance > 0.0 else max(1, k),
                 with_payload=True,
-                with_vectors=False,
+                # Pull dense vectors so we can compute cosine similarity
+                # against the query embedding for the relevance filter
+                # + composite scoring. Only when we'll actually use it.
+                with_vectors=(min_relevance > 0.0),
             )
         except Exception as e:
             logger.warning("Qdrant hybrid search failed: %s", e)
@@ -415,7 +435,59 @@ class ConversationMemory:
             )
             return []
 
-        return [_payload_to_turn(pt.payload or {}) for pt in response.points]
+        # Legacy fast path -- threshold disabled, return RRF order.
+        if min_relevance <= 0.0:
+            return [_payload_to_turn(pt.payload or {}) for pt in response.points]
+
+        # Score each candidate with the composite (cosine + RRF +
+        # recency) and apply the relevance gate.
+        from ultron.memory.ranking import (
+            cosine_similarity,
+            compute_recency_boost,
+        )
+
+        ranking_cfg = mem_cfg.ranking
+        primary_dense = qdv.tolist()
+        scored: List[tuple] = []  # (composite, cosine_sim, MemoryTurn)
+        diag_all: List[tuple] = []  # (cosine_sim, content) for debug logging
+        for pt in response.points:
+            payload = pt.payload or {}
+            # Match the existing helper pattern (line 625): pass the
+            # ``.vector`` attribute, not the whole point.
+            cand_dense = _extract_dense_vector(getattr(pt, "vector", None))
+            cosine_sim = (
+                cosine_similarity(cand_dense, primary_dense)
+                if cand_dense is not None else 0.0
+            )
+            diag_all.append((cosine_sim, str(payload.get("content", ""))[:60]))
+            if cosine_sim < min_relevance:
+                continue
+            ts = float(payload.get("ts", 0.0))
+            recency = compute_recency_boost(
+                ts, half_life_days=float(ranking_cfg.recency_half_life_days),
+            )
+            # Cosine drives the relevance signal; RRF score is a
+            # secondary tiebreaker; recency boosts recent-and-relevant
+            # ahead of old-and-relevant when both clear the threshold.
+            composite = (
+                cosine_sim
+                + float(pt.score or 0.0) * float(ranking_cfg.rrf_weight)
+                + recency * float(ranking_cfg.recency_weight)
+            )
+            scored.append((composite, cosine_sim, _payload_to_turn(payload)))
+
+        # Debug logging when explicitly enabled. Off by default so the
+        # voice hot path stays clean.
+        if logger.isEnabledFor(10):  # DEBUG
+            top = sorted(diag_all, key=lambda r: r[0], reverse=True)[:8]
+            logger.debug(
+                "retrieve('%s', threshold=%.2f) candidates: %s",
+                query[:40], min_relevance,
+                ["%.3f|%s" % (s, c) for s, c in top],
+            )
+
+        scored.sort(key=lambda row: row[0], reverse=True)
+        return [row[2] for row in scored[: max(1, k)]]
 
     # --- V1-gap A2: multi-pass per-category retrieval ---------------------
 

@@ -28,11 +28,33 @@ audio:
   channels: 1                 # mono
   blocksize: 512              # frames per callback (~32 ms at 16 kHz)
   dtype: "float32"
-  input_device: null          # null = system default; or set ULTRON_AUDIO_DEVICE env
+  # 2026-05-09 audio-quality pass: switched from Voicemeeter (virtual
+  # cable + compressor + gain in software) to direct USB mic input.
+  # Going direct gives us the raw signal so Ultron-side processing
+  # (gain, VAD threshold, wake threshold, AGC) can be tuned to the
+  # actual mic + room acoustics without a hidden processing layer.
+  # Substring match against device name; "Focusrite" picks up the
+  # USB interface (Analogue 1 + 2). Set ULTRON_AUDIO_DEVICE env var
+  # to override (e.g. "Voicemeeter Out B2" to revert).
+  input_device: "Focusrite"
   output_device: null         # null = system default; or set ULTRON_AUDIO_OUTPUT_DEVICE env
   barge_in_enabled: true      # wake-word interrupts Ultron's own TTS
   barge_in_grace_seconds: 0.5
-  ring_buffer_seconds: 0.5    # pre-speech audio kept so VAD-detected utterances aren't clipped
+  # 2026-05-09 audio-quality pass: pre-amp applied to the captured
+  # chunk BEFORE VAD / wake-word / Whisper. 0 dB = no-op (legacy).
+  # Tune up when the mic is hot enough close-up but too quiet at
+  # range. Far-field mic improvement typically wants +6 to +18 dB
+  # depending on the mic's native sensitivity. Schema range is
+  # -20..+40 dB. Values are hard-clipped to [-1, 1] after gain to
+  # prevent distortion from over-amplification.
+  input_gain_db: 0.0
+  # Pre-speech audio buffered so VAD-bounded utterances aren't clipped
+  # at the start. 2026-05-09: lowered 0.5 -> 0.15 because the longer
+  # pre-roll was capturing the tail of the wake-word "Ultron" itself,
+  # which Whisper then transcribed as "Tron" prepended to the user's
+  # actual question. 0.15 is enough to catch words that overlap the
+  # wake-fire moment without including the wake-word phoneme tail.
+  ring_buffer_seconds: 0.15
 
 # ---------------------------------------------------------------------------
 # Voice Activity Detection
@@ -41,7 +63,13 @@ audio:
 vad:
   threshold: 0.5              # silero-vad confidence threshold for speech
   min_speech_duration_ms: 250 # ignore blips shorter than this
-  min_silence_duration_ms: 500 # silence required to mark end-of-utterance
+  # Silence required before VAD marks end-of-utterance. 2026-05-09:
+  # raised 500 -> 1200 so natural mid-sentence pauses (thinking,
+  # taking a breath, looking up a word) don't prematurely close the
+  # capture. Trade-off: end-of-turn detection is ~0.7 s slower, but
+  # users no longer get cut off mid-thought. Voice TTFT measurement
+  # is post-end-of-speech so the 79 ms baseline is unaffected.
+  min_silence_duration_ms: 1200
   window_samples: 512         # silero v5 expects 512-sample windows at 16 kHz
 
 # ---------------------------------------------------------------------------
@@ -191,6 +219,22 @@ memory:
     recency_half_life_days: 7.0
     surprise_weight: 0.15
     redundancy_weight: 0.3
+  # 2026-05-09 nuanced-retrieval pass: minimum cosine similarity
+  # between the user query embedding and a candidate turn for the
+  # candidate to be included in the LLM's RAG context. Tuned
+  # empirically with bge-small INT8 -- truly off-topic candidates
+  # peak around 0.55-0.57 (e.g. quantum-entanglement query vs
+  # apex-predator chatter), genuinely relevant content scores
+  # 0.7-0.95. 0.6 sits above the off-topic noise floor and below
+  # genuinely-relevant matches. Set 0.0 to disable filtering
+  # (legacy behaviour).
+  rag_min_relevance: 0.6
+  # Cap on recent-turn history fed to the LLM as conversation
+  # context. The in-process recent-turn CACHE size remains
+  # ``recent_turns: 20`` -- this just bounds what reaches the LLM.
+  # 4 = 2 user+assistant pairs, enough for natural follow-ups
+  # without a wall of stale context.
+  history_turns_for_llm: 4
 
 # ---------------------------------------------------------------------------
 # Web search (Brave + Jina Reader)
@@ -208,8 +252,23 @@ web_search:
 
   jina:
     endpoint: "https://r.jina.ai/"
-    timeout_seconds: 15.0
-    max_fetch: 3               # how many ranked snippets get full-text fetches
+    # Per-fetch HTTP timeout. 2026-05-09: lowered 15 -> 6 so a single
+    # pathological page (e.g. slow Quora result) can't blow the
+    # search-path budget by itself. The collective deadline below is
+    # the executor-side cap covering ALL parallel fetches.
+    timeout_seconds: 6.0
+    # 2026-05-09: lowered 3 -> 2. Two sources is plenty of context for
+    # the LLM to answer most queries; halving fetch count halves the
+    # tail-latency exposure on the slowest page.
+    max_fetch: 2
+    # 2026-05-09 latency fix: collective deadline for ALL parallel
+    # Jina fetches launched by one executor.run() call. After this
+    # many seconds since fan-out started, any fetch still in flight
+    # is abandoned (the source falls back to snippet-only). Protects
+    # the voice path even when one URL is slow but not timing out at
+    # the HTTP layer. Set 0 to disable the collective cap (per-fetch
+    # ``timeout_seconds`` becomes the only ceiling).
+    collective_deadline_seconds: 6.0
     max_bytes: 200000          # truncate giant pages so they don't blow the prompt
 
   cache:
@@ -349,6 +408,29 @@ tts:
   piper_length_scale: 1.15        # >1.0 = slower / more deliberate
   pause_ms: 180                    # silence between consecutive sentence clips
   edge_fade_ms: 4                  # short fade prevents clicks at clip boundaries
+  # 2026-05-09 latency hot-fix: split Piper and RVC into two worker
+  # stages connected by a bounded queue. With single-worker (legacy
+  # off-path), sentence N+1 Piper waited for sentence N RVC; with
+  # split, Piper N+1 runs in parallel with RVC N, saving ~50 ms per
+  # subsequent sentence on multi-sentence responses. Voice output is
+  # bit-identical (same Piper buffer feeds same RVC). Set false to
+  # revert to single-worker pipeline.
+  pipeline_parallel_enabled: true
+  # 2026-05-09 latency hot-fix: open the audio output stream
+  # speculatively at speculative_stream_sample_rate while Piper+RVC
+  # of the first sentence is still running, instead of waiting for
+  # the first clip to land. Saves ~20-30 ms first-sentence audio.
+  # Sample-rate mismatch is handled by the existing close+reopen
+  # path, so this is safe even if the actual rate differs.
+  speculative_stream_open_enabled: true
+  # Expected output sample rate for the speculative open. RVC v2
+  # default is 40000; Piper-only (rvc.enabled=false) should be 22050.
+  speculative_stream_sample_rate: 40000
+  # 2026-05-09 latency hot-fix: pass latency='low' to sd.OutputStream
+  # so PortAudio asks the host API for the smallest acceptable buffer.
+  # Saves 30-100 ms of OS-level audio buffering on most Windows
+  # systems. Falls back gracefully if the host API ignores the hint.
+  output_low_latency_mode: true
 
   rvc:
     enabled: true

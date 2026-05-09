@@ -1073,10 +1073,26 @@ class Orchestrator:
     def _search_augmented_tokens(self, user_text: str, verdict):
         """Yield ack phrase + search-augmented LLM tokens.
 
-        The search workflow (Brave + Jina + LLM rank) runs on a worker
-        thread that's kicked off BEFORE we yield the ack -- TTS speaks the
-        ack while the network calls are in flight, hiding the search
-        latency behind the voice prompt.
+        Order of operations (2026-05-09 refinement):
+          1. Yield ack token FIRST so the TTS pipeline starts speaking
+             "Verifying against the network." (or similar) immediately.
+             User gets audible feedback before any network call leaves
+             the box.
+          2. Submit the Brave + Jina workflow to a worker thread.
+          3. Wait for search to return.
+          4. Yield LLM tokens that answer the user from the search
+             sources. Conversational memory IS available to the LLM
+             via the smart-retrieval path (cosine threshold +
+             recency-weighted composite scoring in
+             :meth:`ConversationMemory.retrieve`), so relevant prior
+             context flows in (e.g. a follow-up troubleshooting query
+             gets the original troubleshooting context) while
+             unrelated past chatter is filtered out by the relevance
+             threshold.
+
+        The augmented prompt explicitly tells the LLM to use prior
+        context only if it relates to THIS specific question --
+        defence in depth on top of the relevance filter.
         """
         from concurrent.futures import ThreadPoolExecutor
 
@@ -1086,6 +1102,12 @@ class Orchestrator:
         # blends into the streamed answer without an awkward double-period.
         ack = ack_phrase + " "
 
+        # Yield the ack to the consumer BEFORE we submit the search job
+        # so the user perceives feedback first, then network activity.
+        # The ack travels through the TTS pipeline while we start search
+        # on a worker thread; both are concurrent from the user's POV.
+        yield ack
+
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="web-search")
         try:
             search_future = pool.submit(
@@ -1093,7 +1115,6 @@ class Orchestrator:
                 user_text,
                 verdict.search_queries or [user_text],
             )
-            yield ack
 
             try:
                 payload = search_future.result(timeout=20.0)
@@ -1122,9 +1143,16 @@ class Orchestrator:
             augmented = (
                 f"User question: {user_text}\n\n"
                 f"Fresh information from web search:\n{sources_block}\n\n"
-                "Answer the user's question using this information. Cite "
-                "sources naturally in prose (e.g. \"According to NASA, ...\"). "
-                "Stay in character. Be concise."
+                "Answer the user's current question using the search "
+                "information above as your primary factual source. If "
+                "any prior conversation context is genuinely relevant to "
+                "THIS specific question (e.g. a related troubleshooting "
+                "thread the user is continuing), you may briefly tie the "
+                "answer to it. Otherwise treat the question as standalone "
+                "-- do NOT drag in unrelated topics from past turns. "
+                "Cite sources naturally in prose (e.g. \"According to "
+                "NASA, ...\"). Stay in character. Be concise. End the "
+                "response when you have answered the question."
             )
             yield from self.llm.generate_stream(augmented)
         finally:

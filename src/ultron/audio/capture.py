@@ -42,6 +42,7 @@ class AudioCapture:
         blocksize: int = settings.BLOCKSIZE,
         device: Optional[str | int] = settings.AUDIO_DEVICE,
         max_queue_size: int = 256,
+        input_gain_db: Optional[float] = None,
     ) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
@@ -52,6 +53,21 @@ class AudioCapture:
         self._stream: Optional[sd.InputStream] = None
         self._lock = threading.Lock()
         self._overrun_warned = False
+        # 2026-05-09 audio-quality pass: pre-amp applied in the audio
+        # callback. ``input_gain_db=None`` -> read from config (allows
+        # tests to construct AudioCapture without a config singleton).
+        if input_gain_db is None:
+            try:
+                from ultron.config import get_config
+                input_gain_db = float(getattr(get_config().audio, "input_gain_db", 0.0))
+            except Exception:
+                input_gain_db = 0.0
+        self.input_gain_db = float(input_gain_db)
+        # Linear multiplier; cached so the audio thread doesn't recompute.
+        # 0 dB -> 1.0 (no-op fast path).
+        self._gain_linear = 1.0 if self.input_gain_db == 0.0 else float(
+            10.0 ** (self.input_gain_db / 20.0)
+        )
 
     # --- context manager -----------------------------------------------------
 
@@ -140,6 +156,18 @@ class AudioCapture:
 
         # Copy because sounddevice reuses the buffer.
         chunk = indata[:, 0].copy() if self.channels == 1 else indata.copy()
+        # Apply pre-amp gain (audio-quality pass). Fast path skips the
+        # multiply when gain is 0 dB. Float audio is in [-1, 1]; we
+        # clip to that range to prevent wraparound on int16 conversion
+        # downstream.
+        if self._gain_linear != 1.0:
+            chunk = chunk * self._gain_linear
+            if self._gain_linear > 1.0:
+                # Hard-clip to prevent distortion from over-gain. Soft
+                # limiting would be smoother but adds a small per-block
+                # CPU cost on the audio thread; clipping is one numpy
+                # call and is acceptable for a single-mic prototype.
+                np.clip(chunk, -1.0, 1.0, out=chunk)
         try:
             self._queue.put_nowait(chunk)
         except queue.Full:

@@ -53,6 +53,9 @@ logs/quality_q6q9_*.json
 logs/quality_q10_iter*_verify_*.json
 logs/comprehensive_harness_*.json
 logs/real_api_smoke_*.json
+# 2026-05-09 audio + memory quality pass audit logs.
+logs/mem_qa_*.json
+logs/search_blend_*.json
 # Quality test pass-generated sandbox apps (regeneratable; not source code)
 data/sandbox/quality_q*/
 *.wav

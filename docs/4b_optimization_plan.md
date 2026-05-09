@@ -316,11 +316,17 @@ it's the GPU physics.
 `models/`. `llm.rag.position` and the `enable_thinking` parameter
 remain available regardless of preset (orthogonal to the model swap).
 
-## Items 4–8 — second-pass optimization ✅ MACHINERY SHIPPED (all flags default OFF)
+## Items 4–8 — second-pass optimization ✅ MACHINERY SHIPPED + DEFAULTED ON
 
 All five items landed as additive, flag-gated, fully-tested machinery.
-Default OFF on every flag — live behaviour byte-for-byte unchanged
-until the user opts each in. Each is an independent commit.
+**Defaults flipped to ON on 2026-05-08** after a bisect verified zero
+added latency on the standard voice baseline (110 ms ON vs 109 ms
+OFF — within noise). Each Item fires only in its own trigger
+scenario, so the standard 10-query voice baseline doesn't activate
+any of them. Per the V1-gap default-flag policy
+([feedback_v1_gap_default_flag_policy.md](C:\Users\alecf\.claude\projects\C--STC-ultronPrototype\memory\feedback_v1_gap_default_flag_policy.md)),
+the rule is "default ON when the flag is a no-op outside its trigger
+scenario AND a real benefit when triggered."
 
 ### Item 4 — LLMLingua-style compression ✅
 [`src/ultron/llm/compression.py`](../src/ultron/llm/compression.py).
@@ -379,11 +385,13 @@ validator's interface stays identical when the real Gateway lands).
 
 ### Combined verification across Items 4–8
 
-99 new tests across the five items. Live system behaviour unchanged
-because every flag is OFF by default. Integration sweeps after each
-item all green. To enable any item live, flip its flag in
-`config.yaml` (or test the change in isolation via the env-var
-overrides per item).
+99 new tests across the five items, then 27 more wiring tests added
+during the default-ON flip (2026-05-08). All five flags now default
+ON in `config.yaml`; the bisect verified zero added latency on the
+standard voice baseline (110 ms ON vs 109 ms OFF — within noise)
+because none of the Items fires in the standard 10-query trigger set.
+Each Item still has an explicit ON/OFF knob in `config.yaml` if the
+operator wants to disable a specific path for debugging.
 
 ## What's already done
 

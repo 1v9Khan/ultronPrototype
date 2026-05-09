@@ -93,6 +93,14 @@ class AudioConfig(_Strict):
     barge_in_enabled: bool = True
     barge_in_grace_seconds: float = 0.5
     ring_buffer_seconds: float = 0.5
+    # 2026-05-09 audio-quality pass: linear gain applied in dB to the
+    # captured audio chunk BEFORE it reaches VAD / wake-word / Whisper.
+    # 0.0 dB = no-op (legacy behaviour). Use a positive value when the
+    # mic is hot enough to capture the user up close but too quiet at
+    # range. Negative values attenuate (rare; only useful when the mic
+    # is clipping at close range). Hard-clipped to int16 range after
+    # gain to prevent distortion.
+    input_gain_db: float = Field(default=0.0, ge=-20.0, le=40.0)
 
 
 class VADConfig(_Strict):
@@ -416,6 +424,30 @@ class MemoryConfig(_Strict):
     rag_exclude_recent: int = Field(default=20, ge=0)
     facts_top_k: int = Field(default=3, ge=0)
     write_queue_maxsize: int = Field(default=256, ge=1)
+    # 2026-05-09 nuanced-retrieval pass: CAP on recent-turn history fed
+    # to the LLM as conversation context. The in-process recent-turns
+    # CACHE size remains ``recent_turns: 20`` (used by ``retrieve``'s
+    # exclude_recent + the public ``recent()`` API). This new field
+    # caps how many of those land in the LLM message list per call.
+    # Smaller = less topic-bleed when the user pivots topics; larger
+    # = more conversational continuity for follow-ups. 4 = 2 user +
+    # assistant pairs, enough for natural follow-ups but not a wall
+    # of stale context.
+    history_turns_for_llm: int = Field(default=4, ge=0)
+    # 2026-05-09 nuanced-retrieval pass: minimum cosine similarity
+    # between the user query embedding and a candidate turn's
+    # embedding for the candidate to be included in the LLM's RAG
+    # context. Below this, the candidate is treated as irrelevant
+    # noise and filtered out entirely. Cosine sim is in [0, 1] for
+    # text embeddings.
+    #
+    # 0.6 was tuned empirically with bge-small INT8 (the production
+    # embedder) against the seeded conversation corpus -- truly
+    # off-topic content peaks around 0.55-0.57 (e.g. apex-predator
+    # chatter cosine'd against a Mariana-Trench query topped at
+    # 0.567), while genuinely relevant matches score 0.7-0.95.
+    # Set 0.0 to disable filtering (pre-2026-05-09 legacy behaviour).
+    rag_min_relevance: float = Field(default=0.6, ge=0.0, le=1.0)
     # V1-gap A2.
     retrieval: MemoryRetrievalConfig = Field(default_factory=MemoryRetrievalConfig)
     ranking: MemoryRankingConfig = Field(default_factory=MemoryRankingConfig)
@@ -430,9 +462,26 @@ class BraveConfig(_Strict):
 
 class JinaConfig(_Strict):
     endpoint: str = "https://r.jina.ai/"
-    timeout_seconds: float = 15.0
-    max_fetch: int = Field(default=3, ge=0)
+    # Per-fetch HTTP timeout. Reduced from 15.0 -> 6.0 (2026-05-09 latency
+    # fix) so a single pathological page can't dominate the search-path
+    # latency. The collective deadline below caps the executor's wait
+    # across ALL parallel fetches; per-fetch timeout is the secondary
+    # ceiling the underlying request honours.
+    timeout_seconds: float = 6.0
+    # How many ranked snippets get full-text fetches. Reduced from 3 ->
+    # 2 (2026-05-09 latency fix) -- two sources is enough context for
+    # the LLM to answer most queries, and dropping the third halves the
+    # tail-latency exposure on the slowest page.
+    max_fetch: int = Field(default=2, ge=0)
     max_bytes: int = Field(default=200_000, ge=0)
+    # Collective deadline for ALL parallel Jina fetches launched by a
+    # single executor.run() call. After this many seconds, any fetch
+    # still in flight is abandoned (its result is dropped; the source
+    # falls back to snippet-only). Independent of per-fetch
+    # ``timeout_seconds`` -- this is the executor-side cap that
+    # protects the voice path even when one URL is slow but not
+    # timing out at the HTTP layer. (2026-05-09 latency fix.)
+    collective_deadline_seconds: float = Field(default=6.0, ge=0.0)
 
 
 class WebCacheConfig(_Strict):
@@ -626,6 +675,34 @@ class TTSConfig(_Strict):
     pause_ms: int = Field(default=180, ge=0)
     edge_fade_ms: int = Field(default=4, ge=0)
     rvc: RVCConfig = Field(default_factory=RVCConfig)
+    # 2026-05-09 latency hot-fix: split Piper and RVC into two separate
+    # worker stages connected by a bounded queue. With the legacy
+    # single-worker shape, sentence N+1's Piper synthesis only began
+    # AFTER sentence N's RVC finished. With the split, Piper N+1 runs
+    # in parallel with RVC N, saving ~Piper-time (~50 ms) per
+    # subsequent sentence on multi-sentence responses. Voice output is
+    # bit-identical because Piper produces the same buffer that RVC
+    # then converts; only the timing of the stages overlaps.
+    # Set false to revert to the legacy single-worker pipeline.
+    pipeline_parallel_enabled: bool = True
+    # 2026-05-09 latency hot-fix: open the audio output stream
+    # speculatively at the expected RVC sample rate while Piper+RVC of
+    # the first sentence is still synthesising, instead of waiting for
+    # the first clip to arrive. The existing sample-rate-mismatch
+    # close-and-reopen path covers the rare case where actual output
+    # rate differs from the speculative one. Saves ~20-30 ms first-
+    # sentence latency.
+    speculative_stream_open_enabled: bool = True
+    # Expected output sample rate for speculative open. RVC v2 models
+    # output 40000 Hz by default; Piper-only stacks should set this to
+    # match ``output_sample_rate`` (22050 by default).
+    speculative_stream_sample_rate: int = Field(default=40000, ge=8000)
+    # 2026-05-09 latency hot-fix: pass ``latency='low'`` to
+    # ``sd.OutputStream`` so PortAudio asks the host audio API for the
+    # smallest acceptable buffer. Saves 30-100 ms of OS-level audio
+    # buffering on most Windows systems. Falls back gracefully on
+    # platforms / devices that don't honour the hint.
+    output_low_latency_mode: bool = True
 
 
 class LoggingConfig(_Strict):

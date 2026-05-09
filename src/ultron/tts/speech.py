@@ -129,103 +129,193 @@ class TextToSpeech:
     def speak_stream(self, fragments: Iterable[str]) -> None:
         """Consume token fragments and play sentence-by-sentence.
 
-        A worker thread reads the token iterator, accumulates a sentence,
-        synthesizes (and converts via RVC if configured), and pushes the
-        resulting clip onto a playback queue. The calling thread holds a
-        single :class:`sounddevice.OutputStream` open for the entire
-        utterance, eliminating the per-sentence open/close clicks that
-        Windows audio drivers produce, and applies brief edge fades + a
-        pre-roll silence so the first sample doesn't pop.
+        Three optional latency optimisations gated by config (all default ON):
+
+        1. ``tts.pipeline_parallel_enabled`` — split synthesis into two
+           worker stages (Piper then RVC) connected by a bounded queue,
+           so Piper N+1 runs in parallel with RVC N. Saves ~Piper time
+           (~50 ms) per subsequent sentence on multi-sentence responses.
+           When false, the legacy single-worker path runs.
+
+        2. ``tts.speculative_stream_open_enabled`` — open the audio
+           output stream at the expected RVC sample rate while the
+           first sentence is still synthesising. Saves ~20-30 ms on
+           first-sentence audio. The existing sample-rate-mismatch
+           close-and-reopen path catches the rare case where actual
+           output rate differs from the expected one.
+
+        3. ``tts.output_low_latency_mode`` — pass ``latency='low'`` to
+           ``sd.OutputStream`` so PortAudio asks the host API for the
+           smallest acceptable buffer. Saves 30-100 ms of OS-level
+           audio buffering.
+
+        Voice character is unchanged: same Piper buffer feeds the same
+        RVC; only the stage timing overlaps. Same fade-in/fade-out,
+        same inter-sentence pause, same pre-roll silence.
         """
         self._stop_event.clear()
-        audio_q: queue.Queue[Optional[Clip]] = queue.Queue(maxsize=8)
+        from ultron.config import get_config
 
-        def synth_worker() -> None:
-            buffer = []
-            try:
-                for frag in fragments:
-                    if self._stop_event.is_set():
-                        break
-                    if not frag:
-                        continue
-
-                    # A single LLM token may contain a flush character followed
-                    # by the start of the next word (e.g. ". Th" where "is"
-                    # arrives in the next token). Naively appending the whole
-                    # token then flushing tears words in half. Walk the token
-                    # character by character: text up to and including the
-                    # flush char closes the current sentence; text after it
-                    # opens the next.
-                    remaining = frag
-                    while remaining:
-                        flush_pos = next(
-                            (i for i, c in enumerate(remaining) if c in self.flush_chars),
-                            -1,
-                        )
-                        if flush_pos == -1:
-                            buffer.append(remaining)
-                            break
-                        buffer.append(remaining[: flush_pos + 1])
-                        sentence = "".join(buffer).strip()
-                        buffer.clear()
-                        remaining = remaining[flush_pos + 1 :]
-                        if sentence:
-                            clip = self._synthesize(sentence)
-                            if clip[0].size > 0:
-                                audio_q.put(clip)
-
-                tail = "".join(buffer).strip()
-                if tail and not self._stop_event.is_set():
-                    clip = self._synthesize(tail)
-                    if clip[0].size > 0:
-                        audio_q.put(clip)
-            except Exception as e:
-                logger.error("TTS worker error: %s", e)
-            finally:
-                audio_q.put(None)  # sentinel
-
-        worker = threading.Thread(target=synth_worker, daemon=True)
-        worker.start()
-
-        # Pull one clip up-front so we know the playback sample rate (RVC may
-        # output at a different rate than Piper) before opening the stream.
-        first_clip: Optional[Clip] = None
         try:
-            first_clip = audio_q.get(timeout=10.0)
-        except queue.Empty:
-            logger.warning("TTS playback queue starved before first clip")
-            worker.join(timeout=2.0)
-            return
-        if first_clip is None:
-            worker.join(timeout=2.0)
-            return
+            tts_cfg = get_config().tts
+            pipeline_parallel = tts_cfg.pipeline_parallel_enabled
+            spec_open = tts_cfg.speculative_stream_open_enabled
+            spec_sr = tts_cfg.speculative_stream_sample_rate
+            low_latency = tts_cfg.output_low_latency_mode
+        except Exception:
+            # Defensive: tests may construct TextToSpeech without a
+            # full config. Fall back to legacy behaviour.
+            pipeline_parallel = False
+            spec_open = False
+            spec_sr = settings.TTS_OUTPUT_SAMPLE_RATE
+            low_latency = False
 
-        sr = first_clip[1]
+        audio_q: queue.Queue[Optional[Clip]] = queue.Queue(maxsize=8)
+        # Track threads so we can join cleanly on every exit path.
+        workers: list[threading.Thread] = []
+
+        if pipeline_parallel and self.rvc is not None:
+            # Two-stage pipeline: piper_worker -> piper_q -> rvc_worker
+            # -> audio_q. The bounded piper_q (maxsize=2) gives natural
+            # backpressure if RVC falls behind without ever growing
+            # unbounded.
+            piper_q: queue.Queue[Optional[Clip]] = queue.Queue(maxsize=2)
+
+            def piper_worker() -> None:
+                try:
+                    self._run_synth_loop(
+                        fragments=fragments,
+                        push=lambda clip: piper_q.put(clip),
+                        synth_fn=self._piper_synth_only,
+                    )
+                except Exception as e:
+                    logger.error("TTS piper worker error: %s", e)
+                finally:
+                    piper_q.put(None)
+
+            def rvc_worker() -> None:
+                try:
+                    while not self._stop_event.is_set():
+                        try:
+                            piper_clip = piper_q.get(timeout=10.0)
+                        except queue.Empty:
+                            logger.warning("TTS RVC stage starved; aborting")
+                            break
+                        if piper_clip is None:
+                            break
+                        if piper_clip[0].size == 0:
+                            continue
+                        out_clip = self._apply_rvc(piper_clip)
+                        if out_clip[0].size > 0:
+                            audio_q.put(out_clip)
+                except Exception as e:
+                    logger.error("TTS rvc worker error: %s", e)
+                finally:
+                    audio_q.put(None)
+
+            piper_t = threading.Thread(
+                target=piper_worker, daemon=True, name="tts-piper"
+            )
+            rvc_t = threading.Thread(
+                target=rvc_worker, daemon=True, name="tts-rvc"
+            )
+            piper_t.start()
+            rvc_t.start()
+            workers.extend([piper_t, rvc_t])
+        else:
+            # Legacy single-worker path: Piper + RVC happen serially
+            # inside _synthesize. Used when pipeline_parallel is off or
+            # RVC isn't wired.
+            def synth_worker() -> None:
+                try:
+                    self._run_synth_loop(
+                        fragments=fragments,
+                        push=lambda clip: audio_q.put(clip),
+                        synth_fn=self._synthesize,
+                    )
+                except Exception as e:
+                    logger.error("TTS worker error: %s", e)
+                finally:
+                    audio_q.put(None)
+
+            worker = threading.Thread(
+                target=synth_worker, daemon=True, name="tts-synth"
+            )
+            worker.start()
+            workers.append(worker)
+
+        sr: int = spec_sr if (spec_open and self.rvc is not None) else (
+            spec_sr if spec_open else settings.TTS_OUTPUT_SAMPLE_RATE
+        )
         block_frames = max(1, int(sr * 0.05))
         stream: Optional[sd.OutputStream] = None
+        first_clip: Optional[Clip] = None
+
         try:
             with self._playback_lock:
                 if self._stop_event.is_set():
                     return
-                stream = sd.OutputStream(
-                    samplerate=sr,
-                    channels=2,
-                    dtype="int16",
-                    device=self.output_device,
-                )
-                stream.start()
-                logger.info(
-                    "TTS stream opened: %d Hz via %s",
-                    sr,
-                    describe_device(self.output_device, "output"),
-                )
 
-                # 50 ms silence pre-roll lets the audio device spin up before
-                # real samples land — kills the cold-start pop.
-                self._write_silence(stream, sr, 0.05)
+                if spec_open:
+                    # Speculative open: stream is up while first sentence
+                    # synthesises. The 50 ms pre-roll silence buys time
+                    # for the device to settle before real samples land.
+                    stream = self._open_output_stream(sr, low_latency)
+                    stream.start()
+                    self._write_silence(stream, sr, 0.05)
+                    logger.info(
+                        "TTS stream opened (speculative %s): %d Hz via %s",
+                        "low-latency" if low_latency else "default",
+                        sr,
+                        describe_device(self.output_device, "output"),
+                    )
 
-                # One-clip lookahead so we know which clip is last in time
-                # to fade out its tail before writing.
+                # Pull first clip; this blocks until first sentence is ready.
+                try:
+                    first_clip = audio_q.get(timeout=10.0)
+                except queue.Empty:
+                    logger.warning("TTS playback queue starved before first clip")
+                    return
+                if first_clip is None:
+                    return
+
+                actual_sr = first_clip[1]
+                if not spec_open:
+                    # Legacy: open the stream now that we know the rate.
+                    sr = actual_sr
+                    block_frames = max(1, int(sr * 0.05))
+                    stream = self._open_output_stream(sr, low_latency)
+                    stream.start()
+                    self._write_silence(stream, sr, 0.05)
+                    logger.info(
+                        "TTS stream opened%s: %d Hz via %s",
+                        " (low-latency)" if low_latency else "",
+                        sr,
+                        describe_device(self.output_device, "output"),
+                    )
+                elif actual_sr != sr:
+                    # Speculative SR didn't match. Close and reopen at
+                    # the actual rate. This is the rare-case fallback;
+                    # configure ``speculative_stream_sample_rate`` to
+                    # the right value to avoid it.
+                    logger.info(
+                        "TTS speculative SR %d != actual %d; reopening",
+                        sr, actual_sr,
+                    )
+                    if stream is not None:
+                        try:
+                            stream.stop()
+                            stream.close()
+                        except Exception:
+                            pass
+                    sr = actual_sr
+                    block_frames = max(1, int(sr * 0.05))
+                    stream = self._open_output_stream(sr, low_latency)
+                    stream.start()
+                    self._write_silence(stream, sr, 0.05)
+
+                # One-clip lookahead so we know which clip is last in
+                # time to fade out its tail before writing.
                 clip = first_clip
                 while True:
                     try:
@@ -236,9 +326,8 @@ class TextToSpeech:
                     is_last = nxt is None
 
                     audio = self._stereo_pcm(clip[0])
-                    # Tiny fade on every clip edge so the inter-clip silence
-                    # gap doesn't introduce a click. Short enough (~4 ms) to
-                    # be inaudible as volume modulation.
+                    # Tiny fade on every clip edge so the inter-clip
+                    # silence gap doesn't introduce a click.
                     edge_ms = settings.TTS_EDGE_FADE_MS
                     if edge_ms > 0:
                         audio = self._apply_fade_in(audio, sr, ms=edge_ms)
@@ -265,12 +354,7 @@ class TextToSpeech:
                         stream.close()
                         sr = nxt[1]
                         block_frames = max(1, int(sr * 0.05))
-                        stream = sd.OutputStream(
-                            samplerate=sr,
-                            channels=2,
-                            dtype="int16",
-                            device=self.output_device,
-                        )
+                        stream = self._open_output_stream(sr, low_latency)
                         stream.start()
                         self._write_silence(stream, sr, 0.05)
                     clip = nxt
@@ -283,7 +367,119 @@ class TextToSpeech:
                     stream.close()
                 except Exception:
                     pass
-            worker.join(timeout=2.0)
+            for w in workers:
+                w.join(timeout=2.0)
+
+    # --- streaming helpers (extracted for the parallel pipeline) -------------
+
+    def _run_synth_loop(self, *, fragments, push, synth_fn) -> None:
+        """Walk ``fragments`` token-by-token, synthesise on flush chars,
+        and push each completed clip via ``push``.
+
+        Used by both the legacy single-worker path and the new piper
+        worker in the parallel pipeline. Same buffer + flush + tail
+        logic as before, factored out so both paths share it.
+
+        Args:
+            fragments: iterable of LLM token strings.
+            push: callable invoked with each non-empty clip.
+            synth_fn: ``str -> Clip`` synthesiser. Either ``_synthesize``
+                (legacy: Piper + RVC fused) or ``_piper_synth_only``
+                (parallel: Piper alone, RVC happens in a downstream stage).
+        """
+        buffer: list[str] = []
+        for frag in fragments:
+            if self._stop_event.is_set():
+                break
+            if not frag:
+                continue
+
+            # A single LLM token may contain a flush character followed
+            # by the start of the next word (e.g. ". Th" where "is"
+            # arrives in the next token). Naively appending the whole
+            # token then flushing tears words in half. Walk char-by-
+            # char: text up to+including the flush char closes the
+            # current sentence; text after it opens the next.
+            remaining = frag
+            while remaining:
+                flush_pos = next(
+                    (i for i, c in enumerate(remaining) if c in self.flush_chars),
+                    -1,
+                )
+                if flush_pos == -1:
+                    buffer.append(remaining)
+                    break
+                buffer.append(remaining[: flush_pos + 1])
+                sentence = "".join(buffer).strip()
+                buffer.clear()
+                remaining = remaining[flush_pos + 1 :]
+                if sentence:
+                    clip = synth_fn(sentence)
+                    if clip[0].size > 0:
+                        push(clip)
+
+        tail = "".join(buffer).strip()
+        if tail and not self._stop_event.is_set():
+            clip = synth_fn(tail)
+            if clip[0].size > 0:
+                push(clip)
+
+    def _piper_synth_only(self, text: str) -> Clip:
+        """Synthesise text with Piper alone (no RVC).
+
+        Used by the parallel pipeline's piper_worker. Returns
+        ``(int16 pcm, piper_sample_rate)``. The downstream RVC stage
+        consumes this and does the conversion separately.
+        """
+        return self._piper_synth(text)
+
+    def _apply_rvc(self, piper_clip: Clip) -> Clip:
+        """Convert a Piper clip via RVC, falling back to raw Piper on error.
+
+        Mirrors the RVC-failure handling baked into ``_synthesize`` so
+        the parallel pipeline preserves the same fail-soft contract.
+        """
+        if self.rvc is None:
+            return piper_clip
+        pcm, sr = piper_clip
+        if pcm.size == 0:
+            return piper_clip
+        try:
+            return self.rvc.convert(pcm, sr)
+        except Exception as e:
+            logger.warning("RVC convert failed (using raw Piper): %s", e)
+            from ultron.errors import RVCConversionError
+            from ultron.resilience import get_error_log
+            get_error_log().record(
+                RVCConversionError(
+                    f"RVC convert failed: {e}",
+                    context={"sample_rate": int(sr), "pcm_samples": int(pcm.size)},
+                    recovery="fell back to raw Piper output (no Ultron filter)",
+                ),
+                dependency="rvc",
+            )
+            return piper_clip
+
+    def _open_output_stream(
+        self, sample_rate: int, low_latency: bool
+    ) -> sd.OutputStream:
+        """Open a stereo int16 OutputStream at ``sample_rate``.
+
+        ``low_latency=True`` passes ``latency='low'`` to PortAudio so
+        the host API uses its smallest acceptable buffer (typically
+        30-50 ms on Windows WASAPI shared mode vs the 100-200 ms
+        default). Safe to leave on; PortAudio falls back gracefully on
+        platforms / devices that don't honour the hint.
+        """
+        kwargs: dict = {
+            "samplerate": sample_rate,
+            "channels": 2,
+            "dtype": "int16",
+            "device": self.output_device,
+        }
+        if low_latency:
+            kwargs["latency"] = "low"
+        return sd.OutputStream(**kwargs)
 
     # --- internals -----------------------------------------------------------
 
@@ -372,6 +568,14 @@ class TextToSpeech:
 
     def _play(self, clip: Clip) -> None:
         pcm, sr = clip
+        # Read low-latency preference from config; default true for the
+        # speak() path too. Falls back to False when config isn't built
+        # (test scenarios that bypass the loader).
+        try:
+            from ultron.config import get_config
+            low_latency = get_config().tts.output_low_latency_mode
+        except Exception:
+            low_latency = False
         with self._playback_lock:
             if self._stop_event.is_set():
                 return
@@ -386,12 +590,7 @@ class TextToSpeech:
                 )
 
                 block_frames = max(1, int(sr * 0.05))
-                with sd.OutputStream(
-                    samplerate=sr,
-                    channels=2,
-                    dtype="int16",
-                    device=self.output_device,
-                ) as stream:
+                with self._open_output_stream(sr, low_latency) as stream:
                     for start in range(0, audio.shape[0], block_frames):
                         if self._stop_event.is_set():
                             return

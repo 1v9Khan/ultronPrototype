@@ -493,7 +493,21 @@ class LLMEngine:
 
     def _build_messages(
         self, user_message: str, *, gate_verdict=None,
+        suppress_memory_context: bool = False,
     ) -> List[dict]:
+        """Assemble the chat-completion message list for one turn.
+
+        ``suppress_memory_context`` (2026-05-09 contamination fix):
+        when True, BOTH the recent-turn conversation history AND the
+        Qdrant RAG block are omitted. The LLM sees only the system
+        prompt + the current user message. Use this on calls where
+        the answer should come from a self-contained context that
+        already accompanies the user message (e.g. web-search-augmented
+        queries where the search results provide the factual ground
+        truth -- pulling unrelated past conversation only contaminates
+        the response with stale topic / tone). False (default)
+        preserves legacy behaviour: recent history + RAG retrieved.
+        """
         # Defence layer — neutralise tag-style prompt-injection markers
         # in the raw user input before any further processing.  Detected
         # markers log to errors.jsonl with dependency='prompt_injection'.
@@ -529,11 +543,17 @@ class LLMEngine:
         # The second is the default at Stage G — it puts retrieved
         # context in the strongest-attention zone (right before the
         # user query) and recovers +10-20% recall on the 4B.
-        rag_block = self._format_rag_block(
-            self._retrieve_rag_snippets(
-                user_message, gate_verdict=gate_verdict,
-            ),
-        )
+        if suppress_memory_context:
+            # Skip Qdrant retrieval entirely: the caller is providing
+            # self-contained context (web search results) and stale
+            # conversation snippets only contaminate the response tone.
+            rag_block = ""
+        else:
+            rag_block = self._format_rag_block(
+                self._retrieve_rag_snippets(
+                    user_message, gate_verdict=gate_verdict,
+                ),
+            )
         rag_position = get_config().llm.rag.position
 
         if rag_block and rag_position == "system":
@@ -541,12 +561,31 @@ class LLMEngine:
 
         msgs: List[dict] = [{"role": "system", "content": system_content}]
 
-        if self._memory is not None:
-            for turn in self._memory.recent(get_config().memory.recent_turns):
-                msgs.append({"role": turn.role, "content": turn.content})
-        else:
-            for role, content in self._history:
-                msgs.append({"role": role, "content": content})
+        if not suppress_memory_context:
+            # Recent-turn history. 2026-05-09 nuanced-retrieval pass:
+            # CAP the number of recent turns appended to the LLM
+            # context at ``memory.history_turns_for_llm`` (default 4 =
+            # 2 user+assistant pairs). The full ``recent_turns: 20``
+            # cache stays for retrieve()'s exclude_recent semantics
+            # and the public ``recent()`` API; this only limits how
+            # many of those land in the LLM's prompt per call.
+            #
+            # Smaller history feed = less topic-bleed when the user
+            # pivots topics. The model still gets enough conversational
+            # continuity for natural follow-ups, but a single pivot
+            # away from "predator chatter" -> "weather" doesn't drown
+            # in stale tone.
+            if self._memory is not None:
+                mem_cfg = get_config().memory
+                history_n = min(
+                    int(getattr(mem_cfg, "history_turns_for_llm", mem_cfg.recent_turns)),
+                    int(mem_cfg.recent_turns),
+                )
+                for turn in self._memory.recent(history_n):
+                    msgs.append({"role": turn.role, "content": turn.content})
+            else:
+                for role, content in self._history:
+                    msgs.append({"role": role, "content": content})
 
         if rag_block and rag_position == "recency":
             user_content = rag_block.lstrip("\n") + "\n\n" + user_message
@@ -728,6 +767,7 @@ class LLMEngine:
         *,
         enable_thinking: Optional[bool] = None,
         gate_verdict=None,
+        suppress_memory_context: bool = False,
     ) -> str:
         """Blocking generation. Returns the full response string.
 
@@ -753,8 +793,18 @@ class LLMEngine:
         ``memory.retrieval.multi_pass_enabled`` is True, the RAG block
         is built via the multi-pass per-category retrieval path. ``None``
         preserves the original single-pass behaviour.
+
+        ``suppress_memory_context`` (2026-05-09 contamination fix): when
+        True, recent-turn history AND RAG are both omitted. Use this on
+        web-search-augmented calls where the search results are the
+        ground truth and unrelated past conversation only contaminates
+        the response tone/topic.
         """
-        messages = self._build_messages(user_message, gate_verdict=gate_verdict)
+        messages = self._build_messages(
+            user_message,
+            gate_verdict=gate_verdict,
+            suppress_memory_context=suppress_memory_context,
+        )
         _llm_cfg = get_config().llm
         t0 = time.monotonic()
         if self._runtime == "in_process":
@@ -780,18 +830,24 @@ class LLMEngine:
         *,
         enable_thinking: Optional[bool] = None,
         gate_verdict=None,
+        suppress_memory_context: bool = False,
     ) -> Iterator[str]:
         """Yield response tokens as they arrive.
 
-        See :meth:`generate` for the ``enable_thinking`` and
-        ``gate_verdict`` (V1-gap A2) semantics.
+        See :meth:`generate` for the ``enable_thinking``,
+        ``gate_verdict`` (V1-gap A2), and ``suppress_memory_context``
+        (2026-05-09 contamination fix) semantics.
 
         The full response is appended to history once the stream completes
         normally; on cancel, partial output is recorded so the model
         remembers what it had said.
         """
         self._cancel.clear()
-        messages = self._build_messages(user_message, gate_verdict=gate_verdict)
+        messages = self._build_messages(
+            user_message,
+            gate_verdict=gate_verdict,
+            suppress_memory_context=suppress_memory_context,
+        )
         _llm_cfg = get_config().llm
         t0 = time.monotonic()
         first_token_time: Optional[float] = None

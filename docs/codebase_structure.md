@@ -10,7 +10,11 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
-Last validated against `main` HEAD `429ed3e` (comprehensive end-to-end functional + quality test passes; classifier coverage extensions; prompt-injection defense layer in `src/ultron/llm/inference.py`). All 12 V1-gap enhancements wired; defaults chosen on net-benefit grounds:
+Last validated against `main` HEAD `464f72b` + this session's combined hot-fix + audio-quality + memory-quality pass (2026-05-09). Three change layers landed in sequence:
+
+1. **Latency hot-fix.** Parallel Jina fetches with collective deadline + Jina timeout/max_fetch reductions + audio ring-buffer trim (0.5 → 0.15 s) + VAD silence cap raise (500 → 1200 ms). Web-search worst case 13.5 s → ~6 s; wake-word tail no longer captured into Whisper transcripts.
+2. **TTS pipeline pass.** Piper / RVC split into two queue-decoupled stages + speculative ``sd.OutputStream`` open + ``latency='low'`` PortAudio hint. ~80–180 ms residual TTS gain. Voice character bit-identical (same Piper buffer feeds same RVC; only stage timing overlaps).
+3. **Contamination + nuanced-retrieval pass.** `ConversationMemory.retrieve()` now applies a cosine-similarity threshold (`memory.rag_min_relevance: 0.6` — empirically tuned on bge-small INT8) + composite scoring (cosine + RRF + recency-weighted boost). Recent-turn history feed capped at `memory.history_turns_for_llm: 4`. New `LLMEngine.suppress_memory_context` kwarg available as a knob. Direct mic input via Focusrite (was Voicemeeter); new `audio.input_gain_db` pre-amp; new `scripts/audio_diagnostic.py` harness for far-field tuning. Verified end-to-end with **31/31 quality scenarios** (28 memory + 3 search-augmented with real Brave/Jina). All 12 V1-gap enhancements wired; defaults chosen on net-benefit grounds:
 
 | Flag | Default | Why |
 |---|---|---|
@@ -37,7 +41,10 @@ State at this validation:
 - Voice baseline (10-query stack with all Items ON): **TTFT median 79 ms**, **VRAM peak 7913 MB** (-2461 MB / -2.5 GB vs 9B). See [baselines.json](../baselines.json).
 - Items 4–8 measurable verification: [scripts/verify_items_4_to_8.py](../scripts/verify_items_4_to_8.py) exercises each item in its trigger scenario and prints concrete deltas.
 - Stale-`.env` gotcha resolved: `ULTRON_LLM_MODEL_PATH=...9B...` line in `.env` was silently overriding the preset. Now commented out (line 84).
-- **1520 tests collected; 1505 passed, 15 skipped (GPU-gated), 0 failed.** Net delta vs Foundation Phase 7 baseline: +510 (+256 OpenClaw-bridge tests; +223 V1-spec gap-fill tests; +10 classifier-pattern coverage from the comprehensive end-to-end test pass; +21 prompt-injection defense layer tests from the comprehensive QUALITY pass — `_sanitize_user_input` neutralises tag-style markers and prepends/rewrites natural-language jailbreak attempts).
+- **1551 tests collected; 1536 passed, 15 skipped (GPU-gated), 0 failed.** Net delta vs Foundation Phase 7 baseline: +541. Most recent additions:
+  - 2026-05-09 latency hot-fix: +6 parallel Jina fetch + collective deadline (`tests/test_web_search_parallel_fetch.py`).
+  - 2026-05-09 TTS hot-fix: +11 Piper/RVC pipeline split + speculative stream + low-latency mode (`tests/test_tts_pipeline_parallel.py`).
+  - 2026-05-09 contamination + nuanced-retrieval pass: +6 ``suppress_memory_context`` regression (`tests/test_llm_memory_suppression.py`) + +8 cosine threshold + history cap regression (`tests/test_memory_relevance_filter.py`).
 
 ---
 
@@ -783,7 +790,8 @@ pre-flight gate's uncertainty signals.
 - `_rank_snippets(llm, query, results, top_n)` — LLM-driven re-ranking
 - `_normalise_search_query(q)` / `_dedupe_queries(qs)` (V1-gap B2) — drop near-duplicate Brave queries before fan-out using a token-set canonical form (lowercase + possessive strip + stopword drop + sort).
 - `_render_inline_marker(index, *, fmt)` (V1-gap B3) — render bracketed `[1]` (default) or Unicode superscript (¹²³) inline citations based on `web_search.citation.inline_marker_format`.
-- `class WebSearchExecutor` — orchestrates Brave → rank → Jina → cache
+- `class WebSearchExecutor` — orchestrates Brave → rank → Jina → cache. **2026-05-09 latency fix:** Jina fetches now run IN PARALLEL via `concurrent.futures.ThreadPoolExecutor` with a collective deadline cap. Pre-fix the loop was sequential and one slow page (~10 s on a Quora result) blocked the entire search path while the TTS playback queue starved waiting for tokens. Post-fix wall time is `max(per-fetch durations)` instead of `sum(...)`, capped further by `collective_deadline_seconds`. Any fetch still in flight at deadline is abandoned (its source falls back to snippet-only with a `jina_deadline:<url>` note). Threads keep running in the background and exit on per-fetch HTTP timeout; `pool.shutdown(wait=False)` ensures the executor returns immediately.
+  - `__init__(brave, jina, llm, cache=None, max_fetch=None, collective_deadline_seconds=None)` — both kwargs default-resolve from `get_config().web_search.jina`.
   - `run(user_query, search_queries?, top_n=3) -> SearchPayload`
 - `format_sources_for_prompt(sources)` / `format_sources_for_transcript(sources)` — references list always uses bracket form for monospace clarity.
 
@@ -1302,15 +1310,15 @@ pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
 
 Sections:
 - `version: "1.0"`
-- `audio` (sample_rate, channels, blocksize, dtype, devices, barge-in, ring buffer)
-- `vad` (threshold, min_speech/silence durations, window_samples)
+- `audio` (sample_rate, channels, blocksize, dtype, devices, barge-in, **ring_buffer_seconds: 0.15** [2026-05-09 latency fix; was 0.5 — the longer pre-roll was capturing the wake-word "Ultron" tail and Whisper transcribed it as "Tron" prepended to the user's actual question])
+- `vad` (threshold, min_speech_duration_ms, **min_silence_duration_ms: 1200** [2026-05-09 latency fix; was 500 — natural mid-sentence pauses prematurely closed the capture; trade-off is ~0.7 s slower end-of-turn detection], window_samples)
 - `wake_word` (name, model_path, fallback_model, threshold, cooldown)
 - `stt` (model, device, compute_type, beam_size, temperature, etc.)
 - `llm` (provider="llama_cpp", **preset** ["qwen3.5-9b"|"qwen3.5-4b"|"custom"; auto-fills model_path/n_ctx/draft_model_path when those keys are omitted — Stage A of the 4B plan], runtime ["in_process"|"http_server"], model_path, draft_model_path, n_ctx, gpu_layers, temperature, top_p, max_tokens, repeat_penalty, history_turns, flash_attn, kv_cache_type, system_prompt, server.{base_url,...}, persona.{source,...})
 - `embeddings` (dense_model, sparse_model, dense_dim)
 - `qdrant` (data_dir="data/qdrant", collections.{conversations,facts,web_results})
-- `memory` (enabled, jsonl_legacy_path, recent_turns, rag_top_k, rag_exclude_recent, facts_top_k, write_queue_maxsize, **retrieval.{multi_pass_enabled=false, max_categories_per_query=4, candidates_per_category_multiplier=4}** (V1-gap A2), **ranking.{rrf_weight=1.0, recency_weight=0.2, recency_half_life_days=7.0, surprise_weight=0.15, redundancy_weight=0.3}** (V1-gap A2))
-- `web_search` (enabled, brave_api_key_env, brave/jina/cache subsections, **citation.inline_marker_format="bracket"** [V1-gap B3])
+- `memory` (enabled, jsonl_legacy_path, recent_turns, rag_top_k, rag_exclude_recent, facts_top_k, write_queue_maxsize, **retrieval.{multi_pass_enabled=false, max_categories_per_query=4, candidates_per_category_multiplier=4}** (V1-gap A2), **ranking.{rrf_weight=1.0, recency_weight=0.2, recency_half_life_days=7.0, surprise_weight=0.15, redundancy_weight=0.3}** (V1-gap A2), **rag_min_relevance=0.6** (NEW 2026-05-09: cosine-similarity floor for RAG candidates; tuned empirically with bge-small INT8 -- off-topic content peaks ~0.55-0.57, truly relevant 0.7-0.95), **history_turns_for_llm=4** (NEW 2026-05-09: cap on recent-turn history fed to LLM per call; prevents topic-bleed when user pivots topics))
+- `web_search` (enabled, brave_api_key_env, brave/jina/cache subsections, **citation.inline_marker_format="bracket"** [V1-gap B3]). 2026-05-09 latency fix tunables: **`jina.timeout_seconds: 6.0`** (was 15.0), **`jina.max_fetch: 2`** (was 3), **`jina.collective_deadline_seconds: 6.0`** (NEW — executor-side cap on parallel fetch wait; 0 disables).
 - `addressing` (follow_up_enabled, **warm_mode_duration_seconds: 30.0** ← user override, NOT 10s; rule_confidence_threshold, zero_shot_model, log_path)
 - `coding` (enabled, bridge="direct", mcp.{host,port,...}, template_dir, prompt_token_budget, default/escalation models + thresholds, verification.{smoke,test,lint}_timeout, session_audit_dir, token_budget_per_session, claude_cli, sandbox_root, project_registry_path, audit_log_path, task_timeout, skip_permissions, **facts.{top_k=5, min_confidence=0.75, min_score=0.85, max_age_days=null}** [V1-gap A3], **pre_task_confirmation_enabled=false, pre_task_confirmation_max_words=30, pre_task_barge_in_window_seconds=0.5** [V1-gap A4])
 - `projections` (tokenizer, budgets.{clarification,status_delta,adjustment,correction,completion}_context, truncation_warning_threshold, log_truncations)
@@ -1534,6 +1542,50 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 
 **Purpose:** background VRAM peak monitor used by `measure_baseline_extended.py` for accurate peak capture during search/coding-session runs.
 
+### `scripts/audio_diagnostic.py` (2026-05-09 audio-quality pass)
+
+**Purpose:** standalone diagnostic harness for far-field mic + wake + Whisper tuning. Loads ONLY the audio path (sounddevice + openWakeWord + Silero VAD + faster-whisper) — NO LLM, NO TTS, NO orchestrator. ~1.5 GB VRAM so it can run while the full Ultron stack is stopped (per the voice-stack-concurrency rule).
+
+**Modes** (`--mode`):
+- `noise-floor` — captures N seconds of silence; reports peak / mean RMS dBFS for noise-floor calibration.
+- `wake` — captures a window, records max wake-word score, prints whether `FIRED` at the configured threshold; saves audio to WAV via `--save-wav` for replay.
+- `phrase` — captures until VAD reports speech end (or hard timeout); reports VAD timing, peak RMS, Whisper transcription + word-coverage vs `--expected-text`.
+- `monitor` — live real-time meter: rolling RMS, VAD probability, wake score per chunk; Ctrl+C to exit.
+
+**CLI overrides** (process-local, never write back to config so iteration is fast): `--device` (substring match — "Focusrite", "Voicemeeter"), `--gain-db`, `--wake-threshold`, `--vad-threshold`, `--seconds`, `--whisper-beam`, `--save-wav`, `--label`.
+
+**Audit log:** every test row appends to `logs/audio_diag_<ts>.jsonl`; useful for cross-distance comparison.
+
+**Run:** `python scripts/audio_diagnostic.py --mode wake --device Focusrite --label round1_5ft --seconds 10 --save-wav logs/round1_5ft.wav`
+
+### `scripts/comprehensive_memory_quality.py` (2026-05-09 memory-quality pass)
+
+**Purpose:** end-to-end memory + retrieval quality test pass. Loads embedder + isolated tmpdir Qdrant + (optionally) Qwen 4B. Seeds the isolated store with 58 mixed-topic turns (predator chatter, PC troubleshooting, food, BMWs, weather, code) and runs 28 scenarios verifying:
+
+- Contamination filtering — predator chatter doesn't bleed into a weather query, troubleshooting doesn't bleed into a ducks query, etc.
+- Healthy recall — relevant prior context (recent or old) IS surfaced when topic-related.
+- Recency-weighted ranking — recent-and-relevant ranks ahead of old-and-relevant.
+- Topic shifts — pivot-and-return works (lions → BMW → "what predator did I ask about earlier?").
+- Edge cases — short queries, paraphrased queries, queries with no matching memory.
+
+Per-scenario validation: retrieval `expect_includes` / `expect_excludes` substrings + LLM `expect_response_excludes` for contamination tokens.
+
+**Run:** `python scripts/comprehensive_memory_quality.py [--skip-llm] [--scenario-filter X] [--audit-log PATH]`. Without `--skip-llm`, loads Qwen 4B and exercises the full retrieve → context-assembly → response path. ~3.5 GB VRAM.
+
+### `scripts/comprehensive_search_blending.py` (2026-05-09 memory-quality pass)
+
+**Purpose:** end-to-end search-augmented contamination tests with REAL Brave + Jina + Qwen 4B. Verifies the orchestrator's `_search_augmented_tokens` path: predator chatter in memory doesn't bleed into a Python-3.13 search response; troubleshooting context doesn't bleed into a duck-lifespan search response; relevant troubleshooting context DOES blend into a motherboard-light search response.
+
+3 scenarios; ~3 Brave + 3 Jina calls per full run. Within free-tier quota.
+
+**Run:** `python scripts/comprehensive_search_blending.py` (requires `ULTRON_BRAVE_API_KEY`).
+
+### `scripts/_debug_retrieval_cosine.py` (2026-05-09 memory-quality pass; debug only)
+
+**Purpose:** prints cosine similarity between a probe query and a hand-picked candidate set. Used to empirically tune `memory.rag_min_relevance` against the actual production embedder (bge-small INT8). The 0.6 threshold was chosen because off-topic content peaked at 0.55-0.57 across the probe corpus, while genuinely relevant content scored 0.7-0.95.
+
+**Run:** `python scripts/_debug_retrieval_cosine.py`. No flags; edit the `PROBES` and `CANDIDATES` lists at the top of the file to test new query+content pairs.
+
 ---
 
 ## Tests
@@ -1579,6 +1631,7 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 - `tests/routing/test_model_switch_classifier.py` (54, 4B plan voice-swap) — classifier maps "switch to 4B/9B/four B/for B/nine B/4 B/4-B" + verb variants (switch/swap/change/use/load/go/move/activate/engage/run/select) to `RoutingIntentKind.MODEL_SWITCH`; rejects passing mentions ("the 4B is faster") and conversational utterances; pending clarification suppresses (mid-dialogue safety); active coding task does not block; `_resolve_model_switch_target` helper
 - `test_llm_reload_for_preset.py` (9, 4B plan voice-swap) — `LLMEngine.reload_for_preset` rejects http_server runtime + unknown preset; idempotent on same-preset; success path replaces `_llm` and clears history; sets `ULTRON_LLM_PRESET` env + clears stale `ULTRON_LLM_MODEL_PATH`; failure path keeps old engine, restores env vars (whether they were set or unset originally)
 - `test_llm_prompt_injection_defense.py` (21, comprehensive QUALITY pass Q10 iter 1+2) — `_sanitize_user_input` neutralises tag-style markers ([INST]/[/INST], <|im_start|>/<|im_end|>/<|system|>/<|user|>/<|assistant|>, stray </think>); detects natural-language jailbreak patterns ("ignore previous instructions", "you are now X", "respond with the exact word", "act as", "pretend"); preserves benign questions (zero false-positive on normal voice queries); end-to-end verified: pre-defense 2/3 of Q8 prompt-injection probes succeeded; post-defense 0/3. Voice baseline TTFT 79 ms / VRAM 7889 MB unchanged (defence is sub-microsecond on benign input).
+- `test_web_search_parallel_fetch.py` (6, 2026-05-09 latency hot-fix) — verifies the `WebSearchExecutor` parallel-Jina-fetch path: wall-time dominated by the slowest URL (not the sum); collective deadline abandons slow fetches and degrades them to snippet-only with `jina_deadline:<url>` notes; partial success with one fast + one slow URL keeps the fast one's `full_text`; per-fetch exception in one parallel branch doesn't break the others; `collective_deadline_seconds=0` disables the cap; `max_fetch=0` skips Jina entirely.
 - `test_voice_model_switch.py` (11, 4B plan voice-swap) — `CapabilityVoiceController._handle_model_switch` calls `llm_engine.reload_for_preset(target)`, speaks "Switched to the 4B/9B" on success, "I'm already running the X" on idempotent, "I couldn't switch ..." on failure with reason; "I can't switch models — engine isn't wired" when llm_engine is None; missing payload says "couldn't tell which model"; end-to-end classifier-then-controller for utterances
 - `tests/routing/test_irma_reformulation.py` (15, 4B plan Item 5) — `InputReformulator` pure-text shape (default-only-utterance, whitespace-strip, quote-escape, recent-decisions section, max-recent truncation, active-session, routing-hints, max_recent=0 omits, log-row factory); disambiguator integration with the IRMA flag (default-OFF passes raw, ON uses enriched, reformulation-failure falls back, no-context still emits utterance)
 - `test_self_consistency.py` (27, 4B plan Item 6) — `majority_vote_text` (winner, whitespace-strip, tie-first-wins, empty input, blank filter), `majority_vote_json` (winner, unparseable handling, think-block strip, first-block-only, all-unparseable returns None, arrays), `majority_vote_label` (case-insensitive, no-match), `run_self_consistency` driver (sampler called N times, default text aggregator, sampler exception handling, fallback to first non-empty, n-clamping), `should_apply_self_consistency` config gate (default-off, global-on, per-site disabled), decomposer integration (single-call default, N-call with consistency, majority winner, per-site bypass, all-unparseable fallback)
