@@ -163,6 +163,39 @@ class LLMRagConfig(_Strict):
     position: Literal["system", "recency"] = "recency"
 
 
+class LLMCompressionConfig(_Strict):
+    """4B optimization plan Item 4 — context compression for RAG / web /
+    history blocks before LLM injection.
+
+    Per LLMLingua (and the lighter EDU-style follow-ups), token-level
+    compression of high-redundancy text (retrieved Qdrant memories,
+    Jina-fetched articles, conversation history) can free 1.5–5×
+    context budget without measurable answer-quality loss. The 4B
+    benefits more than the 9B because it has less attention to spare
+    on filler.
+
+    Default OFF — over-aggressive compression CAN drop nuance, so the
+    flip is gated on live measurement. When enabled, the heuristic
+    compressor (no extra model) drops stopwords, redundant
+    punctuation, repeated paragraph signatures, and contractions to
+    approximate LLMLingua's coarse pass. A real perplexity-scorer
+    hook is plumbed in via :class:`ultron.llm.compression.Compressor`
+    so a follow-up swap to true LLMLingua (using the Stage C
+    speculative-decoding 0.8B as the scorer) is a one-call change.
+
+    ``target_ratio`` is the desired compression — 1.5 means drop ~33%
+    of the input. The heuristic is best-effort; actual ratio depends
+    on input redundancy. Per-block flags let you opt in to specific
+    surfaces without globally turning compression on.
+    """
+
+    enabled: bool = False
+    target_ratio: float = Field(default=1.5, ge=1.0, le=10.0)
+    compress_rag: bool = True       # Qdrant retrieval block before injection
+    compress_web: bool = True       # Jina-fetched article body
+    compress_history: bool = False  # conversation history (riskiest — has user voice)
+
+
 class LLMSelfConsistencyConfig(_Strict):
     """4B optimization plan Item 6 — self-consistency on high-stakes calls.
 
@@ -280,6 +313,10 @@ class LLMConfig(_Strict):
     # 4B plan Item 6 — self-consistency on high-stakes projection-driven calls.
     self_consistency: LLMSelfConsistencyConfig = Field(
         default_factory=LLMSelfConsistencyConfig,
+    )
+    # 4B plan Item 4 — context compression (RAG / web / history blocks).
+    compression: LLMCompressionConfig = Field(
+        default_factory=LLMCompressionConfig,
     )
 
     @model_validator(mode="after")

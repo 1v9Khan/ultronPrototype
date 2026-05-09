@@ -311,6 +311,11 @@ def format_sources_for_prompt(sources: List[SearchSource], max_chars_per_source:
     Each source gets a numbered header, the URL on its own line for citation,
     the snippet, and (if available) a truncated extract from Jina. Truncation
     keeps the total prompt size sane on big articles.
+
+    4B plan Item 4: each source body is optionally compressed when
+    ``llm.compression.enabled`` AND ``llm.compression.compress_web``
+    are both True. URL + title + numbering are NEVER compressed so
+    citations stay accurate. Pass-through when disabled (default).
     """
     if not sources:
         return "(no sources)"
@@ -319,6 +324,12 @@ def format_sources_for_prompt(sources: List[SearchSource], max_chars_per_source:
         body = (s.full_text or s.snippet or "").strip()
         if len(body) > max_chars_per_source:
             body = body[:max_chars_per_source] + "\n[truncated]"
+        # Best-effort compression: never break the search path.
+        try:
+            from ultron.llm.compression import maybe_compress
+            body = maybe_compress(body, surface="web")
+        except Exception:
+            pass
         blocks.append(
             f"[{i}] {s.title}\n    URL: {s.url}\n    {body}"
         )

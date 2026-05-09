@@ -424,13 +424,23 @@ class LLMEngine:
         Returns ``""`` when there are no snippets so the caller can do
         a simple truthiness check. Same content shape as before Stage G
         for back-compat with anything inspecting the rendered prompt.
+
+        4B plan Item 4: optionally compresses the rendered block when
+        ``llm.compression.enabled`` AND ``llm.compression.compress_rag``
+        are both True. Pass-through otherwise (default).
         """
         if not snippets:
             return ""
         lines = ["", "Relevant earlier context from prior conversations:"]
         for s in snippets:
             lines.append(f"- {s.role}: {s.content}")
-        return "\n".join(lines)
+        block = "\n".join(lines)
+        # Late import + best-effort: never break the hot path.
+        try:
+            from ultron.llm.compression import maybe_compress
+            return maybe_compress(block, surface="rag")
+        except Exception:
+            return block
 
     # --- generation ----------------------------------------------------------
 
