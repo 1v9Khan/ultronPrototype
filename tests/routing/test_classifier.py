@@ -242,6 +242,100 @@ def test_code_task_classified(utt):
 
 
 # ---------------------------------------------------------------------------
+# SYSTEM_STATUS — Phase 13 voice queries about Ultron's own state
+# ---------------------------------------------------------------------------
+
+
+_SYSTEM_STATUS_ALERT_QUERIES = [
+    "what alerts did you flag",
+    "any pending alerts",
+    "any heartbeat alerts",
+    "show me the alerts",
+    "list my alerts",
+    "alerts pending",
+    "what alerts did you raise",
+    "any new alerts",
+]
+
+
+_SYSTEM_STATUS_PROJECT_QUERIES = [
+    "what is Ultron working on",
+    "what are you working on",
+    "what's running",
+    "what is currently running",
+    "list active projects",
+    "any active coding sessions",
+    "what standing orders are active",
+    "any active tasks",
+]
+
+
+_SYSTEM_STATUS_BOTH_QUERIES = [
+    "status report",
+    "system status",
+    "give me a status update",
+    "what's going on",
+]
+
+
+@pytest.mark.parametrize("utt", _SYSTEM_STATUS_ALERT_QUERIES)
+def test_system_status_alert_focus(utt):
+    intent = classify_routing(utt)
+    assert intent.kind == RoutingIntentKind.SYSTEM_STATUS, (
+        f"got {intent.kind.value} for {utt!r}"
+    )
+    assert intent.system_status_intent is not None
+    assert intent.system_status_intent.focus == "alerts"
+
+
+@pytest.mark.parametrize("utt", _SYSTEM_STATUS_PROJECT_QUERIES)
+def test_system_status_project_focus(utt):
+    intent = classify_routing(utt)
+    assert intent.kind == RoutingIntentKind.SYSTEM_STATUS, (
+        f"got {intent.kind.value} for {utt!r}"
+    )
+    assert intent.system_status_intent is not None
+    assert intent.system_status_intent.focus == "projects"
+
+
+@pytest.mark.parametrize("utt", _SYSTEM_STATUS_BOTH_QUERIES)
+def test_system_status_combined_focus(utt):
+    intent = classify_routing(utt)
+    assert intent.kind == RoutingIntentKind.SYSTEM_STATUS, (
+        f"got {intent.kind.value} for {utt!r}"
+    )
+    assert intent.system_status_intent is not None
+    assert intent.system_status_intent.focus == "all"
+
+
+def test_system_status_does_not_hijack_unrelated():
+    """Conversational utterances mentioning "status" but not the
+    canonical patterns should NOT classify as SYSTEM_STATUS."""
+    samples = [
+        "what's the status of mongodb deployment best practices",
+        "I am working on machine learning",
+        "alerts can be useful for monitoring",
+    ]
+    for utt in samples:
+        intent = classify_routing(utt)
+        assert intent.kind != RoutingIntentKind.SYSTEM_STATUS, (
+            f"unexpected SYSTEM_STATUS for {utt!r}; reason={intent.reason}"
+        )
+
+
+def test_system_status_skipped_during_pending_clarification():
+    """Mid-coding-clarification, status queries should still pass
+    through as clarification responses (not hijacked by status)."""
+    intent = classify_routing(
+        "what alerts did you flag",
+        has_active_coding_task=True,
+        has_pending_clarification=True,
+    )
+    # Pending clarification has higher precedence than system status.
+    assert intent.kind != RoutingIntentKind.SYSTEM_STATUS
+
+
+# ---------------------------------------------------------------------------
 # Empty / whitespace
 # ---------------------------------------------------------------------------
 

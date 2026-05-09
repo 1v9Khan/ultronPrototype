@@ -84,6 +84,69 @@ _MODEL_SWITCH_PATTERNS = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# System status — read-only voice queries about Ultron's own state
+# (heartbeat alerts, active coding sessions, standing-order activity).
+# Matched at high priority so utterances like "what is Ultron working on"
+# don't get pulled into hybrid / coding rules below.
+# ---------------------------------------------------------------------------
+
+
+_SYSTEM_STATUS_ALERT_PATTERNS = re.compile(
+    r"\b(?:"
+    r"what\s+alerts(?:\s+did\s+you)?(?:\s+flag|\s+raise|\s+see)?|"
+    r"any\s+(?:pending\s+|recent\s+|new\s+|open\s+)?alerts?|"
+    r"any\s+(?:heartbeat\s+)?alerts?(?:\s+pending)?|"
+    r"show\s+me\s+(?:the\s+)?alerts?|"
+    r"list\s+(?:my\s+|the\s+)?alerts?|"
+    r"alerts?\s+(?:status|summary|pending)|"
+    r"what(?:'s|\s+is)?\s+pending(?:\s+for\s+me)?|"
+    r"what\s+have\s+you\s+been\s+(?:flagging|noticing|tracking)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_SYSTEM_STATUS_PROJECT_PATTERNS = re.compile(
+    r"\b(?:"
+    r"what(?:'s|\s+is)?\s+(?:ultron\s+|currently\s+)?(?:working\s+on|running)|"
+    r"what\s+(?:are\s+you|is\s+ultron)\s+(?:working\s+on|doing)|"
+    r"(?:what\s+(?:are\s+the\s+|the\s+)?|list\s+(?:the\s+|all\s+)?)?"
+    r"(?:active|in[-\s]?flight|pending)\s+(?:projects?|coding\s+(?:tasks?|sessions?)|tasks?|sessions?)|"
+    r"any\s+active\s+(?:projects?|coding|tasks?|sessions?)|"
+    r"(?:what\s+)?(?:standing\s+orders?|programs?)\s+(?:are\s+)?(?:active|running)|"
+    r"any\s+(?:running|active)\s+coding"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_SYSTEM_STATUS_BOTH_PATTERNS = re.compile(
+    r"\b(?:"
+    r"status\s+report|"
+    r"system\s+status|"
+    r"give\s+me\s+(?:a\s+)?status\s+update|"
+    r"what(?:'s|\s+is)?\s+going\s+on|"
+    r"what(?:'s|\s+is)?\s+(?:ultron's|your)\s+state"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_system_status(text: str):
+    """Return a (focus, reason) tuple if ``text`` is a SYSTEM_STATUS
+    query, otherwise None. Focus is one of "alerts" / "projects" / "all"
+    based on which pattern fired; ties prefer "all" (more inclusive)."""
+    has_alerts = bool(_SYSTEM_STATUS_ALERT_PATTERNS.search(text))
+    has_projects = bool(_SYSTEM_STATUS_PROJECT_PATTERNS.search(text))
+    has_both = bool(_SYSTEM_STATUS_BOTH_PATTERNS.search(text))
+    if has_both or (has_alerts and has_projects):
+        return "all", "system-status combined pattern matched"
+    if has_alerts:
+        return "alerts", "system-status alerts pattern matched"
+    if has_projects:
+        return "projects", "system-status projects pattern matched"
+    return None
+
+
 def _resolve_model_switch_target(matched_token: str) -> str:
     """Map the matched-text variant back to the canonical preset name.
 
@@ -321,6 +384,27 @@ def classify_routing(
             reason=coding.reason,
             coding_intent=coding,
         )
+
+    # 1.4) SYSTEM_STATUS — read-only voice queries about Ultron's own
+    #      state. Resolved without OpenClaw (read from heartbeat alert
+    #      log + active session list). High-priority match so
+    #      utterances like "what is Ultron working on" don't get pulled
+    #      into hybrid / coding rules.
+    if not has_pending_clarification:
+        status_match = _classify_system_status(text)
+        if status_match is not None:
+            from ultron.openclaw_routing.intents import SystemStatusIntent
+            focus, reason = status_match
+            return RoutingIntent(
+                kind=RoutingIntentKind.SYSTEM_STATUS,
+                raw_text=text,
+                confidence=0.9,
+                source="rule",
+                reason=reason,
+                system_status_intent=SystemStatusIntent(
+                    focus=focus, raw_text=text,
+                ),
+            )
 
     # 1.5) MODEL_SWITCH — must come BEFORE hybrid / automation rules so
     #      "switch to 4B" doesn't get pulled into a different category.

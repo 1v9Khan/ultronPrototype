@@ -618,6 +618,71 @@ class OpenClawBlockAndReviseConfig(_Strict):
     enabled: bool = False
 
 
+class OpenClawBridgeConfig(_Strict):
+    """Phase 3 bridge layer — CLI transport, MCP registration, workspace
+    IO, inbound event routing.
+
+    The bridge is consulted only when:
+
+    - Ultron's orchestrator wants to call an OpenClaw tool (browser, image
+      generation, messaging, etc.).
+    - Ultron starts up (registers Ultron MCP with the Gateway).
+    - OpenClaw forwards an inbound event Ultron should react to.
+
+    The voice pipeline does NOT touch the bridge. Voice queries flow
+    through the existing in-process pipeline without consulting OpenClaw.
+    All bridge ops fail open per the parent ``fail_open`` flag — when
+    the Gateway is down the bridge logs and degrades capabilities, but
+    the voice path keeps working.
+
+    Phase 3 deviates from the integration spec's HTTP transport: OpenClaw
+    2026.5.7 doesn't expose ``/tools/invoke`` or ``/messages`` HTTP
+    endpoints. The CLI is the documented public interface, so the
+    bridge invokes it via subprocess. ``cli_path`` points at
+    ``openclaw.cmd`` (Windows) or ``openclaw`` (POSIX).
+    """
+
+    # CLI transport
+    cli_path: Optional[str] = None
+    cli_timeout_seconds: float = 30.0
+
+    # MCP registration (Phase 3.2 + Phase 13 auto-resolve)
+    mcp_server_name: str = "ultron-mcp"
+    mcp_server_command: Optional[str] = "auto"
+    """Stdio entry-point command for OpenClaw to spawn when calling
+    Ultron's MCP. Three semantics:
+
+    - ``"auto"`` (default): resolve to the canonical entry script
+      ``scripts/run_ultron_mcp_for_openclaw.py`` invoked via the
+      project's ``.venv`` Python. The bridge holder does the
+      resolution at construction; the registrar receives the
+      concrete path.
+    - explicit path: use as-is (absolute path strongly recommended
+      so OpenClaw's spawn from any cwd resolves correctly).
+    - ``None``: disable registration entirely (the bridge runs
+      without MCP exposure)."""
+
+    mcp_server_args: List[str] = Field(default_factory=list)
+    """Extra args appended to ``command`` at spawn time. With the
+    ``"auto"`` resolution, the bridge holder also adds the entry
+    script path automatically — set this list to add extra flags
+    after that. With an explicit command, populate fully here."""
+
+    retry_registration_interval_seconds: float = 60.0
+
+    # Workspace IO (Phase 3.3)
+    workspace_dir: Optional[str] = None
+    workspace_lock_timeout_seconds: float = 5.0
+
+    # Inbound events (Phase 3.4 — gated off until Phase 4+)
+    inbound_voice_handoff_enabled: bool = False
+    inbound_voice_handoff_prefix: str = "[voice]"
+
+    # Per-call timeouts
+    tool_invocation_timeout_seconds: float = 30.0
+    message_send_timeout_seconds: float = 10.0
+
+
 class OpenClawConfig(_Strict):
     """Phase 5 placeholder for the OpenClaw peer Gateway. The dispatcher
     reads this to decide whether to attempt real calls or return stubs."""
@@ -632,6 +697,173 @@ class OpenClawConfig(_Strict):
     block_and_revise: OpenClawBlockAndReviseConfig = Field(
         default_factory=OpenClawBlockAndReviseConfig,
     )
+    # Phase 3 bridge layer — CLI transport, MCP registration, workspace IO.
+    bridge: OpenClawBridgeConfig = Field(default_factory=OpenClawBridgeConfig)
+
+
+# ---------------------------------------------------------------------------
+# Notifications (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+class TelegramNotifyOnConfig(_Strict):
+    """Per-event opt-in flags for Telegram notifications."""
+
+    coding_task_completion: bool = True
+    coding_task_clarification_needed: bool = True
+    heartbeat_alerts: bool = True
+    standing_order_outputs: bool = True
+    search_results_async: bool = False                  # opt-in; can be noisy
+
+
+class TelegramNotificationsConfig(_Strict):
+    """Telegram channel for proactive notifications (Phase 4)."""
+
+    enabled: bool = False
+    user_id_env: str = "TELEGRAM_USER_ID"
+    """Env var that resolves to the Telegram user id messages are sent
+    to. Stored in env (not config) so the user id stays out of git."""
+
+    fallback_user_id: Optional[str] = None
+    """Direct user id used when ``user_id_env`` is unset. Useful for
+    tests; production setups should leave this ``None`` and rely on the
+    env var."""
+
+    notify_on: TelegramNotifyOnConfig = Field(default_factory=TelegramNotifyOnConfig)
+
+
+class NotificationsConfig(_Strict):
+    """Phase 4 — proactive notifications from Ultron to remote channels.
+
+    These are off-hot-path: the orchestrator fires-and-forgets the
+    bridge call after a coding task completes, after a heartbeat
+    alert lands, etc. Failures are logged and never propagate to the
+    voice path.
+    """
+
+    telegram: TelegramNotificationsConfig = Field(
+        default_factory=TelegramNotificationsConfig,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+class BrowserConfig(_Strict):
+    """Phase 6 — browser tool integration via OpenClaw.
+
+    Controls voice-side ack timing and per-call timeouts. The
+    browser tool itself is provided by OpenClaw's bundled plugin;
+    Ultron's wrapper (:class:`BrowserTool`) just routes intent to
+    its primitives via :meth:`OpenClawClient.invoke_tool`.
+    """
+
+    enabled: bool = True
+    """Master switch. When False, MESSAGING / BROWSER intents fall
+    back to the dispatcher's stub voice messages even when a bridge
+    is wired. Use this to suppress browser dispatch without
+    disabling the entire bridge."""
+
+    default_snapshot_mode: Literal["ai", "aria"] = "ai"
+
+    default_navigation_timeout_seconds: float = 30.0
+    default_action_timeout_seconds: float = 10.0
+    default_screenshot_timeout_seconds: float = 30.0
+
+    long_running_progress_threshold_seconds: float = 5.0
+    """Above this threshold, the orchestrator should narrate
+    intermediate progress rather than wait silently."""
+
+    acknowledgment_phrases: List[str] = Field(default_factory=lambda: [
+        "Pulling up that page now.",
+        "Looking at it.",
+        "Loading the site.",
+        "Give me a moment to navigate.",
+    ])
+    """Voice ack played within ~200ms of a browser intent firing.
+    Mirrors the existing web-search ack pool. Phrases stay in
+    Ultron's voice (precise, weighted, no filler)."""
+
+
+class MediaGenerationConfig(_Strict):
+    """Phase 12 — image / video / music generation via OpenClaw.
+
+    Like the browser tool (Phase 6), media generation rides through
+    :meth:`OpenClawClient.invoke_tool` against a tool slug from
+    OpenClaw's provider plugin set.
+
+    **Provider policy (project-wide):** Ultron only accepts
+    free-or-local providers. ComfyUI (local Stable Diffusion) is the
+    canonical option. Pay-per-use APIs (Fal, Runway, Suno, etc.) are
+    NOT supported — Claude Code is the only paid service in the
+    stack. Concrete provider configuration lives in
+    ``~/.openclaw/openclaw.json`` under ``models.providers.<slug>``;
+    Ultron just routes the intent. See
+    ``docs/openclaw_media_generation_setup.md`` for the full setup.
+    """
+
+    enabled: bool = True
+    """Master switch. False suppresses media-gen dispatch even when
+    the bridge is wired."""
+
+    image_tool: str = "image_generate"
+    video_tool: str = "video_generate"
+    music_tool: str = "music_generate"
+    """Tool slugs OpenClaw exposes when the provider plugins are
+    enabled. Override if the user's provider uses different names."""
+
+    default_image_provider: Optional[str] = None
+    default_video_provider: Optional[str] = None
+    default_music_provider: Optional[str] = None
+    """Optional explicit provider names passed through as a tool
+    parameter. ``None`` lets OpenClaw pick its default."""
+
+    default_timeout_seconds: float = 120.0
+    """Generation jobs run for tens of seconds typically."""
+
+    delivery_voice: str = "telegram"
+    """Where to deliver media when the user issued the intent via
+    voice. Voice channels can't display images, so the result is
+    forwarded to Telegram + a voice ack confirms delivery."""
+
+    delivery_text: str = "inline"
+    """Where to deliver media when the user issued the intent via
+    Telegram. ``"inline"`` returns the result in the same chat;
+    overrides per-channel can be set in OpenClaw's channel config."""
+
+    acknowledgment_phrases: List[str] = Field(default_factory=lambda: [
+        "Working on that. Should be a moment.",
+        "Generating now.",
+        "I'll send it when it's ready.",
+    ])
+
+
+class HeartbeatConfig(_Strict):
+    """Phase 5 — heartbeat alert persistence + Ultron-side query.
+
+    The OpenClaw-side heartbeat agent (configured separately in
+    ``~/.openclaw/openclaw.json`` under ``agents[].heartbeat``) raises
+    alerts that Ultron records here so a voice query like "what alerts
+    did you flag?" can pull from the alert log. This config controls
+    local persistence and retention.
+    """
+
+    alert_log_path: str = "logs/heartbeat_alerts.jsonl"
+    """Where heartbeat alerts get appended (JSONL). Path resolves
+    against the project root if relative."""
+
+    alert_retention_days: int = Field(default=30, ge=1, le=365)
+    """How long alerts stay in the log before pruning. Pruning runs
+    on demand via ``HeartbeatAlertLog.prune()``; not automatic."""
+
+    auto_notify_telegram: bool = True
+    """When true, every recorded alert is also fired through
+    :class:`NotificationDispatcher.notify_heartbeat_alert`. Per-event
+    notify gating still applies — set
+    ``notifications.telegram.notify_on.heartbeat_alerts: false`` to
+    suppress Telegram delivery without touching this flag."""
 
 
 class ErrorPhrasesConfig(_Strict):
@@ -709,6 +941,10 @@ class UltronConfig(_Strict):
     error_phrases: ErrorPhrasesConfig = Field(default_factory=ErrorPhrasesConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     openclaw: OpenClawConfig = Field(default_factory=OpenClawConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
+    media_generation: MediaGenerationConfig = Field(default_factory=MediaGenerationConfig)
 
 
 # ---------------------------------------------------------------------------

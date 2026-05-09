@@ -44,6 +44,11 @@ class RoutingIntentKind(str, Enum):
     # Self-management — voice-driven runtime model swap. 4B plan addition.
     MODEL_SWITCH = "model_switch"
 
+    # System status — "what alerts did you flag?", "what is Ultron working on?",
+    # "any pending alerts?". Resolved Ultron-side (no OpenClaw call) by reading
+    # the heartbeat alert log + active coding session list. Phase 13 finish.
+    SYSTEM_STATUS = "system_status"
+
 
 # ---------------------------------------------------------------------------
 # Per-category structured intents (for openclaw-bound ones)
@@ -108,6 +113,21 @@ class ModelSwitchIntent:
 
 
 @dataclass
+class SystemStatusIntent:
+    """A voice query about Ultron's overall state.
+
+    ``focus`` narrows the response: ``"alerts"`` reads from the
+    heartbeat alert log only, ``"projects"`` lists active coding
+    sessions only, ``"all"`` does both. The classifier picks the
+    focus from the utterance ("what alerts" → alerts, "what's
+    Ultron working on" → projects, "status report" → all).
+    """
+
+    focus: str = "all"  # "alerts" | "projects" | "all"
+    raw_text: str = ""
+
+
+@dataclass
 class HybridSubtask:
     """One step in a HYBRID_TASK decomposition."""
     order: int
@@ -146,6 +166,7 @@ class RoutingIntent:
     automation_intent: Optional[AutomationIntent] = None
     subtasks: List[HybridSubtask] = field(default_factory=list)
     model_switch_intent: Optional[ModelSwitchIntent] = None  # MODEL_SWITCH only
+    system_status_intent: Optional[SystemStatusIntent] = None  # SYSTEM_STATUS only
 
     # Disambiguation: when the rule-based + LLM disambiguator can't decide,
     # the orchestrator asks the user a clarifying question.

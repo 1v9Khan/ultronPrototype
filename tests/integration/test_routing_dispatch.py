@@ -100,6 +100,64 @@ def test_hybrid_browser_script_dispatches_stub(cap_stack, routing_log, read_rout
 
 
 # ---------------------------------------------------------------------------
+# Phase 13 — SYSTEM_STATUS voice handler routes through the bridge's reporter
+# ---------------------------------------------------------------------------
+
+
+def test_system_status_alerts_handled(cap_stack, routing_log, read_routing):
+    """`what alerts did you flag` returns a voice response (no OpenClaw call)."""
+    response = dispatch_utterance(cap_stack, "what alerts did you flag")
+    assert response is not None
+    assert response.handled is True
+    # Either a real alert summary or "no pending alerts" — both are acceptable.
+    msg = response.text.lower()
+    assert "alert" in msg or "pending" in msg
+    rec = read_routing()[-1]
+    assert rec["intent"] == "system_status"
+    assert rec["handler"] == "voice.system_status"
+
+
+def test_system_status_projects_handled(cap_stack, routing_log, read_routing):
+    """`what is Ultron working on` returns a voice response."""
+    response = dispatch_utterance(cap_stack, "what is Ultron working on")
+    assert response is not None
+    assert response.handled is True
+    rec = read_routing()[-1]
+    assert rec["intent"] == "system_status"
+    # Empty workspace → "Nothing active." is the canonical reply.
+    msg = response.text.lower()
+    assert "nothing active" in msg or "active" in msg or "session" in msg
+
+
+def test_system_status_combined_handled(cap_stack, routing_log, read_routing):
+    response = dispatch_utterance(cap_stack, "status report")
+    assert response is not None
+    assert response.handled is True
+    rec = read_routing()[-1]
+    assert rec["intent"] == "system_status"
+    assert rec["handler"] == "voice.system_status"
+
+
+def test_system_status_in_ultron_voice(cap_stack, routing_log):
+    """Spot-check: status responses don't use forbidden filler phrases."""
+    for utt in (
+        "what alerts did you flag",
+        "what is Ultron working on",
+        "status report",
+    ):
+        response = dispatch_utterance(cap_stack, utt)
+        assert response is not None
+        msg = response.text.lower()
+        for banned in (
+            "certainly", "of course", "happy to",
+            "i'd be happy", "absolutely",
+        ):
+            assert banned not in msg, (
+                f"banned phrase {banned!r} in status response: {response.text!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Stub voice quality: every stub message stays in Ultron's voice
 # ---------------------------------------------------------------------------
 

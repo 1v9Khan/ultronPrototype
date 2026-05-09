@@ -82,6 +82,7 @@ class CapabilityVoiceController:
         sandbox_root: Path = settings.CODING_SANDBOX_PATH,
         coordinator=None,
         llm_engine=None,
+        openclaw_bridge=None,
     ) -> None:
         self.runner = runner
         self.registry = registry
@@ -93,6 +94,12 @@ class CapabilityVoiceController:
         # call ``llm_engine.reload_for_preset(target)``. None disables
         # the feature (returns a clear voice error rather than crash).
         self.llm_engine = llm_engine
+        # Phase 4 — when set, the OpenClawDispatcher used for MESSAGING
+        # / BROWSER / etc. intents gets the bridge handle so it can
+        # invoke real Gateway calls instead of returning the stub
+        # voice messages. None disables the live path; stubs return
+        # exactly as before.
+        self.openclaw_bridge = openclaw_bridge
         self._lock = threading.Lock()
         # State machine for completion-push: when has_active_task() goes
         # from True to False, we capture the completion narration so the
@@ -546,6 +553,85 @@ class CapabilityVoiceController:
             "qwen3.5-4b": "the 4B",
         }.get(preset, preset)
 
+    # --- Phase 13: system-status voice queries -----------------------------
+
+    def _handle_system_status(self, routing_intent) -> "VoiceResponse":
+        """Resolve a SYSTEM_STATUS intent via the bridge's reporter.
+
+        Reads heartbeat alerts + active coding session listing from
+        disk. Returns a brief voice narration. Fail-open: any read
+        failure yields a clear "no information" response rather than
+        crashing the voice pipeline.
+        """
+        from ultron.openclaw_routing import get_routing_log
+        from ultron.openclaw_routing.intents import SystemStatusIntent
+
+        intent = (
+            routing_intent.system_status_intent
+            if routing_intent.system_status_intent is not None
+            else SystemStatusIntent(focus="all", raw_text=routing_intent.raw_text)
+        )
+
+        # Find an alert log we can read. Prefer the bridge's instance
+        # so the path matches what the OpenClaw side is using; fall
+        # back to a fresh instance from config when no bridge is wired.
+        alert_log = None
+        if self.openclaw_bridge is not None:
+            alert_log = getattr(self.openclaw_bridge, "heartbeat_alerts", None)
+        if alert_log is None:
+            try:
+                from ultron.config import get_config, resolve_path
+                from ultron.openclaw_bridge.heartbeat_alerts import (
+                    HeartbeatAlertLog,
+                )
+                hb_cfg = get_config().heartbeat
+                alert_log = HeartbeatAlertLog(
+                    resolve_path(hb_cfg.alert_log_path),
+                    retention_days=hb_cfg.alert_retention_days,
+                )
+            except Exception as exc:                            # noqa: BLE001
+                get_routing_log().record(
+                    routing_intent,
+                    handler="voice.system_status",
+                    outcome="failed",
+                    extra={"error": f"alert log unreachable: {exc}"},
+                )
+                return VoiceResponse(
+                    text="I can't read the alert log right now.",
+                    handled=True,
+                )
+
+        try:
+            from ultron.openclaw_bridge.system_status import SystemStatusReporter
+            reporter = SystemStatusReporter(alert_log)
+            report = reporter.report(intent)
+        except Exception as exc:                                # noqa: BLE001
+            get_routing_log().record(
+                routing_intent,
+                handler="voice.system_status",
+                outcome="failed",
+                extra={"error": str(exc)},
+            )
+            return VoiceResponse(
+                text="I couldn't put together a status just now.",
+                handled=True,
+            )
+
+        get_routing_log().record(
+            routing_intent,
+            handler="voice.system_status",
+            outcome="dispatched",
+            extra={
+                "focus": report.focus,
+                "alert_count": len(report.alerts),
+                "session_count": len(report.active_sessions),
+            },
+        )
+        return VoiceResponse(
+            text=report.voice_message,
+            handled=True,
+        )
+
     # --- Phase 5 capability dispatch ---------------------------------------
 
     def handle_capability_intent(self, routing_intent) -> Optional[VoiceResponse]:
@@ -588,6 +674,13 @@ class CapabilityVoiceController:
         if kind == RoutingIntentKind.MODEL_SWITCH:
             return self._handle_model_switch(routing_intent)
 
+        # Phase 13 — system-status voice queries ("what alerts did
+        # you flag?", "what is Ultron working on?"). Read from the
+        # heartbeat alert log + active session listing on disk via
+        # the bridge's SystemStatusReporter. No OpenClaw call.
+        if kind == RoutingIntentKind.SYSTEM_STATUS:
+            return self._handle_system_status(routing_intent)
+
         # Coding kinds — delegate to the existing utterance pipeline.
         coding_kinds = {
             RoutingIntentKind.CODE_TASK,
@@ -625,7 +718,10 @@ class CapabilityVoiceController:
                 # / not yet wired), the validator fails open and
                 # dispatch behaves exactly as before.
                 runner = AutomationTaskRunner(
-                    dispatcher=OpenClawDispatcher(llm=self.llm_engine),
+                    dispatcher=OpenClawDispatcher(
+                        llm=self.llm_engine,
+                        bridge=self.openclaw_bridge,
+                    ),
                 )
                 self._automation_runner = runner
 

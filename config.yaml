@@ -377,6 +377,130 @@ openclaw:
   # is wired live in a later phase.
   block_and_revise:
     enabled: true
+  # Phase 3 bridge layer — CLI transport, MCP registration, workspace
+  # IO, inbound event routing. Active only when openclaw.enabled=true.
+  bridge:
+    # CLI transport. Phase 3 invokes the openclaw CLI via subprocess
+    # (the documented public interface) rather than undocumented HTTP.
+    # cli_path null = auto-discover via PATH, then platform defaults.
+    cli_path: null
+    cli_timeout_seconds: 30.0
+
+    # MCP registration. The default "auto" resolves to the canonical
+    # entry script (scripts/run_ultron_mcp_for_openclaw.py invoked
+    # via the project's .venv Python). Set to a custom command +
+    # args, or to null to disable registration entirely.
+    # Spawn shape: <command> <args...>. Used by `openclaw mcp set`.
+    mcp_server_name: "ultron-mcp"
+    mcp_server_command: "auto"
+    mcp_server_args: []
+    retry_registration_interval_seconds: 60.0
+
+    # Shared workspace. null = auto-discover via persona.default_workspace_dir.
+    workspace_dir: null
+    workspace_lock_timeout_seconds: 5.0
+
+    # Inbound voice handoff. Off by default; opt-in for Phase 4+.
+    inbound_voice_handoff_enabled: false
+    inbound_voice_handoff_prefix: "[voice]"
+
+    # Per-call timeouts.
+    tool_invocation_timeout_seconds: 30.0
+    message_send_timeout_seconds: 10.0
+
+# ---------------------------------------------------------------------------
+# Notifications (OpenClaw integration Phase 4) — proactive pings to remote
+# channels. All flags default OFF until the user has set up the channel
+# on the OpenClaw side. Failures are logged and never propagate to the
+# voice path.
+# ---------------------------------------------------------------------------
+
+notifications:
+  telegram:
+    # Master switch. Even when true, individual events still need
+    # their per-event flag below to be true. Requires the Telegram
+    # channel to be configured in OpenClaw — see
+    # docs/openclaw_telegram_setup.md.
+    enabled: false
+
+    # Env var that resolves to the Telegram user id messages are sent
+    # to. Stored in env (not config) so it stays out of git.
+    user_id_env: "TELEGRAM_USER_ID"
+
+    # Direct user id used when user_id_env is unset. Production setups
+    # leave this null and rely on the env var.
+    fallback_user_id: null
+
+    # Per-event opt-ins. Disable any of these to suppress that
+    # specific notification class without flipping the master switch.
+    notify_on:
+      coding_task_completion: true
+      coding_task_clarification_needed: true
+      heartbeat_alerts: true
+      standing_order_outputs: true
+      search_results_async: false           # opt-in; can be noisy
+
+# ---------------------------------------------------------------------------
+# Heartbeat (OpenClaw integration Phase 5) — local persistence + retention
+# for alerts raised by the OpenClaw-side heartbeat agent. The agent
+# itself is configured in ~/.openclaw/openclaw.json (cadence, target
+# channel, etc.). See docs/openclaw_heartbeat_setup.md.
+# ---------------------------------------------------------------------------
+
+heartbeat:
+  alert_log_path: "logs/heartbeat_alerts.jsonl"
+  alert_retention_days: 30
+  # When true, every recorded alert is also pushed to Telegram via
+  # NotificationDispatcher (subject to notifications.telegram per-event
+  # gating). Disabling this records alerts to the log only.
+  auto_notify_telegram: true
+
+# ---------------------------------------------------------------------------
+# Media generation (OpenClaw integration Phase 12) — image / video /
+# music tools via OpenClaw provider plugins. Local-only: ComfyUI is
+# the canonical option (other providers like Fal / Runway / Suno are
+# pay-per-use and explicitly NOT supported per project policy — only
+# Claude Code is paid in this stack). Provider configuration lives in
+# ~/.openclaw/openclaw.json under models.providers.<slug>.
+# See docs/openclaw_media_generation_setup.md.
+# ---------------------------------------------------------------------------
+
+media_generation:
+  enabled: true                                # set false to suppress dispatch
+  image_tool: "image_generate"
+  video_tool: "video_generate"
+  music_tool: "music_generate"
+  default_image_provider: null                 # null = OpenClaw picks
+  default_video_provider: null
+  default_music_provider: null
+  default_timeout_seconds: 120.0               # gen jobs can take a minute+
+  delivery_voice: "telegram"                   # voice queries → Telegram delivery
+  delivery_text: "inline"
+  acknowledgment_phrases:
+    - "Working on that. Should be a moment."
+    - "Generating now."
+    - "I'll send it when it's ready."
+
+# ---------------------------------------------------------------------------
+# Browser tool (OpenClaw integration Phase 6) — voice-side ack timing
+# and per-call timeouts. The actual browser machinery comes from
+# OpenClaw's bundled plugin (Playwright + Chromium). See
+# docs/openclaw_browser_setup.md.
+# ---------------------------------------------------------------------------
+
+browser:
+  enabled: true                                # set false to suppress browser dispatch
+  default_snapshot_mode: "ai"                  # 'ai' (refs) or 'aria' (a11y tree)
+  default_navigation_timeout_seconds: 30.0
+  default_action_timeout_seconds: 10.0
+  default_screenshot_timeout_seconds: 30.0
+  long_running_progress_threshold_seconds: 5.0
+  # Voice ack pool. Played within ~200ms of a browser intent firing.
+  acknowledgment_phrases:
+    - "Pulling up that page now."
+    - "Looking at it."
+    - "Loading the site."
+    - "Give me a moment to navigate."
 
 # ---------------------------------------------------------------------------
 # Error phrases (Phase 4) — user-facing voice messages for dependency failures

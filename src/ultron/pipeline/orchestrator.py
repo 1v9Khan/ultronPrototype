@@ -117,6 +117,13 @@ class Orchestrator:
         )
         self.mcp_server = self._load_mcp_server_if_enabled()
         self.coding_coordinator = self._load_coding_coordinator_if_enabled()
+        # Phase 3.5: OpenClaw bridge holder. None when openclaw.enabled
+        # is False (current default). Construction is fail-open — the
+        # voice path is never blocked by the Gateway being unreachable.
+        # Built BEFORE coding_voice so the voice controller can pass
+        # the bridge to OpenClawDispatcher for live Gateway calls
+        # (Phase 4 onwards).
+        self.openclaw_bridge = self._load_openclaw_bridge_if_enabled()
         self.coding_voice = self._load_coding_voice_if_enabled()
         self._last_response_finished_monotonic: float = 0.0
         self._last_search_payload = None
@@ -177,6 +184,47 @@ class Orchestrator:
             logger.warning("Coordinator init failed (%s) -- disabled", e)
             return None
 
+    def _load_openclaw_bridge_if_enabled(self):
+        """Phase 3.5: build the OpenClaw bridge holder (or return None
+        when ``openclaw.enabled=False``). Fail-open — any startup
+        failure logs WARN and leaves the bridge in a degraded but
+        usable state. The voice pipeline does NOT depend on the
+        bridge; bridge calls fire only on OpenClaw-bound intents.
+
+        Phase 4: also threads :class:`NotificationsConfig` through
+        so the bridge's :class:`NotificationDispatcher` knows whether
+        Telegram pings are enabled.
+        """
+        from ultron.config import get_config
+        from ultron.openclaw_bridge import OpenClawBridge
+
+        full_cfg = get_config()
+        cfg = full_cfg.openclaw
+        if not cfg.enabled:
+            return None
+        try:
+            bridge = OpenClawBridge.from_config(
+                cfg,
+                notifications_cfg=full_cfg.notifications,
+                heartbeat_cfg=full_cfg.heartbeat,
+            )
+        except Exception as e:                                 # noqa: BLE001
+            logger.warning(
+                "OpenClaw bridge construction failed (%s) -- disabled. "
+                "Voice path is unaffected.", e,
+            )
+            return None
+        if bridge is None:
+            return None
+        try:
+            bridge.start()
+        except Exception as e:                                 # noqa: BLE001
+            logger.warning(
+                "OpenClaw bridge start raised (%s) -- bridge stays in "
+                "degraded mode; voice path unaffected.", e,
+            )
+        return bridge
+
     def _load_coding_voice_if_enabled(self):
         """Construct the coding voice controller if enabled.
 
@@ -216,6 +264,11 @@ class Orchestrator:
                 # MODEL_SWITCH intent. Hot-reload happens in the same
                 # process; no orchestrator restart required.
                 llm_engine=self.llm,
+                # Phase 4 — pass through to OpenClawDispatcher so
+                # MESSAGING / BROWSER / etc. intents call real Gateway
+                # operations when the bridge is wired. None when the
+                # bridge is disabled or its construction failed.
+                openclaw_bridge=self.openclaw_bridge,
             )
             logger.info(
                 "Coding voice ready (bridge=%s, sandbox=%s, coordinator=%s)",
@@ -374,6 +427,14 @@ class Orchestrator:
         if self.mcp_server is not None:
             try:
                 self.mcp_server.stop(timeout_s=3.0)
+            except Exception:
+                pass
+        if self.openclaw_bridge is not None:
+            # Phase 3.5: stop the retry thread + event receiver. We
+            # deliberately do NOT unregister the MCP entry — leaving it
+            # lets OpenClaw spawn Ultron's MCP across restarts.
+            try:
+                self.openclaw_bridge.shutdown()
             except Exception:
                 pass
 
@@ -661,7 +722,12 @@ class Orchestrator:
 
     def _announce_coding_completion_if_pending(self) -> None:
         """If a background coding task just finished, speak its summary
-        before we go back to listening for the next utterance."""
+        before we go back to listening for the next utterance.
+
+        Phase 4: also fires a proactive Telegram notification with the
+        same summary text so the user gets the update on their phone
+        when they're away from the desk. Fire-and-forget; failures
+        log and never propagate."""
         if self.coding_voice is None:
             return
         try:
@@ -672,10 +738,14 @@ class Orchestrator:
         if narration:
             self._speak(narration)
             self._last_response_finished_monotonic = time.monotonic()
+            self._notify_coding_completion(narration)
 
     def _announce_pending_clarifications(self) -> None:
         """Speak any clarifications Claude is waiting on. Each prompt is
-        spoken at most once -- the user's next utterance answers it."""
+        spoken at most once -- the user's next utterance answers it.
+
+        Phase 4: also fires a Telegram notification per clarification
+        so a user away from the desk knows their attention is needed."""
         if self.coding_voice is None:
             return
         try:
@@ -686,6 +756,41 @@ class Orchestrator:
         for prompt in prompts:
             self._speak(prompt)
             self._last_response_finished_monotonic = time.monotonic()
+            self._notify_coding_clarification(prompt)
+
+    def _notify_coding_completion(self, summary: str) -> None:
+        """Fire-and-forget Telegram notification for a coding-task
+        completion. Bridge handles all gating + fail-open; this
+        helper just bridges the sync orchestrator loop to the async
+        notifier."""
+        if self.openclaw_bridge is None:
+            return
+        try:
+            self.openclaw_bridge.fire_and_forget(
+                lambda: self.openclaw_bridge.notifications.notify_coding_task_completion(
+                    summary,
+                ),
+            )
+        except Exception as e:                                 # noqa: BLE001
+            logger.warning(
+                "coding-completion notification dispatch failed: %s", e,
+            )
+
+    def _notify_coding_clarification(self, prompt: str) -> None:
+        """Fire-and-forget Telegram notification for a clarification
+        request. See :meth:`_notify_coding_completion`."""
+        if self.openclaw_bridge is None:
+            return
+        try:
+            self.openclaw_bridge.fire_and_forget(
+                lambda: self.openclaw_bridge.notifications.notify_coding_task_clarification(
+                    prompt,
+                ),
+            )
+        except Exception as e:                                 # noqa: BLE001
+            logger.warning(
+                "clarification notification dispatch failed: %s", e,
+            )
 
     def _announce_pending_budget_warning(self) -> None:
         """Phase 7: surface token-budget warnings (80%) and halt notices

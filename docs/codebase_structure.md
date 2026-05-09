@@ -10,17 +10,17 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
-Last validated against HEAD `0d6bd73` (main = `claude/fervent-meitner-98bfe7`).
+Last validated against HEAD `b1a6f41` (`claude/pensive-engelbart-2ba3e5` worktree; main pending merge of Phase 3 finish work).
 
 State at this validation:
 - Foundation phase complete (Parts 0–7); Part 3.5 unified-config migration intentionally deferred; 16-step real-stack smoke test still pending (interactive).
-- OpenClaw integration: **Phases 0, 1, 2 done; Phase 3 PARTIAL** (only `OpenClawLifecycle` + typed errors landed; client.py / mcp_registration.py / workspace.py / events.py / orchestrator-startup-integration / OPENCLAW_TOOL intent classifier not yet built). Phases 4–13 not started.
+- OpenClaw integration: **Phases 0–13 done.** Phase 13 closed the original deferrals: stdio MCP entry script (`scripts/run_ultron_mcp_for_openclaw.py`) + five MCP tools (`get_heartbeat_alerts`, `acknowledge_alert`, `run_maintenance`, `list_active_coding_sessions`, `get_recent_voice_alerts`); voice-side `SystemStatusReporter` + `SYSTEM_STATUS` intent kind + classifier patterns; `OpenClawBridgeConfig.mcp_server_command="auto"` default that resolves to the canonical entry point. Auto-enabled on the user's OpenClaw install: `session-memory` + `command-logger` hooks, `memory-wiki` plugin, `ultron-mcp` MCP registration. Live-stack smoke tests remain user-led per the per-phase setup docs.
 - 4B optimization plan: Stages A–H + voice-driven model swap + Items 4–8 fully wired into trigger sites + **all five flags defaulted ON** in `config.yaml`. Stage E voice character A/B passed (interactive A/B was approved 2026-05-08).
 - Active LLM: **`qwen3.5-4b`** preset (model_path `models/Qwen3.5-4B-Q4_K_M.gguf`, draft `Qwen3.5-0.8B-Q4_K_M.gguf`, n_ctx 8192). 9B GGUF retained for swap-back.
 - Voice baseline (10-query stack with all Items ON): **TTFT median 79 ms**, **VRAM peak 7913 MB** (-2461 MB / -2.5 GB vs 9B). See [baselines.json](../baselines.json).
 - Items 4–8 measurable verification: [scripts/verify_items_4_to_8.py](../scripts/verify_items_4_to_8.py) exercises each item in its trigger scenario and prints concrete deltas.
 - Stale-`.env` gotcha resolved: `ULTRON_LLM_MODEL_PATH=...9B...` line in `.env` was silently overriding the preset. Now commented out (line 84).
-- **1011 tests collected; 995 passed, 16 skipped (GPU-gated), 0 failed.**
+- **1266 tests collected; 1251 passed, 15 skipped (GPU-gated), 0 failed.** Net delta vs Foundation Phase 7 baseline: +256 OpenClaw-bridge tests (Phase 3 = +104, Phase 4 = +27, Phase 5 = +21, Phase 6 = +28, Phase 12 = +9, Phase 13 finish = +67). Phases 7, 8, 9, 10, 11 were docs-only.
 
 ---
 
@@ -155,9 +155,19 @@ For the current decisions and Foundation phase status see
 │       │   ├── irma.py             ← 4B plan Item 5: InputReformulator + ReformulationContext (default OFF)
 │       │   └── runner.py           ← AutomationTaskRunner (mirror of CodingTaskRunner)
 │       │
-│       ├── openclaw_bridge/        ← OpenClaw integration Phase 1 + 3 foundations
+│       ├── openclaw_bridge/        ← OpenClaw integration Phases 1, 3, 4, 5, 6, 13 (complete)
 │       │   ├── persona.py          ← PersonaLoader (mode-based: user_facing/background/heartbeat/bootstrap) + hot reload
-│       │   └── lifecycle.py        ← OpenClawLifecycle (health probes; never raises)
+│       │   ├── lifecycle.py        ← OpenClawLifecycle (HTTP health probes; never raises)
+│       │   ├── client.py           ← OpenClawClient (async CLI subprocess transport: invoke_tool / send_message / trigger_heartbeat / mcp_*)
+│       │   ├── workspace.py        ← WorkspaceWriter (atomic writes + filelock for MEMORY.md / USER.md / daily files)
+│       │   ├── events.py           ← OpenClawEventReceiver (gated-off scaffold for [voice] inbound handoff)
+│       │   ├── mcp_registration.py ← UltronMcpRegistrar (idempotent `openclaw mcp set` with background retry)
+│       │   ├── holder.py           ← OpenClawBridge (orchestrator-owned holder: probe → register → retry-thread → fire_and_forget → record_heartbeat_alert; auto-resolve "auto" command)
+│       │   ├── notifications.py    ← NotificationDispatcher (Phase 4 — proactive Telegram pings on coding-completion / heartbeat / etc.)
+│       │   ├── heartbeat_alerts.py ← HeartbeatAlertLog (Phase 5 — JSONL-backed alert log with atomic update + retention)
+│       │   ├── browser.py          ← BrowserTool (Phase 6 — navigate/snapshot/click/type/screenshot via OpenClawClient.invoke_tool)
+│       │   ├── mcp_tools.py        ← Stdio MCP server (Phase 13 — get_heartbeat_alerts / acknowledge_alert / run_maintenance / list_active_coding_sessions / get_recent_voice_alerts)
+│       │   └── system_status.py    ← SystemStatusReporter (Phase 13 — voice-side reporter for SYSTEM_STATUS intents)
 │       │
 │       ├── resilience/             ← Phase 4 resilience primitives
 │       │   ├── circuit_breaker.py  ← CircuitBreaker (3-state: CLOSED/OPEN/HALF_OPEN)
@@ -193,8 +203,24 @@ For the current decisions and Foundation phase status see
 │   ├── smoke_test.md               ← 16-step real-stack walkthrough procedure
 │   ├── openclaw_integration.md     ← OpenClaw integration architecture + Phase 0/1
 │   ├── openclaw_runtime.md         ← OpenClaw runtime ops (agents, supervisor, locks)
-│   ├── phase_1_summary.md          ← Phase 1 close-out report (persona migration)
-│   ├── 4b_optimization_plan.md     ← Deferred 4B-model migration plan
+│   ├── openclaw_integration_final_summary.md ← Cross-phase reference + intentional deviations + setup-readiness checklist
+│   ├── phase_1_summary.md          ← OpenClaw Phase 1 close-out (persona migration)
+│   ├── phase_3_summary.md          ← OpenClaw Phase 3 close-out (bridge layer)
+│   ├── phase_4_summary.md          ← OpenClaw Phase 4 close-out (Telegram channel)
+│   ├── phase_5_summary.md          ← OpenClaw Phase 5 close-out (heartbeat)
+│   ├── phase_6_summary.md          ← OpenClaw Phase 6 close-out (browser tool)
+│   ├── openclaw_telegram_setup.md  ← User-side: Telegram bot setup procedure
+│   ├── openclaw_heartbeat_setup.md ← User-side: agents[].heartbeat block setup
+│   ├── openclaw_browser_setup.md   ← User-side: Playwright/Chromium + tools.alsoAllow
+│   ├── openclaw_cron_setup.md      ← User-side: cron jobs (Windows Task Scheduler fallback)
+│   ├── openclaw_hooks_setup.md     ← User-side: bundled hooks; custom hook scaffolding
+│   ├── openclaw_memory_wiki_setup.md ← User-side: Memory Wiki plugin enablement
+│   ├── openclaw_media_generation_setup.md ← User-side: local-only ComfyUI setup (paid APIs out)
+│   ├── mobile_node_setup.md        ← User-side: iOS / Android pairing procedure
+│   ├── standing_orders.md          ← Standing-order programs in AGENTS.md
+│   ├── memory_architecture.md      ← Three-layer memory model (Qdrant + workspace + Wiki)
+│   ├── 4b_optimization_plan.md     ← 4B-model migration plan (all stages done)
+│   ├── model_checksums.md          ← SHA256 of every GGUF in `models/`
 │   └── codebase_structure.md       ← THIS FILE
 │
 ├── scripts/                        ← Operational scripts (CLI tools)
@@ -218,7 +244,12 @@ For the current decisions and Foundation phase status see
 │   ├── supervised_llamacpp_server.py ← OpenClaw Phase 0: supervisor wrapper with auto-restart
 │   ├── smoke_test_llamacpp.ps1     ← OpenClaw Phase 0: PowerShell health probe for llama-cpp-server
 │   ├── _bench_llm_http.py          ← OpenClaw Phase 0: HTTP-mode TTFT benchmark
-│   └── _log_proxy.py               ← OpenClaw Phase 0: tee proxy for debugging Gateway → server traffic
+│   ├── _log_proxy.py               ← OpenClaw Phase 0: tee proxy for debugging Gateway → server traffic
+│   ├── _record_phase0_baseline.py  ← OpenClaw Phase 0: baseline recorder
+│   ├── _merge_phase0_baselines.py  ← OpenClaw Phase 0: baseline merger
+│   ├── _vram_peak_monitor.py       ← Auxiliary VRAM peak monitor (used by extended baselines)
+│   ├── run_maintenance_for_cron.py ← OpenClaw Phase 7: cron-friendly maintenance wrapper (JSON / pretty / exit codes)
+│   └── run_ultron_mcp_for_openclaw.py ← OpenClaw Phase 13: stdio MCP entry script OpenClaw spawns to call Ultron tools
 │
 ├── tests/
 │   ├── conftest.py                 ← Path setup so `from ultron.*` works
@@ -251,16 +282,29 @@ For the current decisions and Foundation phase status see
 │   │   ├── test_disambiguator.py
 │   │   ├── test_decision_log.py
 │   │   └── test_backward_compat.py
-│   └── integration/                ← Phase 6: end-to-end pipeline (83 tests)
-│       ├── conftest.py
-│       ├── mocks.md                ← What's mocked vs real, per layer
-│       ├── performance.json        ← Phase 6 perf snapshot
-│       ├── test_routing_dispatch.py
-│       ├── test_conversational_pipeline.py
-│       ├── test_search_pipeline.py
-│       ├── test_coding_pipeline.py
-│       ├── test_addressing_pipeline.py
-│       └── test_error_recovery_pipeline.py
+│   ├── integration/                ← Phase 6: end-to-end pipeline (83 tests + bridge e2e)
+│   │   ├── conftest.py
+│   │   ├── mocks.md                ← What's mocked vs real, per layer
+│   │   ├── performance.json        ← Phase 6 perf snapshot
+│   │   ├── test_routing_dispatch.py    ← + Phase 13 SYSTEM_STATUS routing tests
+│   │   ├── test_conversational_pipeline.py
+│   │   ├── test_search_pipeline.py
+│   │   ├── test_coding_pipeline.py
+│   │   ├── test_addressing_pipeline.py
+│   │   ├── test_error_recovery_pipeline.py
+│   │   └── test_bridge_e2e.py      ← OpenClaw Phase 3 bridge e2e (real subprocess against stub CLI)
+│   └── openclaw_bridge/            ← OpenClaw Phases 3–13 bridge tests (158 tests)
+│       ├── __init__.py
+│       ├── test_client.py          ← OpenClawClient: subprocess transport + result parsing
+│       ├── test_workspace.py       ← WorkspaceWriter: atomic + filelock + concurrency
+│       ├── test_events.py          ← OpenClawEventReceiver: prefix matching + dispatch
+│       ├── test_mcp_registration.py ← UltronMcpRegistrar: idempotent + retry
+│       ├── test_holder.py          ← OpenClawBridge: from_config / start / shutdown / fire_and_forget / record_heartbeat_alert / auto-resolve
+│       ├── test_notifications.py   ← NotificationDispatcher: per-event gating + recipient resolution + transport errors
+│       ├── test_heartbeat_alerts.py ← HeartbeatAlertLog: record / get / acknowledge / prune / concurrency
+│       ├── test_browser.py         ← BrowserTool: six primitives + result extraction edge cases
+│       ├── test_mcp_tools.py       ← Stdio MCP tools: get_heartbeat_alerts / acknowledge_alert / run_maintenance / list_active_coding_sessions / get_recent_voice_alerts
+│       └── test_system_status.py   ← SystemStatusReporter: alerts / projects / all foci + voice rendering
 │
 ├── data/                           ← runtime data (gitignored except for stub structure)
 │   ├── qdrant/                     ← embedded Qdrant store
@@ -898,6 +942,200 @@ pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
     `~/.openclaw/openclaw.json` lazily; never logs the token.
 - `class OpenClawStatus` — frozen dataclass.
 
+#### `openclaw_bridge/client.py` (Phase 3.1)
+
+- `class OpenClawClient` — async client over the `openclaw` CLI.
+  Phase 3 deviates from the integration-spec HTTP transport because
+  OpenClaw 2026.5.7 doesn't expose `/tools/invoke` or `/messages`
+  HTTP endpoints — the CLI is the documented public surface, so the
+  bridge invokes it via `asyncio.create_subprocess_exec`.
+  - `discover_cli(override) -> str` — explicit override → env var
+    (`ULTRON_OPENCLAW_CLI`) → PATH → Windows npm-global default.
+  - `health(timeout_s)` — wraps `openclaw health --json`.
+  - `send_message(channel, target, text)` — wraps
+    `openclaw message send --channel ... --target ... --message ...
+    --json`. Returns :class:`SendMessageResult`.
+  - `trigger_heartbeat(text, mode, expect_final)` — wraps
+    `openclaw system event`. Returns :class:`HeartbeatResult`.
+  - `run_agent(message, agent_id, thinking, deliver, ...)` — wraps
+    `openclaw agent --json`. Returns :class:`AgentRunResult`.
+  - `invoke_tool(tool_name, params, agent_id)` — convenience over
+    `run_agent` for "use this OpenClaw tool" dispatch. Raises
+    :class:`OpenClawToolError` when the agent reports the tool is
+    unavailable.
+  - `mcp_list / mcp_show / mcp_set / mcp_unset` — config helpers
+    used by :class:`UltronMcpRegistrar`.
+- All methods translate stderr 401/403/Unauthorized markers into
+  :class:`OpenClawAuthError`; transport failures into
+  :class:`OpenClawGatewayError`. Tokens are never logged.
+
+#### `openclaw_bridge/workspace.py` (Phase 3.3)
+
+- `class WorkspaceWriter` — coordinated writes to the shared
+  workspace (`MEMORY.md`, `USER.md`, daily memory files). Atomic
+  rename via `os.replace` + advisory lockfiles via `filelock`
+  (cross-platform).
+  - `write_memory_entry(entry, date, prefix_timestamp)` — append
+    to `memory/YYYY-MM-DD.md` with optional `HH:MM` prefix.
+  - `update_memory_md(section, content, create_if_missing)` —
+    splice one Markdown section in place; preserves siblings.
+  - `update_user_md(content)` — full-file replace for the
+    auto-populated USER.md.
+- All methods are async (sync IO dispatched via
+  `asyncio.to_thread`). Lockfile timeouts return a `WriteResult`
+  with `error` set rather than raising.
+
+#### `openclaw_bridge/events.py` (Phase 3.4)
+
+- `class OpenClawEventReceiver` — gated-off scaffold for the
+  `[voice]`-prefix inbound handoff. Phase 3 ships only the prefix
+  matching contract (`should_handle`, `extract_payload`); the
+  transport (webhook subscription / polling) is wired in a later
+  phase once a real channel exists.
+  - `start() / stop()` — no-op when `enabled=False` (default).
+  - `dispatch(IncomingMessage) -> bool` — invokes the registered
+    handler when the prefix matches; swallows handler exceptions
+    so the orchestrator's main loop never sees them.
+- `class IncomingMessage` — frozen dataclass; subset of an inbound
+  message we route on (channel, sender, body, prefix_match).
+
+#### `openclaw_bridge/mcp_registration.py` (Phase 3.2)
+
+- `class UltronMcpRegistrar` — registers Ultron's MCP server with
+  OpenClaw via `openclaw mcp set`. Idempotent: re-running with the
+  same payload is a no-op (`already_registered=True`). Fail-open:
+  failures return a `RegistrationResult` with `error` set rather
+  than raising.
+  - `register()` — main entry. Reads `mcp_show` first to detect
+    matching existing entry; `mcp_set` only when needed.
+  - `verify_registered()` — true iff the configured payload is
+    currently registered.
+  - `unregister()` — best-effort cleanup; never raises.
+  - `schedule_retry(interval_s, on_success, max_attempts)` —
+    coroutine for background retry. Caller wraps with
+    `asyncio.create_task`.
+- Integration deviation: the integration spec assumed Ultron's MCP
+  is stdio. Reality is SSE (in-process). The registrar is
+  config-driven — `openclaw.bridge.mcp_server_command` defaults to
+  `None`, deferring registration. When set (e.g. when a stdio
+  proxy is added in a future phase), the registrar wires it up.
+
+#### `openclaw_bridge/holder.py` (Phase 3.5 + Phase 4)
+
+- `class OpenClawBridge` — single dataclass-style holder owned by
+  the orchestrator. Encapsulates lifecycle, client, workspace,
+  events, registrar, **notifications** (Phase 4).
+  - `from_config(openclaw_cfg, notifications_cfg=None) -> Optional[OpenClawBridge]` —
+    returns `None` when `openclaw.enabled=False`. Construction is
+    fail-open: missing CLI yields `client=None` rather than
+    raising. ``notifications_cfg`` is optional (defaults to a
+    disabled instance) so callers from before Phase 4 keep
+    working.
+  - `start()` — sync. Probes the Gateway; on success runs
+    `registrar.register()`; on failure (or when MCP command is
+    configured but Gateway is unreachable) launches a daemon
+    retry thread.
+  - `shutdown()` — stops the retry thread and the event receiver.
+    Deliberately leaves the MCP entry registered so OpenClaw can
+    spawn Ultron's MCP across restarts.
+  - `fire_and_forget(coro_factory)` (Phase 4) — schedules a
+    coroutine on a daemon thread for off-hot-path dispatch from
+    the sync orchestrator loop (used by coding-completion
+    notification fires).
+
+#### `openclaw_bridge/notifications.py` (Phase 4)
+
+- `class NotificationDispatcher` — single seam for proactive
+  outbound notifications to remote channels. Each event class has
+  its own method:
+  - `notify_coding_task_completion(summary)`
+  - `notify_coding_task_clarification(question)`
+  - `notify_heartbeat_alert(text)`
+  - `notify_standing_order_output(summary)`
+  - `notify_search_results_async(summary)`
+- All methods fail-open at every step: missing client, master
+  flag off, per-event flag off, no recipient, transport failure
+  — each returns a :class:`NotificationResult` with
+  ``sent=False`` and a ``skipped_reason``. Voice pipeline never
+  blocks.
+- Recipient resolution: env var (``user_id_env``) →
+  ``fallback_user_id`` → empty (skip).
+
+#### `openclaw_bridge/heartbeat_alerts.py` (Phase 5)
+
+- `class HeartbeatAlertLog` — JSONL-backed alert log with
+  thread-safe append + atomic full-file rewrite for updates
+  (acknowledgments).
+  - `record(text, source, severity, metadata)` — append a new
+    alert. Returns :class:`HeartbeatAlert`.
+  - `get_alerts(since, only_unacknowledged, limit)` — read,
+    filter, return most-recent-first.
+  - `acknowledge(alert_id)` — mark seen. Atomic rewrite.
+  - `prune()` — drop entries older than ``retention_days``.
+- `class HeartbeatAlert` — dataclass with `alert_id` (UUID4 hex),
+  `text`, `source`, `severity` ("info"/"warn"/"error"),
+  `timestamp`, `acknowledged_at`, `metadata`.
+- Tolerates malformed JSONL lines (logs WARN, skips), missing
+  files (returns empty list), permission errors (logs WARN).
+- `OpenClawBridge.record_heartbeat_alert(...)` is the orchestrator-side
+  entry point: records to the log + (when enabled) fires Telegram
+  notification via :class:`NotificationDispatcher.notify_heartbeat_alert`.
+
+#### `openclaw_bridge/browser.py` (Phase 6)
+
+- `class BrowserTool` — thin facade over
+  :meth:`OpenClawClient.invoke_tool` for browser primitives.
+  Each method assembles a structured prompt asking the OpenClaw
+  ``ultron-main`` agent to use the browser tool with specific
+  parameters; the wrapper unpacks the agent response into a typed
+  dataclass.
+  - `navigate(url)` → :class:`NavigateResult` (best-effort title
+    extraction).
+  - `snapshot(mode='ai'|'aria')` → :class:`Snapshot` with refs
+    extracted in `ai` mode.
+  - `click(ref)` / `type_text(ref, text)` → :class:`ActionResult`.
+  - `screenshot()` → :class:`ScreenshotResult` (decodes base64
+    when present).
+  - `get_page_text()` → :class:`PageTextResult`.
+- All methods translate `OpenClawToolError` (tool unavailable
+  responses) into structured failures rather than raising.
+
+#### `openclaw_bridge/mcp_tools.py` (Phase 13)
+
+- Stdio MCP server exposing Ultron's read-mostly tools to OpenClaw
+  agents. Each tool is a plain Python function callable from
+  Python tests; FastMCP registration in :func:`build_server`
+  wires them up for stdio dispatch.
+- Tool implementations:
+  - `get_heartbeat_alerts_impl(since_seconds_ago, only_unacknowledged, limit)`
+  - `acknowledge_alert_impl(alert_id)`
+  - `run_maintenance_impl(scope=None)` — subprocesses
+    `scripts/run_maintenance_for_cron.py --json`
+  - `list_active_coding_sessions_impl(max_age_hours=24)` — reads
+    `logs/sessions/*.jsonl` audit files
+  - `get_recent_voice_alerts_impl(limit=5)` — voice-friendly
+    convenience wrapper
+- Lazy-imports heavy dependencies; no torch / LLM at startup so
+  the spawned process is light.
+- :func:`run_stdio` is the entry point invoked by
+  ``scripts/run_ultron_mcp_for_openclaw.py``.
+
+#### `openclaw_bridge/system_status.py` (Phase 13)
+
+- `class SystemStatusReporter` — voice-side reporter for
+  `SYSTEM_STATUS` routing intents. Reads heartbeat alert log +
+  active session listing (via the same impl functions
+  `mcp_tools.py` exposes to OpenClaw) and renders a brief in-
+  character voice narration.
+  - `report(SystemStatusIntent) -> SystemStatusReport` — main
+    entry. Honors `focus="alerts"|"projects"|"all"` from the
+    intent.
+- Voice rendering kept short by design (3–4 sentences for
+  combined queries, ≤2 for focused). Sanitiser caps individual
+  alert text at 160 chars + ellipsis.
+- Failure-safe: disk read failures degrade to "no information"
+  voice messages; never raises.
+
 ### `src/ultron/pipeline/orchestrator.py`
 
 - `class State(Enum)` — IDLE / CAPTURING / PROCESSING / FOLLOW_UP_LISTENING
@@ -910,6 +1148,14 @@ pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
   - `_speak(text)` — single-shot synthesize + play
   - `_announce_coding_completion_if_pending()`, `_announce_pending_clarifications()`, `_announce_pending_budget_warning()` — voice-loop poll hooks
   - `_load_memory_if_enabled()` — Qdrant init with graceful fallback
+  - `_load_openclaw_bridge_if_enabled()` (Phase 3.5) — constructs
+    :class:`OpenClawBridge`. Returns `None` when
+    `openclaw.enabled=False` (current default). Fail-open: any
+    construction or start failure leaves the bridge disabled
+    without affecting the voice path.
+  - `self.openclaw_bridge` attribute — accessed by the dispatcher
+    when an OpenClaw-bound intent fires. Cleaned up in `shutdown()`
+    via `self.openclaw_bridge.shutdown()`.
 
 **In:** mic input (sounddevice), config.yaml, models on disk.
 **Out:** speaker output (sounddevice), all audit logs.
@@ -1113,6 +1359,50 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 **Purpose:** PowerShell smoke test for llama-cpp-server. Hits `/v1/models` and `/v1/chat/completions` with a tiny prompt; prints timing + completion text. Used to verify the server is healthy before involving OpenClaw.
 **Run:** `pwsh scripts/smoke_test_llamacpp.ps1`
 
+### `scripts/swap_llm_preset.py` (4B plan Stage H)
+
+**Purpose:** atomic preset swap — edits `config.yaml:llm.preset` in place after validating the requested preset's GGUFs are present. Supports `--list`, `--status`, `--dry-run`. The voice path can also be swapped at runtime via the `MODEL_SWITCH` intent ("Ultron, switch to the 9B"); this script is for off-orchestrator workflows.
+**Run:** `python scripts/swap_llm_preset.py [--status | --list | <preset> [--dry-run]]`
+**In:** `config.yaml`, `models/*.gguf` (validation).
+**Out:** updated `config.yaml`; stdout reports the change.
+
+### `scripts/verify_voice_character_4b.py` (4B plan Stage E)
+
+**Purpose:** interactive A/B helper that synthesises 5 representative voice queries through both the 4B and 9B presets so the operator can confirm Ultron's character is preserved. Approved 2026-05-08.
+**Run:** `python scripts/verify_voice_character_4b.py`
+**In:** loads voice stack twice (once per preset).
+**Out:** plays audio + writes A/B comparison CSV.
+
+### `scripts/verify_items_4_to_8.py` (4B plan Items 4–8 verification)
+
+**Purpose:** exercises each of Items 4 (compression), 5 (IRMA), 6 (self-consistency), 7 (canonical-path monitor), 8 (block-and-revise) in the trigger scenario the corresponding flag fires on. Prints concrete deltas (token reduction, accuracy lift, abort timing, etc.).
+**Run:** `python scripts/verify_items_4_to_8.py`
+**Out:** stdout — per-item status with measurable metrics.
+
+### `scripts/run_maintenance_for_cron.py` (OpenClaw Phase 7)
+
+**Purpose:** cron-friendly wrapper around `scripts/maintenance.py`. Outputs JSON or single-line Telegram-pretty summary; captures stdout from underlying tasks; structured exit codes (0 ok / 1 task error / 2 init failure). Suitable for Windows Task Scheduler invocations.
+**Run:** `python scripts/run_maintenance_for_cron.py [--task <name> ...] [--json | --pretty]`
+**In:** subprocesses `scripts/maintenance.py` machinery.
+**Out:** stdout — structured summary; exit code per outcome.
+
+### `scripts/run_ultron_mcp_for_openclaw.py` (OpenClaw Phase 13)
+
+**Purpose:** stdio MCP entry script OpenClaw spawns when an agent calls one of Ultron's tools. Boots a FastMCP server on stdio that exposes `get_heartbeat_alerts`, `acknowledge_alert`, `run_maintenance`, `list_active_coding_sessions`, `get_recent_voice_alerts`. Imports stay light — no torch / LLM loaded.
+**Run:** `python scripts/run_ultron_mcp_for_openclaw.py [--stdio | --list-tools]`
+**In:** disk artifacts (heartbeat alert log, session audit dir) + OpenClaw stdio channel.
+**Out:** MCP responses over stdio.
+**Auto-resolved:** `OpenClawBridgeConfig.mcp_server_command="auto"` resolves to this script via the holder's `_resolve_mcp_command` helper.
+
+### `scripts/_record_phase0_baseline.py` / `scripts/_merge_phase0_baselines.py` (OpenClaw Phase 0)
+
+**Purpose:** record and merge Phase 0 baseline measurements into `baselines.json`. Used during the OpenClaw Phase 0 verification work.
+**Run:** `python scripts/_record_phase0_baseline.py`; `python scripts/_merge_phase0_baselines.py`
+
+### `scripts/_vram_peak_monitor.py` (auxiliary)
+
+**Purpose:** background VRAM peak monitor used by `measure_baseline_extended.py` for accurate peak capture during search/coding-session runs.
+
 ---
 
 ## Tests
@@ -1259,14 +1549,17 @@ RVC voice model for Ultron timbre.
 
 Reading order for a fresh Claude:
 
-1. **`MEMORY.md`** (auto-loaded) — index of memory files
-2. **`project_ultron.md`**, **`project_ultron_foundation.md`** — current state
-3. **`feedback_*.md`** — confirmed user decisions
-4. **`docs/codebase_structure.md`** ← THIS FILE — single-source reference
-5. **`docs/architecture.md`** — pipeline + diagrams
-6. **`docs/phase3_5_followup.md`** — open punch list
+1. **`CLAUDE.md`** (project-root, auto-loaded by Claude Code) — orientation + binding standards.
+2. **`MEMORY.md`** (auto-loaded) — index of memory files.
+3. **`project_ultron_openclaw.md`** — primary cross-phase OpenClaw reference.
+4. **`project_ultron_4b_plan.md`** — final 4B + Items 4–8 state with measured TTFT/VRAM.
+5. **`feedback_*.md`** — confirmed user decisions (especially `feedback_no_paid_apis.md`, `feedback_llm_runtime_decision.md`).
+6. **`docs/codebase_structure.md`** ← THIS FILE — single-source reference.
+7. **`docs/openclaw_integration_final_summary.md`** — cross-phase OpenClaw reference + intentional deviations + setup-readiness checklist.
+8. **`docs/architecture.md`** — pipeline + diagrams.
+9. **`docs/phase3_5_followup.md`** — open punch list (deferred Foundation Part 3.5).
 
-For specific tasks:
+### Foundation reference
 - Day-to-day operation: [docs/operations.md](operations.md)
 - Adding code / debugging: [docs/development.md](development.md)
 - Config reference: [docs/configuration.md](configuration.md)
@@ -1276,10 +1569,34 @@ For specific tasks:
 - 16-step end-to-end smoke test: [docs/smoke_test.md](smoke_test.md)
 - Foundation Phase 1 inventory snapshot: [docs/system_inventory.md](system_inventory.md)
 - Phase 3 discovery catalog: [docs/config_discovery.md](config_discovery.md)
+
+### OpenClaw integration (architecture)
 - **OpenClaw integration architecture + Phase 0/1 status:** [docs/openclaw_integration.md](openclaw_integration.md)
 - **OpenClaw runtime ops (agents, supervisor, locked-in constraints):** [docs/openclaw_runtime.md](openclaw_runtime.md)
-- **Phase 1 close-out report (persona migration):** [docs/phase_1_summary.md](phase_1_summary.md)
-- **4B-model optimization plan (Stages A + B done; C in flight):** [docs/4b_optimization_plan.md](4b_optimization_plan.md)
+- **Cross-phase final summary + setup-readiness checklist:** [docs/openclaw_integration_final_summary.md](openclaw_integration_final_summary.md)
+
+### OpenClaw integration (per-phase close-outs)
+- **Phase 1 (persona migration):** [docs/phase_1_summary.md](phase_1_summary.md)
+- **Phase 3 (bridge layer):** [docs/phase_3_summary.md](phase_3_summary.md)
+- **Phase 4 (Telegram channel):** [docs/phase_4_summary.md](phase_4_summary.md)
+- **Phase 5 (heartbeat):** [docs/phase_5_summary.md](phase_5_summary.md)
+- **Phase 6 (browser tool):** [docs/phase_6_summary.md](phase_6_summary.md)
+- (Phases 7–13 have inline summaries in `openclaw_integration_final_summary.md`.)
+
+### OpenClaw integration (user-side setup procedures)
+- **Telegram channel:** [docs/openclaw_telegram_setup.md](openclaw_telegram_setup.md)
+- **Heartbeat agents[].heartbeat block:** [docs/openclaw_heartbeat_setup.md](openclaw_heartbeat_setup.md)
+- **Browser tool (Playwright + Chromium):** [docs/openclaw_browser_setup.md](openclaw_browser_setup.md)
+- **Cron jobs (Windows Task Scheduler fallback):** [docs/openclaw_cron_setup.md](openclaw_cron_setup.md)
+- **Bundled hooks (`session-memory`, `command-logger`):** [docs/openclaw_hooks_setup.md](openclaw_hooks_setup.md)
+- **Memory Wiki plugin:** [docs/openclaw_memory_wiki_setup.md](openclaw_memory_wiki_setup.md)
+- **Local-only ComfyUI media generation:** [docs/openclaw_media_generation_setup.md](openclaw_media_generation_setup.md)
+- **iOS / Android node pairing:** [docs/mobile_node_setup.md](mobile_node_setup.md)
+- **Standing-order programs:** [docs/standing_orders.md](standing_orders.md)
+- **Three-layer memory architecture (Qdrant + workspace + Wiki):** [docs/memory_architecture.md](memory_architecture.md)
+
+### 4B optimization plan
+- **4B-model optimization plan (all stages + Items 4–8 done):** [docs/4b_optimization_plan.md](4b_optimization_plan.md)
 - **GGUF SHA256 reference:** [docs/model_checksums.md](model_checksums.md)
 
 ---
@@ -1288,46 +1605,107 @@ For specific tasks:
 
 **This document is the operating manual. Keep it current.**
 
-Update this file when you:
+This contract is **binding** — every non-trivial change to the
+codebase must update this document in the same change. Skipping
+the update means future sessions waste time re-deriving ground
+truth from the source. **Don't skip.**
+
+The CLAUDE.md (project-root) at the top of this prompt's reading
+order calls this contract out explicitly so a fresh Claude Code
+session sees it before its first edit.
+
+### What "non-trivial change" means
+
+You MUST update the relevant section of this document when you:
 
 1. **Add a new module file** under `src/ultron/` →
    - Add to the file tree.
-   - Add a section under "Source modules" with the public API (classes, functions, brief in/out).
-   - If it's a new subsystem (e.g. `src/ultron/notifications/`), add to the architecture diagram in `docs/architecture.md` too.
+   - Add a section under "Source modules" with the public API
+     (classes, functions, brief in/out).
+   - If it's a new subsystem (e.g. `src/ultron/openclaw_bridge/`),
+     add to the architecture diagram in `docs/architecture.md`
+     too.
 
 2. **Add a new public class or function** to an existing module →
    - Add it to the module's section under "Source modules".
    - Note the inputs and outputs in one line.
 
-3. **Add a new script** under `scripts/` →
-   - Add to the file tree.
-   - Add a section under "Operational scripts" with purpose, run command, in/out, and functions.
+3. **Remove or rename** an existing module / class / function →
+   - Update every section that referenced it.
+   - Search for the old name with Grep before declaring done.
 
-4. **Add a new test directory or test category** →
+4. **Add a new script** under `scripts/` →
    - Add to the file tree.
+   - Add a section under "Operational scripts" with purpose,
+     run command, in/out, and functions.
+
+5. **Add a new test directory or test category** →
+   - Add to the file tree (under `tests/`).
    - Add to the relevant "Tests" subsection.
+   - Update the "current state" header at the top of this file
+     with the new total.
 
-5. **Add a new log file or data path** →
+6. **Add a new log file or data path** →
    - Add to the "Runtime artifacts" tables.
 
-6. **Add a new doc** under `docs/` →
-   - Add to the "Documentation index".
+7. **Add a new doc** under `docs/` →
+   - Add to the "Documentation index" with the right category
+     (Foundation reference / OpenClaw architecture / per-phase
+     close-out / user-side setup / 4B plan).
+   - Add to the file tree under `docs/`.
    - Cross-reference where relevant in other sections.
 
-7. **Add a new config section / key** →
+8. **Add a new config section / key** →
    - Add to the `config.yaml` summary in "Configuration".
-   - Update [docs/configuration.md](configuration.md) too (per-key reference).
+   - Update [docs/configuration.md](configuration.md) too
+     (per-key reference).
+   - Document any new defaults in the relevant `feedback_*.md`
+     if it reflects a confirmed user decision.
 
-8. **Change a cross-cutting flow** (voice path, coding path, search path, dispatch path) →
+9. **Change a cross-cutting flow** (voice path, coding path,
+   search path, dispatch path, OpenClaw bridge path) →
    - Update the relevant diagram in "Cross-cutting flows".
 
-9. **Migrate a subsystem out of the `config/settings.py` shim** →
-   - Update [docs/phase3_5_followup.md](phase3_5_followup.md) (cross off).
-   - If it changes the public API of the migrated module, update its "Source modules" section here.
+10. **Migrate a subsystem out of the `config/settings.py` shim** →
+    - Update [docs/phase3_5_followup.md](phase3_5_followup.md)
+      (cross off).
+    - If it changes the public API of the migrated module,
+      update its "Source modules" section here.
 
-The goal: a fresh Claude Code session reads this document + the memory
-files and is fully oriented without needing to re-explore the
-codebase. If that's not the case after your changes, fix this document.
+11. **Bump test counts** — the file's header tracks "X passed /
+    Y skipped / Z failed". Update these when the count changes.
+
+12. **Land a new phase / sub-phase** → bump the phase status
+    line in the header.
+
+### The validation loop
+
+After your change:
+
+```powershell
+# 1) Tests pass
+C:\STC\ultronPrototype\.venv\Scripts\python.exe -m pytest tests/ -q --no-header --ignore=tests/coding/test_orchestration_real.py
+
+# 2) Config still validates
+C:\STC\ultronPrototype\.venv\Scripts\python.exe scripts\validate_config.py
+
+# 3) Re-read this doc and confirm:
+#    - File tree matches `git ls-files | grep -v '^\\.'`
+#    - "Source modules" sections cover every src/ultron/ file
+#    - "Operational scripts" sections cover every scripts/ file
+#    - "Tests" subsections cover every tests/ subdirectory
+#    - "Documentation index" links every docs/*.md file
+```
+
+If the doc no longer matches reality after your changes, fix
+this document before declaring the task done.
+
+### Why this matters
+
+A fresh Claude Code session reads this document + the memory files
+and should be fully oriented without re-exploring the codebase. If
+that's not the case after your changes, the maintenance contract
+was violated. Treat that as a regression and fix the doc.
 
 To verify the document still matches reality:
 ```powershell
