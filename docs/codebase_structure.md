@@ -10,28 +10,17 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
-Last validated against HEAD: Foundation Phase 7 close + Phase 4 deferred
-wrappers + OpenClaw integration Phase 0 + 1 (llama-cpp-server launcher
-+ supervisor, persona migration, PersonaLoader with mode-based
-composition + hot reload, LLMEngine HTTP-client opt-in, OpenClaw bridge
-foundations) + 4B optimization plan Stage A (LLMConfig preset +
-draft_model_path with model_validator) + Stage B (4B + 0.8B GGUFs
-downloaded, structurally validated, SHA256 recorded) + Stage C
-(start_llamacpp_server.py: --model-draft, --draft-num-pred-tokens,
---from-config flags + testable CLI helpers) + Stage D (4B in-process
-baseline measured: TTFT 86 ms vs 9B's 109 ms; VRAM peak 7825 MB vs
-9B's 10370 MB; gate passed) + Stage F (LLMEngine.generate*:
-enable_thinking parameter wired through to chat_template_kwargs in both
-runtimes) + Stage G (position-aware RAG injection: `llm.rag.position`
-config + LLMEngine._build_messages refactor; default flipped from
-"system" fold-in to "recency" prepend on user message — +10-20%
-recall expected) + Stage H (on-the-fly preset switching infra +
-voice-driven model swap + preset flipped to qwen3.5-4b) + **Items 4–8**
-(LLMLingua-style compression / IRMA input reformulation /
-self-consistency on high-stakes calls / canonical-path monitor for
-coding sessions / block-and-revise validator on OpenClaw tool calls
-— all flag-gated OFF by default; live behaviour byte-for-byte
-unchanged until opt-in) — **969 passing tests**, 16 skipped, 0 failed.
+Last validated against HEAD `0d6bd73` (main = `claude/fervent-meitner-98bfe7`).
+
+State at this validation:
+- Foundation phase complete (Parts 0–7); Part 3.5 unified-config migration intentionally deferred; 16-step real-stack smoke test still pending (interactive).
+- OpenClaw integration: **Phases 0, 1, 2 done; Phase 3 PARTIAL** (only `OpenClawLifecycle` + typed errors landed; client.py / mcp_registration.py / workspace.py / events.py / orchestrator-startup-integration / OPENCLAW_TOOL intent classifier not yet built). Phases 4–13 not started.
+- 4B optimization plan: Stages A–H + voice-driven model swap + Items 4–8 fully wired into trigger sites + **all five flags defaulted ON** in `config.yaml`. Stage E voice character A/B passed (interactive A/B was approved 2026-05-08).
+- Active LLM: **`qwen3.5-4b`** preset (model_path `models/Qwen3.5-4B-Q4_K_M.gguf`, draft `Qwen3.5-0.8B-Q4_K_M.gguf`, n_ctx 8192). 9B GGUF retained for swap-back.
+- Voice baseline (10-query stack with all Items ON): **TTFT median 79 ms**, **VRAM peak 7913 MB** (-2461 MB / -2.5 GB vs 9B). See [baselines.json](../baselines.json).
+- Items 4–8 measurable verification: [scripts/verify_items_4_to_8.py](../scripts/verify_items_4_to_8.py) exercises each item in its trigger scenario and prints concrete deltas.
+- Stale-`.env` gotcha resolved: `ULTRON_LLM_MODEL_PATH=...9B...` line in `.env` was silently overriding the preset. Now commented out (line 84).
+- **1011 tests collected; 995 passed, 16 skipped (GPU-gated), 0 failed.**
 
 ---
 
@@ -224,6 +213,7 @@ For the current decisions and Foundation phase status see
 │   ├── validate_config.py          ← Schema-validate config.yaml without starting Ultron
 │   ├── swap_llm_preset.py          ← 4B plan: edit config.yaml in place to swap LLM preset (validates GGUFs, atomic write)
 │   ├── verify_voice_character_4b.py ← 4B plan Stage E: A/B voice-character helper (5 queries × 4B/9B)
+│   ├── verify_items_4_to_8.py      ← 4B plan: exercises Items 4–8 in their trigger scenarios; prints measurable deltas
 │   ├── start_llamacpp_server.py    ← OpenClaw Phase 0 + 4B plan Stage C: launch llama-cpp-server with voice-pipeline params (+ --model-draft / --draft-num-pred-tokens / --from-config)
 │   ├── supervised_llamacpp_server.py ← OpenClaw Phase 0: supervisor wrapper with auto-restart
 │   ├── smoke_test_llamacpp.ps1     ← OpenClaw Phase 0: PowerShell health probe for llama-cpp-server
@@ -1129,7 +1119,7 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 
 ### `tests/conftest.py` — Path setup so `from ultron.*` works.
 
-### Default suite (no env gate) — 969 tests, ~32 s wall
+### Default suite (no env gate) — 995 passed / 16 skipped (GPU-gated), ~32 s wall
 
 **Top-level (~25 files):**
 - `test_addressing.py` — rule-based addressing classifier
@@ -1173,6 +1163,9 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 - `test_canonical_monitor.py` (17, 4B plan Item 7) — canonical set lockdown (standard tools, MCP callbacks), canonical-only paths (no abort), threshold-not-reached, threshold-reached-in-window aborts, late drift does not abort, latch semantics, reset clears state, non-tool-use events ignored, empty/None tool name ignored, case-insensitive match, attribute-style event input, custom canonical override, verdict-shape (off_canonical_tools list, immutability), factory gate (disabled returns None, enabled returns instance with config)
 - `test_block_and_revise.py` (14, 4B plan Item 8) — `ToolCallValidator` ALLOW + BLOCK verdicts, think-block strip, case-insensitive, fail-open on no-LLM / exception / unparseable / empty, prompt rendering (tool name, args, args truncated, goal-quote escaped), `is_enabled` config gate
 - `test_compression.py` (26, 4B plan Item 4) — heuristic compresses redundant text, preserves negations (and "isn't" preserves negation-meaning), collapses repeated punctuation, short input passthrough, empty passthrough, ratio-1.0 means no drop, higher-ratio drops more; perplexity-scorer drops lowest-score, scorer exception fallback, mismatched-length fallback; result dataclass; factory off-returns-None / on-returns-instance; `maybe_compress` global-off / per-surface-off / per-surface-on / unknown surface / history default-off / compressor exception / empty text; integration `_format_rag_block` default-OFF unchanged + ON-compresses; `format_sources_for_prompt` default-OFF unchanged + URL-preserved-on
+- `test_self_consistency_web_gating.py` (8, 4B plan Item 6 second site) — `web_search.gating.classify_by_preflight` with self-consistency: default-OFF single greedy call (back-compat), N-call when enabled, configured non-zero temperature, majority-vote winner, per-site disabled bypass, all-unparseable fallback to NO_SEARCH, LLM-exception returns NO_SEARCH (never raises)
+- `test_canonical_monitor_runner_wiring.py` (9, 4B plan Item 7 wiring) — `CodingTaskRunner` listener gating: not-attached-when-disabled, attached-when-enabled, cancels handle on first abort verdict, doesn't cancel on canonical sequence, latches after first abort, swallows listener exceptions; `CapabilityVoiceController.pending_canonical_abort` polls + clears + swallows runner exception
+- `test_block_and_revise_dispatcher_wiring.py` (10, 4B plan Item 8 wiring) — `OpenClawDispatcher` per-handler validator gate: disabled-flag skips, no-LLM skips, ALLOW dispatches to stub, BLOCK short-circuits with reason, all 5 handlers run validator when enabled, validator exception falls open, voice controller threads its `llm_engine` to the dispatcher
 
 **`tests/coding/`:**
 - `mock_bridge.py` — `ScriptedClaudeBridge` + `ClaudeScript` DSL
