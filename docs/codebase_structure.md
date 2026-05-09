@@ -10,7 +10,7 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
-Last validated against the `claude/agitated-sinoussi-2b27ea` worktree, post V1-spec gap-fill **Phases 1–6 complete + default-flag tuning**. All 12 enhancements wired; defaults chosen on net-benefit grounds:
+Last validated against `main` HEAD `80a31ba` (V1-spec gap fill Phases 1–6 + default-flag tuning + classifier gating). All 12 enhancements wired; defaults chosen on net-benefit grounds:
 
 | Flag | Default | Why |
 |---|---|---|
