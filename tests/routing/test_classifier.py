@@ -16,6 +16,39 @@ from ultron.openclaw_routing import classify_routing
 from ultron.openclaw_routing.intents import RoutingIntentKind
 
 
+@pytest.fixture(autouse=True)
+def _enable_openclaw_features():
+    """V1-gap A1 / C3: gaming / desktop / window classifier patterns
+    are gated on the live OpenClaw flags. Tests in this file assume
+    those features are wired (so the patterns fire). We flip the
+    flags ON for the duration of each test and restore the original
+    state afterward.
+
+    The fixture is autouse so it applies to every test in the file
+    without requiring each parametrise block to opt in.
+    """
+    from ultron.config import get_config
+
+    cfg = get_config()
+    saved = (
+        cfg.openclaw.enabled,
+        cfg.gaming_mode.enabled,
+        cfg.desktop.enabled,
+        cfg.window_control.enabled,
+    )
+    cfg.openclaw.enabled = True
+    cfg.gaming_mode.enabled = True
+    cfg.desktop.enabled = True
+    cfg.window_control.enabled = True
+    try:
+        yield
+    finally:
+        cfg.openclaw.enabled = saved[0]
+        cfg.gaming_mode.enabled = saved[1]
+        cfg.desktop.enabled = saved[2]
+        cfg.window_control.enabled = saved[3]
+
+
 # ---------------------------------------------------------------------------
 # BROWSER_AUTOMATION — 20 utterances
 # ---------------------------------------------------------------------------
@@ -348,3 +381,255 @@ def test_empty_utterance_is_conversational():
 def test_whitespace_utterance_is_conversational():
     intent = classify_routing("   \n  ")
     assert intent.kind == RoutingIntentKind.CONVERSATIONAL
+
+
+# ---------------------------------------------------------------------------
+# V1-gap A1 — gaming mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("utterance", [
+    "gaming mode",
+    "gaming mode on",
+    "engage gaming mode",
+    "I'm about to play Valorant",
+    "I'm gonna play Valorant",
+    "I'm about to play CS2",
+    "I'm fixing to play Apex",
+    "shutting down desktop control",
+    "kill desktop control",
+])
+def test_classify_routing_gaming_mode_engage(utterance):
+    intent = classify_routing(utterance)
+    assert intent.kind == RoutingIntentKind.GAMING_MODE
+    assert intent.gaming_mode_intent is not None
+    assert intent.gaming_mode_intent.action == "engage"
+
+
+@pytest.mark.parametrize("utterance", [
+    "gaming mode off",
+    "disengage gaming mode",
+    "exit gaming mode",
+    "done playing",
+    "I'm done playing",
+    "restore desktop control",
+    "full control restored",
+])
+def test_classify_routing_gaming_mode_disengage(utterance):
+    intent = classify_routing(utterance)
+    assert intent.kind == RoutingIntentKind.GAMING_MODE
+    assert intent.gaming_mode_intent is not None
+    assert intent.gaming_mode_intent.action == "disengage"
+
+
+@pytest.mark.parametrize("utterance", [
+    "are we in gaming mode",
+    "is gaming mode on",
+    "is gaming mode active",
+    "gaming mode status",
+])
+def test_classify_routing_gaming_mode_status(utterance):
+    intent = classify_routing(utterance)
+    assert intent.kind == RoutingIntentKind.GAMING_MODE
+    assert intent.gaming_mode_intent.action == "status"
+
+
+def test_classify_routing_gaming_mode_priority_over_hybrid():
+    """An utterance with both 'gaming mode' AND a HYBRID phrase routes
+    GAMING_MODE -- gaming mode is checked first."""
+    intent = classify_routing(
+        "I'm about to play Valorant, set up my dev environment afterward",
+    )
+    assert intent.kind == RoutingIntentKind.GAMING_MODE
+
+
+def test_gaming_mode_suppressed_during_pending_clarification():
+    intent = classify_routing(
+        "gaming mode",
+        has_active_coding_task=True,
+        has_pending_clarification=True,
+    )
+    assert intent.kind != RoutingIntentKind.GAMING_MODE
+
+
+# ---------------------------------------------------------------------------
+# V1-gap C3 — desktop / windows control
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("utterance,expected_action", [
+    ("take a screenshot of the desktop", "screenshot"),
+    ("take a screenshot of the screen", "screenshot"),
+    ("take a screenshot of the active window", "screenshot"),
+    ("screenshot the screen", "screenshot"),
+    ("screenshot my desktop", "screenshot"),
+    ("snap a screenshot", "screenshot"),
+    ("capture the desktop", "screenshot"),
+    ("list my open windows", "list_windows"),
+    ("what windows are open", "list_windows"),
+    ("show me all open windows", "list_windows"),
+    ("find the chrome window", "find_window"),
+    ("locate the visual studio window", "find_window"),
+    ("where is the slack window", "find_window"),
+])
+def test_classify_routing_desktop_automation(utterance, expected_action):
+    intent = classify_routing(utterance)
+    assert intent.kind == RoutingIntentKind.DESKTOP_AUTOMATION
+    assert intent.desktop_intent is not None
+    assert intent.desktop_intent.action == expected_action
+
+
+def test_screenshot_with_url_routes_browser_not_desktop():
+    """Browser-screenshot context (URL present) wins over desktop."""
+    intent = classify_routing(
+        "Take a screenshot of github.com after navigating to the repo",
+    )
+    assert intent.kind != RoutingIntentKind.DESKTOP_AUTOMATION
+
+
+@pytest.mark.parametrize("utterance,expected_action", [
+    ("focus the chrome window", "focus"),
+    ("activate the cursor window", "focus"),
+    ("bring the slack window to front", "focus"),
+])
+def test_classify_routing_window_focus(utterance, expected_action):
+    intent = classify_routing(utterance)
+    assert intent.kind == RoutingIntentKind.WINDOW_AUTOMATION
+    assert intent.window_intent.action == expected_action
+
+
+def test_classify_routing_window_type():
+    intent = classify_routing(
+        "type 'hello world' into the search box",
+    )
+    assert intent.kind == RoutingIntentKind.WINDOW_AUTOMATION
+    assert intent.window_intent.action == "type"
+    assert intent.window_intent.value == "hello world"
+
+
+def test_classify_routing_window_click():
+    intent = classify_routing(
+        "click the submit button in the form window",
+    )
+    assert intent.kind == RoutingIntentKind.WINDOW_AUTOMATION
+    assert intent.window_intent.action == "click"
+
+
+def test_desktop_window_suppressed_during_pending_clarification():
+    intent = classify_routing(
+        "take a screenshot of the desktop",
+        has_pending_clarification=True,
+    )
+    assert intent.kind != RoutingIntentKind.DESKTOP_AUTOMATION
+
+
+# ---------------------------------------------------------------------------
+# V1-gap A1 / C3 — feature flag gating
+#
+# The autouse fixture above turns the flags ON for every test in this
+# file so the patterns fire. The tests below override that by setting
+# specific flags OFF and verifying the new intent kinds fall through
+# to CONVERSATIONAL -- confirming we don't surface "isn't reachable"
+# stub messages on installs that haven't wired OpenClaw yet.
+# ---------------------------------------------------------------------------
+
+
+def _classify_with_flags(
+    utterance: str,
+    *,
+    openclaw: bool,
+    gaming_mode: bool = True,
+    desktop: bool = True,
+    window_control: bool = True,
+):
+    """Run classify_routing under explicit flag overrides."""
+    from ultron.config import get_config
+
+    cfg = get_config()
+    saved = (
+        cfg.openclaw.enabled, cfg.gaming_mode.enabled,
+        cfg.desktop.enabled, cfg.window_control.enabled,
+    )
+    try:
+        cfg.openclaw.enabled = openclaw
+        cfg.gaming_mode.enabled = gaming_mode
+        cfg.desktop.enabled = desktop
+        cfg.window_control.enabled = window_control
+        return classify_routing(utterance)
+    finally:
+        cfg.openclaw.enabled = saved[0]
+        cfg.gaming_mode.enabled = saved[1]
+        cfg.desktop.enabled = saved[2]
+        cfg.window_control.enabled = saved[3]
+
+
+def test_gaming_mode_pattern_skipped_when_openclaw_offline():
+    intent = _classify_with_flags(
+        "I'm about to play Valorant", openclaw=False,
+    )
+    assert intent.kind == RoutingIntentKind.CONVERSATIONAL
+
+
+def test_gaming_mode_pattern_skipped_when_per_feature_off():
+    """openclaw.enabled=true but gaming_mode.enabled=false -> falls through."""
+    intent = _classify_with_flags(
+        "gaming mode", openclaw=True, gaming_mode=False,
+    )
+    assert intent.kind == RoutingIntentKind.CONVERSATIONAL
+
+
+def test_desktop_pattern_skipped_when_openclaw_offline():
+    """With openclaw.enabled=false, the DESKTOP_AUTOMATION classifier
+    branch is skipped. Utterances like "take a screenshot of the
+    desktop" share the ``take a screenshot`` token with the legacy
+    BROWSER_INTERACT pattern, so they fall back to BROWSER_AUTOMATION
+    (the pre-Phase-3 routing). What we care about: the utterance is
+    NOT routed to DESKTOP_AUTOMATION."""
+    intent = _classify_with_flags(
+        "take a screenshot of the desktop", openclaw=False,
+    )
+    assert intent.kind != RoutingIntentKind.DESKTOP_AUTOMATION
+
+
+def test_desktop_pattern_skipped_when_per_feature_off():
+    intent = _classify_with_flags(
+        "take a screenshot of the desktop",
+        openclaw=True, desktop=False,
+    )
+    assert intent.kind != RoutingIntentKind.DESKTOP_AUTOMATION
+
+
+def test_list_windows_falls_through_when_desktop_off():
+    """Pure desktop-only phrasing (no browser-overlap) falls all the
+    way through to CONVERSATIONAL when the feature is gated off."""
+    intent = _classify_with_flags(
+        "list my open windows", openclaw=False,
+    )
+    assert intent.kind == RoutingIntentKind.CONVERSATIONAL
+
+
+def test_window_pattern_skipped_when_openclaw_offline():
+    intent = _classify_with_flags(
+        "focus the chrome window", openclaw=False,
+    )
+    assert intent.kind == RoutingIntentKind.CONVERSATIONAL
+
+
+def test_window_pattern_skipped_when_per_feature_off():
+    intent = _classify_with_flags(
+        "focus the chrome window",
+        openclaw=True, window_control=False,
+    )
+    assert intent.kind == RoutingIntentKind.CONVERSATIONAL
+
+
+def test_other_routing_kinds_unaffected_by_openclaw_flag():
+    """Sanity: BROWSER / MEDIA / etc. are NOT gated by openclaw.enabled
+    because their dispatchers also check it. Ungating them would
+    break existing tests + the messaging dispatcher's actual live
+    path. Only the V1-gap A1 / C3 kinds get the classifier gate."""
+    # BROWSER pattern still fires when openclaw is off.
+    intent = _classify_with_flags(
+        "open hacker news", openclaw=False,
+    )
+    assert intent.kind == RoutingIntentKind.BROWSER_AUTOMATION

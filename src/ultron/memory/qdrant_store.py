@@ -26,7 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from ultron.config import get_config, resolve_path
 from ultron.errors import QdrantUnavailableError
@@ -56,6 +56,26 @@ class MemoryTurn:
     entities: List[str] = field(default_factory=list)
     topic_tags: List[str] = field(default_factory=list)
     cluster_id: Optional[int] = None
+
+
+@dataclass
+class FactRow:
+    """A row from the ``facts`` collection.
+
+    Populated by :meth:`ConversationMemory.search_facts`. The maintenance
+    script (``scripts/maintenance.py:run_extract_facts``) writes the
+    underlying Qdrant points; this dataclass is the read-side projection
+    callers consume (Coordinator's clarification fast-path, in particular).
+    """
+
+    fact: str
+    confidence: float
+    last_confirmed: float
+    category: str
+    score: float                          # RRF score from the hybrid query
+    extracted_at: float = 0.0
+    extracted_from: List[int] = field(default_factory=list)
+    retrieval_weight: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +417,371 @@ class ConversationMemory:
 
         return [_payload_to_turn(pt.payload or {}) for pt in response.points]
 
+    # --- V1-gap A2: multi-pass per-category retrieval ---------------------
+
+    def retrieve_multi(
+        self,
+        primary_query: str,
+        category_queries: List[str],
+        *,
+        k: Optional[int] = None,
+        exclude_recent: Optional[int] = None,
+    ) -> List[MemoryTurn]:
+        """Multi-pass retrieval (V1-gap A2).
+
+        Issues one hybrid Qdrant query per category sub-query (plus the
+        primary if it isn't already in the list), unions the results,
+        and ranks them via the composite scorer in
+        :mod:`ultron.memory.ranking`.
+
+        Args:
+            primary_query: literal user utterance.
+            category_queries: 2-4 category sub-queries from the gate's
+                pre-flight pass. May be empty -- in that case we behave
+                identically to :meth:`retrieve` so the orchestrator can
+                call this unconditionally.
+            k: max final hits.
+            exclude_recent: exclude the latest N turns from results
+                (anti-echo of the in-process recent cache).
+
+        Returns:
+            Up to ``k`` :class:`MemoryTurn` ranked by composite score.
+            Empty on any failure (Qdrant down, embedder failure) -- same
+            posture as :meth:`retrieve`.
+        """
+        if not (primary_query or "").strip():
+            return []
+        cfg = get_config()
+        mem_cfg = cfg.memory
+        if k is None:
+            k = mem_cfg.rag_top_k
+        if exclude_recent is None:
+            exclude_recent = mem_cfg.rag_exclude_recent
+        with self._lock:
+            cutoff_id = max(0, self._next_id - exclude_recent)
+        if cutoff_id <= 0:
+            return []
+
+        retrieval_cfg = mem_cfg.retrieval
+        ranking_cfg = mem_cfg.ranking
+        # Cap the category fan-out so a runaway pre-flight can't
+        # multiply load.
+        max_categories = max(0, retrieval_cfg.max_categories_per_query)
+        categories = [
+            q for q in (category_queries or [])
+            if isinstance(q, str) and q.strip()
+        ][:max_categories]
+        # The primary query always gets a pass so we never miss
+        # literal hits.
+        all_queries = [primary_query] + [
+            q for q in categories if q.strip() != primary_query.strip()
+        ]
+        if len(all_queries) == 1:
+            # No category fan-out -- fall through to single-pass.
+            return self.retrieve(primary_query, k=k, exclude_recent=exclude_recent)
+
+        try:
+            dense_batch = self._embedder.encode_query_dense_batch(all_queries)
+            sparse_batch = self._embedder.encode_query_sparse_batch(all_queries)
+        except Exception as e:
+            logger.warning("retrieve_multi: query embedding failed: %s", e)
+            get_error_log().record(
+                QdrantUnavailableError(
+                    f"multi-pass query embedding failed: {e}",
+                    context={"queries": len(all_queries)},
+                    recovery=(
+                        "fell through to single-pass retrieve; "
+                        "results may be narrower"
+                    ),
+                ),
+                dependency="qdrant_embedder",
+            )
+            return self.retrieve(primary_query, k=k, exclude_recent=exclude_recent)
+
+        primary_dense = dense_batch[0].tolist()
+
+        from concurrent.futures import ThreadPoolExecutor
+        from qdrant_client.models import (
+            FieldCondition, Filter, Fusion, FusionQuery, Prefetch, Range,
+            SparseVector,
+        )
+
+        recency_filter = Filter(
+            must=[FieldCondition(key="turn_id", range=Range(lt=cutoff_id))],
+        )
+
+        per_query_limit = max(
+            k * retrieval_cfg.candidates_per_category_multiplier, 20,
+        )
+        collection = cfg.qdrant.collections.conversations
+
+        def _query(idx: int):
+            try:
+                response = self._client.query_points(
+                    collection_name=collection,
+                    prefetch=[
+                        Prefetch(
+                            query=dense_batch[idx].tolist(),
+                            using="dense",
+                            filter=recency_filter,
+                            limit=per_query_limit,
+                        ),
+                        Prefetch(
+                            query=SparseVector(
+                                indices=sparse_batch[idx].indices,
+                                values=sparse_batch[idx].values,
+                            ),
+                            using="bm25",
+                            filter=recency_filter,
+                            limit=per_query_limit,
+                        ),
+                    ],
+                    query=FusionQuery(fusion=Fusion.RRF),
+                    limit=per_query_limit,
+                    with_payload=True,
+                    with_vectors=True,
+                )
+                return idx, list(response.points)
+            except Exception as e:
+                logger.warning(
+                    "retrieve_multi sub-query %d failed: %s", idx, e,
+                )
+                return idx, []
+
+        # Parallel fan-out. ThreadPoolExecutor caps concurrency at the
+        # number of queries; the embedded Qdrant client is thread-safe
+        # enough for this read-only fan-out.
+        merged: dict[str, "_MergedCandidate"] = {}
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, len(all_queries))) as pool:
+                results = list(pool.map(_query, range(len(all_queries))))
+        except Exception as e:
+            logger.warning("retrieve_multi fan-out failed: %s", e)
+            return self.retrieve(primary_query, k=k, exclude_recent=exclude_recent)
+
+        for idx, points in results:
+            for pt in points:
+                pid = str(pt.id)
+                payload = pt.payload or {}
+                rrf_score = float(getattr(pt, "score", 0.0) or 0.0)
+                dense = _extract_dense_vector(pt.vector)
+                if pid not in merged:
+                    merged[pid] = _MergedCandidate(
+                        candidate_id=pid,
+                        payload=payload,
+                        dense=dense,
+                        primary_rrf=rrf_score if idx == 0 else 0.0,
+                        category_rrf=0.0 if idx == 0 else rrf_score,
+                    )
+                    continue
+                existing = merged[pid]
+                if idx == 0:
+                    existing.primary_rrf = max(existing.primary_rrf, rrf_score)
+                else:
+                    existing.category_rrf = max(existing.category_rrf, rrf_score)
+
+        if not merged:
+            return []
+
+        from ultron.memory.ranking import (
+            CandidateScore,
+            RankingWeights,
+            select_top_k,
+        )
+
+        weights = RankingWeights(
+            rrf_weight=ranking_cfg.rrf_weight,
+            recency_weight=ranking_cfg.recency_weight,
+            recency_half_life_days=ranking_cfg.recency_half_life_days,
+            surprise_weight=ranking_cfg.surprise_weight,
+            redundancy_weight=ranking_cfg.redundancy_weight,
+        )
+        candidates: List[CandidateScore] = []
+        for m in merged.values():
+            # Use the larger of primary / category as the base RRF.
+            base = max(m.primary_rrf, m.category_rrf)
+            candidates.append(CandidateScore(
+                candidate_id=m.candidate_id,
+                payload=m.payload,
+                rrf_score=base,
+                dense=m.dense,
+                primary_similarity=m.primary_rrf,
+                category_similarity=m.category_rrf,
+            ))
+        picked = select_top_k(
+            candidates, k=max(1, k), weights=weights,
+            primary_dense=primary_dense,
+        )
+        return [_payload_to_turn(p.payload) for p in picked]
+
+    def retrieve_for_query(
+        self,
+        primary_query: str,
+        gate_verdict=None,
+        *,
+        k: Optional[int] = None,
+        exclude_recent: Optional[int] = None,
+    ) -> List[MemoryTurn]:
+        """Single entry point that routes between single- and multi-pass.
+
+        When ``memory.retrieval.multi_pass_enabled`` is ON AND the gate
+        verdict carries category sub-queries, fan out via
+        :meth:`retrieve_multi`. Otherwise call :meth:`retrieve`. Calling
+        this with ``gate_verdict=None`` is equivalent to calling
+        ``retrieve(...)`` directly -- callers that don't have a verdict
+        (e.g., the existing RAG path before A2 lands fully) keep working.
+        """
+        cfg = get_config().memory
+        if cfg.retrieval.multi_pass_enabled and gate_verdict is not None:
+            categories = list(getattr(gate_verdict, "context_categories", []) or [])
+            extra = list(getattr(gate_verdict, "memory_search_queries", []) or [])
+            combined = [c for c in categories + extra if c]
+            if combined:
+                return self.retrieve_multi(
+                    primary_query, combined, k=k, exclude_recent=exclude_recent,
+                )
+        return self.retrieve(
+            primary_query, k=k, exclude_recent=exclude_recent,
+        )
+
+    # --- facts collection ---------------------------------------------------
+
+    def search_facts(
+        self,
+        query: str,
+        *,
+        k: int = 5,
+        min_confidence: float = 0.0,
+        max_age_days: Optional[float] = None,
+    ) -> List[FactRow]:
+        """Hybrid (dense + BM25, RRF-fused) search of the ``facts`` collection.
+
+        Args:
+            query: free-text question to match against stored facts.
+            k: max rows to return.
+            min_confidence: drop facts with ``confidence`` below this.
+            max_age_days: drop facts whose ``last_confirmed`` is older than
+                this many days. ``None`` disables the age cap.
+
+        Returns:
+            Newest-first list of :class:`FactRow`. Empty on any failure
+            (Qdrant down, embedder down, malformed payload). Failures are
+            logged via :class:`ErrorLog`; no exception is propagated to the
+            caller — the coordinator must keep working when memory is sick.
+        """
+        if not (query or "").strip() or k <= 0:
+            return []
+
+        from qdrant_client.models import (
+            FieldCondition,
+            Filter,
+            Fusion,
+            FusionQuery,
+            Prefetch,
+            Range,
+            SparseVector,
+        )
+
+        try:
+            qdv = self._embedder.encode_query_dense(query)
+            qsv: _SparseVec = self._embedder.encode_query_sparse(query)
+        except Exception as e:
+            logger.warning("search_facts: query embedding failed: %s", e)
+            get_error_log().record(
+                QdrantUnavailableError(
+                    f"facts query embedding failed: {e}",
+                    context={"query_len": len(query)},
+                    recovery=(
+                        "returned empty facts list; coordinator falls "
+                        "through to LLM/escalation"
+                    ),
+                ),
+                dependency="qdrant_embedder",
+            )
+            return []
+
+        must: List[Any] = []
+        if min_confidence > 0:
+            must.append(
+                FieldCondition(
+                    key="confidence",
+                    range=Range(gte=float(min_confidence)),
+                ),
+            )
+        if max_age_days is not None and max_age_days > 0:
+            cutoff_ts = time.time() - (max_age_days * 86400.0)
+            must.append(
+                FieldCondition(
+                    key="last_confirmed",
+                    range=Range(gte=float(cutoff_ts)),
+                ),
+            )
+        flt: Optional[Filter] = Filter(must=must) if must else None
+
+        try:
+            response = self._client.query_points(
+                collection_name=get_config().qdrant.collections.facts,
+                prefetch=[
+                    Prefetch(
+                        query=qdv.tolist(),
+                        using="dense",
+                        filter=flt,
+                        limit=max(k * 4, 20),
+                    ),
+                    Prefetch(
+                        query=SparseVector(
+                            indices=qsv.indices, values=qsv.values
+                        ),
+                        using="bm25",
+                        filter=flt,
+                        limit=max(k * 4, 20),
+                    ),
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=max(1, k),
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as e:
+            logger.warning("search_facts: Qdrant query failed: %s", e)
+            get_error_log().record(
+                QdrantUnavailableError(
+                    f"facts hybrid search failed: {e}",
+                    context={"query_len": len(query), "k": k},
+                    recovery=(
+                        "returned empty facts list; coordinator falls "
+                        "through to LLM/escalation"
+                    ),
+                ),
+                dependency="qdrant",
+            )
+            return []
+
+        rows: List[FactRow] = []
+        for pt in response.points:
+            payload = pt.payload or {}
+            try:
+                rows.append(
+                    FactRow(
+                        fact=str(payload.get("fact", "")),
+                        confidence=float(payload.get("confidence", 0.0)),
+                        last_confirmed=float(
+                            payload.get("last_confirmed", 0.0)
+                        ),
+                        category=str(payload.get("category", "")),
+                        score=float(getattr(pt, "score", 0.0) or 0.0),
+                        extracted_at=float(payload.get("extracted_at", 0.0)),
+                        extracted_from=list(payload.get("extracted_from") or []),
+                        retrieval_weight=float(
+                            payload.get("retrieval_weight", 1.0)
+                        ),
+                    )
+                )
+            except (TypeError, ValueError) as e:
+                logger.debug("search_facts: skipping malformed row: %s", e)
+                continue
+        return rows
+
     # --- introspection ------------------------------------------------------
 
     def __len__(self) -> int:
@@ -433,6 +818,46 @@ class ConversationMemory:
 
 def _new_session_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+@dataclass
+class _MergedCandidate:
+    """Internal: per-point aggregator for the multi-pass fan-out.
+
+    Tracks the best RRF score the candidate received against the
+    primary query and the best score it received against any of the
+    category sub-queries. The composite-score helper later prefers
+    candidates with strong category match + weak primary match
+    (the surprise score).
+    """
+
+    candidate_id: str
+    payload: dict
+    dense: Optional[List[float]]
+    primary_rrf: float = 0.0
+    category_rrf: float = 0.0
+
+
+def _extract_dense_vector(vec) -> Optional[List[float]]:
+    """Pull the dense vector out of a Qdrant point's ``vector`` field.
+
+    Qdrant returns ``vector`` as a dict keyed by vector name when
+    multiple vectors were configured (our ``dense`` + ``bm25`` setup);
+    we fish out the dense one. Returns ``None`` when the point came
+    back without vectors (``with_vectors=False``).
+    """
+    if vec is None:
+        return None
+    if isinstance(vec, dict):
+        dense = vec.get("dense")
+        if dense is None:
+            return None
+        return list(dense)
+    # Plain list / array form (single-vector collection).
+    try:
+        return list(vec)
+    except TypeError:
+        return None
 
 
 def _payload_to_turn(payload: dict) -> MemoryTurn:

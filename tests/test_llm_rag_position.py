@@ -175,3 +175,64 @@ def test_recency_position_does_not_affect_history() -> None:
     # RAG only in the final user message
     assert "rag-context" in msgs[-1]["content"]
     assert "rag-context" not in msgs[1]["content"]
+
+
+# ---------------------------------------------------------------------------
+# V1-gap A2: gate_verdict pass-through into multi-pass retrieval.
+# ---------------------------------------------------------------------------
+
+
+def test_build_messages_default_uses_single_pass_retrieve():
+    """No gate_verdict -> the engine still calls memory.retrieve(...) (the
+    legacy single-pass path), even when the memory exposes
+    retrieve_for_query."""
+    snippets = [_FakeTurn("user", "snippet")]
+    eng = _make_engine(snippets, "recency")
+    eng._memory.retrieve_for_query = MagicMock(return_value=snippets)
+
+    with patch("ultron.llm.inference.get_config", return_value=_CfgWithMemory("recency")):
+        eng._build_messages("query")
+
+    eng._memory.retrieve.assert_called_once()
+    eng._memory.retrieve_for_query.assert_not_called()
+
+
+def test_build_messages_with_verdict_uses_retrieve_for_query():
+    """When a gate_verdict is passed, the engine routes through
+    retrieve_for_query so the multi-pass fan-out activates."""
+    snippets = [_FakeTurn("user", "snippet")]
+    eng = _make_engine(snippets, "recency")
+    eng._memory.retrieve_for_query = MagicMock(return_value=snippets)
+
+    class _Verdict:
+        context_categories = ["category A"]
+        memory_search_queries = []
+
+    with patch("ultron.llm.inference.get_config", return_value=_CfgWithMemory("recency")):
+        eng._build_messages("query", gate_verdict=_Verdict())
+
+    eng._memory.retrieve_for_query.assert_called_once()
+    args, kwargs = eng._memory.retrieve_for_query.call_args
+    assert args[0] == "query"
+    assert isinstance(args[1], _Verdict)
+    eng._memory.retrieve.assert_not_called()
+
+
+def test_build_messages_falls_back_when_retrieve_for_query_missing():
+    """If memory doesn't expose retrieve_for_query (e.g., a stub from a
+    test that predates A2), the engine still works via retrieve."""
+    snippets = [_FakeTurn("user", "s")]
+    eng = _make_engine(snippets, "recency")
+
+    # Remove retrieve_for_query if Mock auto-added it.
+    if hasattr(eng._memory, "retrieve_for_query"):
+        del eng._memory.retrieve_for_query
+
+    class _Verdict:
+        context_categories = []
+        memory_search_queries = []
+
+    with patch("ultron.llm.inference.get_config", return_value=_CfgWithMemory("recency")):
+        eng._build_messages("query", gate_verdict=_Verdict())
+
+    eng._memory.retrieve.assert_called_once()

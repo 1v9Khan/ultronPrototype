@@ -604,3 +604,266 @@ def test_decide_adjustment_during_pending_clarification_resolves_it(env):
     assert decision.action == "FOLLOWUP"
     assert decision.followup_prompt is None  # answered the clarification
     assert "no, skip auth" in claude_answer
+
+
+# ---------------------------------------------------------------------------
+# A3: stored-facts fast-path
+# ---------------------------------------------------------------------------
+
+
+def _make_facts_lookup(rows):
+    """Build a facts_lookup callable that returns ``rows`` regardless of args."""
+
+    def _lookup(query, *, k=5, min_confidence=0.0, max_age_days=None):
+        return rows
+
+    return _lookup
+
+
+def test_decide_clarification_uses_fact_when_high_confidence(tmp_path):
+    """A high-confidence preference fact short-circuits the LLM call."""
+    store = SessionStore()
+    project = tmp_path / "project"
+    project.mkdir()
+    session = store.create(
+        project_root=project,
+        user_intent="Build me a Python web service",
+        mode="new",
+        model="haiku",
+    )
+    store.transition(session.session_id, SessionStatus.EXECUTING)
+
+    llm = _FakeLLM()
+    coord = ConversationCoordinator(
+        store=store, llm=llm,
+        log_path=tmp_path / "clarifs.jsonl",
+        facts_lookup=_make_facts_lookup([{
+            "fact": "user prefers FastAPI over Flask",
+            "confidence": 0.92,
+            "category": "preference",
+            "score": 0.95,
+            "last_confirmed": time.time(),
+        }]),
+    )
+
+    request = _make_request("Should I use FastAPI or Flask?")
+    answer = asyncio.run(coord.decide_clarification(
+        session.session_id, request, store.get(session.session_id),
+    ))
+
+    # Answer pulled from the fact, not from the LLM.
+    assert "FastAPI" in answer
+    assert "stored preferences" in answer
+    assert llm.calls == [], "LLM should not have been called when fact answered"
+
+    # Verdict logged with FACT_ANSWER decision path.
+    log_lines = (tmp_path / "clarifs.jsonl").read_text(encoding="utf-8").splitlines()
+    assert any('"fact_answer"' in line for line in log_lines)
+
+
+def test_decide_clarification_skips_fact_below_confidence_threshold(tmp_path):
+    """A low-confidence fact must not auto-answer; coordinator falls
+    through to the LLM path (which then escalates)."""
+    store = SessionStore()
+    project = tmp_path / "project"
+    project.mkdir()
+    session = store.create(
+        project_root=project, user_intent="Build a service",
+        mode="new", model="haiku",
+    )
+    store.transition(session.session_id, SessionStatus.EXECUTING)
+
+    llm = _FakeLLM()
+    coord = ConversationCoordinator(
+        store=store, llm=llm,
+        log_path=tmp_path / "clarifs.jsonl",
+        clarification_user_timeout_s=1.0,
+        facts_lookup=_make_facts_lookup([{
+            "fact": "user maybe prefers FastAPI",
+            "confidence": 0.4,  # below default 0.75 threshold
+            "category": "preference",
+            "score": 0.95,
+            "last_confirmed": time.time(),
+        }]),
+    )
+
+    # Use a question that will hit the LLM path (not a rule keyword).
+    request = _make_request("FastAPI or Starlette for the API layer?")
+    asyncio.run(coord.decide_clarification(
+        session.session_id, request, store.get(session.session_id),
+    ))
+    # The LLM path was exercised because the fact was filtered out.
+    assert llm.calls, "LLM should have been called when fact filtered out"
+
+
+def test_decide_clarification_skips_fact_with_low_score(tmp_path):
+    """An on-topic high-confidence fact with low RRF score must not
+    auto-answer (the score is the relevance gate)."""
+    store = SessionStore()
+    project = tmp_path / "project"
+    project.mkdir()
+    session = store.create(
+        project_root=project, user_intent="Build a service",
+        mode="new", model="haiku",
+    )
+    store.transition(session.session_id, SessionStatus.EXECUTING)
+
+    llm = _FakeLLM()
+    coord = ConversationCoordinator(
+        store=store, llm=llm,
+        log_path=tmp_path / "clarifs.jsonl",
+        clarification_user_timeout_s=1.0,
+        facts_lookup=_make_facts_lookup([{
+            "fact": "user prefers FastAPI",
+            "confidence": 0.95,
+            "category": "preference",
+            "score": 0.40,  # below default 0.85 threshold
+            "last_confirmed": time.time(),
+        }]),
+    )
+
+    request = _make_request("FastAPI or Starlette for the API layer?")
+    asyncio.run(coord.decide_clarification(
+        session.session_id, request, store.get(session.session_id),
+    ))
+    assert llm.calls, "low score should fall through to LLM path"
+
+
+def test_decide_clarification_skips_fact_with_irrelevant_category(tmp_path):
+    """Categories like 'person' / 'project' are descriptive, not directive,
+    so they don't auto-answer Claude."""
+    store = SessionStore()
+    project = tmp_path / "project"
+    project.mkdir()
+    session = store.create(
+        project_root=project, user_intent="Build a service",
+        mode="new", model="haiku",
+    )
+    store.transition(session.session_id, SessionStatus.EXECUTING)
+
+    llm = _FakeLLM()
+    coord = ConversationCoordinator(
+        store=store, llm=llm,
+        log_path=tmp_path / "clarifs.jsonl",
+        clarification_user_timeout_s=1.0,
+        facts_lookup=_make_facts_lookup([{
+            "fact": "user works at Anthropic",
+            "confidence": 0.99,
+            "category": "person",  # NOT in directive set
+            "score": 0.99,
+            "last_confirmed": time.time(),
+        }]),
+    )
+
+    request = _make_request("FastAPI or Starlette for the API layer?")
+    asyncio.run(coord.decide_clarification(
+        session.session_id, request, store.get(session.session_id),
+    ))
+    assert llm.calls, "non-directive category should fall through to LLM path"
+
+
+def test_decide_clarification_handles_facts_lookup_exception(tmp_path):
+    """A raising facts_lookup must not crash the decision loop."""
+    store = SessionStore()
+    project = tmp_path / "project"
+    project.mkdir()
+    session = store.create(
+        project_root=project, user_intent="Build a service",
+        mode="new", model="haiku",
+    )
+    store.transition(session.session_id, SessionStatus.EXECUTING)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated facts lookup failure")
+
+    llm = _FakeLLM()
+    coord = ConversationCoordinator(
+        store=store, llm=llm,
+        log_path=tmp_path / "clarifs.jsonl",
+        clarification_user_timeout_s=1.0,
+        facts_lookup=_boom,
+    )
+
+    request = _make_request("FastAPI or Starlette for the API layer?")
+    answer = asyncio.run(coord.decide_clarification(
+        session.session_id, request, store.get(session.session_id),
+    ))
+    # Coordinator falls through; LLM was called.
+    assert llm.calls
+    assert isinstance(answer, str)
+
+
+def test_decide_clarification_unchanged_when_facts_lookup_none(tmp_path):
+    """Back-compat: the existing decision matrix must still work when no
+    facts_lookup is wired."""
+    store = SessionStore()
+    project = tmp_path / "project"
+    project.mkdir()
+    session = store.create(
+        project_root=project,
+        user_intent="Build a service",
+        mode="new", model="haiku",
+    )
+    store.transition(session.session_id, SessionStatus.EXECUTING)
+
+    llm = _FakeLLM()
+    # Note: facts_lookup not passed -> None.
+    coord = ConversationCoordinator(
+        store=store, llm=llm,
+        log_path=tmp_path / "clarifs.jsonl",
+        clarification_user_timeout_s=1.0,
+    )
+
+    # An always-answer rule still hits.
+    request = _make_request("What test framework should I use?")
+    answer = asyncio.run(coord.decide_clarification(
+        session.session_id, request, store.get(session.session_id),
+    ))
+    assert "pytest" in answer.lower() or "test framework" in answer.lower()
+
+
+def test_decide_clarification_facts_lookup_signature_compat(tmp_path):
+    """A facts_lookup that only accepts a single positional argument
+    (no kwargs) must still work -- the coordinator falls back to the
+    bare-call path."""
+
+    captured = []
+
+    def _legacy_lookup(query):
+        captured.append(query)
+        return [{
+            "fact": "user prefers FastAPI",
+            "confidence": 0.95,
+            "category": "preference",
+            "score": 0.95,
+            "last_confirmed": time.time(),
+        }]
+
+    store = SessionStore()
+    project = tmp_path / "project"
+    project.mkdir()
+    session = store.create(
+        project_root=project, user_intent="Build a service",
+        mode="new", model="haiku",
+    )
+    store.transition(session.session_id, SessionStatus.EXECUTING)
+
+    llm = _FakeLLM()
+    coord = ConversationCoordinator(
+        store=store, llm=llm,
+        log_path=tmp_path / "clarifs.jsonl",
+        clarification_user_timeout_s=1.0,
+        facts_lookup=_legacy_lookup,
+    )
+
+    request = _make_request("FastAPI or Starlette?")
+    answer = asyncio.run(coord.decide_clarification(
+        session.session_id, request, store.get(session.session_id),
+    ))
+    assert "FastAPI" in answer
+    assert captured  # legacy positional-only signature exercised
+
+
+def test_decision_path_enum_includes_fact_answer():
+    """B1/A3 sanity: the new enum value is exposed on DecisionPath."""
+    assert DecisionPath.FACT_ANSWER.value == "fact_answer"

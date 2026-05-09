@@ -376,6 +376,38 @@ class QdrantConfig(_Strict):
     collections: QdrantCollections = Field(default_factory=QdrantCollections)
 
 
+class MemoryRetrievalConfig(_Strict):
+    """V1-gap A2: multi-pass per-category retrieval.
+
+    Default ON. The fan-out path only fires when the gate verdict has
+    ``context_categories`` populated, which only the LLM-preflight
+    branch produces. The standard 10-query voice baseline routes
+    through hard rules whose verdicts have empty categories — those
+    queries automatically fall back to single-pass retrieval, so the
+    voice TTFT contract (median ≤ 79 ms) is preserved.
+
+    Memory-heavy or ambiguous queries that DO trigger the LLM
+    preflight pay an additional ~150-200 ms for the fan-out + composite
+    re-ranking. That is the spec-intended cost; the queries that
+    benefit from "you didn't ask but you'd want to know" memory
+    retrieval are the same ones whose preflight already added latency.
+    """
+
+    multi_pass_enabled: bool = True
+    max_categories_per_query: int = Field(default=4, ge=0, le=10)
+    candidates_per_category_multiplier: int = Field(default=4, ge=1, le=20)
+
+
+class MemoryRankingConfig(_Strict):
+    """V1-gap A2: weighted blend of RRF + recency + surprise - redundancy."""
+
+    rrf_weight: float = Field(default=1.0, ge=0.0)
+    recency_weight: float = Field(default=0.2, ge=0.0)
+    recency_half_life_days: float = Field(default=7.0, gt=0.0)
+    surprise_weight: float = Field(default=0.15, ge=0.0)
+    redundancy_weight: float = Field(default=0.3, ge=0.0)
+
+
 class MemoryConfig(_Strict):
     enabled: bool = True
     jsonl_legacy_path: str = "data/memory.jsonl"
@@ -384,6 +416,9 @@ class MemoryConfig(_Strict):
     rag_exclude_recent: int = Field(default=20, ge=0)
     facts_top_k: int = Field(default=3, ge=0)
     write_queue_maxsize: int = Field(default=256, ge=1)
+    # V1-gap A2.
+    retrieval: MemoryRetrievalConfig = Field(default_factory=MemoryRetrievalConfig)
+    ranking: MemoryRankingConfig = Field(default_factory=MemoryRankingConfig)
 
 
 class BraveConfig(_Strict):
@@ -405,12 +440,29 @@ class WebCacheConfig(_Strict):
     ttl_stable_seconds: int = Field(default=2_592_000, ge=0)
 
 
+class CitationConfig(_Strict):
+    """V1-gap B3: citation rendering format.
+
+    Default ``"superscript"`` matches the V1-spec Part 4.4 wording
+    (Unicode ¹²³ inline citations). The references list at the end
+    of the prompt + the visible transcript keep the bracketed
+    ``[N]`` form for monospace clarity, so the user can match
+    inline ¹ to the bracketed [1] reference unambiguously.
+
+    Set to ``"bracket"`` for ASCII-only consumers.
+    """
+
+    inline_marker_format: str = "superscript"  # "bracket" | "superscript"
+
+
 class WebSearchConfig(_Strict):
     enabled: bool = True
     brave_api_key_env: str = "ULTRON_BRAVE_API_KEY"
     brave: BraveConfig = Field(default_factory=BraveConfig)
     jina: JinaConfig = Field(default_factory=JinaConfig)
     cache: WebCacheConfig = Field(default_factory=WebCacheConfig)
+    # V1-gap B3.
+    citation: CitationConfig = Field(default_factory=CitationConfig)
 
 
 class AddressingConfig(_Strict):
@@ -470,6 +522,26 @@ class CodingVerificationConfig(_Strict):
     lint_timeout_seconds: int = Field(default=30, ge=0)
 
 
+class CodingFactsConfig(_Strict):
+    """A3 wiring -- stored-facts fast-path on clarifications.
+
+    The Coordinator's ``decide_clarification`` consults the Qdrant
+    ``facts`` collection (populated by ``scripts/maintenance.py``) before
+    calling the LLM. A high-confidence fact in a directive category
+    short-circuits the decision and answers Claude directly.
+
+    Defaults err on the cautious side: a fact must clear both a
+    confidence and an RRF-score threshold before it answers, and the
+    age cap is null (off) so newer installs without long history aren't
+    dependent on calendar age.
+    """
+
+    top_k: int = Field(default=5, ge=1)
+    min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    min_score: float = Field(default=0.85, ge=0.0)
+    max_age_days: Optional[float] = None
+
+
 class CodingConfig(_Strict):
     enabled: bool = True
     bridge: str = "direct"
@@ -486,6 +558,16 @@ class CodingConfig(_Strict):
     canonical_monitor: CodingCanonicalMonitorConfig = Field(
         default_factory=CodingCanonicalMonitorConfig,
     )
+    # A3 wiring -- stored-facts fast-path on clarifications.
+    facts: CodingFactsConfig = Field(default_factory=CodingFactsConfig)
+    # A4 pre-task confirmation. Default OFF -- the spoken confirmation
+    # adds ~0.5 s of TTS playback before every coding task dispatch,
+    # which is a UX cost that has to fire universally to provide its
+    # safety value. Flip true to opt in to the wake-word barge-in
+    # window before destructive coding actions.
+    pre_task_confirmation_enabled: bool = False
+    pre_task_confirmation_max_words: int = Field(default=30, ge=4)
+    pre_task_barge_in_window_seconds: float = Field(default=0.5, ge=0.0, le=10.0)
     session_audit_dir: str = "logs/sessions"
     token_budget_per_session: int = Field(default=100_000, ge=1)
     token_warning_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
@@ -921,6 +1003,63 @@ class ErrorPhrasesConfig(_Strict):
     ])
 
 
+class GamingModeConfig(_Strict):
+    """V1-gap A1: anticheat-safe shutdown of OpenClaw plugins.
+
+    When the user says "gaming mode", "I'm about to play Valorant",
+    etc., the manager calls ``openclaw plugins disable <id>`` for each
+    slug listed below, optionally stops Docker Desktop, and logs the
+    transition. ``gaming mode off`` reverses the cycle.
+
+    Default OFF -- this is a safety-critical toggle that disables
+    OpenClaw plugins. Operator opts in explicitly once they have the
+    plugins installed and want the voice trigger active.
+    """
+
+    enabled: bool = False
+    plugins_to_disable: List[str] = Field(
+        default_factory=lambda: ["desktop-control", "windows-control"],
+    )
+    toggle_docker: bool = False
+    docker_executable_path: Optional[str] = None
+    docker_process_name: str = "Docker Desktop"
+    log_path: str = "logs/gaming_mode.jsonl"
+
+
+class DesktopConfig(_Strict):
+    """V1-gap C3: voice routing for the OpenClaw ``desktop-control`` plugin.
+
+    Tool slugs are configurable so plugin renames don't require code
+    changes. Default ``enabled=True`` -- the dispatcher gates each
+    call on bridge availability + plugin reachability and falls back
+    to a clear "isn't wired up yet" voice message if either is missing.
+    """
+
+    enabled: bool = True
+    default_screenshot_timeout_seconds: float = 10.0
+    default_action_timeout_seconds: float = 5.0
+    plugin_slug: str = "desktop-control"
+    tool_slug_screenshot: str = "desktop_screenshot"
+    tool_slug_list_windows: str = "desktop_list_windows"
+    tool_slug_find_window: str = "desktop_find_window"
+
+
+class WindowControlConfig(_Strict):
+    """V1-gap C3: voice routing for the OpenClaw ``windows-control`` plugin
+    (UI Automation).
+
+    Same shape + posture as :class:`DesktopConfig`. Default ON; runtime
+    fail-open behaviour matches the desktop wrapper.
+    """
+
+    enabled: bool = True
+    default_action_timeout_seconds: float = 5.0
+    plugin_slug: str = "windows-control"
+    tool_slug_focus: str = "windows_focus_window"
+    tool_slug_click: str = "windows_click_element"
+    tool_slug_type: str = "windows_type_text"
+
+
 class UltronConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -945,6 +1084,10 @@ class UltronConfig(_Strict):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     media_generation: MediaGenerationConfig = Field(default_factory=MediaGenerationConfig)
+    # V1-gap A1 / C3.
+    gaming_mode: GamingModeConfig = Field(default_factory=GamingModeConfig)
+    desktop: DesktopConfig = Field(default_factory=DesktopConfig)
+    window_control: WindowControlConfig = Field(default_factory=WindowControlConfig)
 
 
 # ---------------------------------------------------------------------------

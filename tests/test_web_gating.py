@@ -192,3 +192,133 @@ def test_preflight_routes_specific_recent_facts_to_search():
     # Confidence + temporal metadata must be populated either way.
     assert v.knowledge_confidence in {"high", "medium", "low"}
     assert isinstance(v.has_temporal_dependency, (bool, type(None)))
+
+
+# ---------------------------------------------------------------------------
+# B1: knowledge_source enumeration
+# ---------------------------------------------------------------------------
+
+
+def test_knowledge_source_for_personal_question_is_retrieved_memory():
+    got = classify_by_rules("What did I say earlier about the project?")
+    assert got is not None
+    assert got.decision == D.NO_SEARCH
+    assert got.knowledge_source == "retrieved_memory"
+
+
+def test_knowledge_source_for_url_is_web_search_needed():
+    got = classify_by_rules("Summarize https://example.com/post for me.")
+    assert got is not None
+    assert got.decision == D.SEARCH
+    assert got.knowledge_source == "web_search_needed"
+
+
+def test_knowledge_source_for_time_sensitive_is_web_search_needed():
+    got = classify_by_rules("What's the weather today?")
+    assert got is not None
+    assert got.decision == D.SEARCH
+    assert got.knowledge_source == "web_search_needed"
+
+
+def test_knowledge_source_for_post_cutoff_year_is_web_search_needed():
+    got = classify_by_rules("Who won the 2027 Super Bowl?")
+    assert got is not None
+    assert got.decision == D.SEARCH
+    assert got.knowledge_source == "web_search_needed"
+
+
+def test_knowledge_source_for_volatile_topic_is_web_search_needed():
+    got = classify_by_rules("Apple stock price.")
+    assert got is not None
+    assert got.decision == D.SEARCH
+    assert got.knowledge_source == "web_search_needed"
+
+
+def test_knowledge_source_for_creative_task_is_weights():
+    got = classify_by_rules("Write me a poem about coffee.")
+    assert got is not None
+    assert got.decision == D.NO_SEARCH
+    # Creative tasks have high-confidence "no need to search"; they're
+    # answered from training (weights).
+    assert got.knowledge_source == "weights"
+
+
+def test_knowledge_source_for_stable_factual_is_weights():
+    got = classify_by_rules("Who was Nikola Tesla?")
+    assert got is not None
+    assert got.decision == D.NO_SEARCH
+    # The catch-all stable-factual path is medium-confidence -- so the
+    # resolver returns "unknown" rather than "weights" until preflight
+    # tightens the call.
+    assert got.knowledge_source == "unknown"
+
+
+def test_knowledge_source_for_empty_utterance_is_weights():
+    got = classify_by_rules("")
+    assert got is not None
+    assert got.knowledge_source == "weights"
+
+
+def test_knowledge_source_default_branch_when_no_llm():
+    gate = WebSearchGate(llm=None)
+    v = gate.classify("Has the package been delivered yet?")
+    assert v.decision == D.UNCERTAIN
+    assert v.knowledge_source in {"unknown", "retrieved_memory"}
+
+
+def test_gate_verdict_default_context_categories_empty():
+    from ultron.web_search.gating import GateVerdict
+    v = GateVerdict(D.NO_SEARCH, "high", "rule", "test")
+    assert v.context_categories == []
+    assert v.memory_search_queries == []
+
+
+def test_classify_by_rules_leaves_categories_empty():
+    """Rule branches don't fill in categories -- only the LLM preflight
+    pass produces those."""
+    got = classify_by_rules("What's the weather today?")
+    assert got is not None
+    assert got.context_categories == []
+    assert got.memory_search_queries == []
+
+
+def test_knowledge_source_resolver_helper_directly():
+    """Unit-test the helper so its decision tree is locked down."""
+    from ultron.web_search.gating import _resolve_knowledge_source
+
+    # Rule precedence: search wins.
+    assert _resolve_knowledge_source(
+        needs_search=True, confidence="high",
+    ) == "web_search_needed"
+
+    # Personal-question reason marker.
+    assert _resolve_knowledge_source(
+        needs_search=False, confidence="high",
+        rule_reason="personal/memory question",
+    ) == "retrieved_memory"
+
+    # Stored-fact reason marker.
+    assert _resolve_knowledge_source(
+        needs_search=False, confidence="high",
+        rule_reason="matched stored fact (preference)",
+    ) == "retrieved_facts"
+
+    # Memory snippets non-empty -> retrieved_memory.
+    class _Fake:
+        role = "user"
+        content = "earlier"
+
+    assert _resolve_knowledge_source(
+        needs_search=False, confidence="medium",
+        memory_snippets=[_Fake()],
+    ) == "retrieved_memory"
+
+    # High confidence + nothing else -> weights.
+    assert _resolve_knowledge_source(
+        needs_search=False, confidence="high",
+    ) == "weights"
+
+    # Low confidence + nothing else -> unknown.
+    assert _resolve_knowledge_source(
+        needs_search=False, confidence="low",
+    ) == "unknown"

@@ -142,8 +142,11 @@ class Orchestrator:
         try:
             # Phase 7: pass the per-session audit dir so SessionStore
             # auto-logs every state change to logs/sessions/<id>.jsonl.
+            # A3 wiring: thread the live ConversationMemory through so
+            # ``project.lookup_facts`` reads from Qdrant.
             server = UltronMCPServer(
                 session_audit_dir=settings.CODING_SESSION_AUDIT_DIR,
+                memory=self.memory,
             )
             server.start(ready_timeout_s=5.0)
             logger.info("MCP server listening at %s", server.sse_url)
@@ -167,11 +170,18 @@ class Orchestrator:
                 logger.warning("Template renderer disabled (%s)", e)
             from ultron.coding.verification import Verifier
             verifier = Verifier(store=self.mcp_server.store)
+            # A3 wiring: hand the MCP server's lookup_facts method to the
+            # coordinator so the clarification fast-path can answer from
+            # the Qdrant ``facts`` collection. When memory is unavailable,
+            # the MCP server's own no-op stub fires (returns []), keeping
+            # the coordinator's behaviour identical to today.
+            facts_lookup = self.mcp_server.lookup_facts
             coordinator = ConversationCoordinator(
                 store=self.mcp_server.store,
                 llm=self.llm,
                 renderer=renderer,
                 verifier=verifier,
+                facts_lookup=facts_lookup,
             )
             self.mcp_server.set_clarification_responder(coordinator.decide_clarification)
             self.mcp_server.set_declare_complete_handler(coordinator.handle_declare_complete)
@@ -269,6 +279,10 @@ class Orchestrator:
                 # operations when the bridge is wired. None when the
                 # bridge is disabled or its construction failed.
                 openclaw_bridge=self.openclaw_bridge,
+                # V1-gap A1 — gaming-mode manager (None when disabled
+                # or no bridge client). Routes GAMING_MODE intents to
+                # the OpenClawDispatcher's plugin enable/disable path.
+                gaming_mode_manager=self._load_gaming_mode_manager_if_enabled(),
             )
             logger.info(
                 "Coding voice ready (bridge=%s, sandbox=%s, coordinator=%s)",
@@ -278,6 +292,48 @@ class Orchestrator:
             return controller
         except Exception as e:
             logger.warning("Coding voice init failed (%s) -- disabled.", e)
+            return None
+
+    def _load_gaming_mode_manager_if_enabled(self):
+        """V1-gap A1: construct the GamingModeManager when configured.
+
+        Returns ``None`` when disabled or when the OpenClaw bridge is
+        unavailable (which the manager needs to call
+        ``openclaw plugins enable / disable``). Failures degrade
+        silently -- gaming mode is purely additive.
+        """
+        from ultron.config import get_config, resolve_path
+
+        cfg = get_config().gaming_mode
+        if not cfg.enabled:
+            return None
+        bridge = getattr(self, "openclaw_bridge", None)
+        client = getattr(bridge, "client", None) if bridge is not None else None
+        if client is None:
+            logger.warning(
+                "gaming_mode.enabled=true but no OpenClaw client wired -- "
+                "gaming mode disabled this session.",
+            )
+            return None
+        try:
+            from ultron.openclaw_routing.gaming_mode import GamingModeManager
+            manager = GamingModeManager(
+                client=client,
+                plugins_to_disable=list(cfg.plugins_to_disable),
+                toggle_docker=cfg.toggle_docker,
+                docker_executable_path=cfg.docker_executable_path,
+                docker_process_name=cfg.docker_process_name,
+                log_path=resolve_path(cfg.log_path) if cfg.log_path else None,
+            )
+            logger.info(
+                "GamingModeManager ready (plugins=%s, toggle_docker=%s)",
+                cfg.plugins_to_disable, cfg.toggle_docker,
+            )
+            return manager
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "GamingModeManager init failed (%s) -- gaming mode disabled.", e,
+            )
             return None
 
     def _load_web_search_if_enabled(self):
@@ -567,7 +623,9 @@ class Orchestrator:
                     )
                     capability_response = self.coding_voice.handle_capability_intent(routing_intent)
                     if capability_response is not None:
-                        self._speak(capability_response.text)
+                        self._handle_capability_response(
+                            capability_response, routing_intent,
+                        )
                         self._last_response_finished_monotonic = time.monotonic()
                         if _addr_cfg.follow_up_enabled:
                             follow_up_until = (
@@ -719,6 +777,101 @@ class Orchestrator:
             self.tts.speak(text)
         except Exception as e:
             logger.warning("speak failed: %s", e)
+
+    def _handle_capability_response(
+        self, response, routing_intent,
+    ) -> None:
+        """Speak the response, applying A4 pre-task confirmation when set.
+
+        Default path (no ``pre_task_confirmation``): same as before --
+        speak ``response.text``.
+
+        A4 path: speak ``response.pre_task_confirmation`` first with
+        barge-in detection. If barge-in fires, audit the abort and
+        skip both the deferred dispatch AND the post-dispatch ``text``
+        (replaced with a brief acknowledgement).
+        """
+        pre_text = getattr(response, "pre_task_confirmation", None)
+        deferred = getattr(response, "deferred_dispatch", None)
+        label = getattr(response, "pre_task_label", None)
+        if pre_text and deferred is not None:
+            window_s = float(
+                getattr(settings, "CODING_PRE_TASK_BARGE_IN_WINDOW_S", 0.5)
+            )
+            barge_in = self._speak_with_barge_in_check(
+                pre_text, post_check_window_s=window_s,
+            )
+            if barge_in:
+                # Record the abort + speak a short cancellation. The
+                # next utterance becomes the user's clarifying input.
+                if self.coding_voice is not None:
+                    try:
+                        self.coding_voice.runner.record_pre_task_aborted(
+                            label=label,
+                            reason="barge_in",
+                            intent_text=getattr(routing_intent, "raw_text", ""),
+                        )
+                    except Exception as e:
+                        logger.debug("record_pre_task_aborted failed: %s", e)
+                self._speak("Cancelled. What did you mean?")
+                return
+            # No barge-in -- run the dispatch.
+            try:
+                deferred()
+            except Exception as e:
+                logger.warning("A4 deferred dispatch raised: %s", e)
+            self._speak(response.text)
+            return
+        # Default path.
+        self._speak(response.text)
+
+    def _speak_with_barge_in_check(
+        self,
+        text: str,
+        *,
+        post_check_window_s: float = 0.5,
+    ) -> bool:
+        """A4: speak ``text`` and report whether wake-word fired during
+        the playback or for ``post_check_window_s`` after.
+
+        Returns ``True`` when the wake-word detector saw a fire
+        recently enough that we should treat it as a barge-in --
+        meaning the caller (pre-task confirmation path) should DROP
+        the deferred dispatch.
+
+        TTS failure is treated as "no barge-in detected" -- we don't
+        want a Piper hiccup to silently brick the coding pipeline. The
+        caller still dispatches.
+        """
+        if not text:
+            return False
+        # Record the trigger timestamp BEFORE speaking so a wake fire
+        # that happened during a previous utterance can't be confused
+        # with one during this confirmation.
+        before_ts = self.wake._last_trigger_ts  # noqa: SLF001
+        print(f"  ultron: {text}")
+        try:
+            self.tts.speak(text)
+        except Exception as e:
+            logger.warning("pre-task speak failed: %s", e)
+            return False
+        # Wait briefly so the user has a window to fire the wake word
+        # AFTER the TTS audio actually finishes playing back. Cheap.
+        try:
+            time.sleep(max(0.0, float(post_check_window_s)))
+        except Exception:
+            pass
+        try:
+            after_ts = self.wake._last_trigger_ts  # noqa: SLF001
+        except Exception:
+            return False
+        # Barge-in iff the trigger timestamp advanced during/after the speak.
+        if after_ts > before_ts and after_ts > 0:
+            logger.info(
+                "A4 barge-in detected during pre-task confirmation",
+            )
+            return True
+        return False
 
     def _announce_coding_completion_if_pending(self) -> None:
         """If a background coding task just finished, speak its summary
@@ -908,7 +1061,11 @@ class Orchestrator:
             verdict.reason,
         )
         if verdict.decision != GateDecision.SEARCH:
-            yield from self.llm.generate_stream(augmented_text)
+            # V1-gap A2: thread the verdict through so multi-pass
+            # retrieval activates (when configured + categories present).
+            yield from self.llm.generate_stream(
+                augmented_text, gate_verdict=verdict,
+            )
             return
 
         yield from self._search_augmented_tokens(augmented_text, verdict)

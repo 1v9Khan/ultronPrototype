@@ -108,6 +108,28 @@ class _FakeBridge(CodingBridge):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _utter_and_dispatch(controller, text):
+    """Run ``handle_utterance`` and complete any A4 deferred dispatch.
+
+    The orchestrator (in production) calls ``response.deferred_dispatch()``
+    after the pre-task confirmation TTS clears its barge-in watch. The
+    voice-controller unit tests below assume the bridge is invoked as a
+    side effect of the utterance, so they wrap with this helper to mimic
+    the orchestrator without exercising the full TTS / wake-word stack.
+
+    Returns the original :class:`VoiceResponse`.
+    """
+    out = controller.handle_utterance(text)
+    if out is not None and getattr(out, "deferred_dispatch", None) is not None:
+        out.deferred_dispatch()
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -157,8 +179,9 @@ def test_empty_utterance_returns_none(setup):
 
 
 def test_new_project_creates_sandbox_and_submits_task(setup):
-    out = setup["controller"].handle_utterance(
-        "Create a Python script called weather_fetcher that pulls forecasts."
+    out = _utter_and_dispatch(
+        setup["controller"],
+        "Create a Python script called weather_fetcher that pulls forecasts.",
     )
     assert out is not None and out.handled
     assert "weather_fetcher" in out.text.lower()
@@ -174,8 +197,9 @@ def test_new_project_creates_sandbox_and_submits_task(setup):
 
 
 def test_new_project_concurrent_request_is_refused(setup):
-    setup["controller"].handle_utterance(
-        "Create a python script to convert tab files to csv."
+    _utter_and_dispatch(
+        setup["controller"],
+        "Create a python script to convert tab files to csv.",
     )
     out = setup["controller"].handle_utterance(
         "Make another quick python tool to do something else."
@@ -201,8 +225,9 @@ def test_existing_project_routes_via_resolver(setup, tmp_path: Path):
         description="basic math helpers",
     ))
 
-    out = setup["controller"].handle_utterance(
-        "Add a subtract function to my calculator project."
+    out = _utter_and_dispatch(
+        setup["controller"],
+        "Add a subtract function to my calculator project.",
     )
     assert out is not None and out.handled
     assert "calculator" in out.text.lower()
@@ -235,8 +260,9 @@ def test_missing_directory_for_registered_project_aborts(setup):
 
 
 def test_progress_query_during_active_task(setup):
-    setup["controller"].handle_utterance(
-        "Create a python script that prints hello."
+    _utter_and_dispatch(
+        setup["controller"],
+        "Create a python script that prints hello.",
     )
     out = setup["controller"].handle_utterance("How's it going?")
     assert out is not None and out.handled
@@ -244,8 +270,9 @@ def test_progress_query_during_active_task(setup):
 
 
 def test_cancel_during_active_task(setup):
-    setup["controller"].handle_utterance(
-        "Create a python script that prints hello."
+    _utter_and_dispatch(
+        setup["controller"],
+        "Create a python script that prints hello.",
     )
     out = setup["controller"].handle_utterance("Stop the task.")
     assert out is not None and out.cancelled
@@ -254,8 +281,9 @@ def test_cancel_during_active_task(setup):
 
 def test_pending_completion_returns_none_until_transition(setup):
     assert setup["controller"].pending_completion() is None
-    setup["controller"].handle_utterance(
-        "Create a python script that prints hello."
+    _utter_and_dispatch(
+        setup["controller"],
+        "Create a python script that prints hello.",
     )
     # While running, no completion.
     assert setup["controller"].pending_completion() is None
@@ -268,3 +296,138 @@ def test_pending_completion_returns_none_until_transition(setup):
     assert "Done." in narration or "complete" in narration.lower()
     # Subsequent calls return None (consumed).
     assert setup["controller"].pending_completion() is None
+
+
+# ---------------------------------------------------------------------------
+# A4: pre-task confirmation
+# ---------------------------------------------------------------------------
+
+
+def test_pre_task_confirmation_disabled_by_default_dispatches_immediately(setup):
+    """Default config has pre_task_confirmation_enabled=False; behaviour
+    must be byte-for-byte identical to the legacy path."""
+    out = setup["controller"].handle_utterance(
+        "Create a Python script called sample_one that prints hello."
+    )
+    assert out is not None and out.handled
+    # Legacy path: no deferred dispatch, no confirmation.
+    assert out.pre_task_confirmation is None
+    assert out.deferred_dispatch is None
+    # Bridge got the task synchronously.
+    assert setup["bridge"].last_request is not None
+
+
+def test_pre_task_confirmation_when_enabled_returns_deferred(setup, monkeypatch):
+    """Operator opt-in path: with the flag on, _submit must NOT have
+    run yet -- the response carries the deferred dispatch closure for
+    the orchestrator to run after the barge-in window."""
+    monkeypatch.setattr(
+        "config.settings.CODING_PRE_TASK_CONFIRMATION_ENABLED", True,
+    )
+    out = setup["controller"].handle_utterance(
+        "Create a Python script called sample_two that prints hello."
+    )
+    assert out is not None and out.handled
+    # Confirmation phrase populated; bridge has NOT been called yet.
+    assert out.pre_task_confirmation is not None
+    assert "claude code" in out.pre_task_confirmation.lower()
+    assert "going ahead" in out.pre_task_confirmation.lower()
+    assert "sample_two" in out.pre_task_confirmation.lower()
+    assert out.deferred_dispatch is not None
+    assert out.pre_task_label == "sample_two"
+    # Bridge submission deferred until orchestrator runs deferred_dispatch().
+    assert setup["bridge"].last_request is None
+    # Run the closure -> bridge fires.
+    out.deferred_dispatch()
+    assert setup["bridge"].last_request is not None
+
+
+def test_pre_task_confirmation_existing_project_uses_on_phrase(setup, monkeypatch):
+    monkeypatch.setattr(
+        "config.settings.CODING_PRE_TASK_CONFIRMATION_ENABLED", True,
+    )
+    proj_dir = setup["sandbox"] / "calculator"
+    proj_dir.mkdir()
+    setup["registry"].add(Project(
+        name="Calculator",
+        path=str(proj_dir),
+        aliases=["calc", "calculator project"],
+        language="python",
+    ))
+    out = setup["controller"].handle_utterance(
+        "Add a subtract function to my calculator project."
+    )
+    assert out is not None
+    confirmation = out.pre_task_confirmation or ""
+    assert "on the calculator project" in confirmation.lower()
+    # Should include a verb extraction.
+    assert "subtract" in confirmation.lower()
+
+
+def test_pre_task_confirmation_caps_word_count(setup, monkeypatch):
+    monkeypatch.setattr(
+        "config.settings.CODING_PRE_TASK_CONFIRMATION_ENABLED", True,
+    )
+    monkeypatch.setattr(
+        "config.settings.CODING_PRE_TASK_MAX_WORDS", 10,
+    )
+    long_request = (
+        "Create a python script called long_one that does many things "
+        "with database connections, web scraping, and external APIs."
+    )
+    out = setup["controller"].handle_utterance(long_request)
+    assert out is not None and out.pre_task_confirmation is not None
+    # Word cap is on the action phrase, not the wrapper, but the
+    # confirmation must still be reasonably short.
+    assert len(out.pre_task_confirmation.split()) < 30
+
+
+def test_pre_task_confirmation_no_change_for_progress_query(setup, monkeypatch):
+    """Read-only intents (progress, cancel) must NOT acquire pre-task
+    confirmation -- they aren't destructive."""
+    monkeypatch.setattr(
+        "config.settings.CODING_PRE_TASK_CONFIRMATION_ENABLED", True,
+    )
+    seed = setup["controller"].handle_utterance(
+        "Create a Python script called progress_one that prints hello."
+    )
+    # Run the deferred dispatch (the orchestrator does this in production).
+    assert seed is not None and seed.deferred_dispatch is not None
+    seed.deferred_dispatch()
+    out = setup["controller"].handle_utterance("How's it going?")
+    assert out is not None
+    # Progress query carries plain text only; no pre-task confirmation.
+    assert out.pre_task_confirmation is None
+    assert out.deferred_dispatch is None
+
+
+def test_pre_task_confirmation_summarise_strips_filler():
+    """Direct unit test of the action-phrase summariser."""
+    from ultron.coding.voice import CapabilityVoiceController
+    summarise = CapabilityVoiceController._summarise_intent_for_voice
+
+    assert summarise(
+        intent_text="Can you add a subtract function?", max_words=10,
+    ) == "add a subtract function"
+    assert summarise(
+        intent_text="please refactor the auth module", max_words=10,
+    ) == "refactor the auth module"
+    assert summarise(intent_text="", max_words=10) == "make the requested change"
+
+
+def test_record_pre_task_aborted_writes_audit(setup, tmp_path):
+    """The runner's audit-log helper writes a structured row."""
+    setup["runner"].record_pre_task_aborted(
+        label="weather_fetcher",
+        reason="barge_in",
+        intent_text="Make me a weather thing",
+    )
+    log_path = tmp_path / "log.jsonl"
+    assert log_path.is_file()
+    line = log_path.read_text(encoding="utf-8").splitlines()[-1]
+    import json
+
+    record = json.loads(line)
+    assert record["event"] == "pre_task_aborted"
+    assert record["label"] == "weather_fetcher"
+    assert record["reason"] == "barge_in"

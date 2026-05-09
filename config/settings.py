@@ -256,6 +256,31 @@ CODING_PROGRESS_TIMEOUT_S = _env_int(
 )
 CODING_TEST_SANDBOX_PATH = resolve_path(_cfg.coding.test_sandbox_path)
 
+# A3 wiring -- stored-facts fast-path on clarifications. Exposed as a
+# dict so the Coordinator can read all four values via a single
+# ``settings.CODING_FACTS`` reference (matching the access pattern in
+# coordinator.py).
+CODING_FACTS = {
+    "top_k": _cfg.coding.facts.top_k,
+    "min_confidence": _cfg.coding.facts.min_confidence,
+    "min_score": _cfg.coding.facts.min_score,
+    "max_age_days": _cfg.coding.facts.max_age_days,
+}
+
+# A4 pre-task confirmation. Default OFF for safe rollout.
+CODING_PRE_TASK_CONFIRMATION_ENABLED = _env_bool(
+    "ULTRON_CODING_PRE_TASK_CONFIRMATION_ENABLED",
+    _cfg.coding.pre_task_confirmation_enabled,
+)
+CODING_PRE_TASK_MAX_WORDS = _env_int(
+    "ULTRON_CODING_PRE_TASK_MAX_WORDS",
+    _cfg.coding.pre_task_confirmation_max_words,
+)
+CODING_PRE_TASK_BARGE_IN_WINDOW_S = _env_float(
+    "ULTRON_CODING_PRE_TASK_BARGE_IN_WINDOW_S",
+    _cfg.coding.pre_task_barge_in_window_seconds,
+)
+
 CODING_CLAUDE_CLI = os.getenv("ULTRON_CLAUDE_CLI", _cfg.coding.claude_cli)
 CODING_CLAUDE_MODEL = os.getenv("ULTRON_CLAUDE_MODEL", _cfg.coding.claude_model)
 CODING_SANDBOX_PATH = resolve_path(_cfg.coding.sandbox_root)

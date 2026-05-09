@@ -22,13 +22,17 @@ from ultron.config import UltronConfig, get_config, resolve_path
 from ultron.openclaw_routing.dispatcher import OpenClawDispatcher
 from ultron.openclaw_routing.intents import (
     BrowserIntent,
+    DesktopIntent,
     DispatchResult,
     FileOpIntent,
+    GamingModeIntent,
     MediaGenIntent,
     MessagingIntent,
     RoutingIntent,
+    RoutingIntentKind,
     ShellOpIntent,
     TaskInfo,
+    WindowIntent,
 )
 from ultron.utils.logging import get_logger
 
@@ -105,7 +109,38 @@ class AutomationTaskRunner:
         return task_id
 
     async def _dispatch(self, intent: RoutingIntent) -> DispatchResult:
-        """Route the intent's automation_intent to the right dispatcher method."""
+        """Route the intent to the right dispatcher method.
+
+        V1-gap A1 / C3 — gaming-mode, desktop, and window intents live
+        on dedicated fields (``gaming_mode_intent``, ``desktop_intent``,
+        ``window_intent``) rather than ``automation_intent``. They get
+        priority routing here so the legacy ``automation_intent`` path
+        still works for browser / media / messaging / file / shell.
+        """
+        # V1-gap A1 — gaming mode.
+        if (
+            intent.kind == RoutingIntentKind.GAMING_MODE
+            and intent.gaming_mode_intent is not None
+        ):
+            return await self._dispatcher.handle_gaming_mode(
+                intent.gaming_mode_intent,
+            )
+        # V1-gap C3 — desktop / window control.
+        if (
+            intent.kind == RoutingIntentKind.DESKTOP_AUTOMATION
+            and intent.desktop_intent is not None
+        ):
+            return await self._dispatcher.handle_desktop_automation(
+                intent.desktop_intent,
+            )
+        if (
+            intent.kind == RoutingIntentKind.WINDOW_AUTOMATION
+            and intent.window_intent is not None
+        ):
+            return await self._dispatcher.handle_window_automation(
+                intent.window_intent,
+            )
+
         a = intent.automation_intent
         if a is None:
             return DispatchResult(

@@ -116,3 +116,20 @@ class WakeWordDetector:
         except AttributeError:
             pass
         self._last_trigger_ts = 0.0
+
+    def fired_recently(self, window_s: float = 0.5) -> bool:
+        """Return True iff the wake word fired within the last ``window_s``
+        seconds.
+
+        A4 (pre-task confirmation): the orchestrator polls this during
+        the confirmation TTS playback to detect a barge-in. The model
+        already tracks ``_last_trigger_ts``; this accessor is a read-only
+        view that doesn't reset internal state. Idempotent across calls.
+
+        Returns False when the detector has never fired (initial
+        ``_last_trigger_ts == 0``) so a stale or zeroed timestamp can't
+        spoof a barge-in on the first task of a session.
+        """
+        if self._last_trigger_ts <= 0.0:
+            return False
+        return (time.monotonic() - self._last_trigger_ts) < float(window_s)

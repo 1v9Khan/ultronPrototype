@@ -64,6 +64,7 @@ class DecisionPath(str, Enum):
     RULE_ESCALATE = "rule_escalate"             # always-escalate keyword
     RULE_DEFAULT = "rule_default"               # urgency=preference + options
     RULE_ANSWER = "rule_answer"                 # always-answer keyword
+    FACT_ANSWER = "fact_answer"                 # high-confidence stored fact
     LLM_ANSWER = "llm_answer"
     LLM_DEFAULT = "llm_default"
     LLM_ESCALATE = "llm_escalate"
@@ -100,6 +101,19 @@ class PendingUserClarification:
     voice_question: str
     options: List[str]
     raised_at: float
+
+
+@dataclass
+class _FactAnswer:
+    """Internal: structured answer derived from a stored fact.
+
+    Returned by :meth:`ConversationCoordinator._maybe_answer_from_facts`
+    when a high-confidence fact directly addresses the question. The
+    caller wraps this into a :class:`ClarificationDecision` with
+    ``decision_path=FACT_ANSWER``.
+    """
+    answer_text: str
+    reasoning: str
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +317,7 @@ class ConversationCoordinator:
         renderer: Optional[TemplateRenderer] = None,
         verifier: Optional[Verifier] = None,
         on_failed_session: Optional[Any] = None,
+        facts_lookup: Optional[Callable[..., List[Dict[str, Any]]]] = None,
     ) -> None:
         self.store = store
         self.llm = llm
@@ -310,6 +325,14 @@ class ConversationCoordinator:
             log_path or (settings.LOGS_DIR / "clarifications.jsonl")
         )
         self.clarification_user_timeout_s = clarification_user_timeout_s
+        # Phase 1 (A3 wiring) -- callable that queries the Qdrant facts
+        # collection. Signature: ``facts_lookup(query: str, *, k=...,
+        # min_confidence=..., max_age_days=...) -> List[Dict[str, Any]]``.
+        # When ``None``, ``decide_clarification`` skips the stored-facts
+        # fast-path. The orchestrator wires this to
+        # ``UltronMCPServer.lookup_facts`` (which proxies to
+        # ``ConversationMemory.search_facts``).
+        self._facts_lookup = facts_lookup
         # Phase 3 hook: when set, follow-up prompts the coordinator hands
         # back to the runner pass through the rendered template (which
         # enforces schema + token-budget). When None we emit the LLM /
@@ -370,6 +393,23 @@ class ConversationCoordinator:
                 session_id, request,
                 decision_path=DecisionPath.RULE_DEFAULT,
                 reasoning="urgency=preference with options; defaulting",
+            )
+
+        # Fast-path 2.5: stored facts. If a high-confidence fact directly
+        # addresses the question, answer from it. Cheaper and more
+        # consistent than burning an LLM call -- and skips an unnecessary
+        # escalation when the user's stored preferences already cover the
+        # question. Categories are restricted to ones whose facts map
+        # cleanly to "answer Claude directly" (preference / decision /
+        # constraint); 'person' / 'project' get logged but don't auto-
+        # answer because their content is descriptive, not directive.
+        fact_answer = self._maybe_answer_from_facts(question)
+        if fact_answer is not None:
+            return self._respond_with(
+                session_id, request,
+                answer=fact_answer.answer_text,
+                decision_path=DecisionPath.FACT_ANSWER,
+                reasoning=fact_answer.reasoning,
             )
 
         # Fast-path 3: known low-stakes implementation question.
@@ -721,6 +761,80 @@ class ConversationCoordinator:
                 f"(This is the {verification_failure_count + 1}{'nd' if verification_failure_count == 1 else 'rd' if verification_failure_count == 2 else 'th'} verification cycle. Be deliberate.)"
             )
         return "\n".join(lines)
+
+    # -----------------------------------------------------------------------
+    # Internals: stored-facts fast-path (A3 wiring)
+    # -----------------------------------------------------------------------
+
+    # Categories from extract_facts that we trust to auto-answer Claude
+    # without escalation. 'person' and 'project' are descriptive, not
+    # directive, so they don't qualify.
+    _DIRECTIVE_FACT_CATEGORIES = {"preference", "decision", "constraint"}
+
+    def _maybe_answer_from_facts(
+        self, question: str,
+    ) -> Optional[_FactAnswer]:
+        """Return a structured answer from a high-confidence stored fact,
+        or ``None`` to fall through to the next decision path.
+
+        The fact must:
+          * exist (lookup non-empty),
+          * have ``confidence >= settings.CODING_FACTS_MIN_CONFIDENCE``,
+          * have ``score >= settings.CODING_FACTS_MIN_SCORE``,
+          * have ``category`` in :attr:`_DIRECTIVE_FACT_CATEGORIES`.
+
+        Failures inside ``facts_lookup`` are swallowed -- the next
+        decision path (always-answer / LLM) handles the request normally.
+        """
+        if self._facts_lookup is None:
+            return None
+        cfg = settings.CODING_FACTS
+        try:
+            rows = self._facts_lookup(
+                question,
+                k=cfg["top_k"],
+                min_confidence=cfg["min_confidence"],
+                max_age_days=cfg["max_age_days"],
+            )
+        except TypeError:
+            try:
+                rows = self._facts_lookup(question)
+            except Exception as e:
+                logger.debug("facts_lookup raised: %s", e)
+                return None
+        except Exception as e:
+            logger.debug("facts_lookup raised: %s", e)
+            return None
+        if not rows:
+            return None
+        top = rows[0]
+        try:
+            confidence = float(top.get("confidence", 0.0))
+            score = float(top.get("score", 0.0))
+            category = str(top.get("category", "")).strip().lower()
+            fact_text = str(top.get("fact", "")).strip()
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug("facts_lookup malformed top row: %s", e)
+            return None
+        if not fact_text:
+            return None
+        if confidence < cfg["min_confidence"]:
+            return None
+        if score < cfg["min_score"]:
+            return None
+        if category not in self._DIRECTIVE_FACT_CATEGORIES:
+            return None
+        # Wrap the fact so Claude knows the source. Keeping it explicit
+        # lets Claude judge whether the fact is stale and re-call
+        # request_clarification with rephrased context.
+        answer_text = (
+            f"From the user's stored preferences: {fact_text} Use that."
+        )
+        reasoning = (
+            f"matched stored fact (category={category}, "
+            f"confidence={confidence:.2f}, score={score:.2f})"
+        )
+        return _FactAnswer(answer_text=answer_text, reasoning=reasoning)
 
     # -----------------------------------------------------------------------
     # Internals: rule-based answers

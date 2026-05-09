@@ -140,6 +140,26 @@ class AgentRunResult:
 
 
 @dataclass(frozen=True)
+class PluginToggleResult:
+    """Outcome of an enable_plugin / disable_plugin call (A1 / C3)."""
+
+    plugin_id: str
+    action: str  # "enable" | "disable"
+    success: bool
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PluginInfo:
+    """One row from ``openclaw plugins list --json`` (A1 / C3)."""
+
+    plugin_id: str
+    name: str
+    enabled: bool
+    version: str = ""
+
+
+@dataclass(frozen=True)
 class ToolInvocationResult:
     """Convenience wrapper around :class:`AgentRunResult` for callers
     that explicitly want a tool result (browser, image-gen, etc.)."""
@@ -629,6 +649,127 @@ class OpenClawClient:
             f"openclaw mcp unset {name} failed: {err[:200]}",
             context={"name": name, "returncode": result.returncode},
         )
+
+    # -------------------------------------------------------------------
+    # Plugin management (A1 / C3 — gaming mode + desktop control)
+    # -------------------------------------------------------------------
+
+    async def enable_plugin(
+        self,
+        plugin_id: str,
+        *,
+        timeout_s: Optional[float] = None,
+    ) -> "PluginToggleResult":
+        """Enable a plugin via ``openclaw plugins enable <id>``.
+
+        Returns a :class:`PluginToggleResult` with ``success=True`` on
+        successful CLI exit. Returns ``success=False`` with a populated
+        ``error`` field for known failure modes (plugin not installed,
+        plugin already in target state). Transport-level errors raise
+        :class:`OpenClawGatewayError` so callers can distinguish
+        infrastructural failure from operational outcomes.
+        """
+        return await self._toggle_plugin(plugin_id, "enable", timeout_s=timeout_s)
+
+    async def disable_plugin(
+        self,
+        plugin_id: str,
+        *,
+        timeout_s: Optional[float] = None,
+    ) -> "PluginToggleResult":
+        """Disable a plugin via ``openclaw plugins disable <id>``.
+
+        Same semantics as :meth:`enable_plugin`. Used by the gaming-mode
+        manager (A1) to take ``desktop-control`` / ``windows-control``
+        offline before launching anticheat-protected games.
+        """
+        return await self._toggle_plugin(plugin_id, "disable", timeout_s=timeout_s)
+
+    async def _toggle_plugin(
+        self,
+        plugin_id: str,
+        action: str,
+        *,
+        timeout_s: Optional[float] = None,
+    ) -> "PluginToggleResult":
+        if action not in ("enable", "disable"):
+            raise ValueError(f"_toggle_plugin: invalid action {action!r}")
+        if not plugin_id or not str(plugin_id).strip():
+            raise ValueError("_toggle_plugin: plugin_id must be non-empty")
+        result = await self._run_cli(
+            ["plugins", action, plugin_id], timeout_s=timeout_s,
+        )
+        if result.returncode == 0:
+            return PluginToggleResult(
+                plugin_id=plugin_id, action=action, success=True,
+            )
+        err = result.stderr.strip()
+        lowered = err.lower()
+        # OpenClaw's CLI surfaces "not installed" / "unknown plugin"
+        # cleanly on stderr; bubble those as structured failures so the
+        # voice layer can say the right thing.
+        if any(m in lowered for m in ("not installed", "unknown plugin", "no such")):
+            return PluginToggleResult(
+                plugin_id=plugin_id, action=action, success=False,
+                error=f"plugin {plugin_id!r} is not installed on this OpenClaw",
+            )
+        # Auth failures escalate.
+        self._raise_for_auth_failure(err, context={"op": f"plugins.{action}"})
+        return PluginToggleResult(
+            plugin_id=plugin_id, action=action, success=False,
+            error=err[:300] or f"plugins {action} returned {result.returncode}",
+        )
+
+    async def list_plugins(
+        self,
+        *,
+        enabled_only: bool = False,
+        timeout_s: Optional[float] = None,
+    ) -> List["PluginInfo"]:
+        """List discovered plugins via ``openclaw plugins list --json``.
+
+        Returns an empty list when the CLI fails or the output isn't
+        parseable -- callers (gaming-mode status reporter) treat that
+        as 'I don't know which plugins are installed'.
+        """
+        args = ["plugins", "list", "--json"]
+        if enabled_only:
+            args.append("--enabled")
+        try:
+            result = await self._run_cli(args, timeout_s=timeout_s)
+        except OpenClawGatewayError as e:
+            logger.warning("list_plugins transport failure: %s", e)
+            return []
+        if result.returncode != 0:
+            logger.warning(
+                "list_plugins returned %s: %s",
+                result.returncode, result.stderr[:200],
+            )
+            return []
+        text = result.stdout.strip()
+        if not text:
+            return []
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.warning("list_plugins JSON parse failed: %s", e)
+            return []
+        rows: List[PluginInfo] = []
+        seq = payload if isinstance(payload, list) else payload.get("plugins", [])
+        for entry in (seq or []):
+            if not isinstance(entry, dict):
+                continue
+            try:
+                rows.append(PluginInfo(
+                    plugin_id=str(entry.get("id") or entry.get("name") or ""),
+                    name=str(entry.get("name") or ""),
+                    enabled=bool(entry.get("enabled", entry.get("status") == "enabled")),
+                    version=str(entry.get("version") or ""),
+                ))
+            except (TypeError, ValueError) as e:
+                logger.debug("list_plugins skipping malformed row: %s", e)
+                continue
+        return rows
 
     @staticmethod
     def _parse_mcp_list(stdout: str) -> Dict[str, Dict[str, Any]]:

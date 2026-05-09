@@ -344,7 +344,9 @@ class LLMEngine:
             self._history.append(("user", user_message))
             self._history.append(("assistant", assistant_message))
 
-    def _build_messages(self, user_message: str) -> List[dict]:
+    def _build_messages(
+        self, user_message: str, *, gate_verdict=None,
+    ) -> List[dict]:
         # Resolve the system prompt fresh each turn. When the persona
         # source is the workspace, this is what makes hot reload work:
         # PersonaLoader's refresh_if_stale catches mtime/size changes
@@ -374,7 +376,11 @@ class LLMEngine:
         # The second is the default at Stage G — it puts retrieved
         # context in the strongest-attention zone (right before the
         # user query) and recovers +10-20% recall on the 4B.
-        rag_block = self._format_rag_block(self._retrieve_rag_snippets(user_message))
+        rag_block = self._format_rag_block(
+            self._retrieve_rag_snippets(
+                user_message, gate_verdict=gate_verdict,
+            ),
+        )
         rag_position = get_config().llm.rag.position
 
         if rag_block and rag_position == "system":
@@ -398,8 +404,17 @@ class LLMEngine:
 
     # --- 4B plan Stage G: RAG retrieval + formatting helpers ---------------
 
-    def _retrieve_rag_snippets(self, user_message: str) -> List:
+    def _retrieve_rag_snippets(
+        self, user_message: str, *, gate_verdict=None,
+    ) -> List:
         """Best-effort fetch of RAG snippets from the memory module.
+
+        V1-gap A2: when ``gate_verdict`` is provided AND
+        ``memory.retrieval.multi_pass_enabled`` is True, routes through
+        :meth:`ConversationMemory.retrieve_for_query` so the gate's
+        category sub-queries fan out into a multi-pass retrieval. With
+        no verdict (or the flag off), falls back to the original
+        single-pass ``retrieve`` -- byte-for-byte identical to today.
 
         Returns ``[]`` on failure or when memory is disabled. Logs a
         warning on retrieval failure but never raises.
@@ -408,6 +423,15 @@ class LLMEngine:
             return []
         mem_cfg = get_config().memory
         try:
+            if gate_verdict is not None and hasattr(
+                self._memory, "retrieve_for_query",
+            ):
+                return list(self._memory.retrieve_for_query(
+                    user_message,
+                    gate_verdict,
+                    k=mem_cfg.rag_top_k,
+                    exclude_recent=mem_cfg.rag_exclude_recent,
+                ))
             return list(self._memory.retrieve(
                 user_message,
                 k=mem_cfg.rag_top_k,
@@ -545,7 +569,13 @@ class LLMEngine:
         logger.info("reload_for_preset(%s) succeeded; model=%s", preset, new_path)
         return True, f"loaded {preset}"
 
-    def generate(self, user_message: str, *, enable_thinking: Optional[bool] = None) -> str:
+    def generate(
+        self,
+        user_message: str,
+        *,
+        enable_thinking: Optional[bool] = None,
+        gate_verdict=None,
+    ) -> str:
         """Blocking generation. Returns the full response string.
 
         ``enable_thinking`` (4B optimization plan Stage F):
@@ -565,8 +595,13 @@ class LLMEngine:
 
         See [docs/4b_optimization_plan.md](../../docs/4b_optimization_plan.md)
         for the per-intent thinking-mode table.
+
+        ``gate_verdict`` (V1-gap A2): when set AND
+        ``memory.retrieval.multi_pass_enabled`` is True, the RAG block
+        is built via the multi-pass per-category retrieval path. ``None``
+        preserves the original single-pass behaviour.
         """
-        messages = self._build_messages(user_message)
+        messages = self._build_messages(user_message, gate_verdict=gate_verdict)
         _llm_cfg = get_config().llm
         t0 = time.monotonic()
         if self._runtime == "in_process":
@@ -591,17 +626,19 @@ class LLMEngine:
         user_message: str,
         *,
         enable_thinking: Optional[bool] = None,
+        gate_verdict=None,
     ) -> Iterator[str]:
         """Yield response tokens as they arrive.
 
-        See :meth:`generate` for the ``enable_thinking`` semantics.
+        See :meth:`generate` for the ``enable_thinking`` and
+        ``gate_verdict`` (V1-gap A2) semantics.
 
         The full response is appended to history once the stream completes
         normally; on cancel, partial output is recorded so the model
         remembers what it had said.
         """
         self._cancel.clear()
-        messages = self._build_messages(user_message)
+        messages = self._build_messages(user_message, gate_verdict=gate_verdict)
         _llm_cfg = get_config().llm
         t0 = time.monotonic()
         first_token_time: Optional[float] = None

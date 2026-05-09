@@ -50,6 +50,18 @@ _ADDENDUM_LOW_TEMPORAL = (
     "you may not be current; do not fabricate fresh facts.]"
 )
 
+# B1: knowledge_source-aware source hints. Prepended ABOVE the confidence
+# addendum so the LLM has both signals when it composes the response.
+# The web-search-needed branch isn't here -- the search path adds its
+# own ack and sources, and we don't want a confidence addendum on a
+# verdict that's about to be replaced by fetched citations.
+_SOURCE_HINT_RETRIEVED_MEMORY = (
+    "[Source: prior conversation memory. Speak naturally; do not cite.]"
+)
+_SOURCE_HINT_RETRIEVED_FACTS = (
+    "[Source: stored user preference. Speak naturally; do not cite.]"
+)
+
 
 def apply(verdict: GateVerdict, user_text: str) -> Tuple[GateVerdict, str]:
     """Apply Phase 5 transforms.
@@ -58,14 +70,24 @@ def apply(verdict: GateVerdict, user_text: str) -> Tuple[GateVerdict, str]:
 
     Behavior:
       * Verdict from a hard-rule firing (``source == "rule"``) is left
-        alone -- rules don't carry confidence signals worth acting on.
+        alone -- rules don't carry confidence signals worth acting on,
+        EXCEPT a rule-derived ``knowledge_source`` that points at
+        retrieved memory/facts still gets its source hint so the LLM
+        can match its tone.
       * Verdict with ``knowledge_confidence == "low"`` AND a temporal
         dependency AND a current NO_SEARCH decision is upgraded to
         SEARCH. The original user text becomes the search query.
-      * The user text gets a leading ``[Confidence: ...]`` addendum based
-        on ``knowledge_confidence`` when present.
+      * The user text gets a leading source hint (B1) based on
+        ``knowledge_source`` when it points at retrieved memory/facts,
+        and a ``[Confidence: ...]`` addendum based on
+        ``knowledge_confidence`` when present.
     """
+    # B1: rule verdicts skip the confidence path but their source hint
+    # (if memory/facts) still primes the LLM tone.
     if verdict.source == "rule":
+        source_hint = _source_hint_for(verdict)
+        if source_hint:
+            return verdict, f"{source_hint}\n\n{user_text}"
         return verdict, user_text
 
     upgraded = verdict
@@ -97,16 +119,40 @@ def apply(verdict: GateVerdict, user_text: str) -> Tuple[GateVerdict, str]:
     # Addendum based on the FINAL confidence + temporal signals.
     final_confidence = upgraded.knowledge_confidence
     final_temporal = bool(upgraded.has_temporal_dependency)
-    addendum: str = ""
+    confidence_addendum: str = ""
     if final_confidence == "medium":
-        addendum = _ADDENDUM_MEDIUM
+        confidence_addendum = _ADDENDUM_MEDIUM
     elif final_confidence == "low":
-        addendum = (
+        confidence_addendum = (
             _ADDENDUM_LOW_TEMPORAL if final_temporal else _ADDENDUM_LOW_NON_TEMPORAL
         )
 
-    if not addendum:
+    # B1: source hint from knowledge_source. Skipped on the search path
+    # (sources will be cited inline) so we don't conflict with the
+    # search-result formatter.
+    source_hint = ""
+    if upgraded.decision != GateDecision.SEARCH:
+        source_hint = _source_hint_for(upgraded)
+
+    parts = [p for p in (source_hint, confidence_addendum) if p]
+    if not parts:
         return upgraded, user_text
 
-    augmented = f"{addendum}\n\n{user_text}"
+    augmented = "\n".join(parts) + "\n\n" + user_text
     return upgraded, augmented
+
+
+def _source_hint_for(verdict: GateVerdict) -> str:
+    """B1: pick a leading source-hint based on ``knowledge_source``.
+
+    Only fires on retrieved-memory / retrieved-facts. ``weights`` /
+    ``unknown`` / ``web_search_needed`` get no hint -- the first two
+    are the model's default mode, and the third has the search-result
+    formatter handling source attribution.
+    """
+    src = (verdict.knowledge_source or "").lower()
+    if src == "retrieved_memory":
+        return _SOURCE_HINT_RETRIEVED_MEMORY
+    if src == "retrieved_facts":
+        return _SOURCE_HINT_RETRIEVED_FACTS
+    return ""

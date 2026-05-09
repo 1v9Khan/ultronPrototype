@@ -570,6 +570,34 @@ class CodingTaskRunner:
             self._pending_budget_warning = None
         return text
 
+    # --- A4 pre-task confirmation audit -----------------------------------
+
+    def record_pre_task_aborted(
+        self,
+        *,
+        label: Optional[str],
+        reason: str,
+        intent_text: str = "",
+    ) -> None:
+        """A4: log a pre-task confirmation that was aborted before dispatch.
+
+        Called by the orchestrator when its barge-in watcher detected a
+        wake-word fire during the confirmation TTS, so the user's
+        interrupt is durable in the coding task audit log. Best-effort:
+        log-write failures degrade silently rather than crash the
+        voice loop.
+        """
+        try:
+            self._log_record({
+                "event": "pre_task_aborted",
+                "label": label or "(unset)",
+                "reason": reason,
+                "intent_text": (intent_text or "")[:300],
+                "ts": time.time(),
+            })
+        except Exception as e:
+            logger.debug("pre_task_aborted audit failed: %s", e)
+
     # --- 4B plan Item 7: canonical-path-monitor wiring --------------------
 
     def _make_canonical_monitor_listener(self, handle):

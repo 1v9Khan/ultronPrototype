@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from config import settings
 from ultron.coding.bridge import TaskRequest
@@ -43,11 +43,26 @@ logger = get_logger("coding.voice")
 
 @dataclass
 class VoiceResponse:
-    """Result returned to the orchestrator from :meth:`handle_utterance`."""
+    """Result returned to the orchestrator from :meth:`handle_utterance`.
+
+    A4 pre-task confirmation: when a CODE_TASK intent fires AND the
+    feature is enabled, the controller defers the actual bridge spawn
+    via :attr:`deferred_dispatch` and asks the orchestrator to speak
+    :attr:`pre_task_confirmation` first. The orchestrator's barge-in
+    watcher gives the user a window to interrupt before files start
+    moving. On barge-in, ``deferred_dispatch`` is dropped without firing.
+    """
 
     text: str  # what to speak
     handled: bool = True  # if False, orchestrator should fall through to LLM
     cancelled: bool = False  # set when we cancelled a running task
+    # A4: optional confirmation phrase spoken BEFORE deferred_dispatch.
+    pre_task_confirmation: Optional[str] = None
+    # A4: deferred dispatch closure. Called by the orchestrator AFTER
+    # the confirmation TTS completes without barge-in.
+    deferred_dispatch: Optional[Callable[[], None]] = None
+    # A4: tag used in the audit log for traceability.
+    pre_task_label: Optional[str] = None
 
 
 class CapabilityVoiceController:
@@ -83,6 +98,7 @@ class CapabilityVoiceController:
         coordinator=None,
         llm_engine=None,
         openclaw_bridge=None,
+        gaming_mode_manager=None,
     ) -> None:
         self.runner = runner
         self.registry = registry
@@ -100,6 +116,10 @@ class CapabilityVoiceController:
         # voice messages. None disables the live path; stubs return
         # exactly as before.
         self.openclaw_bridge = openclaw_bridge
+        # V1-gap A1 — gaming-mode manager. None disables gaming mode
+        # with a clear voice message; otherwise GAMING_MODE intents
+        # route to it via the OpenClawDispatcher.
+        self.gaming_mode_manager = gaming_mode_manager
         self._lock = threading.Lock()
         # State machine for completion-push: when has_active_task() goes
         # from True to False, we capture the completion narration so the
@@ -383,11 +403,17 @@ class CapabilityVoiceController:
                     f"folder is missing at {project_path}. Aborting."
                 ))
             self.registry.touch(resolution.project.name)
-            self._submit(project_path, intent, label=resolution.project.name)
-            return VoiceResponse(text=(
-                f"Working on {resolution.project.name}. "
-                f"I'll let you know when it's done."
-            ))
+            return self._build_code_task_response(
+                project_path=project_path,
+                intent=intent,
+                label=resolution.project.name,
+                post_dispatch_text=(
+                    f"Working on {resolution.project.name}. "
+                    f"I'll let you know when it's done."
+                ),
+                project_phrase=resolution.project.name,
+                is_new=False,
+            )
 
         # Ambiguous: ask the user to disambiguate.
         if resolution and resolution.kind == ResolutionKind.AMBIGUOUS:
@@ -419,17 +445,135 @@ class CapabilityVoiceController:
                     description=intent.task_text[:200],
                     sandbox_root=self.sandbox_root,
                 )
-            self._submit(Path(project.path), intent, label=project_name)
-            return VoiceResponse(text=(
-                f"Starting a new project, {project_name}, in the sandbox. "
-                f"Working on it now."
-            ))
+            return self._build_code_task_response(
+                project_path=Path(project.path),
+                intent=intent,
+                label=project_name,
+                post_dispatch_text=(
+                    f"Starting a new project, {project_name}, in the sandbox. "
+                    f"Working on it now."
+                ),
+                project_phrase=project_name,
+                is_new=True,
+            )
 
         # Fallback (shouldn't reach here in practice).
         return VoiceResponse(text=(
             "I couldn't figure out which project you meant. "
             "Say create a new project or name an existing one."
         ))
+
+    # --- A4 pre-task confirmation -----------------------------------------
+
+    def _build_code_task_response(
+        self,
+        *,
+        project_path: Path,
+        intent: CodingIntent,
+        label: str,
+        post_dispatch_text: str,
+        project_phrase: str,
+        is_new: bool,
+    ) -> VoiceResponse:
+        """Either dispatch immediately (legacy path) or defer dispatch
+        behind a spoken confirmation (A4 path).
+
+        When ``coding.pre_task_confirmation_enabled`` is False (default),
+        behaves exactly like the legacy path: ``_submit`` runs synchronously
+        and the returned VoiceResponse carries only ``text``. When True,
+        ``_submit`` is wrapped into a ``deferred_dispatch`` closure the
+        orchestrator runs after the confirmation TTS clears its barge-in
+        watch.
+        """
+        if not getattr(settings, "CODING_PRE_TASK_CONFIRMATION_ENABLED", False):
+            self._submit(project_path, intent, label=label)
+            return VoiceResponse(text=post_dispatch_text)
+
+        confirmation = self._build_pre_task_confirmation(
+            intent=intent,
+            project_phrase=project_phrase,
+            is_new=is_new,
+        )
+
+        # Capture the values _submit needs in a closure so the actual
+        # bridge spawn can fire later without the controller reaching
+        # back through `self`. Errors from _submit translate to a queued
+        # warning the orchestrator can surface; we never crash the voice
+        # loop on dispatch failure.
+        def _dispatch() -> None:
+            try:
+                self._submit(project_path, intent, label=label)
+            except Exception as e:                                        # noqa: BLE001
+                logger.warning(
+                    "deferred dispatch for %r failed: %s", label, e,
+                )
+        return VoiceResponse(
+            text=post_dispatch_text,
+            pre_task_confirmation=confirmation,
+            deferred_dispatch=_dispatch,
+            pre_task_label=label,
+        )
+
+    def _build_pre_task_confirmation(
+        self,
+        *,
+        intent: CodingIntent,
+        project_phrase: str,
+        is_new: bool,
+    ) -> str:
+        """Render a short spoken confirmation in Ultron's voice.
+
+        Format mirrors the V1 spec example:
+            "I'll have Claude Code <verb> on the <project> project. Going ahead."
+
+        We extract a short verb/object phrase from the intent text. When
+        the intent is for a brand-new project we say "scaffold a new"
+        rather than "work on" so the user knows a new directory is about
+        to be created.
+        """
+        max_words = int(getattr(settings, "CODING_PRE_TASK_MAX_WORDS", 30))
+        action_phrase = self._summarise_intent_for_voice(
+            intent_text=intent.task_text or "",
+            max_words=max(8, max_words // 2),
+        )
+        if is_new:
+            return (
+                f"I'll have Claude Code scaffold a new {project_phrase} "
+                f"project: {action_phrase}. Going ahead."
+            )
+        return (
+            f"I'll have Claude Code {action_phrase} on the "
+            f"{project_phrase} project. Going ahead."
+        )
+
+    @staticmethod
+    def _summarise_intent_for_voice(*, intent_text: str, max_words: int) -> str:
+        """Trim the intent text to a short phrase for the confirmation.
+
+        Strips leading filler ("can you", "please", "i need you to"),
+        clamps to ``max_words`` words, and ensures the result reads as
+        a verb phrase (no trailing punctuation).
+        """
+        text = (intent_text or "").strip()
+        if not text:
+            return "make the requested change"
+        # Strip filler.
+        lowered = text.lower()
+        for prefix in (
+            "can you ", "could you ", "please ", "i need you to ",
+            "i want you to ", "i'd like you to ", "go ahead and ",
+            "go and ", "now ", "ok ", "okay ",
+        ):
+            if lowered.startswith(prefix):
+                text = text[len(prefix):]
+                lowered = text.lower()
+                break
+        # Clamp.
+        words = text.split()
+        if len(words) > max_words:
+            text = " ".join(words[:max_words]) + "..."
+        # Drop trailing terminator so it joins naturally.
+        return text.rstrip(".!? ").rstrip(",;: ")
 
     def _submit(self, project_path: Path, intent: CodingIntent, label: str) -> None:
         # Phase 7: when the coordinator's session store is available,
@@ -545,6 +689,91 @@ class CapabilityVoiceController:
                 f"Reason: {msg}."
             )
         return VoiceResponse(text=voice, handled=True)
+
+    def _dispatch_via_automation_runner(self, routing_intent) -> "VoiceResponse":
+        """Shared dispatch path for all automation-bound kinds.
+
+        Builds (or reuses) the singleton :class:`AutomationTaskRunner`,
+        submits the intent, and awaits the completion narration. Threads
+        the live :class:`LLMEngine`, :class:`OpenClawBridge`, and
+        gaming-mode manager (V1-gap A1) through to the dispatcher so all
+        of them apply uniformly.
+
+        The runner is constructed lazily on first use so unit tests
+        without these dependencies aren't forced to instantiate them.
+        Routing-log outcome is derived from the dispatch result's
+        ``stub`` / ``blocked`` metadata so existing tests (which assert
+        ``outcome == "stub"`` for unwired automation kinds) keep
+        working.
+        """
+        from ultron.openclaw_routing.intents import RoutingIntentKind
+        from ultron.openclaw_routing import (
+            AutomationTaskRunner,
+            OpenClawDispatcher,
+            get_routing_log,
+        )
+        import asyncio
+
+        runner = getattr(self, "_automation_runner", None)
+        if runner is None:
+            runner = AutomationTaskRunner(
+                dispatcher=OpenClawDispatcher(
+                    llm=self.llm_engine,
+                    bridge=self.openclaw_bridge,
+                    gaming_mode_manager=getattr(
+                        self, "gaming_mode_manager", None,
+                    ),
+                ),
+            )
+            self._automation_runner = runner
+
+        async def _go():
+            task_id = await runner.submit_task(routing_intent)
+            return task_id, await runner.completion_narration(task_id)
+
+        try:
+            task_id, voice = asyncio.run(_go())
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "automation runner raised on %s: %s",
+                routing_intent.kind.value, e,
+            )
+            task_id = None
+            voice = "Something went wrong dispatching that. Try again."
+
+        # Derive outcome from the dispatch result's metadata so existing
+        # routing-log assertions ("outcome=stub" for unwired automation
+        # paths) stay correct without forcing the new V1-gap kinds to
+        # masquerade as stubs.
+        outcome = "dispatched"
+        extra: Dict[str, Any] = {}
+        if task_id is not None:
+            try:
+                result = runner._results.get(task_id)              # noqa: SLF001
+            except Exception:
+                result = None
+            if result is not None:
+                meta = result.metadata or {}
+                if meta.get("blocked"):
+                    outcome = "blocked"
+                    extra["block_reason"] = meta.get("reason")
+                elif meta.get("stub"):
+                    outcome = "stub"
+                    extra["stub_reason"] = (
+                        "OpenClaw integration not yet complete"
+                    )
+        else:
+            outcome = "failed"
+
+        get_routing_log().record(
+            routing_intent,
+            handler=f"OpenClawDispatcher.handle_{routing_intent.kind.value}",
+            outcome=outcome,
+            extra=extra or None,
+        )
+        return VoiceResponse(
+            text=voice or "I couldn't run that yet.", handled=True,
+        )
 
     @staticmethod
     def _preset_voice_label(preset: str) -> str:
@@ -681,6 +910,23 @@ class CapabilityVoiceController:
         if kind == RoutingIntentKind.SYSTEM_STATUS:
             return self._handle_system_status(routing_intent)
 
+        # V1-gap A1 — gaming mode (anticheat-safe shutdown of OpenClaw
+        # plugins). Routes through the dispatcher so the block-and-
+        # revise validator + per-call audit log apply uniformly.
+        if kind == RoutingIntentKind.GAMING_MODE:
+            return self._dispatch_via_automation_runner(routing_intent)
+
+        # V1-gap C3 — desktop / windows control (UI Automation +
+        # screenshot via the OpenClaw desktop-control / windows-control
+        # plugins). Routes through the same automation runner so the
+        # audit log + block-and-revise apply identically to other
+        # OpenClaw-bound kinds.
+        if kind in {
+            RoutingIntentKind.DESKTOP_AUTOMATION,
+            RoutingIntentKind.WINDOW_AUTOMATION,
+        }:
+            return self._dispatch_via_automation_runner(routing_intent)
+
         # Coding kinds — delegate to the existing utterance pipeline.
         coding_kinds = {
             RoutingIntentKind.CODE_TASK,
@@ -708,35 +954,7 @@ class CapabilityVoiceController:
             RoutingIntentKind.FILE_OPERATION,
             RoutingIntentKind.SHELL_OPERATION,
         }:
-            # Build a per-call runner so each intent gets its own task id /
-            # audit row. The runner is cheap to construct.
-            runner = getattr(self, "_automation_runner", None)
-            if runner is None:
-                # 4B plan Item 8 — thread the live LLMEngine into the
-                # dispatcher so the block-and-revise validator can run
-                # its pre-flight check. When llm_engine is None (tests
-                # / not yet wired), the validator fails open and
-                # dispatch behaves exactly as before.
-                runner = AutomationTaskRunner(
-                    dispatcher=OpenClawDispatcher(
-                        llm=self.llm_engine,
-                        bridge=self.openclaw_bridge,
-                    ),
-                )
-                self._automation_runner = runner
-
-            async def _go():
-                task_id = await runner.submit_task(routing_intent)
-                return await runner.completion_narration(task_id)
-
-            voice = asyncio.run(_go()) or "I couldn't run that yet."
-            get_routing_log().record(
-                routing_intent,
-                handler=f"OpenClawDispatcher.handle_{kind.value}",
-                outcome="stub",
-                extra={"stub_reason": "OpenClaw integration not yet complete"},
-            )
-            return VoiceResponse(text=voice, handled=True)
+            return self._dispatch_via_automation_runner(routing_intent)
 
         # Hybrid — without a wired-up decomposer + Anthropic, we can only
         # tell the user we recognized it but can't run it yet.

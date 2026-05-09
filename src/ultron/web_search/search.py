@@ -63,6 +63,91 @@ class SearchPayload:
 
 
 # ---------------------------------------------------------------------------
+# V1-gap B3: citation marker rendering
+# ---------------------------------------------------------------------------
+
+
+_SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _render_inline_marker(index: int, *, fmt: str) -> str:
+    """Render an inline citation marker in the configured format.
+
+    ``"bracket"`` (default) -> ``"[1]"`` (terminal-friendly).
+    ``"superscript"`` -> ``"¹"`` / ``"²"`` (matches the V1-spec
+    Part 4.4 phrasing).
+
+    The references list at the end of a reply always uses bracketed
+    numbers regardless of the inline format, so the user can match
+    inline markers to the source list even on terminal fonts that
+    render Unicode superscripts oddly.
+    """
+    if fmt == "superscript":
+        return str(index).translate(_SUPERSCRIPT_DIGITS)
+    return f"[{index}]"
+
+
+def _resolve_citation_format() -> str:
+    try:
+        cfg = get_config()
+        return getattr(cfg.web_search.citation, "inline_marker_format", "bracket")
+    except Exception:
+        return "bracket"
+
+
+# ---------------------------------------------------------------------------
+# V1-gap B2: query deduplication
+# ---------------------------------------------------------------------------
+
+
+# Short stopwords to drop during canonicalisation. Conservative list:
+# only dropping word-order fillers + possessive markers so "Tampa
+# weather today" and "today's weather in Tampa" canonicalise the same.
+_DEDUPE_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "in", "on", "at", "of", "for", "to",
+    "and", "or", "but", "s", "current",
+})
+
+
+def _normalise_search_query(q: str) -> str:
+    """Canonicalise ``q`` for dedup purposes.
+
+    Lowercase, strip punctuation (so possessives like "today's" become
+    "today" + "s"), drop short word-order stopwords, sort the
+    remaining token set. Two queries with the same canonical form are
+    treated as duplicates even when their phrasing differs.
+
+    Examples:
+      "Tampa weather today" -> "tampa today weather"
+      "today's weather in Tampa" -> "tampa today weather"  (same)
+    """
+    if not q:
+        return ""
+    cleaned = re.sub(r"['']s\b", "", q.lower())     # strip possessive 's
+    cleaned = re.sub(r"[^\w\s]", " ", cleaned)
+    tokens = sorted(
+        t for t in cleaned.split()
+        if t and t not in _DEDUPE_STOPWORDS
+    )
+    return " ".join(tokens)
+
+
+def _dedupe_queries(queries: List[str]) -> List[str]:
+    """Drop near-duplicates while preserving first-seen order."""
+    seen: set = set()
+    out: List[str] = []
+    for q in queries:
+        canonical = _normalise_search_query(q)
+        if not canonical:
+            continue
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        out.append(q)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Snippet ranking: ask the LLM to pick the most relevant N from Brave's list.
 # ---------------------------------------------------------------------------
 
@@ -206,7 +291,18 @@ class WebSearchExecutor:
         """
         t0 = time.monotonic()
         notes: List[str] = []
-        queries = [q.strip() for q in (search_queries or [user_query]) if q and q.strip()]
+        raw_queries = [q.strip() for q in (search_queries or [user_query]) if q and q.strip()]
+        # V1-gap B2: dedupe near-duplicate Brave queries before the
+        # fan-out. The pre-flight pass occasionally emits 2-3 queries
+        # that share the same canonical-token set ("Tampa weather
+        # today" / "weather in Tampa today" / "today weather Tampa").
+        # Keep first-seen order so the cache lookup uses the original
+        # phrasing the user is most likely to repeat.
+        queries = _dedupe_queries(raw_queries)
+        if len(queries) != len(raw_queries):
+            notes.append(
+                f"query_dedup:{len(raw_queries)}->{len(queries)}",
+            )
         if not queries:
             return SearchPayload(query=user_query, sources=[], cache_hit=False,
                                  elapsed_ms=0.0, notes=["empty queries"])
@@ -276,9 +372,10 @@ class WebSearchExecutor:
         # Cache write -- best-effort; failure doesn't block the response.
         if self.cache is not None and rows:
             try:
-                # Cache against the FIRST (best) query so subsequent identical
-                # queries hit. We don't try to deduplicate per-search-query
-                # variants; the simplest cache wins.
+                # Cache against the FIRST (best) query so subsequent
+                # identical queries hit. V1-gap B2 dedupes near-duplicate
+                # variants at the query level before this point, so the
+                # FIRST query is reliably the canonical one.
                 self.cache.store(queries[0], rows)
             except Exception as e:
                 logger.warning("cache store failed: %s", e)
@@ -308,9 +405,11 @@ class WebSearchExecutor:
 def format_sources_for_prompt(sources: List[SearchSource], max_chars_per_source: int = 1500) -> str:
     """Render sources into a prompt-ready block.
 
-    Each source gets a numbered header, the URL on its own line for citation,
-    the snippet, and (if available) a truncated extract from Jina. Truncation
-    keeps the total prompt size sane on big articles.
+    Each source gets a numbered header (V1-gap B3: inline marker matches
+    the configured format -- "bracket" or "superscript"), the URL on
+    its own line for citation, the snippet, and (if available) a
+    truncated extract from Jina. Truncation keeps the total prompt
+    size sane on big articles.
 
     4B plan Item 4: each source body is optionally compressed when
     ``llm.compression.enabled`` AND ``llm.compression.compress_web``
@@ -319,8 +418,10 @@ def format_sources_for_prompt(sources: List[SearchSource], max_chars_per_source:
     """
     if not sources:
         return "(no sources)"
+    fmt = _resolve_citation_format()
     blocks: List[str] = []
     for i, s in enumerate(sources, 1):
+        marker = _render_inline_marker(i, fmt=fmt)
         body = (s.full_text or s.snippet or "").strip()
         if len(body) > max_chars_per_source:
             body = body[:max_chars_per_source] + "\n[truncated]"
@@ -331,7 +432,7 @@ def format_sources_for_prompt(sources: List[SearchSource], max_chars_per_source:
         except Exception:
             pass
         blocks.append(
-            f"[{i}] {s.title}\n    URL: {s.url}\n    {body}"
+            f"{marker} {s.title}\n    URL: {s.url}\n    {body}"
         )
     return "\n\n".join(blocks)
 

@@ -149,3 +149,29 @@ class HybridEmbedder:
         self._ensure_sparse()
         s = list(self._sparse.query_embed([query]))[0]
         return _SparseVec(s.indices.tolist(), s.values.tolist())
+
+    def encode_query_dense_batch(self, queries: Sequence[str]) -> np.ndarray:
+        """V1-gap A2: batch the dense query encoder for multi-pass retrieval.
+
+        Returns ``(N, 384)`` float32. Empty input -> zero rows. Wraps
+        FastEmbed's ``query_embed`` in one call so the multi-pass path
+        pays a single ONNX-runtime warmup instead of N.
+        """
+        self._ensure_dense()
+        seq = list(queries)
+        if not seq:
+            return np.zeros((0, self.dim), dtype=np.float32)
+        return np.asarray(
+            list(self._dense.query_embed(seq)), dtype=np.float32,
+        )
+
+    def encode_query_sparse_batch(self, queries: Sequence[str]) -> List[_SparseVec]:
+        """V1-gap A2: batch the sparse query encoder for multi-pass retrieval."""
+        self._ensure_sparse()
+        seq = list(queries)
+        if not seq:
+            return []
+        return [
+            _SparseVec(s.indices.tolist(), s.values.tolist())
+            for s in self._sparse.query_embed(seq)
+        ]

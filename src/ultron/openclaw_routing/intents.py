@@ -49,6 +49,22 @@ class RoutingIntentKind(str, Enum):
     # the heartbeat alert log + active coding session list. Phase 13 finish.
     SYSTEM_STATUS = "system_status"
 
+    # Gaming mode (V1-spec gap A1) — anticheat-safe shutdown of the
+    # desktop-control / windows-control plugins before launching a
+    # Vanguard / EAC-protected game. Voice phrases: "gaming mode",
+    # "I'm about to play Valorant", "gaming mode off".
+    GAMING_MODE = "gaming_mode"
+
+    # Desktop automation (V1-spec gap C3) — voice routing for the
+    # OpenClaw ``desktop-control`` plugin: take a screenshot, list open
+    # windows, find a window by title.
+    DESKTOP_AUTOMATION = "desktop_automation"
+
+    # Window automation (V1-spec gap C3) — voice routing for the
+    # OpenClaw ``windows-control`` plugin: focus / click / type into a
+    # specific window via UI Automation.
+    WINDOW_AUTOMATION = "window_automation"
+
 
 # ---------------------------------------------------------------------------
 # Per-category structured intents (for openclaw-bound ones)
@@ -113,6 +129,57 @@ class ModelSwitchIntent:
 
 
 @dataclass
+class GamingModeIntent:
+    """V1-gap A1: voice-driven anticheat-safe shutdown of OpenClaw plugins.
+
+    ``action`` mirrors the user's phrasing:
+      * ``"engage"`` -- "gaming mode", "I'm about to play Valorant".
+      * ``"disengage"`` -- "gaming mode off", "done playing".
+      * ``"status"`` -- "is gaming mode on?", "are we in gaming mode?".
+
+    The dispatcher routes to :class:`GamingModeManager` and shapes a
+    :class:`DispatchResult` matching the spec's voice phrasing.
+    """
+
+    action: str  # "engage" | "disengage" | "status"
+    trigger_phrase: str = ""
+    raw_text: str = ""
+
+
+@dataclass
+class DesktopIntent:
+    """V1-gap C3: voice routing for the OpenClaw ``desktop-control`` plugin.
+
+    ``action`` is the high-level operation:
+      * ``"screenshot"`` -- capture full screen or a named window.
+      * ``"list_windows"`` -- enumerate currently open windows.
+      * ``"find_window"`` -- locate a specific window by title query.
+    """
+
+    action: str  # "screenshot" | "list_windows" | "find_window"
+    target: Optional[str] = None  # window title pattern (screenshot / find)
+    raw_text: str = ""
+
+
+@dataclass
+class WindowIntent:
+    """V1-gap C3: voice routing for the OpenClaw ``windows-control`` plugin.
+
+    UI Automation primitives. ``action`` selects the operation:
+      * ``"focus"`` -- bring a window to the foreground.
+      * ``"click"`` -- click a specific UI element by ref.
+      * ``"type"`` -- type text into a specific UI element.
+      * ``"find"`` -- look up a window's UIA reference by query.
+    """
+
+    action: str  # "focus" | "click" | "type" | "find"
+    query: Optional[str] = None  # window title pattern (focus / find)
+    ref: Optional[str] = None    # UIA reference (click / type)
+    value: Optional[str] = None  # text to type (type only)
+    raw_text: str = ""
+
+
+@dataclass
 class SystemStatusIntent:
     """A voice query about Ultron's overall state.
 
@@ -167,6 +234,9 @@ class RoutingIntent:
     subtasks: List[HybridSubtask] = field(default_factory=list)
     model_switch_intent: Optional[ModelSwitchIntent] = None  # MODEL_SWITCH only
     system_status_intent: Optional[SystemStatusIntent] = None  # SYSTEM_STATUS only
+    gaming_mode_intent: Optional[GamingModeIntent] = None     # GAMING_MODE only (V1-gap A1)
+    desktop_intent: Optional[DesktopIntent] = None            # DESKTOP_AUTOMATION only (V1-gap C3)
+    window_intent: Optional[WindowIntent] = None              # WINDOW_AUTOMATION only (V1-gap C3)
 
     # Disambiguation: when the rule-based + LLM disambiguator can't decide,
     # the orchestrator asks the user a clarifying question.

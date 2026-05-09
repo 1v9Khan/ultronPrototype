@@ -39,13 +39,37 @@ def _vmake(**overrides) -> GateVerdict:
 # ---------------------------------------------------------------------------
 
 
-def test_rule_verdict_is_left_alone():
-    """Rule-fired verdicts don't carry preflight signals; Phase 5 must not
-    second-guess them."""
-    v = _vmake(source="rule", knowledge_confidence="low", has_temporal_dependency=True)
+def test_rule_verdict_is_left_alone_when_source_is_weights():
+    """Rule-fired verdicts don't carry preflight signals; Phase 5 must
+    not second-guess them. When ``knowledge_source`` indicates weights
+    (or unknown), the user text passes through unchanged."""
+    v = _vmake(source="rule", knowledge_confidence="low",
+               has_temporal_dependency=True, knowledge_source="weights")
     out_v, out_text = apply_uncertainty(v, "tell me about black holes")
     assert out_v is v  # no copy made
     assert out_text == "tell me about black holes"
+
+
+def test_rule_verdict_with_retrieved_memory_source_gets_hint():
+    """B1: a rule verdict whose knowledge_source indicates retrieved
+    memory still gets the source hint -- the LLM benefits from knowing
+    the answer is leaning on prior conversation."""
+    v = _vmake(source="rule", knowledge_confidence="high",
+               knowledge_source="retrieved_memory",
+               decision=GateDecision.NO_SEARCH,
+               reason="personal/memory question")
+    _, out_text = apply_uncertainty(v, "what did I say earlier?")
+    assert "prior conversation memory" in out_text
+    assert "what did I say earlier?" in out_text
+
+
+def test_rule_verdict_with_retrieved_facts_source_gets_hint():
+    v = _vmake(source="rule", knowledge_confidence="high",
+               knowledge_source="retrieved_facts",
+               decision=GateDecision.NO_SEARCH,
+               reason="matched stored fact")
+    _, out_text = apply_uncertainty(v, "what's my favorite framework?")
+    assert "stored user preference" in out_text
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +168,72 @@ def test_no_confidence_signal_means_no_addendum():
     out_v, out_text = apply_uncertainty(v, "Hello.")
     assert out_text == "Hello."
     assert out_v is v
+
+
+# ---------------------------------------------------------------------------
+# B1: knowledge_source-aware source hints.
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_with_retrieved_memory_source_prepends_hint():
+    """When the preflight identifies retrieved-memory as the source, the
+    user text gets a source hint."""
+    v = _vmake(
+        source="preflight",
+        knowledge_confidence="medium",
+        knowledge_source="retrieved_memory",
+    )
+    _, out_text = apply_uncertainty(v, "tell me about that thing we discussed")
+    assert "prior conversation memory" in out_text
+    # Source hint comes BEFORE confidence addendum.
+    assert out_text.index("conversation memory") < out_text.index("Confidence")
+
+
+def test_preflight_with_weights_source_no_hint():
+    v = _vmake(
+        source="preflight",
+        knowledge_confidence="high",
+        knowledge_source="weights",
+    )
+    _, out_text = apply_uncertainty(v, "explain photosynthesis")
+    assert out_text == "explain photosynthesis"
+
+
+def test_preflight_with_unknown_source_no_hint():
+    v = _vmake(
+        source="preflight",
+        knowledge_confidence="low",
+        knowledge_source="unknown",
+        has_temporal_dependency=False,
+    )
+    _, out_text = apply_uncertainty(v, "obscure trivia question")
+    # Confidence addendum still fires; no source hint.
+    assert "prior conversation memory" not in out_text
+    assert "stored user preference" not in out_text
+    assert "Confidence: low" in out_text
+
+
+def test_search_decision_skips_source_hint():
+    """The search path adds its own attribution; no source hint here."""
+    v = _vmake(
+        source="preflight",
+        decision=GateDecision.SEARCH,
+        knowledge_confidence="medium",
+        knowledge_source="web_search_needed",
+    )
+    _, out_text = apply_uncertainty(v, "what is happening today")
+    assert "prior conversation memory" not in out_text
+    assert "stored user preference" not in out_text
+
+
+def test_source_hint_for_retrieved_facts():
+    v = _vmake(
+        source="preflight",
+        knowledge_confidence="high",
+        knowledge_source="retrieved_facts",
+    )
+    _, out_text = apply_uncertainty(v, "what should I default to?")
+    assert "stored user preference" in out_text
 
 
 # ---------------------------------------------------------------------------

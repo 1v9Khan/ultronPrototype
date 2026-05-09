@@ -167,6 +167,7 @@ class UltronMCPServer:
         log_path: Optional[Path] = settings.CODING_MCP_LOG_PATH,
         clarification_timeout_s: float = float(settings.CODING_MCP_CLARIFICATION_TIMEOUT_S),
         session_audit_dir: Optional[Path] = None,
+        memory: Optional[Any] = None,
     ) -> None:
         from mcp.server.fastmcp import FastMCP
 
@@ -175,6 +176,11 @@ class UltronMCPServer:
         self.sse_path = sse_path
         self.audit = _AuditLog(log_path)
         self.clarification_timeout_s = clarification_timeout_s
+        # Phase 1 (A3 wiring) -- when set, ``lookup_facts`` queries the
+        # Qdrant ``facts`` collection via ``memory.search_facts``. None
+        # preserves the legacy stub behaviour for tests that bypass the
+        # orchestrator.
+        self._memory = memory
 
         # Phase 7: per-session audit writer. Defaults to None so existing
         # tests that bypass the orchestrator don't get filesystem writes;
@@ -416,14 +422,59 @@ class UltronMCPServer:
         )
         return resolved
 
-    def lookup_facts(self, query: str) -> List[Dict[str, Any]]:
-        """Spec: ``project.lookup_facts``. Phase 1 stub; Phase 2 wires in
-        the existing Qdrant ``facts`` collection."""
+    def lookup_facts(
+        self,
+        query: str,
+        *,
+        k: Optional[int] = None,
+        min_confidence: Optional[float] = None,
+        max_age_days: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Spec: ``project.lookup_facts``.
+
+        Returns up to ``k`` matching rows from the Qdrant ``facts``
+        collection (populated by ``scripts/maintenance.py``). Each row is
+        a plain dict with keys: ``fact``, ``confidence``, ``last_confirmed``,
+        ``category``, ``score``, ``extracted_at``, ``extracted_from``,
+        ``retrieval_weight`` (so the coordinator's clarification fast-path
+        can consume them without importing :class:`FactRow`).
+
+        When no memory is wired (test-isolation path), returns ``[]`` and
+        logs an audit entry with ``result_count=0``. Failures inside
+        ``memory.search_facts`` are already swallowed there; this method
+        never raises.
+        """
+        if self._memory is None:
+            self.audit.write(
+                kind="qwen_call", tool="project.lookup_facts",
+                query=query[:200], result_count=0, source="no_memory_wired",
+            )
+            return []
+        cfg = settings.CODING_FACTS
+        eff_k = k if k is not None else cfg["top_k"]
+        eff_min_conf = (
+            min_confidence if min_confidence is not None
+            else cfg["min_confidence"]
+        )
+        eff_max_age = (
+            max_age_days if max_age_days is not None
+            else cfg["max_age_days"]
+        )
+        try:
+            rows = self._memory.search_facts(
+                query, k=eff_k, min_confidence=eff_min_conf,
+                max_age_days=eff_max_age,
+            )
+        except Exception as e:
+            logger.debug("lookup_facts: search_facts raised %s", e)
+            rows = []
+        result = [asdict(row) for row in rows]
         self.audit.write(
             kind="qwen_call", tool="project.lookup_facts",
-            query=query[:200], result_count=0,
+            query=query[:200], result_count=len(result),
+            min_confidence=eff_min_conf, max_age_days=eff_max_age,
         )
-        return []
+        return result
 
     def read_file_tree(self, project_root: Path) -> Dict[str, Any]:
         """Spec: ``project.read_file_tree``. Returns a flat list of files

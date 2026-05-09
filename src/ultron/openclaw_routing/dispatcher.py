@@ -33,11 +33,14 @@ from typing import Any, Dict, Optional
 from ultron.config import UltronConfig, get_config
 from ultron.openclaw_routing.intents import (
     BrowserIntent,
+    DesktopIntent,
     DispatchResult,
     FileOpIntent,
+    GamingModeIntent,
     MediaGenIntent,
     MessagingIntent,
     ShellOpIntent,
+    WindowIntent,
 )
 from ultron.utils.logging import get_logger
 
@@ -64,6 +67,7 @@ class OpenClawDispatcher:
         *,
         llm: Optional[Any] = None,
         bridge: Optional[Any] = None,
+        gaming_mode_manager: Optional[Any] = None,
     ) -> None:
         cfg = config if config is not None else get_config()
         self._cfg = cfg
@@ -80,6 +84,10 @@ class OpenClawDispatcher:
         # stub. Any other handler currently still returns the stub; later
         # phases (6/12/etc.) replace those.
         self._bridge = bridge
+        # V1-gap A1 — gaming-mode manager. None disables the engage/
+        # disengage flow with a clear voice message; otherwise the
+        # dispatcher routes GAMING_MODE intents to it.
+        self._gaming_mode_manager = gaming_mode_manager
 
     # --- per-capability dispatch surface -----------------------------------
 
@@ -541,6 +549,419 @@ class OpenClawDispatcher:
             capability="shell_operations",
             voice_message="I can't run shell commands yet.",
             metadata={"command_preview": intent.command[:60]},
+        )
+
+    # --- V1-gap A1: gaming mode --------------------------------------------
+
+    async def handle_gaming_mode(self, intent: GamingModeIntent) -> DispatchResult:
+        """Engage / disengage / status for gaming mode.
+
+        ``engage`` -> shut down configured anticheat-sensitive plugins.
+        ``disengage`` -> restore them.
+        ``status`` -> report whether gaming mode is currently on.
+
+        The block-and-revise validator runs as for other handlers so
+        we never accidentally engage / disengage on a tool call that
+        doesn't match the user's stated goal.
+        """
+        # Pre-flight gating still applies.
+        blocked = self._maybe_block(
+            tool_name="gaming_mode",
+            goal=intent.raw_text,
+            tool_args={
+                "action": intent.action,
+                "trigger_phrase": intent.trigger_phrase,
+            },
+        )
+        if blocked is not None:
+            return blocked
+
+        if self._gaming_mode_manager is None:
+            return DispatchResult(
+                success=False,
+                voice_message=(
+                    "Gaming mode isn't ready -- the OpenClaw bridge "
+                    "isn't reachable. Make sure OpenClaw is running."
+                ),
+                error="no gaming_mode_manager",
+                metadata={"action": intent.action, "stub": True},
+            )
+
+        action = (intent.action or "").lower().strip()
+        try:
+            if action == "engage":
+                report = await self._gaming_mode_manager.engage()
+                if report.note == "already engaged":
+                    voice = "Gaming mode is already on. Have fun."
+                elif report.all_plugin_actions_succeeded:
+                    voice = "Shutting down desktop control. Have fun."
+                else:
+                    voice = (
+                        "Gaming mode engaged with errors -- some plugins "
+                        "didn't disable cleanly. Check logs/gaming_mode.jsonl."
+                    )
+            elif action == "disengage":
+                report = await self._gaming_mode_manager.disengage()
+                if report.note == "already idle":
+                    voice = "Gaming mode wasn't on."
+                elif report.all_plugin_actions_succeeded:
+                    voice = "Full control restored."
+                else:
+                    voice = (
+                        "Tried to restore desktop control but some plugins "
+                        "didn't come back cleanly. Check logs/gaming_mode.jsonl."
+                    )
+            elif action == "status":
+                from ultron.openclaw_routing.gaming_mode import GamingModeStatus
+                status = self._gaming_mode_manager.status()
+                if status == GamingModeStatus.ENGAGED:
+                    voice = "Gaming mode is on."
+                elif status == GamingModeStatus.IDLE:
+                    voice = "Gaming mode is off."
+                else:
+                    voice = "Gaming mode is in the middle of changing state."
+                return DispatchResult(
+                    success=True,
+                    voice_message=voice,
+                    metadata={"action": "status", "status": status.value},
+                )
+            else:
+                return DispatchResult(
+                    success=False,
+                    voice_message=f"I don't know how to {action!r} gaming mode.",
+                    error=f"unknown gaming-mode action: {action!r}",
+                    metadata={"action": action},
+                )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("gaming_mode dispatch raised: %s", e)
+            return DispatchResult(
+                success=False,
+                voice_message=(
+                    "I tried to change gaming mode but something went "
+                    "wrong on the OpenClaw side. Try again in a moment."
+                ),
+                error=str(e)[:300],
+                metadata={"action": action},
+            )
+        return DispatchResult(
+            success=report.all_plugin_actions_succeeded,
+            voice_message=voice,
+            metadata={
+                "action": action,
+                "status": report.status.value,
+                "plugin_states": [
+                    {"id": p.plugin_id, "ok": p.success, "error": p.error}
+                    for p in report.plugin_states
+                ],
+                "docker_acted": report.docker_acted,
+            },
+        )
+
+    # --- V1-gap C3: desktop / windows automation ---------------------------
+
+    async def handle_desktop_automation(self, intent: DesktopIntent) -> DispatchResult:
+        """Voice routing for the OpenClaw ``desktop-control`` plugin.
+
+        When gaming mode is engaged, returns a short-circuit message so
+        the user understands why their request can't run -- the plugins
+        the desktop tool needs are intentionally disabled.
+        """
+        blocked = self._maybe_block(
+            tool_name="desktop_automation",
+            goal=intent.raw_text,
+            tool_args={"action": intent.action, "target": intent.target},
+        )
+        if blocked is not None:
+            return blocked
+
+        gaming_block = self._block_for_gaming_mode("desktop control")
+        if gaming_block is not None:
+            return gaming_block
+
+        client = self._bridge.client if self._bridge is not None else None
+        cfg = getattr(self._cfg, "desktop", None)
+        if client is None or cfg is None or not getattr(cfg, "enabled", False):
+            return self._stub_response(
+                capability="desktop_automation",
+                voice_message=(
+                    "Desktop control isn't reachable. Confirm OpenClaw "
+                    "is running and the desktop-control plugin is "
+                    "installed and enabled."
+                ),
+                metadata={"action": intent.action, "target": intent.target},
+            )
+        return await self._desktop_via_bridge(intent, cfg)
+
+    async def _desktop_via_bridge(
+        self, intent: DesktopIntent, cfg,
+    ) -> DispatchResult:
+        from ultron.openclaw_bridge.desktop import DesktopTool
+
+        client = self._bridge.client                                   # checked
+        agent_id = self._cfg.openclaw.required_agent_id or "ultron-main"
+        tool = DesktopTool(
+            client,
+            agent_id=agent_id,
+            screenshot_tool=cfg.tool_slug_screenshot,
+            list_windows_tool=cfg.tool_slug_list_windows,
+            find_window_tool=cfg.tool_slug_find_window,
+        )
+        action = (intent.action or "").lower()
+        try:
+            if action == "screenshot":
+                result = await tool.screenshot(
+                    intent.target, timeout_s=cfg.default_screenshot_timeout_seconds,
+                )
+                if not result.success:
+                    return DispatchResult(
+                        success=False,
+                        voice_message="I couldn't capture the screen.",
+                        error=result.error,
+                        metadata={"action": "screenshot", "stub": False},
+                    )
+                where = result.image_path or "the configured location"
+                voice = f"Screenshot captured -- saved to {where}." if result.image_path else "Screenshot captured."
+                return DispatchResult(
+                    success=True,
+                    voice_message=voice,
+                    metadata={
+                        "action": "screenshot", "stub": False,
+                        "image_path": result.image_path,
+                    },
+                )
+            if action == "list_windows":
+                result = await tool.list_windows(
+                    timeout_s=cfg.default_action_timeout_seconds,
+                )
+                if not result.success:
+                    return DispatchResult(
+                        success=False,
+                        voice_message="I couldn't list the open windows.",
+                        error=result.error,
+                        metadata={"action": "list_windows", "stub": False},
+                    )
+                count = len(result.windows)
+                if count == 0:
+                    voice = "No open windows found."
+                elif count <= 3:
+                    titles = ", ".join(w.title for w in result.windows if w.title)
+                    voice = f"{count} windows open: {titles}." if titles else f"{count} windows open."
+                else:
+                    voice = f"{count} windows are open. The list is in the metadata."
+                return DispatchResult(
+                    success=True,
+                    voice_message=voice,
+                    metadata={
+                        "action": "list_windows", "stub": False,
+                        "count": count,
+                        "windows": [
+                            {"title": w.title, "handle": w.handle, "app": w.app_name}
+                            for w in result.windows
+                        ],
+                    },
+                )
+            if action == "find_window":
+                if not intent.target:
+                    return DispatchResult(
+                        success=False,
+                        voice_message="I need a window name to look up.",
+                        error="missing target",
+                        metadata={"action": "find_window", "stub": False},
+                    )
+                result = await tool.find_window(
+                    intent.target,
+                    timeout_s=cfg.default_action_timeout_seconds,
+                )
+                if not result.success:
+                    return DispatchResult(
+                        success=False,
+                        voice_message=f"I couldn't find a {intent.target} window.",
+                        error=result.error,
+                        metadata={"action": "find_window", "stub": False},
+                    )
+                voice = (
+                    f"Found {result.title or intent.target}."
+                    if result.title else "Window found."
+                )
+                return DispatchResult(
+                    success=True,
+                    voice_message=voice,
+                    metadata={
+                        "action": "find_window", "stub": False,
+                        "handle": result.handle, "title": result.title,
+                        "app": result.app_name,
+                    },
+                )
+            return DispatchResult(
+                success=False,
+                voice_message=f"I don't know how to {action} the desktop.",
+                error=f"unknown action: {action}",
+                metadata={"action": action, "stub": False},
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("desktop dispatch raised: %s", e)
+            return DispatchResult(
+                success=False,
+                voice_message=(
+                    "Something went wrong on the desktop side. "
+                    "Try again in a moment."
+                ),
+                error=str(e)[:300],
+                metadata={"action": action, "stub": False},
+            )
+
+    async def handle_window_automation(self, intent: WindowIntent) -> DispatchResult:
+        """Voice routing for the OpenClaw ``windows-control`` plugin."""
+        blocked = self._maybe_block(
+            tool_name="window_automation",
+            goal=intent.raw_text,
+            tool_args={
+                "action": intent.action, "query": intent.query,
+                "ref": intent.ref, "value_preview": (intent.value or "")[:120],
+            },
+        )
+        if blocked is not None:
+            return blocked
+
+        gaming_block = self._block_for_gaming_mode("window control")
+        if gaming_block is not None:
+            return gaming_block
+
+        client = self._bridge.client if self._bridge is not None else None
+        cfg = getattr(self._cfg, "window_control", None)
+        if client is None or cfg is None or not getattr(cfg, "enabled", False):
+            return self._stub_response(
+                capability="window_automation",
+                voice_message=(
+                    "Window control isn't reachable. Confirm OpenClaw "
+                    "is running and the windows-control plugin is "
+                    "installed and enabled."
+                ),
+                metadata={"action": intent.action, "query": intent.query},
+            )
+        return await self._window_via_bridge(intent, cfg)
+
+    async def _window_via_bridge(
+        self, intent: WindowIntent, cfg,
+    ) -> DispatchResult:
+        from ultron.openclaw_bridge.desktop import WindowControlTool
+
+        client = self._bridge.client                                   # checked
+        agent_id = self._cfg.openclaw.required_agent_id or "ultron-main"
+        tool = WindowControlTool(
+            client,
+            agent_id=agent_id,
+            focus_tool=cfg.tool_slug_focus,
+            click_tool=cfg.tool_slug_click,
+            type_tool=cfg.tool_slug_type,
+        )
+        action = (intent.action or "").lower()
+        try:
+            if action == "focus":
+                if not intent.query:
+                    return DispatchResult(
+                        success=False,
+                        voice_message="I need a window name to focus.",
+                        error="missing query",
+                        metadata={"action": "focus", "stub": False},
+                    )
+                result = await tool.focus(
+                    intent.query,
+                    timeout_s=cfg.default_action_timeout_seconds,
+                )
+                voice = (
+                    f"Focused {intent.query}." if result.success
+                    else f"I couldn't focus the {intent.query} window."
+                )
+                return DispatchResult(
+                    success=result.success, voice_message=voice,
+                    error=result.error,
+                    metadata={"action": "focus", "stub": False, "query": intent.query},
+                )
+            if action == "click":
+                ref = intent.ref or intent.query or ""
+                if not ref:
+                    return DispatchResult(
+                        success=False,
+                        voice_message="I don't know what to click.",
+                        error="missing ref",
+                        metadata={"action": "click", "stub": False},
+                    )
+                result = await tool.click(
+                    ref, timeout_s=cfg.default_action_timeout_seconds,
+                )
+                voice = "Clicked." if result.success else "I couldn't click that."
+                return DispatchResult(
+                    success=result.success, voice_message=voice,
+                    error=result.error,
+                    metadata={"action": "click", "stub": False, "ref": ref},
+                )
+            if action == "type":
+                if not intent.query and not intent.ref:
+                    return DispatchResult(
+                        success=False,
+                        voice_message=(
+                            "I need a target window or field to type into."
+                        ),
+                        error="missing ref / query",
+                        metadata={"action": "type", "stub": False},
+                    )
+                result = await tool.type_text(
+                    intent.ref or intent.query, intent.value or "",
+                    timeout_s=cfg.default_action_timeout_seconds,
+                )
+                voice = "Typed." if result.success else "I couldn't type that."
+                return DispatchResult(
+                    success=result.success, voice_message=voice,
+                    error=result.error,
+                    metadata={
+                        "action": "type", "stub": False,
+                        "target": intent.ref or intent.query,
+                    },
+                )
+            return DispatchResult(
+                success=False,
+                voice_message=f"I don't know how to {action} a window.",
+                error=f"unknown action: {action}",
+                metadata={"action": action, "stub": False},
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("window dispatch raised: %s", e)
+            return DispatchResult(
+                success=False,
+                voice_message=(
+                    "Something went wrong on the window-control side. "
+                    "Try again in a moment."
+                ),
+                error=str(e)[:300],
+                metadata={"action": action, "stub": False},
+            )
+
+    def _block_for_gaming_mode(self, capability_label: str) -> Optional[DispatchResult]:
+        """Short-circuit a desktop / window action when gaming mode is on.
+
+        Without this, the user would get a confusing "tool unavailable"
+        error for plugins that ARE installed but were intentionally
+        disabled by the gaming-mode manager. The voice message is in
+        Ultron's voice and includes the recovery action.
+        """
+        if self._gaming_mode_manager is None:
+            return None
+        try:
+            from ultron.openclaw_routing.gaming_mode import GamingModeStatus
+            status = self._gaming_mode_manager.status()
+        except Exception:
+            return None
+        if status != GamingModeStatus.ENGAGED:
+            return None
+        return DispatchResult(
+            success=False,
+            voice_message=(
+                f"Gaming mode is on. {capability_label.capitalize()} is "
+                f"disabled. Say 'gaming mode off' to restore it."
+            ),
+            error="gaming mode engaged",
+            metadata={"gaming_mode": "engaged"},
         )
 
     # --- 4B plan Item 8: block-and-revise pre-flight ------------------------

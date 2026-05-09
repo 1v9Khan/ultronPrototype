@@ -169,6 +169,28 @@ memory:
   rag_exclude_recent: 20       # don't surface RAG hits already in recent-turns window
   facts_top_k: 3
   write_queue_maxsize: 256     # background writer queue cap
+  # V1-gap A2 — multi-pass per-category retrieval. The gate's pre-flight
+  # pass produces 2-4 short context categories + 0-3 reformulated memory
+  # queries; when this flag is ON, ConversationMemory fans out one
+  # hybrid Qdrant query per (primary + category) and re-ranks the union
+  # via a composite score (RRF + recency boost + surprise bonus -
+  # redundancy penalty). Default ON. The voice baseline (10 hard-rule
+  # queries) routes through verdicts with empty context_categories and
+  # automatically falls back to single-pass — so the standard
+  # TTFT 79 ms / VRAM 7913 MB contract is preserved. Memory-heavy
+  # ambiguous queries that DO trigger the LLM preflight pay the
+  # ~150-200 ms multi-pass cost on top of the preflight latency they
+  # already incur.
+  retrieval:
+    multi_pass_enabled: true
+    max_categories_per_query: 4
+    candidates_per_category_multiplier: 4
+  ranking:
+    rrf_weight: 1.0
+    recency_weight: 0.2
+    recency_half_life_days: 7.0
+    surprise_weight: 0.15
+    redundancy_weight: 0.3
 
 # ---------------------------------------------------------------------------
 # Web search (Brave + Jina Reader)
@@ -193,6 +215,14 @@ web_search:
   cache:
     ttl_volatile_seconds: 86400      # 24 h — sports, weather, stocks
     ttl_stable_seconds: 2592000      # 30 d — historical, definitional facts
+
+  # V1-gap B3 — citation marker format. "superscript" (default) emits
+  # Unicode ¹²³ inline markers per V1-spec Part 4.4. Use "bracket"
+  # for ASCII-only consumers (terminal transcripts in fonts that
+  # render Unicode superscripts oddly). The references list at the
+  # end of a reply is always bracketed regardless of this flag.
+  citation:
+    inline_marker_format: "superscript"
 
 # ---------------------------------------------------------------------------
 # Addressing (warm/cold mode + classifier)
@@ -227,6 +257,29 @@ coding:
     enabled: true
     off_canonical_threshold: 3
     early_window_calls: 10
+
+  # A3 wiring — stored-facts fast-path on clarifications.
+  # The Coordinator's decide_clarification consults the Qdrant ``facts``
+  # collection (populated by scripts/maintenance.py) before the LLM
+  # call. A high-confidence directive-category fact short-circuits the
+  # decision and answers Claude without escalating to the user.
+  facts:
+    top_k: 5                  # max rows fetched from Qdrant per clarification
+    min_confidence: 0.75      # facts under this never auto-answer
+    min_score: 0.85           # RRF score floor; relevance gate
+    max_age_days: null        # null = no cap; set e.g. 90.0 to mirror decay
+
+  # A4 pre-task confirmation — speak a brief in-character confirmation
+  # ("I'll have Claude Code <verb> on the <project> project. Going ahead.")
+  # BEFORE spawning the bridge subprocess so the user has a wake-word
+  # barge-in window to interrupt if Ultron resolved the wrong project
+  # or misread the task. Default OFF — the ~0.5 s of TTS playback on
+  # every coding-task dispatch is a UX cost that fires universally,
+  # so the operator opts in explicitly. Errors during TTS are treated
+  # as 'no barge-in' so a Piper hiccup never silently drops a task.
+  pre_task_confirmation_enabled: false
+  pre_task_confirmation_max_words: 30
+  pre_task_barge_in_window_seconds: 0.5
 
   mcp:
     enabled: true
@@ -501,6 +554,60 @@ browser:
     - "Looking at it."
     - "Loading the site."
     - "Give me a moment to navigate."
+
+# ---------------------------------------------------------------------------
+# Gaming mode (V1-spec gap A1) — anticheat-safe shutdown of OpenClaw
+# desktop / windows control plugins. When engaged, runs
+# ``openclaw plugins disable <id>`` for each slug below so Vanguard /
+# Easy Anti-Cheat / etc. don't see the plugin processes. ``gaming
+# mode off`` reverses the cycle. Default OFF — this is a
+# safety-critical toggle that disables plugins; the operator opts
+# in explicitly once they want the voice trigger active.
+# See docs/openclaw_gaming_mode_setup.md.
+# ---------------------------------------------------------------------------
+
+gaming_mode:
+  enabled: false
+  plugins_to_disable:
+    - desktop-control
+    - windows-control
+  toggle_docker: false
+  docker_executable_path: null              # null = use default Windows path
+  docker_process_name: "Docker Desktop"
+  log_path: "logs/gaming_mode.jsonl"
+
+# ---------------------------------------------------------------------------
+# Desktop control (V1-spec gap C3) — voice routing for the OpenClaw
+# ``desktop-control`` plugin: screenshot, list_windows, find_window.
+# Default ON. Dispatch falls back to the "isn't wired up yet" voice
+# message when either the OpenClaw bridge isn't connected or the
+# plugin isn't installed in OpenClaw. Set false to suppress the
+# routing entirely (voice queries fall through to conversational).
+# See docs/openclaw_desktop_control_setup.md.
+# ---------------------------------------------------------------------------
+
+desktop:
+  enabled: true
+  default_screenshot_timeout_seconds: 10.0
+  default_action_timeout_seconds: 5.0
+  plugin_slug: "desktop-control"
+  tool_slug_screenshot: "desktop_screenshot"
+  tool_slug_list_windows: "desktop_list_windows"
+  tool_slug_find_window: "desktop_find_window"
+
+# ---------------------------------------------------------------------------
+# Window control (V1-spec gap C3) — voice routing for the OpenClaw
+# ``windows-control`` plugin (UI Automation primitives). Default ON
+# with the same fail-open posture as desktop above.
+# ---------------------------------------------------------------------------
+
+window_control:
+  enabled: true
+  default_action_timeout_seconds: 5.0
+  plugin_slug: "windows-control"
+  tool_slug_focus: "windows_focus_window"
+  tool_slug_click: "windows_click_element"
+  tool_slug_type: "windows_type_text"
 
 # ---------------------------------------------------------------------------
 # Error phrases (Phase 4) — user-facing voice messages for dependency failures

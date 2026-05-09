@@ -189,9 +189,114 @@ def test_terminate_session_removes_from_active(tmp_path: Path):
     assert server.get_session_state(session.session_id).status == SessionStatus.TERMINATED
 
 
-def test_lookup_facts_returns_empty_in_phase1(tmp_path: Path):
+def test_lookup_facts_returns_empty_when_no_memory_wired(tmp_path: Path):
+    """Back-compat: tests that bypass the orchestrator must still see []."""
     server = _server(tmp_path)
     assert server.lookup_facts("anything") == []
+
+
+def test_lookup_facts_audit_entry_marks_no_memory(tmp_path: Path):
+    """The no-memory branch logs ``source=no_memory_wired`` so we can grep
+    audit traces for stub fires."""
+    log_path = tmp_path / "mcp.jsonl"
+    server = UltronMCPServer(
+        host="127.0.0.1",
+        port=_free_port(),
+        log_path=log_path,
+    )
+    server.lookup_facts("anything")
+    line = log_path.read_text(encoding="utf-8").splitlines()[-1]
+    record = json.loads(line)
+    assert record["tool"] == "project.lookup_facts"
+    assert record["source"] == "no_memory_wired"
+    assert record["result_count"] == 0
+
+
+def test_lookup_facts_calls_memory_search_facts(tmp_path: Path):
+    """When memory IS wired, lookup_facts proxies to search_facts and
+    returns dict-shaped rows."""
+
+    class _StubMemory:
+        def __init__(self):
+            self.calls = []
+
+        def search_facts(self, query, *, k, min_confidence, max_age_days):
+            self.calls.append({
+                "query": query, "k": k,
+                "min_confidence": min_confidence,
+                "max_age_days": max_age_days,
+            })
+            from ultron.memory.qdrant_store import FactRow
+            return [
+                FactRow(
+                    fact="user prefers FastAPI",
+                    confidence=0.92,
+                    last_confirmed=time.time(),
+                    category="preference",
+                    score=0.95,
+                    extracted_at=time.time(),
+                    extracted_from=[1, 2],
+                )
+            ]
+
+    stub = _StubMemory()
+    server = UltronMCPServer(
+        host="127.0.0.1",
+        port=_free_port(),
+        log_path=tmp_path / "mcp.jsonl",
+        memory=stub,
+    )
+    rows = server.lookup_facts("Python framework")
+    assert len(stub.calls) == 1
+    assert stub.calls[0]["query"] == "Python framework"
+    assert len(rows) == 1
+    assert rows[0]["fact"] == "user prefers FastAPI"
+    assert rows[0]["confidence"] == 0.92
+    assert rows[0]["category"] == "preference"
+    assert rows[0]["score"] == 0.95
+
+
+def test_lookup_facts_swallows_search_facts_exception(tmp_path: Path):
+    """A failure inside memory.search_facts must not propagate."""
+
+    class _BoomMemory:
+        def search_facts(self, *args, **kwargs):
+            raise RuntimeError("simulated qdrant failure")
+
+    server = UltronMCPServer(
+        host="127.0.0.1",
+        port=_free_port(),
+        log_path=tmp_path / "mcp.jsonl",
+        memory=_BoomMemory(),
+    )
+    assert server.lookup_facts("anything") == []
+
+
+def test_lookup_facts_overrides_threshold_kwargs(tmp_path: Path):
+    """Custom k / min_confidence / max_age_days flow through to search_facts."""
+
+    class _CapturingMemory:
+        def __init__(self):
+            self.kwargs = None
+
+        def search_facts(self, query, **kwargs):
+            self.kwargs = {"query": query, **kwargs}
+            return []
+
+    cap = _CapturingMemory()
+    server = UltronMCPServer(
+        host="127.0.0.1",
+        port=_free_port(),
+        log_path=tmp_path / "mcp.jsonl",
+        memory=cap,
+    )
+    server.lookup_facts(
+        "Python", k=2, min_confidence=0.5, max_age_days=30.0,
+    )
+    assert cap.kwargs == {
+        "query": "Python", "k": 2,
+        "min_confidence": 0.5, "max_age_days": 30.0,
+    }
 
 
 def test_read_file_tree_returns_relative_paths_with_sizes(tmp_path: Path):

@@ -24,20 +24,40 @@ Rule-based with explicit signals; LLM disambiguation kicks in via
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 from ultron.coding.intent import (
     CodingIntentKind,
     classify as classify_coding,
 )
+
+
+def _safe_get_config():
+    """Best-effort config read for the gating logic below.
+
+    Returns ``None`` on any failure (config not loaded, schema invalid)
+    so the classifier always degrades to its default behaviour rather
+    than raising. The downstream gates treat ``None`` as
+    "all OpenClaw-bound features off" which matches the conservative
+    pre-Phase-3 behaviour.
+    """
+    try:
+        from ultron.config import get_config
+        return get_config()
+    except Exception:
+        return None
 from ultron.openclaw_routing.intents import (
     BrowserIntent,
+    DesktopIntent,
     FileOpIntent,
+    GamingModeIntent,
     MediaGenIntent,
     MessagingIntent,
     ModelSwitchIntent,
     RoutingIntent,
     RoutingIntentKind,
     ShellOpIntent,
+    WindowIntent,
 )
 
 
@@ -161,6 +181,188 @@ def _resolve_model_switch_target(matched_token: str) -> str:
         return "qwen3.5-9b"
     # Defensive — regex shouldn't allow other tokens through.
     raise ValueError(f"Unrecognised model token: {matched_token!r}")
+
+
+# ---------------------------------------------------------------------------
+# Gaming mode (V1-spec gap A1) — anticheat-safe shutdown of OpenClaw
+# desktop / windows control plugins. Voice triggers fire at HIGH
+# priority (above HYBRID and automation rules) so a phrase like
+# "I'm about to play Valorant" doesn't get pulled into a generic
+# automation routing path.
+# ---------------------------------------------------------------------------
+
+
+_GAMING_MODE_ENGAGE = re.compile(
+    r"\b(?:"
+    r"gaming\s+mode(?:\s+on|\s+please)?|"
+    r"engage\s+gaming\s+mode|"
+    r"enter\s+gaming\s+mode|"
+    r"(?:about\s+to|going\s+to|gonna|fixing\s+to)\s+play\s+"
+    r"(?:valorant|cs(?:2|:?go)|counter[-\s]strike|fortnite|league|"
+    r"overwatch|destiny|apex|warzone|rust|tarkov|pubg|"
+    r"easy\s+anti[-\s]?cheat|vanguard|battleye)|"
+    r"i'?m\s+(?:about\s+to\s+|going\s+to\s+|gonna\s+)?play(?:\s+a\s+game)?(?:\s+now)?|"
+    r"shut(?:ting)?\s+down\s+desktop\s+(?:control|skills?)|"
+    r"kill\s+desktop\s+control"
+    r")\b",
+    re.IGNORECASE,
+)
+_GAMING_MODE_DISENGAGE = re.compile(
+    r"\b(?:"
+    r"gaming\s+mode\s+off|"
+    r"(?:disengage|exit|leave|end)\s+gaming\s+mode|"
+    r"(?:done|finished)\s+(?:gaming|playing)|"
+    r"restore\s+desktop\s+(?:control|skills?)|"
+    r"full\s+control(?:\s+restored)?|"
+    r"i'?m\s+done\s+playing"
+    r")\b",
+    re.IGNORECASE,
+)
+_GAMING_MODE_STATUS = re.compile(
+    r"\b(?:"
+    r"(?:are\s+we|am\s+i)\s+in\s+gaming\s+mode|"
+    r"is\s+gaming\s+mode\s+(?:on|active|engaged)|"
+    r"gaming\s+mode\s+status|"
+    r"what(?:'s|\s+is)\s+(?:my\s+)?gaming\s+mode"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_gaming_mode(text: str):
+    """Return a (action, trigger_phrase) tuple if ``text`` matches a
+    gaming-mode pattern, otherwise ``None``."""
+    m = _GAMING_MODE_DISENGAGE.search(text)
+    if m:
+        return ("disengage", m.group(0))
+    m = _GAMING_MODE_STATUS.search(text)
+    if m:
+        return ("status", m.group(0))
+    m = _GAMING_MODE_ENGAGE.search(text)
+    if m:
+        return ("engage", m.group(0))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Desktop automation (V1-spec gap C3) — voice routing for the
+# OpenClaw ``desktop-control`` plugin. Distinct from BROWSER_AUTOMATION's
+# screenshot pattern (which expects a URL or "of github.com" context);
+# DESKTOP_AUTOMATION fires for "the screen", "my desktop", "the active
+# window".
+# ---------------------------------------------------------------------------
+
+
+_DESKTOP_SCREENSHOT = re.compile(
+    r"\b(?:"
+    r"(?:take\s+|capture\s+|grab\s+)?(?:a\s+)?screenshot\s+of\s+"
+    r"(?:my\s+|the\s+)?(?:screen|desktop|monitor|active\s+window|current\s+window)|"
+    r"screenshot\s+(?:my\s+|the\s+)?(?:screen|desktop|monitor|active\s+window)|"
+    r"(?:take|capture|grab)\s+(?:a\s+)?screenshot(?:\s+of\s+everything)?$|"
+    r"snap\s+(?:a\s+|me\s+a\s+)?screenshot|"
+    r"capture\s+the\s+(?:screen|desktop|monitor)"
+    r")",
+    re.IGNORECASE,
+)
+_DESKTOP_LIST_WINDOWS = re.compile(
+    r"\b(?:"
+    r"list\s+(?:my\s+|the\s+|all\s+)?(?:open\s+)?windows|"
+    r"what\s+windows\s+(?:are\s+)?(?:open|running)|"
+    r"show\s+(?:me\s+)?(?:my\s+|the\s+|all\s+)?(?:open\s+)?windows|"
+    r"enumerate\s+(?:my\s+|the\s+)?windows"
+    r")\b",
+    re.IGNORECASE,
+)
+_DESKTOP_FIND_WINDOW = re.compile(
+    r"\b(?:"
+    r"find\s+(?:the\s+|my\s+)?(?P<query1>[\w\s]+?)\s+window|"
+    r"locate\s+(?:the\s+|my\s+)?(?P<query2>[\w\s]+?)\s+window|"
+    r"where(?:'s|\s+is)\s+(?:the\s+|my\s+)?(?P<query3>[\w\s]+?)\s+window"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_desktop(text: str):
+    """Return a desktop intent (action, target) if matched, else None."""
+    if _DESKTOP_SCREENSHOT.search(text):
+        # Try to extract a target phrase.
+        target = None
+        m_active = re.search(
+            r"(?:active|current)\s+window", text, re.IGNORECASE,
+        )
+        if m_active:
+            target = "active_window"
+        return ("screenshot", target)
+    if _DESKTOP_LIST_WINDOWS.search(text):
+        return ("list_windows", None)
+    m = _DESKTOP_FIND_WINDOW.search(text)
+    if m:
+        # Pick whichever named capture group fired.
+        for name in ("query1", "query2", "query3"):
+            try:
+                v = m.group(name)
+            except Exception:
+                v = None
+            if v and v.strip():
+                return ("find_window", v.strip())
+        return ("find_window", None)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Window automation (V1-spec gap C3) — voice routing for OpenClaw
+# ``windows-control`` plugin. UI Automation primitives.
+# ---------------------------------------------------------------------------
+
+
+_WINDOW_FOCUS = re.compile(
+    r"\b(?:"
+    r"focus\s+(?:the\s+|my\s+)?(?P<q1>[\w\s]+?)\s+window|"
+    r"switch\s+to\s+(?:the\s+|my\s+)?(?P<q2>[\w\s]+?)(?:\s+window)?$|"
+    r"bring\s+(?:the\s+|my\s+)?(?P<q3>[\w\s]+?)\s+(?:window\s+)?to\s+(?:the\s+)?front|"
+    r"activate\s+(?:the\s+|my\s+)?(?P<q4>[\w\s]+?)\s+window"
+    r")",
+    re.IGNORECASE,
+)
+_WINDOW_TYPE = re.compile(
+    r"\b(?:"
+    r"type\s+(?:'(?P<v1>[^']*)'|\"(?P<v2>[^\"]*)\")\s+into\s+(?:the\s+|my\s+)?(?P<wq1>[\w\s]+)|"
+    r"enter\s+(?:'(?P<v3>[^']*)'|\"(?P<v4>[^\"]*)\")\s+into\s+(?:the\s+|my\s+)?(?P<wq2>[\w\s]+)"
+    r")",
+    re.IGNORECASE,
+)
+_WINDOW_CLICK = re.compile(
+    r"\b(?:"
+    r"click\s+(?:the\s+|my\s+)?(?P<element>[\w\s]+?)\s+in\s+(?:the\s+|my\s+)?(?P<window>[\w\s]+?)\s+window|"
+    r"click\s+(?:the\s+|my\s+)?(?P<element2>[\w\s]+?)\s+button\s+(?:in|on)\s+(?:the\s+|my\s+)?(?P<window2>[\w\s]+)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _classify_window(text: str):
+    """Return a window intent tuple (action, query, ref, value) if matched."""
+    m = _WINDOW_TYPE.search(text)
+    if m:
+        value = m.group("v1") or m.group("v2") or m.group("v3") or m.group("v4") or ""
+        query = (m.group("wq1") or m.group("wq2") or "").strip()
+        return ("type", query, None, value)
+    m = _WINDOW_CLICK.search(text)
+    if m:
+        element = (m.group("element") or m.group("element2") or "").strip()
+        window = (m.group("window") or m.group("window2") or "").strip()
+        return ("click", window, element, None)
+    m = _WINDOW_FOCUS.search(text)
+    if m:
+        for name in ("q1", "q2", "q3", "q4"):
+            try:
+                v = m.group(name)
+            except Exception:
+                v = None
+            if v and v.strip():
+                return ("focus", v.strip(), None, None)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -342,8 +544,23 @@ def classify_routing(
 
     Args mirror the existing coding classifier so callers don't have to
     track two separate "is something running" flags.
+
+    V1-gap A1 / C3: gaming-mode, desktop, and window-control routing
+    is gated on the master ``openclaw.enabled`` flag plus the
+    individual feature flags. When OpenClaw is offline (default) the
+    new patterns DO NOT fire -- utterances like "take a screenshot of
+    the desktop" fall through to the conversational LLM instead of
+    being routed to a stub message. Once the user wires OpenClaw they
+    take effect automatically.
     """
     text = (utterance or "").strip()
+    # Resolve the OpenClaw / per-feature flags once per call. Cheap --
+    # the config singleton is a hot read.
+    cfg = _safe_get_config()
+    openclaw_on = bool(cfg and cfg.openclaw.enabled)
+    desktop_on = bool(openclaw_on and cfg and cfg.desktop.enabled)
+    window_on = bool(openclaw_on and cfg and cfg.window_control.enabled)
+    gaming_on = bool(openclaw_on and cfg and cfg.gaming_mode.enabled)
     if not text:
         return RoutingIntent(
             kind=RoutingIntentKind.CONVERSATIONAL,
@@ -422,6 +639,72 @@ def classify_routing(
                 reason="model-switch pattern matched",
                 model_switch_intent=ModelSwitchIntent(
                     target_preset=_resolve_model_switch_target(m.group("model")),
+                    raw_text=text,
+                ),
+            )
+
+    # 1.6) GAMING_MODE (V1-gap A1) — anticheat-safe shutdown of OpenClaw
+    #      desktop / windows control plugins. Highest priority among the
+    #      automation-adjacent rules so "I'm about to play Valorant"
+    #      doesn't get pulled into HYBRID's "automate my workflow" branch.
+    #      Gated on openclaw.enabled AND gaming_mode.enabled so the
+    #      patterns don't fire (and produce stub messages) when the
+    #      Gateway / feature is offline -- utterances fall through to
+    #      conversational LLM instead.
+    if not has_pending_clarification and gaming_on:
+        gm = _classify_gaming_mode(text)
+        if gm is not None:
+            action, trigger = gm
+            return RoutingIntent(
+                kind=RoutingIntentKind.GAMING_MODE,
+                raw_text=text,
+                confidence=0.95,
+                source="rule",
+                reason=f"gaming-mode pattern matched ({action})",
+                gaming_mode_intent=GamingModeIntent(
+                    action=action,
+                    trigger_phrase=trigger,
+                    raw_text=text,
+                ),
+            )
+
+    # 1.7) DESKTOP_AUTOMATION (V1-gap C3) — fires BEFORE BROWSER_AUTOMATION
+    #      so "take a screenshot of the desktop" routes to desktop, not
+    #      browser. Browser-screenshot still wins when the utterance has
+    #      a URL (handled by classify by URL marker on the browser side).
+    #      Gated on openclaw.enabled AND desktop.enabled.
+    if not has_pending_clarification and desktop_on and not _URL_RE.search(text):
+        desktop = _classify_desktop(text)
+        if desktop is not None:
+            action, target = desktop
+            return RoutingIntent(
+                kind=RoutingIntentKind.DESKTOP_AUTOMATION,
+                raw_text=text,
+                confidence=0.85,
+                source="rule",
+                reason=f"desktop pattern matched ({action})",
+                desktop_intent=DesktopIntent(
+                    action=action, target=target, raw_text=text,
+                ),
+            )
+
+    # 1.8) WINDOW_AUTOMATION (V1-gap C3) — UI Automation primitives.
+    #      Fires before BROWSER_AUTOMATION's interact patterns because
+    #      window utterances ("focus the chrome window") share verbs
+    #      ("click", "focus") with the browser branch. Gated on
+    #      openclaw.enabled AND window_control.enabled.
+    if not has_pending_clarification and window_on:
+        window = _classify_window(text)
+        if window is not None:
+            action, query, ref, value = window
+            return RoutingIntent(
+                kind=RoutingIntentKind.WINDOW_AUTOMATION,
+                raw_text=text,
+                confidence=0.85,
+                source="rule",
+                reason=f"window pattern matched ({action})",
+                window_intent=WindowIntent(
+                    action=action, query=query, ref=ref, value=value,
                     raw_text=text,
                 ),
             )

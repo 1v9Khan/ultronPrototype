@@ -80,7 +80,7 @@ def _make_engine_with_mock_llm() -> LLMEngine:
     eng._cfg = MagicMock()
     eng._system_prompt = "test prompt"
 
-    def _build(user_message):
+    def _build(user_message, **kwargs):
         return [
             {"role": "system", "content": "test prompt"},
             {"role": "user", "content": user_message},
@@ -177,7 +177,7 @@ def _make_http_engine() -> LLMEngine:
     eng._memory = None
     eng._history_turns = 6
     eng._system_prompt = "test"
-    eng._build_messages = lambda u: [
+    eng._build_messages = lambda u, **kwargs: [
         {"role": "system", "content": "test"},
         {"role": "user", "content": u},
     ]

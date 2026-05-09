@@ -12,6 +12,6 @@ it directly.
 """
 
 from ultron.memory.embedder import HybridEmbedder
-from ultron.memory.qdrant_store import ConversationMemory, MemoryTurn
+from ultron.memory.qdrant_store import ConversationMemory, FactRow, MemoryTurn
 
-__all__ = ["ConversationMemory", "MemoryTurn", "HybridEmbedder"]
+__all__ = ["ConversationMemory", "FactRow", "MemoryTurn", "HybridEmbedder"]

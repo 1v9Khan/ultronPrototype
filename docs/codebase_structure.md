@@ -10,7 +10,24 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
-Last validated against HEAD `bb08a65` (`claude/pensive-engelbart-2ba3e5` worktree; closes OpenClaw integration Phases 3–13 + Phase 13 finish).
+Last validated against the `claude/agitated-sinoussi-2b27ea` worktree, post V1-spec gap-fill **Phases 1–6 complete + default-flag tuning**. All 12 enhancements wired; defaults chosen on net-benefit grounds:
+
+| Flag | Default | Why |
+|---|---|---|
+| Phase 1 A3 facts wiring | always on | no flag; pure additive on coding-clarification path |
+| Phase 1 B1 knowledge_source | always on | no flag; pure additive |
+| Phase 2 A4 pre-task confirmation | **OFF** | adds ~0.5 s TTS to every coding dispatch — UX cost on every fire |
+| Phase 3 A1 gaming mode | **OFF** | safety-critical plugin disable; operator opts in |
+| Phase 3 C3 desktop / window control | **ON** | no observable effect when OpenClaw bridge is offline; ready when wired |
+| Phase 4 A2 multi-pass retrieval | **ON** | voice baseline (rule verdicts) unaffected; ~150-200 ms only on memory-aware queries that already paid LLM-preflight cost |
+| Phase 5 B5 preflight benchmark | n/a | script + doc; no runtime flag |
+| Phase 6 B2 query dedup | always on | no flag; pure additive |
+| Phase 6 B3 citation marker | **superscript** | matches V1-spec Part 4.4 wording; references list keeps bracket form |
+| Phase 6 B4 / C1 / C2 | n/a | verifications / aliases; no runtime flag |
+
+**Classifier gating (V1-gap A1 / C3):** the new GAMING_MODE / DESKTOP_AUTOMATION / WINDOW_AUTOMATION classifier branches are gated on `openclaw.enabled` AND the per-feature flag. With OpenClaw offline (today's default), the new patterns DO NOT fire — utterances like "take a screenshot of the desktop" / "I'm about to play Valorant" fall through to the conversational LLM, preserving the pre-Phase-3 UX. Once the user wires OpenClaw + flips per-feature flags, the routing engages automatically.
+
+Prior validating HEAD `bb08a65` (closes OpenClaw integration Phases 3–13 + Phase 13 finish).
 
 State at this validation:
 - Foundation phase complete (Parts 0–7); Part 3.5 unified-config migration intentionally deferred; 16-step real-stack smoke test still pending (interactive).
@@ -20,7 +37,7 @@ State at this validation:
 - Voice baseline (10-query stack with all Items ON): **TTFT median 79 ms**, **VRAM peak 7913 MB** (-2461 MB / -2.5 GB vs 9B). See [baselines.json](../baselines.json).
 - Items 4–8 measurable verification: [scripts/verify_items_4_to_8.py](../scripts/verify_items_4_to_8.py) exercises each item in its trigger scenario and prints concrete deltas.
 - Stale-`.env` gotcha resolved: `ULTRON_LLM_MODEL_PATH=...9B...` line in `.env` was silently overriding the preset. Now commented out (line 84).
-- **1266 tests collected; 1251 passed, 15 skipped (GPU-gated), 0 failed.** Net delta vs Foundation Phase 7 baseline: +256 OpenClaw-bridge tests (Phase 3 = +104, Phase 4 = +27, Phase 5 = +21, Phase 6 = +28, Phase 12 = +9, Phase 13 finish = +67). Phases 7, 8, 9, 10, 11 were docs-only.
+- **1489 tests collected; 1474 passed, 15 skipped (GPU-gated), 0 failed.** Net delta vs Foundation Phase 7 baseline: +479 (+256 OpenClaw-bridge tests; +223 V1-spec gap-fill tests across Phases 1-6 of the post-13-phase batch — Phase 1 (A3+B1) +35, Phase 2 (A4) +24, Phase 3 (A1+C3) +98, Phase 4 (A2) +39, Phase 5 (B5) +5, Phase 6 minor batch +14, +8 classifier-gating regression coverage).
 
 ---
 
@@ -419,6 +436,21 @@ For the current decisions and Foundation phase status see
 9. Orchestrator polls voice.pending_completion() → speaks it
 ```
 
+**Clarification fast-path order** (V1-gap A3 added Fast-path 2.5):
+
+```
+ConversationCoordinator.decide_clarification(...):
+  1. Always-escalate keyword (api key, paid tier, scope add, ...)
+  2. urgency=preference + options provided -> "use your default"
+  2.5 (A3) Stored facts via facts_lookup -- if a directive-category
+       (preference / decision / constraint) fact clears confidence and
+       score thresholds, answer Claude with "From the user's stored
+       preferences: <fact>. Use that."
+  3. Always-answer keyword (test framework, linter, layout, ...)
+  4. LLM decide pass (ANSWER / USE_DEFAULT / ESCALATE)
+  5. Escalate to user (voice question + asyncio.Future await)
+```
+
 ### Search-triggered path (web)
 
 ```
@@ -581,8 +613,14 @@ pre-flight gate's uncertainty signals.
 **Public:**
 - `apply(verdict: GateVerdict, user_text: str) -> Tuple[GateVerdict, str]`
   — given a `GateVerdict` with `knowledge_confidence` /
-  `has_temporal_dependency`, returns a possibly-prepended user prompt
-  with style hints.
+  `knowledge_source` / `has_temporal_dependency`, returns a
+  possibly-prepended user prompt with style hints. V1-gap B1: a
+  `knowledge_source` of `retrieved_memory` / `retrieved_facts`
+  prepends a source hint above the confidence addendum so the LLM
+  matches its tone (rule verdicts inherit this branch too).
+- `_source_hint_for(verdict)` (internal) — picks the leading source
+  hint from `knowledge_source`. `weights` / `unknown` /
+  `web_search_needed` get no hint.
 
 **In:** `GateVerdict` from `web_search.gating`, raw user text.
 **Out:** `(verdict, augmented_prompt)`.
@@ -614,6 +652,7 @@ pre-flight gate's uncertainty signals.
   - Loads `models/openwakeword/ultron.onnx` (custom)
   - Falls back to `hey_jarvis` with startup warning if missing
   - `predict(audio_block) -> Optional[str]` — fires a wake event
+  - `fired_recently(window_s: float = 0.5) -> bool` (V1-gap A4) — read-only accessor for the last trigger timestamp; returns True iff a wake fire happened within ``window_s`` seconds. Used by the orchestrator's pre-task barge-in watcher. Idempotent — does not consume the trigger.
 
 ### `src/ultron/addressing/`
 
@@ -671,12 +710,26 @@ pre-flight gate's uncertainty signals.
 
 #### `memory/qdrant_store.py`
 - `class MemoryTurn` — dataclass: id, ts, role, content, summary, entities, ...
+- `class FactRow` (V1-gap A3) — dataclass: fact, confidence, last_confirmed, category, score, extracted_at, extracted_from, retrieval_weight. Read-side projection of the `facts` collection that the maintenance script writes.
 - `class ConversationMemory`
   - `__init__(path?, embedder, recent_cache_size=100, session_id?)`
   - `add(role, content)` — sync; queues to background writer
   - `recent(n) -> List[MemoryTurn]` — from in-process cache
-  - `retrieve(query, k=cfg, exclude_recent=cfg) -> List[MemoryTurn]` — hybrid RRF
+  - `retrieve(query, k=cfg, exclude_recent=cfg) -> List[MemoryTurn]` — single-pass hybrid RRF
+  - `retrieve_multi(primary_query, category_queries, *, k, exclude_recent)` (V1-gap A2) — multi-pass per-category hybrid RRF + composite re-ranking. Parallel fan-out via `ThreadPoolExecutor`. Falls back to single-pass on any failure.
+  - `retrieve_for_query(primary_query, gate_verdict=None, *, k, exclude_recent)` (V1-gap A2) — routing helper: when `memory.retrieval.multi_pass_enabled` is True AND the verdict carries `context_categories`, fans out via `retrieve_multi`; otherwise calls `retrieve`. Default-OFF preserves byte-for-byte legacy behaviour.
+  - `search_facts(query, *, k=5, min_confidence=0.0, max_age_days=None) -> List[FactRow]` (V1-gap A3) — hybrid RRF over the `facts` collection. Filters via Qdrant `confidence >= min_confidence` and `last_confirmed >= now - max_age_days*86400`. Fail-open: returns `[]` on any Qdrant / embedder failure.
   - `__len__()` / `close()`
+
+#### `memory/ranking.py` (V1-gap A2)
+- `@dataclass class RankingWeights` — frozen snapshot of the rrf_weight / recency_weight / recency_half_life_days / surprise_weight / redundancy_weight tuning.
+- `@dataclass class CandidateScore` — per-candidate aggregator (id, payload, rrf_score, dense vector, primary_similarity, category_similarity, composite_score).
+- `cosine_similarity(a, b) -> float` — pure cosine on float lists; defensive against length mismatch / zero vectors.
+- `compute_recency_boost(ts, *, half_life_days, now=None)` — exponential decay; ``ts == 0`` (sentinel) returns 0.
+- `compute_surprise_score(candidate_dense, primary_dense, category_score)` — clamps to ``max(0, category_score - primary_similarity)``.
+- `compute_redundancy_penalty(candidate_dense, picked)` — max cosine vs already-picked.
+- `compute_composite_score(candidate, *, weights, primary_dense, picked, now=None)` — weighted blend.
+- `select_top_k(candidates, *, k, weights, primary_dense=None, now=None) -> List[CandidateScore]` — greedy redundancy-aware selection.
 
 ### `src/ultron/web_search/`
 
@@ -699,7 +752,8 @@ pre-flight gate's uncertainty signals.
 
 #### `web_search/gating.py`
 - `class GateDecision(str, Enum)` — SEARCH / NO_SEARCH / UNCERTAIN
-- `class GateVerdict` — decision, confidence, source, search_queries, knowledge signals
+- `class GateVerdict` — decision, confidence, source, search_queries, knowledge signals (knowledge_confidence, knowledge_source, has_temporal_dependency), **context_categories** + **memory_search_queries** (V1-gap A2 — populated by the LLM preflight pass; rule-only verdicts leave them empty so the multi-pass retrieval path stays inactive).
+- `_resolve_knowledge_source(*, needs_search, confidence, memory_snippets, rule_reason)` (V1-gap B1) — single-source helper that maps gate inputs to the spec's five-value enumeration (`weights / retrieved_memory / retrieved_facts / web_search_needed / unknown`). Every `GateVerdict` construction site routes through this.
 - `classify_by_rules(utterance) -> Optional[GateVerdict]` — hard rules (time markers, URL, etc.)
 - `classify_by_preflight(utterance, llm, memory_snippets) -> GateVerdict` — LLM call
 - `class WebSearchGate` — orchestrates rules → LLM
@@ -714,9 +768,11 @@ pre-flight gate's uncertainty signals.
 - `class SearchSource` — dataclass: url, title, snippet, full_text, rank
 - `class SearchPayload` — dataclass: query, sources, cache_hit, elapsed_ms, notes
 - `_rank_snippets(llm, query, results, top_n)` — LLM-driven re-ranking
+- `_normalise_search_query(q)` / `_dedupe_queries(qs)` (V1-gap B2) — drop near-duplicate Brave queries before fan-out using a token-set canonical form (lowercase + possessive strip + stopword drop + sort).
+- `_render_inline_marker(index, *, fmt)` (V1-gap B3) — render bracketed `[1]` (default) or Unicode superscript (¹²³) inline citations based on `web_search.citation.inline_marker_format`.
 - `class WebSearchExecutor` — orchestrates Brave → rank → Jina → cache
   - `run(user_query, search_queries?, top_n=3) -> SearchPayload`
-- `format_sources_for_prompt(sources)` / `format_sources_for_transcript(sources)`
+- `format_sources_for_prompt(sources)` / `format_sources_for_transcript(sources)` — references list always uses bracket form for monospace clarity.
 
 ### `src/ultron/tts/`
 
@@ -820,23 +876,27 @@ pre-flight gate's uncertainty signals.
   - `progress_narration() -> str`
   - `completion_narration() -> Optional[str]`
   - `pop_budget_warning() -> Optional[str]`
+  - `record_pre_task_aborted(*, label, reason, intent_text="")` (V1-gap A4) — append a pre-task abort row to the audit log when the orchestrator's barge-in watcher fires.
 
 #### `coding/coordinator.py`
-- `class DecisionPath(str, Enum)` — RULE_ANSWER / LLM_AGREED / LLM_PICKED / USER_ANSWER / TIMEOUT
-- `class ClarificationDecision`, `AdjustmentDecision`, `PendingUserClarification` — dataclasses
+- `class DecisionPath(str, Enum)` — RULE_ESCALATE / RULE_DEFAULT / RULE_ANSWER / FACT_ANSWER (V1-gap A3) / LLM_ANSWER / LLM_DEFAULT / LLM_ESCALATE / USER_ANSWER / TIMEOUT_DEFAULT
+- `class ClarificationDecision`, `AdjustmentDecision`, `PendingUserClarification`, `_FactAnswer` (V1-gap A3, internal) — dataclasses
 - `class ConversationCoordinator`
-  - `decide_clarification(session_id, request, session) -> str` — answer or escalate
+  - `__init__(store, llm, *, ..., facts_lookup=None)` — V1-gap A3: optional callable that reads the Qdrant `facts` collection. Wired by the orchestrator to `UltronMCPServer.lookup_facts`.
+  - `decide_clarification(session_id, request, session) -> str` — answer or escalate. V1-gap A3: a high-confidence directive-category fact short-circuits the LLM call (Fast-path 2.5 between preference-options and always-answer rules).
   - `decide_adjustment(session_id, adjustment_text) -> AdjustmentDecision`
   - `handle_declare_complete(session_id) -> str` — runs Verifier, drives correction loop
   - `pending_user_clarifications() -> List[PendingUserClarification]`
 
 #### `coding/mcp_server.py`
 - `class UltronMCPServer`
+  - `__init__(*, host, port, sse_path, log_path, clarification_timeout_s, session_audit_dir=None, memory=None)` — V1-gap A3: `memory` kwarg threads a live `ConversationMemory` so `lookup_facts` queries Qdrant. `None` preserves the test-isolation no-op.
   - In-process Python tools (called by Qwen via `get_config().coding.mcp.host:port`):
     - `create_session()`, `get_full_state()` (Python only), `get_status_delta()`,
       `get_clarification_context()`, `get_adjustment_context()`,
       `get_correction_context()`, `get_completion_context()`,
-      `send_followup()`, `terminate_session()`, `list_active_sessions()`
+      `send_followup()`, `terminate_session()`, `list_active_sessions()`,
+      `lookup_facts(query, *, k=None, min_confidence=None, max_age_days=None)` — V1-gap A3: when memory is wired, returns dict-shaped FactRow rows (proxies `memory.search_facts`); otherwise `[]`. Audit entry tagged `source="no_memory_wired"` on the stub branch.
   - SSE worker tools (called by Claude Code via SSE):
     - `report_progress()`, `request_clarification()`, `report_test_results()`,
       `declare_complete()`, `abandon_task()`, `record_file_change()`
@@ -845,20 +905,22 @@ pre-flight gate's uncertainty signals.
 - `write_mcp_config(project_root, sse_url)` / `remove_mcp_config(project_root)`
 
 #### `coding/voice.py`
-- `class VoiceResponse` — dataclass: text, handled, cancelled
+- `class VoiceResponse` — dataclass: text, handled, cancelled, **pre_task_confirmation, deferred_dispatch, pre_task_label** (V1-gap A4 — when populated, the orchestrator speaks the confirmation with barge-in detection before running the deferred dispatch closure).
 - `class CapabilityVoiceController` (Phase 5 rename; alias = CodingVoiceController). `__init__` accepts an optional `llm_engine` (the live `LLMEngine`) so MODEL_SWITCH intents can call `llm_engine.reload_for_preset(...)` for in-process model hot-swap.
   - `pending_completion()` / `pending_clarifications()` / `pending_budget_warning()`
   - `has_pending_clarification() -> bool`
   - `handle_utterance(text) -> Optional[VoiceResponse]` — coding-only (delegated by capability dispatch)
   - `handle_capability_intent(routing_intent) -> Optional[VoiceResponse]` — top-level dispatch (Phase 5)
+  - `_build_code_task_response(...)` (V1-gap A4, internal) — wraps `_submit` into a deferred dispatch closure when `coding.pre_task_confirmation_enabled`. Read-only intents (PROGRESS_QUERY / CANCEL / etc.) keep the legacy text-only response.
+  - `_build_pre_task_confirmation(...)` / `_summarise_intent_for_voice(...)` (V1-gap A4, internal) — render the confirmation phrase ("I'll have Claude Code &lt;verb&gt; on the &lt;project&gt; project. Going ahead.").
 
 ### `src/ultron/openclaw_routing/` (Phase 5)
 
 #### `openclaw_routing/intents.py`
-- `class RoutingIntentKind(str, Enum)` — 13 values: CONVERSATIONAL, CODE_TASK, PROGRESS_QUERY, CANCEL, MID_SESSION_ADJUSTMENT, CLARIFICATION_RESPONSE, BROWSER_AUTOMATION, MEDIA_GENERATION, MESSAGING, FILE_OPERATION, SHELL_OPERATION, HYBRID_TASK, MODEL_SWITCH (4B plan voice-driven LLM swap)
-- Per-category dataclasses: `BrowserIntent`, `MediaGenIntent`, `MessagingIntent`, `FileOpIntent`, `ShellOpIntent`
+- `class RoutingIntentKind(str, Enum)` — 17 values: CONVERSATIONAL, CODE_TASK, PROGRESS_QUERY, CANCEL, MID_SESSION_ADJUSTMENT, CLARIFICATION_RESPONSE, BROWSER_AUTOMATION, MEDIA_GENERATION, MESSAGING, FILE_OPERATION, SHELL_OPERATION, HYBRID_TASK, MODEL_SWITCH (4B plan), SYSTEM_STATUS (Phase 13), GAMING_MODE (V1-gap A1), DESKTOP_AUTOMATION (V1-gap C3), WINDOW_AUTOMATION (V1-gap C3)
+- Per-category dataclasses: `BrowserIntent`, `MediaGenIntent`, `MessagingIntent`, `FileOpIntent`, `ShellOpIntent`, **`GamingModeIntent`** (V1-gap A1), **`DesktopIntent`** (V1-gap C3), **`WindowIntent`** (V1-gap C3)
 - `HybridSubtask` — dataclass: order, type, subtype, description
-- `RoutingIntent` — top-level dataclass: kind, raw_text, confidence, source, reason, coding_intent, automation_intent, subtasks, needs_user_clarification, clarification_question
+- `RoutingIntent` — top-level dataclass: kind, raw_text, confidence, source, reason, coding_intent, automation_intent, subtasks, model_switch_intent, system_status_intent, **gaming_mode_intent, desktop_intent, window_intent** (V1-gaps A1/C3), needs_user_clarification, clarification_question
 - `DispatchResult` — dataclass: success, voice_message, error, metadata
 - `TaskInfo` — task tracking dataclass
 - `AutomationIntent` = Union of the 5 automation intent classes
@@ -869,9 +931,22 @@ pre-flight gate's uncertainty signals.
 - `_build_browser_intent(text)`, `_build_media_intent(text)`, `_build_messaging_intent(text)`, `_build_file_intent(text)`, `_build_shell_intent(text)` — extract structured intent from raw text
 
 #### `openclaw_routing/dispatcher.py`
-- `class OpenClawDispatcher` (currently STUBBED)
-  - `__init__(config?)` — reads openclaw.enabled + routing.stub_responses_enabled
-  - `async handle_browser(intent)` / `handle_media_generation(intent)` / `handle_messaging(intent)` / `handle_file_operation(intent)` / `handle_shell_operation(intent)` — all return DispatchResult with stub voice message + `metadata={"stub": True}`
+- `class OpenClawDispatcher`
+  - `__init__(config?, *, llm=None, bridge=None, gaming_mode_manager=None)` — reads openclaw.enabled + routing.stub_responses_enabled; threads optional dependencies for live-dispatch paths.
+  - `async handle_browser(intent)` / `handle_media_generation(intent)` / `handle_messaging(intent)` / `handle_file_operation(intent)` / `handle_shell_operation(intent)` — return live results when the bridge is wired (Phases 4, 6, 12), stubs otherwise.
+  - `async handle_gaming_mode(intent)` (V1-gap A1) — engage / disengage / status. Routes to `GamingModeManager` for plugin enable/disable; voice messages match the spec phrasing.
+  - `async handle_desktop_automation(intent)` (V1-gap C3) — screenshot / list_windows / find_window via `DesktopTool`. Short-circuits with a clear message when gaming mode is engaged.
+  - `async handle_window_automation(intent)` (V1-gap C3) — focus / click / type via `WindowControlTool`. Same gaming-mode short-circuit.
+
+#### `openclaw_routing/gaming_mode.py` (V1-gap A1)
+- `class GamingModeStatus(str, Enum)` — IDLE / ENGAGED / TRANSITIONING.
+- `@dataclass class GamingModeReport` — engage/disengage outcome with per-plugin states + Docker action info.
+- `class GamingModeManager`
+  - `__init__(*, client, plugins_to_disable, toggle_docker, ...)` — owns the engage/disengage state machine.
+  - `async engage()` — calls `client.disable_plugin(slug)` for each configured plugin; optionally stops Docker Desktop. Best-effort: per-plugin failures don't abort the cycle.
+  - `async disengage()` — re-enables only the plugins successfully disabled during the matching engage.
+  - `status() -> GamingModeStatus`.
+  - Audit log: `logs/gaming_mode.jsonl`.
 
 #### `openclaw_routing/runner.py`
 - `class AutomationTaskRunner` — mirror of `CodingTaskRunner` for automation tasks
@@ -965,6 +1040,12 @@ pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
     unavailable.
   - `mcp_list / mcp_show / mcp_set / mcp_unset` — config helpers
     used by :class:`UltronMcpRegistrar`.
+  - `enable_plugin(plugin_id)` / `disable_plugin(plugin_id)` /
+    `list_plugins(*, enabled_only=False)` (V1-gap A1) — wrap
+    `openclaw plugins enable / disable / list --json`. Returns
+    `PluginToggleResult` / `List[PluginInfo]`. Failures (plugin not
+    installed, auth) translate into structured failures rather than
+    raising.
 - All methods translate stderr 401/403/Unauthorized markers into
   :class:`OpenClawAuthError`; transport failures into
   :class:`OpenClawGatewayError`. Tokens are never logged.
@@ -1120,6 +1201,12 @@ pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
 - :func:`run_stdio` is the entry point invoked by
   ``scripts/run_ultron_mcp_for_openclaw.py``.
 
+#### `openclaw_bridge/desktop.py` (V1-gap C3)
+
+- `class DesktopTool` — wrapper over `OpenClawClient.invoke_tool` for the `desktop-control` plugin. Methods: `screenshot(target?)`, `list_windows()`, `find_window(query)`. Each returns a typed dataclass (`DesktopScreenshotResult`, `ListWindowsResult`, `FindWindowResult`). Tool slugs configurable via `config.desktop.tool_slug_*`.
+- `class WindowControlTool` — same pattern over `windows-control` plugin. Methods: `focus(query)`, `click(ref)`, `type_text(ref, value)`. Returns `WindowActionResult`.
+- `OpenClawToolError` raised by the underlying client is translated into structured failures with the error preserved in `result.error`.
+
 #### `openclaw_bridge/system_status.py` (Phase 13)
 
 - `class SystemStatusReporter` — voice-side reporter for
@@ -1146,6 +1233,8 @@ pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
   - `_follow_up_listen(deadline)` — WARM-mode VAD loop
   - `_respond(user_text)` — LLM stream → TTS pipeline (with optional web search)
   - `_speak(text)` — single-shot synthesize + play
+  - `_speak_with_barge_in_check(text, *, post_check_window_s=0.5) -> bool` (V1-gap A4) — speak text and report whether wake fired during/after; used by the pre-task confirmation flow.
+  - `_handle_capability_response(response, routing_intent)` (V1-gap A4) — wraps the capability voice dispatch. Default path: speak `response.text`. A4 path: speak `response.pre_task_confirmation` first, abort dispatch on barge-in (audit via `runner.record_pre_task_aborted`).
   - `_announce_coding_completion_if_pending()`, `_announce_pending_clarifications()`, `_announce_pending_budget_warning()` — voice-loop poll hooks
   - `_load_memory_if_enabled()` — Qdrant init with graceful fallback
   - `_load_openclaw_bridge_if_enabled()` (Phase 3.5) — constructs
@@ -1206,16 +1295,19 @@ Sections:
 - `llm` (provider="llama_cpp", **preset** ["qwen3.5-9b"|"qwen3.5-4b"|"custom"; auto-fills model_path/n_ctx/draft_model_path when those keys are omitted — Stage A of the 4B plan], runtime ["in_process"|"http_server"], model_path, draft_model_path, n_ctx, gpu_layers, temperature, top_p, max_tokens, repeat_penalty, history_turns, flash_attn, kv_cache_type, system_prompt, server.{base_url,...}, persona.{source,...})
 - `embeddings` (dense_model, sparse_model, dense_dim)
 - `qdrant` (data_dir="data/qdrant", collections.{conversations,facts,web_results})
-- `memory` (enabled, jsonl_legacy_path, recent_turns, rag_top_k, rag_exclude_recent, facts_top_k, write_queue_maxsize)
-- `web_search` (enabled, brave_api_key_env, brave/jina/cache subsections)
+- `memory` (enabled, jsonl_legacy_path, recent_turns, rag_top_k, rag_exclude_recent, facts_top_k, write_queue_maxsize, **retrieval.{multi_pass_enabled=false, max_categories_per_query=4, candidates_per_category_multiplier=4}** (V1-gap A2), **ranking.{rrf_weight=1.0, recency_weight=0.2, recency_half_life_days=7.0, surprise_weight=0.15, redundancy_weight=0.3}** (V1-gap A2))
+- `web_search` (enabled, brave_api_key_env, brave/jina/cache subsections, **citation.inline_marker_format="bracket"** [V1-gap B3])
 - `addressing` (follow_up_enabled, **warm_mode_duration_seconds: 30.0** ← user override, NOT 10s; rule_confidence_threshold, zero_shot_model, log_path)
-- `coding` (enabled, bridge="direct", mcp.{host,port,...}, template_dir, prompt_token_budget, default/escalation models + thresholds, verification.{smoke,test,lint}_timeout, session_audit_dir, token_budget_per_session, claude_cli, sandbox_root, project_registry_path, audit_log_path, task_timeout, skip_permissions)
+- `coding` (enabled, bridge="direct", mcp.{host,port,...}, template_dir, prompt_token_budget, default/escalation models + thresholds, verification.{smoke,test,lint}_timeout, session_audit_dir, token_budget_per_session, claude_cli, sandbox_root, project_registry_path, audit_log_path, task_timeout, skip_permissions, **facts.{top_k=5, min_confidence=0.75, min_score=0.85, max_age_days=null}** [V1-gap A3], **pre_task_confirmation_enabled=false, pre_task_confirmation_max_words=30, pre_task_barge_in_window_seconds=0.5** [V1-gap A4])
 - `projections` (tokenizer, budgets.{clarification,status_delta,adjustment,correction,completion}_context, truncation_warning_threshold, log_truncations)
 - `tts` (piper paths, sample_rate, sentence_flush_chars, length_scale, pause_ms, edge_fade_ms, rvc subsection)
 - `logging` (file, level, format, datefmt)
 - `error_phrases` (13 pools — qdrant_unavailable, brave_unavailable, jina_unavailable, anthropic_unavailable, rvc_unavailable, openclaw_unavailable, piper_unavailable, whisper_repeated_failures, addressing_classifier_failure, wake_word_model_failure, mcp_server_lost, claude_code_subprocess_failed, config_invalid)
 - `routing` (llm_disambiguation_enabled, hybrid_task_decomposition_enabled, disambiguation_question_template, routing_log_path, classifier subsection, stub_responses_enabled)
 - `openclaw` (enabled=false [stub], gateway_url, auth_token_env, health_check_*_seconds, fail_open, required_agent_id)
+- `gaming_mode` (V1-gap A1) — enabled=false, plugins_to_disable=[desktop-control, windows-control], toggle_docker=false, docker_executable_path, docker_process_name, log_path
+- `desktop` (V1-gap C3) — enabled=false, default_*_timeout_seconds, plugin_slug, tool_slug_screenshot / tool_slug_list_windows / tool_slug_find_window
+- `window_control` (V1-gap C3) — enabled=false, default_action_timeout_seconds, plugin_slug, tool_slug_focus / tool_slug_click / tool_slug_type
 
 ### `config/settings.py` (Phase 3 SHIM)
 
@@ -1266,6 +1358,11 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 **In:** `logs/sessions/<id>.jsonl`.
 **Out:** stdout — formatted event list (one line per event with timestamp + kind + summary).
 **Functions:** `_resolve_session_path(token, dir)`, `_read_records(path)`, `_format_record(rec)`, `main(argv)`.
+
+### `scripts/last_session.py` (V1-gap C2)
+
+**Purpose:** backwards-compat alias for `dump_session.py`. The V1 spec named this script `last_session.py`; both names now coexist and resolve to the same `main(argv)` entry point.
+**Run:** `python scripts/last_session.py ...` (forwards every arg to `dump_session.main`).
 
 ### `scripts/list_audio_devices.py`
 
@@ -1385,6 +1482,13 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 **Run:** `python scripts/run_maintenance_for_cron.py [--task <name> ...] [--json | --pretty]`
 **In:** subprocesses `scripts/maintenance.py` machinery.
 **Out:** stdout — structured summary; exit code per outcome.
+
+### `scripts/benchmark_preflight.py` (V1-gap B5)
+
+**Purpose:** benchmark the web-search gate's pre-flight reasoning pass against the main LLM AND optional CPU-only candidate models. Settles V1-spec Part 1.5's question about whether a dedicated CPU model would be faster than the main Qwen on pre-flight. Decision documented at [docs/preflight_decision.md](preflight_decision.md): keep main LLM (TTFT 79 ms voice baseline already beats the spec's 200 ms threshold).
+**Run:** `python scripts/benchmark_preflight.py [--candidate-model PATH] [--skip-main] [--queries N]`
+**In:** loads the live `LLMEngine` (or a CPU-only `llama_cpp.Llama` for the candidate); 30 representative queries with manual ground truth.
+**Out:** Markdown summary table + appends `preflight_benchmark.backends` block to `baselines.json`.
 
 ### `scripts/run_ultron_mcp_for_openclaw.py` (OpenClaw Phase 13)
 
@@ -1594,6 +1698,8 @@ Reading order for a fresh Claude:
 - **iOS / Android node pairing:** [docs/mobile_node_setup.md](mobile_node_setup.md)
 - **Standing-order programs:** [docs/standing_orders.md](standing_orders.md)
 - **Three-layer memory architecture (Qdrant + workspace + Wiki):** [docs/memory_architecture.md](memory_architecture.md)
+- **Gaming mode (V1-gap A1):** [docs/openclaw_gaming_mode_setup.md](openclaw_gaming_mode_setup.md)
+- **Desktop / window control (V1-gap C3):** [docs/openclaw_desktop_control_setup.md](openclaw_desktop_control_setup.md)
 
 ### 4B optimization plan
 - **4B-model optimization plan (all stages + Items 4–8 done):** [docs/4b_optimization_plan.md](4b_optimization_plan.md)
