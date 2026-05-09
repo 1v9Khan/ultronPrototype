@@ -25,10 +25,13 @@ enable_thinking parameter wired through to chat_template_kwargs in both
 runtimes) + Stage G (position-aware RAG injection: `llm.rag.position`
 config + LLMEngine._build_messages refactor; default flipped from
 "system" fold-in to "recency" prepend on user message — +10-20%
-recall expected) + Stage H infra (on-the-fly preset switching:
-ULTRON_LLM_PRESET env var, scripts/swap_llm_preset.py helper,
-preset-aware check_vram.py target, preset-only YAML works) —
-796 passing tests, 16 skipped, 0 failed.
+recall expected) + Stage H (on-the-fly preset switching infra +
+voice-driven model swap + preset flipped to qwen3.5-4b) + **Items 4–8**
+(LLMLingua-style compression / IRMA input reformulation /
+self-consistency on high-stakes calls / canonical-path monitor for
+coding sessions / block-and-revise validator on OpenClaw tool calls
+— all flag-gated OFF by default; live behaviour byte-for-byte
+unchanged until opt-in) — **969 passing tests**, 16 skipped, 0 failed.
 
 ---
 
@@ -1121,7 +1124,7 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 
 ### `tests/conftest.py` — Path setup so `from ultron.*` works.
 
-### Default suite (no env gate) — 870 tests, ~30 s wall
+### Default suite (no env gate) — 969 tests, ~32 s wall
 
 **Top-level (~25 files):**
 - `test_addressing.py` — rule-based addressing classifier
@@ -1160,6 +1163,11 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 - `tests/routing/test_model_switch_classifier.py` (54, 4B plan voice-swap) — classifier maps "switch to 4B/9B/four B/for B/nine B/4 B/4-B" + verb variants (switch/swap/change/use/load/go/move/activate/engage/run/select) to `RoutingIntentKind.MODEL_SWITCH`; rejects passing mentions ("the 4B is faster") and conversational utterances; pending clarification suppresses (mid-dialogue safety); active coding task does not block; `_resolve_model_switch_target` helper
 - `test_llm_reload_for_preset.py` (9, 4B plan voice-swap) — `LLMEngine.reload_for_preset` rejects http_server runtime + unknown preset; idempotent on same-preset; success path replaces `_llm` and clears history; sets `ULTRON_LLM_PRESET` env + clears stale `ULTRON_LLM_MODEL_PATH`; failure path keeps old engine, restores env vars (whether they were set or unset originally)
 - `test_voice_model_switch.py` (11, 4B plan voice-swap) — `CapabilityVoiceController._handle_model_switch` calls `llm_engine.reload_for_preset(target)`, speaks "Switched to the 4B/9B" on success, "I'm already running the X" on idempotent, "I couldn't switch ..." on failure with reason; "I can't switch models — engine isn't wired" when llm_engine is None; missing payload says "couldn't tell which model"; end-to-end classifier-then-controller for utterances
+- `tests/routing/test_irma_reformulation.py` (15, 4B plan Item 5) — `InputReformulator` pure-text shape (default-only-utterance, whitespace-strip, quote-escape, recent-decisions section, max-recent truncation, active-session, routing-hints, max_recent=0 omits, log-row factory); disambiguator integration with the IRMA flag (default-OFF passes raw, ON uses enriched, reformulation-failure falls back, no-context still emits utterance)
+- `test_self_consistency.py` (27, 4B plan Item 6) — `majority_vote_text` (winner, whitespace-strip, tie-first-wins, empty input, blank filter), `majority_vote_json` (winner, unparseable handling, think-block strip, first-block-only, all-unparseable returns None, arrays), `majority_vote_label` (case-insensitive, no-match), `run_self_consistency` driver (sampler called N times, default text aggregator, sampler exception handling, fallback to first non-empty, n-clamping), `should_apply_self_consistency` config gate (default-off, global-on, per-site disabled), decomposer integration (single-call default, N-call with consistency, majority winner, per-site bypass, all-unparseable fallback)
+- `test_canonical_monitor.py` (17, 4B plan Item 7) — canonical set lockdown (standard tools, MCP callbacks), canonical-only paths (no abort), threshold-not-reached, threshold-reached-in-window aborts, late drift does not abort, latch semantics, reset clears state, non-tool-use events ignored, empty/None tool name ignored, case-insensitive match, attribute-style event input, custom canonical override, verdict-shape (off_canonical_tools list, immutability), factory gate (disabled returns None, enabled returns instance with config)
+- `test_block_and_revise.py` (14, 4B plan Item 8) — `ToolCallValidator` ALLOW + BLOCK verdicts, think-block strip, case-insensitive, fail-open on no-LLM / exception / unparseable / empty, prompt rendering (tool name, args, args truncated, goal-quote escaped), `is_enabled` config gate
+- `test_compression.py` (26, 4B plan Item 4) — heuristic compresses redundant text, preserves negations (and "isn't" preserves negation-meaning), collapses repeated punctuation, short input passthrough, empty passthrough, ratio-1.0 means no drop, higher-ratio drops more; perplexity-scorer drops lowest-score, scorer exception fallback, mismatched-length fallback; result dataclass; factory off-returns-None / on-returns-instance; `maybe_compress` global-off / per-surface-off / per-surface-on / unknown surface / history default-off / compressor exception / empty text; integration `_format_rag_block` default-OFF unchanged + ON-compresses; `format_sources_for_prompt` default-OFF unchanged + URL-preserved-on
 
 **`tests/coding/`:**
 - `mock_bridge.py` — `ScriptedClaudeBridge` + `ClaudeScript` DSL

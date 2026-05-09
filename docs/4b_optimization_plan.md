@@ -316,42 +316,74 @@ it's the GPU physics.
 `models/`. `llm.rag.position` and the `enable_thinking` parameter
 remain available regardless of preset (orthogonal to the model swap).
 
-## Items 4-8 — second-pass optimization
+## Items 4–8 — second-pass optimization ✅ MACHINERY SHIPPED (all flags default OFF)
 
-Lower priority; defer until Stages A-H are stable. Each is additive
-and behind its own config flag so they can be enabled / rolled back
-independently.
+All five items landed as additive, flag-gated, fully-tested machinery.
+Default OFF on every flag — live behaviour byte-for-byte unchanged
+until the user opts each in. Each is an independent commit.
 
-### Item 4 — LLMLingua-style RAG compression
-Token-level compression of retrieved Qdrant snippets and Jina-fetched
-articles before injection. The 0.8B draft model from Stage C doubles
-as the perplexity scorer (no extra VRAM). Start at 1.5x compression,
-tune from there.
+### Item 4 — LLMLingua-style compression ✅
+[`src/ultron/llm/compression.py`](../src/ultron/llm/compression.py).
+Heuristic compressor (no extra model) drops stopwords (negation-
+preserving), contractions, redundant punctuation, repeated sentence
+signatures. `Compressor(perplexity_scorer=...)` kwarg lets a future
+drop-in plug a real perplexity model — the Stage C speculative-
+decoding 0.8B is the natural fit. Wired into
+`LLMEngine._format_rag_block` and `format_sources_for_prompt`. Per-
+surface flags: `compress_rag` / `compress_web` / `compress_history`
+(history default OFF — has user voice). 26 tests. Config:
+`llm.compression.{enabled, target_ratio, compress_rag, compress_web,
+compress_history}`.
 
-### Item 5 — IRMA-style tool-call input reformulation
-Wrapper between intent classification and the disambiguation LLM
-call. Enriches the raw utterance with: recently-used tools (avoid
-suggesting failed ones), active session state summary, relevant
-routing rules. Paper claims +12-19% on ambiguous tool calling.
+### Item 5 — IRMA-style input reformulation ✅
+[`src/ultron/openclaw_routing/irma.py`](../src/ultron/openclaw_routing/irma.py).
+`InputReformulator` is a pure-text shaper (no LLM call) — wraps the
+disambiguator's input with optional recent-decision context, active
+session summary, and routing hints. Wired into `IntentDisambiguator`
+behind `routing.irma.enabled`. Reformulation failure falls back to the
+legacy prompt — disambiguator path never crashes. 15 tests. Config:
+`routing.irma.{enabled, max_recent_decisions}`.
 
-### Item 6 — Self-consistency for high-stakes calls
-Apply N-sample majority vote (N=3, temperature 0.7-1.0) to:
-- Coding correction-prompt generation
-- HYBRID_TASK decomposition
-- Pre-flight uncertainty when initial confidence is borderline
+### Item 6 — Self-consistency for high-stakes calls ✅
+[`src/ultron/llm/self_consistency.py`](../src/ultron/llm/self_consistency.py).
+Three aggregator families: `majority_vote_text`, `majority_vote_json`,
+`majority_vote_label`. `run_self_consistency(sampler, n, temperature,
+aggregator)` driver. Wired into `HybridTaskDecomposer.decompose` (JSON
+voting). Other call sites (web-gating preflight, IntentDisambiguator)
+ready-to-extend with the same pattern. 27 tests. Config:
+`llm.self_consistency.{enabled, n, temperature, disabled_sites}`.
 
-3x token cost on those specific calls; not on the voice hot path.
+### Item 7 — Canonical-path monitor for coding sessions ✅
+[`src/ultron/coding/canonical_monitor.py`](../src/ultron/coding/canonical_monitor.py).
+`CanonicalPathMonitor.observe(event)` ingests `TaskEvent`-shaped
+objects (duck-typed; works with both the dataclass and dicts in
+tests). Tracks tool_use events; signals abort when off-canonical
+count crosses the threshold inside the early window. Latches once
+triggered. Conservative defaults (3 off-canonical in first 10 calls)
+because false-positive aborts are real. 17 tests. Wiring into the
+runner is intentionally NOT in this commit — machinery first, abort-
+and-restart-with-cleaner-prompt flow as a follow-up. Config:
+`coding.canonical_monitor.{enabled, off_canonical_threshold,
+early_window_calls}`.
 
-### Item 7 — Canonical path monitor (coding sessions)
-Per-session "canonical adherence" tracker. If a session has 3+
-unexpected tool calls in the first 30% of execution, abort and
-restart with a cleaner prompt. Paper claims +8.8 percentage points
-on long coding sessions.
+### Item 8 — Block-and-revise validator on OpenClaw tool calls ✅
+[`src/ultron/openclaw_routing/block_and_revise.py`](../src/ultron/openclaw_routing/block_and_revise.py).
+`ToolCallValidator(llm).validate(goal, tool_name, tool_args)` runs a
+short pre-flight LLM check ("does this tool call advance the goal?")
+returning `ValidationResult(allow, reason, verdict, raw_response)`.
+Fails open on no-LLM / exception / unparseable response — never
+hard-blocks on flaky LLM. Wiring into `OpenClawDispatcher` is NOT in
+this commit (dispatcher is currently stubbed in Phase 5; the
+validator's interface stays identical when the real Gateway lands).
+14 tests. Config: `openclaw.block_and_revise.enabled`.
 
-### Item 8 — Block-and-revise on OpenClaw tool calls
-Pre-flight validator: "given the user's stated goal, does this tool
-call advance it?" If no, block + ask the agent to revise. Extends
-the existing coding verification pattern.
+### Combined verification across Items 4–8
+
+99 new tests across the five items. Live system behaviour unchanged
+because every flag is OFF by default. Integration sweeps after each
+item all green. To enable any item live, flip its flag in
+`config.yaml` (or test the change in isolation via the env-var
+overrides per item).
 
 ## What's already done
 
