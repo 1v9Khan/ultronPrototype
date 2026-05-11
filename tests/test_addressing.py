@@ -134,6 +134,163 @@ def test_rule_layer_handles_obvious_yes_and_no_cases():
         pytest.fail("Rule layer regressions:\n" + "\n".join(misses))
 
 
+def test_third_party_narrative_rule_catches_session_log_failures():
+    """2026-05-11 regression: real-session log showed third-person
+    narration about Ultron sliding through the rule layer and landing
+    at zero-shot YES with 0.75 confidence. The narrow narrative rule
+    should catch the specific surface forms observed."""
+    # The exact utterances from the failing log + variants. Each must
+    # be classified NOT_ADDRESSED at high enough confidence to
+    # short-circuit zero-shot.
+    failing_now_caught = [
+        # Verbatim from the bug log.
+        "Okay, I got him to the point where he's workable. You'll see",
+        "Let us know from context whether I'm talking to him.",
+        # Close variants of each pattern in the rule.
+        "I'm talking to him about the project.",
+        "I'm talking to it right now.",
+        "Got her to do the thing.",
+        "You'll see what he does.",
+        "Watch this.",
+        "Watch him build it.",
+        "He's workable.",
+        "It's ready.",
+        "She is set up.",
+    ]
+    misses: list[str] = []
+    for utt in failing_now_caught:
+        hit = classify_rules(utt, seconds_since_response=5.0)
+        if hit is None:
+            misses.append(f"  {utt!r}: rule layer abstained (None)")
+            continue
+        if hit.decision != AddressingDecision.NOT_ADDRESSED:
+            misses.append(
+                f"  {utt!r}: expected NOT_ADDRESSED, "
+                f"got {hit.decision.value} ({hit.reason}, conf={hit.confidence:.2f})"
+            )
+        elif hit.confidence < 0.80:
+            misses.append(
+                f"  {utt!r}: NOT_ADDRESSED but conf={hit.confidence:.2f} "
+                f"(below 0.80 short-circuit; zero-shot still gets the call)"
+            )
+    if misses:
+        pytest.fail("Third-party-narrative rule misses:\n" + "\n".join(misses))
+
+
+def test_third_party_narrative_rule_does_not_break_legit_commands():
+    """The narrative rule must NOT match legitimate Ultron commands
+    that happen to reference a third party ('tell him to ...'). False
+    negatives here mean the user can't issue routine commands."""
+    legit_commands = [
+        # Pronoun-target commands that legitimately go to Ultron.
+        "Tell him to send the email.",
+        "Ask her about the meeting.",
+        "Send him the report.",
+        "Show me what he wrote.",
+        "What did he say earlier?",
+        "Did he reply yet?",
+        # Imperative commands that don't reference third parties.
+        "Play some music.",
+        "Set a timer for ten minutes.",
+        "Turn off the kitchen light.",
+        # Direct Ultron address.
+        "Ultron, what time is it?",
+    ]
+    for utt in legit_commands:
+        hit = classify_rules(utt, seconds_since_response=2.0)
+        # We don't care WHICH rule wins, only that the narrative rule
+        # didn't wrongly classify these as NOT_ADDRESSED.
+        if hit is not None and hit.decision == AddressingDecision.NOT_ADDRESSED:
+            if hit.reason == "narrating Ultron to a third party":
+                pytest.fail(
+                    f"Narrative rule wrongly fired on legit command: "
+                    f"{utt!r} (reason={hit.reason}, conf={hit.confidence:.2f})"
+                )
+
+
+def test_zero_shot_addressed_min_confidence_gate_demotes_low_confidence_yes():
+    """2026-05-11 false-positive guard: when zero-shot returns YES at
+    < min_confidence, the classifier should demote to NOT_ADDRESSED
+    (with default_silent=True). This is the lever that catches the
+    saturated-at-0.75 third-person verdicts."""
+    from unittest.mock import patch
+    from ultron.addressing.classifier import AddressingClassifier
+
+    classifier = AddressingClassifier(
+        rule_confidence_threshold=0.8,
+        default_silent_on_uncertain=True,
+        log_path=None,
+        zero_shot_addressed_min_confidence=0.80,
+    )
+    # Simulate a borderline zero-shot YES at 0.75. The utterance must
+    # be ambiguous enough that no rule fires above 0.8 -- pick a
+    # short follow-up that the rule layer abstains on.
+    with patch.object(
+        classifier._zero_shot,
+        "classify",
+        return_value=("YES", 0.75, 3.0),
+    ):
+        verdict = classifier.classify(
+            "Maybe try a different angle on it.",
+            seconds_since_response=10.0,
+        )
+    # Gate fires: low-confidence YES demoted to NOT_ADDRESSED.
+    assert verdict.decision == AddressingDecision.NOT_ADDRESSED, (
+        f"expected NOT_ADDRESSED after gate, got {verdict.decision.value} "
+        f"(reason={verdict.reason})"
+    )
+    assert "below ADDRESSED threshold" in verdict.reason
+
+
+def test_zero_shot_addressed_min_confidence_gate_allows_high_confidence_yes():
+    """The gate must NOT block high-confidence YES verdicts -- those
+    are real direct addresses and need to pass through."""
+    from unittest.mock import patch
+    from ultron.addressing.classifier import AddressingClassifier
+
+    classifier = AddressingClassifier(
+        rule_confidence_threshold=0.8,
+        default_silent_on_uncertain=True,
+        log_path=None,
+        zero_shot_addressed_min_confidence=0.80,
+    )
+    with patch.object(
+        classifier._zero_shot,
+        "classify",
+        return_value=("YES", 0.92, 3.0),
+    ):
+        verdict = classifier.classify(
+            "Maybe try a different angle on it.",
+            seconds_since_response=10.0,
+        )
+    assert verdict.decision == AddressingDecision.ADDRESSED
+    assert "below ADDRESSED threshold" not in verdict.reason
+
+
+def test_zero_shot_min_confidence_gate_default_zero_preserves_legacy_behaviour():
+    """The default value 0.0 keeps legacy behaviour for callers that
+    don't opt in -- borderline YES verdicts still route to ADDRESSED."""
+    from unittest.mock import patch
+    from ultron.addressing.classifier import AddressingClassifier
+
+    classifier = AddressingClassifier(
+        rule_confidence_threshold=0.8,
+        default_silent_on_uncertain=True,
+        log_path=None,
+        # zero_shot_addressed_min_confidence not passed -- default 0.0.
+    )
+    with patch.object(
+        classifier._zero_shot,
+        "classify",
+        return_value=("YES", 0.55, 3.0),
+    ):
+        verdict = classifier.classify(
+            "Maybe try a different angle on it.",
+            seconds_since_response=10.0,
+        )
+    assert verdict.decision == AddressingDecision.ADDRESSED
+
+
 def test_rule_layer_covers_majority_of_cases():
     """Sanity check: rules should classify confidently on >= 60 % of utterances
     so the zero-shot path stays cheap on average."""

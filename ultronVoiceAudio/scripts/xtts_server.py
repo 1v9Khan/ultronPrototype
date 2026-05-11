@@ -16,7 +16,7 @@ Endpoints:
   by the client to wait for readiness on startup.
 
 * ``POST /synthesize`` -- body ``{text, language="en", chunk_size=20,
-  temperature=0.75}``. Returns ``Transfer-Encoding: chunked`` stream
+  temperature=0.75, speed=1.0}``. Returns ``Transfer-Encoding: chunked`` stream
   of raw int16 little-endian mono PCM at the model's native sample
   rate (24000 Hz). Each network chunk corresponds to one XTTS
   inference chunk.
@@ -149,10 +149,15 @@ class XttsHolder:
         language: str = "en",
         chunk_size: int = 20,
         temperature: float = 0.75,
+        speed: float = 1.0,
     ):
         """Generator yielding raw int16 little-endian PCM bytes, one
         XTTS inference chunk at a time. Acquires the inference lock
-        for the duration."""
+        for the duration.
+
+        ``speed`` is XTTS v2's native duration multiplier (>1.0 =
+        faster). Adjusts the GPT duration tokens before waveform
+        decoding, so pitch and timbre are unchanged."""
         if self.model is None:
             raise RuntimeError("model not loaded")
         with self._inference_lock:
@@ -163,6 +168,7 @@ class XttsHolder:
                 speaker_embedding=self.speaker_embedding,
                 stream_chunk_size=chunk_size,
                 temperature=temperature,
+                speed=speed,
             ):
                 # chunk is a torch tensor (float32) in [-1, 1] on GPU
                 pcm_f32 = chunk.detach().cpu().numpy().astype(np.float32)
@@ -182,6 +188,9 @@ class SynthRequest(BaseModel):
     language: str = "en"
     chunk_size: int = 20
     temperature: float = 0.75
+    # XTTS native duration multiplier. 1.0 = native rate; >1.0 = faster.
+    # Set by the client from ``tts.xtts_v3.speed`` in config.
+    speed: float = 1.0
 
 
 def build_app(holder: XttsHolder) -> FastAPI:
@@ -232,6 +241,7 @@ def build_app(holder: XttsHolder) -> FastAPI:
                     language=req.language,
                     chunk_size=req.chunk_size,
                     temperature=req.temperature,
+                    speed=req.speed,
                 ):
                     if not first_chunk_logged[0]:
                         first_chunk_logged[0] = True

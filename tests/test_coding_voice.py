@@ -196,6 +196,82 @@ def test_new_project_creates_sandbox_and_submits_task(setup):
     assert request.cwd == Path(project.path).resolve() or request.cwd == Path(project.path)
 
 
+def test_voice_dispatch_defaults_to_no_test_mandate(setup):
+    """2026-05-11 token-efficiency: voice-dispatched coding tasks
+    used to hardcode ``require_testing=True``, which prepended a
+    "MUST write tests + run + fix + re-run" preamble to the Claude
+    prompt and 3-5x'd the token spend on small utility asks. The
+    voice path now reads ``coding.voice_task_require_testing``
+    (default False) -- the bridge gets a clean ``require_testing=False``
+    and the discipline preamble is skipped."""
+    _utter_and_dispatch(
+        setup["controller"],
+        "Create a python script that prints hello.",
+    )
+    request = setup["bridge"].last_request
+    assert request is not None
+    assert request.require_testing is False, (
+        "voice dispatch should default to require_testing=False; "
+        "the testing-mandated preamble was inflating token cost on "
+        "tiny one-file voice asks"
+    )
+
+
+def test_voice_dispatch_honors_config_flag_for_testing(setup, monkeypatch):
+    """Operators who want the testing mandate on every voice dispatch
+    can opt back in via ``coding.voice_task_require_testing: true``."""
+    from ultron.config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(cfg.coding, "voice_task_require_testing", True)
+    _utter_and_dispatch(
+        setup["controller"],
+        "Create a python script that prints hello.",
+    )
+    request = setup["bridge"].last_request
+    assert request is not None
+    assert request.require_testing is True
+
+
+def test_render_prompt_omits_discipline_preamble_without_testing():
+    """The render_prompt seam itself: ``require_testing=False`` means
+    the user's task text reaches Claude verbatim, not wrapped in the
+    ~270-token "you MUST write tests" preamble. This is the load-
+    bearing change for the token-efficiency win."""
+    from pathlib import Path
+    from ultron.coding.bridge import TaskRequest, render_prompt
+
+    request_lean = TaskRequest(
+        task_prompt="write a hello world",
+        cwd=Path("."),
+        require_testing=False,
+    )
+    request_heavy = TaskRequest(
+        task_prompt="write a hello world",
+        cwd=Path("."),
+        require_testing=True,
+    )
+    lean = render_prompt(request_lean)
+    heavy = render_prompt(request_heavy)
+    assert lean == "write a hello world"
+    # Heavy preamble starts with "You are working on" and contains
+    # the testing mandate items.
+    assert lean != heavy
+    assert "MUST" in heavy
+    assert "tests" in heavy.lower()
+    assert "MUST" not in lean
+    # And the heavy preamble has substantial weight -- this is the
+    # ~270 tokens the user pays for on every voice dispatch with
+    # the testing mandate on. Quantify so the test fails noisily if
+    # someone re-bloats the preamble.
+    assert len(heavy) > len(lean) + 500
+
+
+def test_coding_config_voice_task_require_testing_defaults_false():
+    from ultron.config import CodingConfig
+    cfg = CodingConfig()
+    assert cfg.voice_task_require_testing is False
+
+
 def test_new_project_concurrent_request_is_refused(setup):
     _utter_and_dispatch(
         setup["controller"],
@@ -293,7 +369,17 @@ def test_pending_completion_returns_none_until_transition(setup):
     time.sleep(0.1)
     narration = setup["controller"].pending_completion()
     assert narration is not None
-    assert "Done." in narration or "complete" in narration.lower()
+    # The fake bridge's finish() doesn't emit FILE_CHANGE events, so
+    # the runner sees zero file activity. Post-2026-05-11 honesty
+    # fix the narration is "I finished without writing or modifying
+    # any files..." when success=True AND no files touched; legacy
+    # "Done." still fires when files were actually written. Accept
+    # either form.
+    assert (
+        "Done." in narration
+        or "complete" in narration.lower()
+        or "without writing or modifying" in narration.lower()
+    )
     # Subsequent calls return None (consumed).
     assert setup["controller"].pending_completion() is None
 

@@ -186,3 +186,51 @@ def test_audio_capture_produces_chunks():
         assert chunk is not None
         assert chunk.dtype == np.float32
         assert chunk.shape == (512,)
+
+
+# ---- VAD adaptive silence (no model load required) -----------------------
+
+
+def _make_vad_without_loading_silero(monkeypatch, min_silence_ms: int = 500):
+    """Construct a VoiceActivityDetector with the Silero load patched
+    out -- lets us test the silence-window math without needing the
+    real model on disk."""
+    from ultron.audio import vad as _vad
+    monkeypatch.setattr(
+        _vad.VoiceActivityDetector,
+        "_load_model",
+        staticmethod(lambda: object()),
+    )
+    return _vad.VoiceActivityDetector(min_silence_ms=min_silence_ms)
+
+
+def test_vad_set_min_silence_duration_ms_changes_window_count(monkeypatch):
+    """The adaptive end-of-turn knob lives on the VAD: orchestrator
+    calls ``set_min_silence_duration_ms`` mid-utterance and the next
+    process() call must use the new requirement."""
+    vad = _make_vad_without_loading_silero(monkeypatch, min_silence_ms=500)
+    baseline_windows = vad._silence_windows_required
+    # 32 ms per window at 16 kHz; 500 ms -> ~15 windows; 2400 ms -> ~75.
+    vad.set_min_silence_duration_ms(2400)
+    assert vad._silence_windows_required > baseline_windows
+    expected = max(1, int(2400 / vad.window_ms))
+    assert vad._silence_windows_required == expected
+
+
+def test_vad_reset_restores_baseline_silence_requirement(monkeypatch):
+    """The bump must be one-shot per utterance: reset() restores the
+    configured baseline so the next utterance doesn't inherit it."""
+    vad = _make_vad_without_loading_silero(monkeypatch, min_silence_ms=1200)
+    baseline_windows = vad._silence_windows_required
+    vad.set_min_silence_duration_ms(2400)
+    assert vad._silence_windows_required != baseline_windows
+    vad.reset()
+    assert vad._silence_windows_required == baseline_windows
+
+
+def test_vad_set_min_silence_duration_floors_at_one_window(monkeypatch):
+    """Pathological zero/negative input must not produce a zero-window
+    requirement (would make SPEECH_END fire on every silence sample)."""
+    vad = _make_vad_without_loading_silero(monkeypatch, min_silence_ms=500)
+    vad.set_min_silence_duration_ms(0)
+    assert vad._silence_windows_required >= 1

@@ -218,6 +218,57 @@ def test_completion_narration_handles_failure(tmp_path: Path):
     assert "failed" in narration.lower()
 
 
+def test_completion_narration_honest_when_success_but_zero_files(tmp_path: Path):
+    """2026-05-11 narration honesty: a clean Claude exit with zero
+    file changes happens when the model burned budget on exploration
+    without writing anything (the PDF->docx bug). The legacy "Done."
+    opener was misleading -- the user heard "Done" and opened an
+    empty folder. The narration now surfaces the no-files case
+    explicitly so the user knows to say continue or rephrase."""
+    bridge = _FakeBridge()
+    runner = CodingTaskRunner(bridge=bridge, log_path=tmp_path / "log.jsonl")
+    runner.start_task(TaskRequest(task_prompt="t", cwd=tmp_path, label="task"))
+    h = bridge.last_handle
+    assert h is not None
+    # Clean success exit, zero file changes, with a generic Claude
+    # tail line that the bug log showed should NOT make it into
+    # the narration (it added noise after the honest "no files"
+    # opener).
+    h.finish(success=True, summary="What would you like me to work on?")
+
+    narration = runner.completion_narration()
+    # Honest opener, not "Done."
+    assert "Done." not in narration
+    assert "without writing or modifying" in narration.lower() or \
+           "no files" in narration.lower() or \
+           "didn't" in narration.lower()
+    # Generic tail line is suppressed (noise on top of the honest
+    # opener -- the bug log showed this confused the user).
+    assert "What would you like me to work on" not in narration
+    # Project root + elapsed are still surfaced for visibility.
+    assert str(tmp_path) in narration
+    assert "Elapsed:" in narration
+
+
+def test_completion_narration_keeps_done_when_files_were_written(tmp_path: Path):
+    """The honest-no-files path must NOT trigger when Claude actually
+    wrote files. Existing test covers the simple case; this one
+    explicitly pins the success-with-files branch so the new code
+    can't accidentally widen its trigger."""
+    bridge = _FakeBridge()
+    runner = CodingTaskRunner(bridge=bridge, log_path=tmp_path / "log.jsonl")
+    runner.start_task(TaskRequest(task_prompt="t", cwd=tmp_path, label="task"))
+    h = bridge.last_handle
+    assert h is not None
+    h.fire(TaskEvent(kind=EventKind.FILE_CHANGE, file_path=Path("main.py"),
+                     file_change_kind=FileChangeKind.CREATED))
+    h.finish(success=True, summary="implemented main.py")
+
+    narration = runner.completion_narration()
+    assert "Done." in narration
+    assert "1 file" in narration or "1 new file" in narration.lower()
+
+
 def test_completion_narration_handles_cancellation(tmp_path: Path):
     bridge = _FakeBridge()
     runner = CodingTaskRunner(bridge=bridge, log_path=tmp_path / "log.jsonl")

@@ -114,6 +114,7 @@ class XttsV3Speech:
         flush_chars: str = settings.TTS_SENTENCE_FLUSH_CHARS,
         filter_preset: str = "v3_heavy",
         filter_tail_silence_ms: float = 200.0,
+        speed: Optional[float] = None,
         rvc=None,  # accepted-but-ignored for legacy ctor compat
     ) -> None:
         # Resolve paths via config when not explicitly passed. Defaults
@@ -159,6 +160,26 @@ class XttsV3Speech:
         self.flush_chars = set(flush_chars)
         self.filter_preset = filter_preset
         self.filter_tail_silence_ms = float(filter_tail_silence_ms)
+        # Cadence: passed to XTTS ``inference_stream(speed=...)`` on the
+        # server side. Adjusts synthesis duration tokens; does NOT touch
+        # the post-synthesis v3 filter chain.
+        if speed is None:
+            speed = float(xtts_cfg.speed) if xtts_cfg is not None else 1.0
+        self._synth_speed = float(speed)
+        # 2026-05-11 chunk-streaming investigation: was prototyped but
+        # not shipped. Pedalboard's PitchShift (Rubber Band offline
+        # mode) buffers ~25 000 samples internally with ``reset=False``,
+        # which means streaming chunks through the v3_heavy chain
+        # produces zero output until the buffer fills (and the buffered
+        # audio can't be cleanly drained). Per-chunk ``reset=True``
+        # works but produces ~125 % RMS divergence at chunk boundaries
+        # -- audible artifacts. The v3 chain order is user-locked, so
+        # moving PitchShift to the end (which would unblock streaming)
+        # is out of scope. The audio is still streamed at the HTTP
+        # level (server pushes PCM chunks as they're synthesised), but
+        # the client accumulates the full sentence before filter
+        # processing. See docs/codebase_structure.md for the
+        # investigation notes.
 
         # Match the Piper path's output device + lock behaviour so the
         # orchestrator + barge-in handling stay uniform.
@@ -319,7 +340,14 @@ class XttsV3Speech:
             from ultron.config import get_config
             tts_cfg = get_config().tts
             spec_open = tts_cfg.speculative_stream_open_enabled
-            spec_sr = tts_cfg.speculative_stream_sample_rate
+            # 2026-05-11 SR-mismatch fix: ``tts.speculative_stream_sample_rate``
+            # is tuned for the legacy Piper+RVC stack (48 kHz). The XTTS
+            # engine produces 24 kHz natively. Reading the global field
+            # here forced a close-and-reopen on every turn (50-100 ms
+            # wasted) when xtts_v3 was active. The engine knows its own
+            # native rate, so use it directly -- the legacy speech.py
+            # path is unchanged and still uses the config field.
+            spec_sr = self._sample_rate
             low_latency = tts_cfg.output_low_latency_mode
         except Exception:
             spec_open = False
@@ -537,7 +565,9 @@ class XttsV3Speech:
 
     def _http_synthesize(self, text: str) -> np.ndarray:
         """POST /synthesize, accumulate streamed PCM, return int16 array."""
-        body = json.dumps({"text": text, "language": "en"}).encode("utf-8")
+        body = json.dumps(
+            {"text": text, "language": "en", "speed": self._synth_speed}
+        ).encode("utf-8")
         req = urllib.request.Request(
             self.base_url + "/synthesize",
             data=body,
@@ -558,6 +588,7 @@ class XttsV3Speech:
             return np.zeros(0, dtype=np.int16)
         raw = b"".join(chunks)
         return np.frombuffer(raw, dtype=np.int16).copy()
+
 
     def _play(self, clip: Clip) -> None:
         """Single-shot playback. Same shape as TextToSpeech._play."""

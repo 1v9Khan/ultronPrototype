@@ -111,7 +111,8 @@ class Orchestrator:
         # mode follow-ups. Mode-aware slicing restores both behaviours.
         try:
             from ultron.config import get_config
-            _audio_cfg = get_config().audio
+            _cfg = get_config()
+            _audio_cfg = _cfg.audio
             self._cold_pre_roll_seconds = float(_audio_cfg.cold_pre_roll_seconds)
             self._warm_pre_roll_seconds = float(_audio_cfg.warm_pre_roll_seconds)
             ring_capacity_seconds = max(
@@ -119,12 +120,25 @@ class Orchestrator:
                 self._cold_pre_roll_seconds,
                 self._warm_pre_roll_seconds,
             )
+            # Adaptive end-of-turn (2026-05-11): when speech has been
+            # going for this long, bump VAD silence requirement so a
+            # thinking pause mid-sentence doesn't cut the capture
+            # short. Short utterances stay snappy.
+            _vad_cfg = _cfg.vad
+            self._long_utterance_threshold_seconds = float(
+                _vad_cfg.long_utterance_threshold_seconds
+            )
+            self._long_utterance_silence_duration_ms = int(
+                _vad_cfg.long_utterance_silence_duration_ms
+            )
         except Exception:
             # Defensive: tests / scripts may construct Orchestrator
             # without a fully built config. Fall back to the shim.
             self._cold_pre_roll_seconds = float(settings.RING_BUFFER_SECONDS)
             self._warm_pre_roll_seconds = float(settings.RING_BUFFER_SECONDS)
             ring_capacity_seconds = float(settings.RING_BUFFER_SECONDS)
+            self._long_utterance_threshold_seconds = 8.0
+            self._long_utterance_silence_duration_ms = 2400
         self.ring = RingBuffer(
             int(ring_capacity_seconds * settings.SAMPLE_RATE)
         )
@@ -430,6 +444,7 @@ class Orchestrator:
             zero_shot_model_name=addr_cfg.zero_shot_model,
             load_zero_shot_eagerly=addr_cfg.load_eagerly,
             recent_turns_provider=recent_turns_provider,
+            zero_shot_addressed_min_confidence=addr_cfg.zero_shot_addressed_min_confidence,
         )
 
     @staticmethod
@@ -743,7 +758,15 @@ class Orchestrator:
     # --- phase: capture ------------------------------------------------------
 
     def _capture_utterance(self) -> np.ndarray:
-        """Record from now until VAD reports end-of-speech (or timeout)."""
+        """Record from now until VAD reports end-of-speech (or timeout).
+
+        Adaptive end-of-turn (2026-05-11): once speech has been active
+        for ``vad.long_utterance_threshold_seconds`` the VAD silence
+        requirement is bumped to ``vad.long_utterance_silence_duration_ms``
+        for the remainder of the capture. This keeps short utterances
+        snappy but gives long technical descriptions room to breathe
+        through thinking pauses without prematurely closing.
+        """
         self.vad.reset()
         # Pre-roll: take the COLD slice (short) from the ring so the
         # wake-word "Ultron" tail does not bleed into Whisper as a
@@ -754,11 +777,16 @@ class Orchestrator:
         )
         chunks: list[np.ndarray] = [self.ring.snapshot(cold_pre_roll_samples)]
         speech_seen = False
+        speech_start_samples = 0
+        long_utterance_bump_applied = False
         elapsed_samples = 0
         max_samples = int(self.MAX_UTTERANCE_SECONDS * settings.SAMPLE_RATE)
         # Allow up to MIN_SILENCE * 2 of leading silence before bailing.
         silence_grace = int(2.0 * settings.SAMPLE_RATE)
         leading_silence = 0
+        long_threshold_samples = int(
+            self._long_utterance_threshold_seconds * settings.SAMPLE_RATE
+        )
 
         while not self._shutdown.is_set() and elapsed_samples < max_samples:
             chunk = self.audio.get_chunk(timeout=0.5)
@@ -770,8 +798,28 @@ class Orchestrator:
             result = self.vad.process(chunk)
             if result.event == SpeechEvent.SPEECH_START:
                 speech_seen = True
+                speech_start_samples = elapsed_samples
             elif result.event == SpeechEvent.SPEECH_END and speech_seen:
                 break
+
+            # Once we've been speaking longer than the threshold,
+            # extend the silence requirement so a thinking pause
+            # doesn't end the capture mid-thought.
+            if (
+                speech_seen
+                and not long_utterance_bump_applied
+                and self._long_utterance_threshold_seconds > 0.0
+                and (elapsed_samples - speech_start_samples) >= long_threshold_samples
+            ):
+                self.vad.set_min_silence_duration_ms(
+                    self._long_utterance_silence_duration_ms
+                )
+                long_utterance_bump_applied = True
+                logger.info(
+                    "Adaptive VAD: speech %.1fs long, silence requirement raised to %d ms",
+                    (elapsed_samples - speech_start_samples) / settings.SAMPLE_RATE,
+                    self._long_utterance_silence_duration_ms,
+                )
 
             if not speech_seen:
                 leading_silence += chunk.shape[0]

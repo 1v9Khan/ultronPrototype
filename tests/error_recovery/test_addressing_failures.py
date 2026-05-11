@@ -24,6 +24,9 @@ def classifier(tmp_path):
     c = AddressingClassifier.__new__(AddressingClassifier)
     c.rule_threshold = 0.99  # force fall-through to zero-shot for any utt
     c.default_silent = True
+    # 0.0 disables the 2026-05-11 zero-shot min-confidence gate, so
+    # existing error-recovery tests keep validating the legacy path.
+    c.zero_shot_addressed_min_confidence = 0.0
     c._zero_shot = MagicMock()
     c._recent_turns_provider = None
     c.log_path = tmp_path / "addressing.jsonl"

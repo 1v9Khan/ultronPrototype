@@ -125,6 +125,16 @@ class VADConfig(_Strict):
     min_speech_duration_ms: int = Field(default=250, ge=0)
     min_silence_duration_ms: int = Field(default=500, ge=0)
     window_samples: int = 512
+    # 2026-05-11 adaptive end-of-turn: when an utterance has been
+    # going for ``long_utterance_threshold_seconds`` of speech, the
+    # orchestrator bumps the VAD silence requirement to
+    # ``long_utterance_silence_duration_ms`` so a thinking pause
+    # mid-sentence doesn't prematurely close a long technical prompt.
+    # Short utterances are unaffected -- the threshold only applies
+    # once the speaker has been going for a while. Setting threshold
+    # to 0 or a very large number disables the adaptive bump.
+    long_utterance_threshold_seconds: float = Field(default=8.0, ge=0.0, le=60.0)
+    long_utterance_silence_duration_ms: int = Field(default=2400, ge=0)
 
 
 class WakeWordConfig(_Strict):
@@ -537,6 +547,14 @@ class AddressingConfig(_Strict):
     warm_mode_duration_seconds: float = 30.0
     default_uncertain_to_not_addressed: bool = True
     rule_confidence_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    # 2026-05-11 false-positive guard: flan-t5-small zero-shot
+    # saturates around 0.75 confidence on borderline utterances --
+    # third-person narration about Ultron was getting routed to
+    # ADDRESSED at exactly that level. Require ``>=`` this confidence
+    # before treating a zero-shot YES as direct address; below the
+    # bar falls through to ``default_uncertain_to_not_addressed``.
+    # Set to 0.0 to disable the gate (back-compat).
+    zero_shot_addressed_min_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
     zero_shot_model: str = "google/flan-t5-small"
     load_eagerly: bool = True
     log_path: str = "logs/addressing.jsonl"
@@ -648,6 +666,21 @@ class CodingConfig(_Strict):
     audit_log_path: str = "logs/coding_tasks.jsonl"
     task_timeout_seconds: int = Field(default=1800, ge=0)
     skip_permissions: bool = True
+    # 2026-05-11 token-efficiency: voice-dispatched coding tasks used
+    # to hardcode ``require_testing=True``, which prepended a "MUST
+    # write tests, run them, fix failures, re-run" discipline preamble
+    # to the Claude prompt. For ad-hoc voice utility requests ("write
+    # me a PDF to DOCX converter") this triples-to-quintuples the
+    # token spend -- Claude writes the script, then writes tests, then
+    # fixes import errors, then re-runs, etc. A direct Claude Code
+    # invocation of the same ask completes in ~2 k tokens; the
+    # testing-mandated voice path was burning 130 k+. Default off
+    # gets voice asks back to the natural cadence -- if the user
+    # actually wants tests they can say so in their request ("with
+    # unit tests") or flip this. Existing non-voice callers (the
+    # coordinator's correction loop in runner.py) pass require_testing
+    # explicitly and aren't affected.
+    voice_task_require_testing: bool = False
 
 
 class ProjectionsBudgets(_Strict):
@@ -714,6 +747,14 @@ class XttsV3Config(_Strict):
     # portion of the v3 reverb); offline standalone samples use
     # 500 ms for full decay.
     filter_tail_silence_ms: float = Field(default=200.0, ge=0.0, le=2000.0)
+    # 2026-05-11 cadence tune: XTTS native default is 1.0; production
+    # sits at 1.15 to make speech ~15% faster without slurring. Passed
+    # to ``model.inference_stream(speed=...)`` on the server side, which
+    # adjusts the GPT duration tokens BEFORE waveform decoding -- so
+    # the v3 pedalboard filter (pitch shift / reverb / etc.) is
+    # untouched and processes the shorter audio buffer identically.
+    # Below ~0.7 sounds drawn out; above ~1.4 starts to slur consonants.
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
 class TTSConfig(_Strict):

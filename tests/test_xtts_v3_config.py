@@ -62,6 +62,31 @@ def test_xtts_v3_config_defaults_match_audio_prep_layout():
     assert cfg.port is None  # engine picks free port at startup
     assert cfg.filter_preset == "v3_heavy"
     assert cfg.filter_tail_silence_ms == 200.0
+    # Schema default is XTTS-native 1.0 so direct ctor calls (mostly
+    # tests) stay back-compat. The production value lives in
+    # config.yaml.
+    assert cfg.speed == 1.0
+
+
+def test_xtts_v3_config_speed_range_enforced():
+    """Bounded to keep things in the natural-sounding range. Below
+    ~0.7 the model sounds drawn out; above ~1.4 it starts to slur
+    consonants. The schema clamps at [0.5, 2.0] so callers can't
+    accidentally ship a setting that destroys intelligibility."""
+    from pydantic import ValidationError
+    XttsV3Config(speed=0.5)  # ok (lower bound)
+    XttsV3Config(speed=1.15)  # ok (production value)
+    XttsV3Config(speed=2.0)  # ok (upper bound)
+    with pytest.raises(ValidationError):
+        XttsV3Config(speed=0.49)
+    with pytest.raises(ValidationError):
+        XttsV3Config(speed=2.01)
+
+
+def test_xtts_v3_config_speed_round_trips_through_dict():
+    cfg = XttsV3Config(speed=1.15)
+    cfg2 = XttsV3Config.model_validate(cfg.model_dump())
+    assert cfg2.speed == 1.15
 
 
 def test_xtts_v3_config_filter_tail_ms_range_enforced():
@@ -72,6 +97,67 @@ def test_xtts_v3_config_filter_tail_ms_range_enforced():
         XttsV3Config(filter_tail_silence_ms=-1.0)
     with pytest.raises(ValidationError):
         XttsV3Config(filter_tail_silence_ms=2500.0)
+
+
+def test_xtts_v3_client_forwards_speed_in_http_body(monkeypatch, tmp_path):
+    """Pure wiring test: confirms ``XttsV3Speech._http_synthesize``
+    sends the configured speed in the POST JSON body so the server's
+    XTTS ``inference_stream(speed=...)`` call actually picks it up.
+
+    Mocks the subprocess + HTTP seams so we don't load the voice
+    stack (per feedback_voice_stack_concurrency). If the client ever
+    silently drops the speed field, this test fails."""
+    import json
+    import urllib.request
+    from ultron.tts import xtts_v3
+
+    # The constructor asserts the configured paths exist; stub files
+    # under tmp_path satisfy that without spawning anything.
+    server_py = tmp_path / "python.exe"
+    server_py.write_text("")
+    server_sc = tmp_path / "xtts_server.py"
+    server_sc.write_text("")
+    ref_wav = tmp_path / "ref.wav"
+    ref_wav.write_text("")
+
+    captured: list[bytes] = []
+
+    class _FakeResp:
+        headers = {"X-Sample-Rate": "24000"}
+        def read(self, n=None):
+            return b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+    def _fake_urlopen(req, timeout=None):
+        data = getattr(req, "data", None)
+        if data:
+            captured.append(data)
+        return _FakeResp()
+
+    # Skip the subprocess spawn + health-probe loop.
+    monkeypatch.setattr(xtts_v3.XttsV3Speech, "_start_server", lambda self: None)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    engine = xtts_v3.XttsV3Speech(
+        server_python=server_py,
+        server_script=server_sc,
+        reference_audio=ref_wav,
+        port=12345,
+        speed=1.15,
+    )
+
+    engine._http_synthesize("hello there")
+
+    assert captured, "expected exactly one POST to /synthesize"
+    body = json.loads(captured[0].decode("utf-8"))
+    assert body["text"] == "hello there"
+    assert body["language"] == "en"
+    assert body["speed"] == 1.15
 
 
 def test_xtts_v3_config_nested_under_tts():

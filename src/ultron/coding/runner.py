@@ -441,10 +441,27 @@ class CodingTaskRunner:
         n_created = len(state.files_created)
         n_modified = len(state.files_modified)
         n_deleted = len(state.files_deleted)
+        no_file_activity = (n_created + n_modified + n_deleted) == 0
         elapsed = int(state.duration_s)
         path = state.cwd
 
-        if state.success:
+        # 2026-05-11 narration honesty: a success exit code with zero
+        # file activity means Claude returned cleanly but did no work
+        # -- usually budget exhaustion mid-exploration or a generic
+        # "what should I build?" tail response. The legacy "Done."
+        # opener was misleading the user (folder created, no scripts
+        # inside). Surface the lack of file activity explicitly so the
+        # user knows to say "continue" or rephrase. Failures and
+        # cancellations keep their existing openers because the user
+        # already knows the task didn't complete normally.
+        if state.success and no_file_activity:
+            opener = (
+                "I finished without writing or modifying any files. "
+                "The project may need more direction, or it may have "
+                "run out of token budget mid-exploration -- say continue "
+                "if you want me to keep going."
+            )
+        elif state.success:
             opener = "Done."
         elif state.is_cancelled:
             opener = "Cancelled."
@@ -474,7 +491,10 @@ class CodingTaskRunner:
         parts.append(f"Project root: {path}.")
         if state.error and not state.success:
             parts.append(f"Error: {state.error}.")
-        elif state.final_summary:
+        elif state.final_summary and not no_file_activity:
+            # 2026-05-11: when no files were written, skip Claude's
+            # tail summary -- it's usually a generic "what should I
+            # build?" line that adds noise to the honest narration.
             tail = state.final_summary.strip().splitlines()
             tail_text = tail[-1] if tail else state.final_summary.strip()
             if tail_text:

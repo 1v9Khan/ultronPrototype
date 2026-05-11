@@ -609,12 +609,27 @@ class CapabilityVoiceController:
             self.runner.bind_session(bound_session_id)
         except Exception:
             pass
+        # 2026-05-11 token-efficiency: was hardcoded require_testing=True,
+        # which prepended a heavy "MUST write tests, run, fix, re-run"
+        # preamble that tripled-to-quintupled the token spend on small
+        # voice-dispatched utilities. Now config-driven; default False
+        # (config.coding.voice_task_require_testing). Users who want
+        # the testing mandate can flip it; the orchestrator's
+        # correction-loop path (runner.py) passes require_testing
+        # explicitly and isn't affected.
+        try:
+            from ultron.config import get_config
+            voice_require_testing = bool(
+                get_config().coding.voice_task_require_testing
+            )
+        except Exception:
+            voice_require_testing = False
         request = TaskRequest(
             task_prompt=intent.task_text,
             cwd=project_path,
             model=settings.CODING_CLAUDE_MODEL,
             skip_permissions=settings.CODING_SKIP_PERMISSIONS,
-            require_testing=True,
+            require_testing=voice_require_testing,
             timeout_s=float(settings.CODING_TASK_TIMEOUT_S),
             label=label,
         )

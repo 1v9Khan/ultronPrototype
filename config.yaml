@@ -83,6 +83,15 @@ vad:
   # is post-end-of-speech so the 79 ms baseline is unaffected.
   min_silence_duration_ms: 1200
   window_samples: 512         # silero v5 expects 512-sample windows at 16 kHz
+  # 2026-05-11 adaptive end-of-turn: once speech has been active for
+  # ``long_utterance_threshold_seconds``, the orchestrator bumps VAD's
+  # silence requirement to ``long_utterance_silence_duration_ms`` for
+  # the rest of the capture. Short utterances stay snappy at the
+  # 1200 ms baseline; long technical prompts get a 2400 ms grace
+  # window for mid-sentence thinking pauses. Set threshold to 0 to
+  # disable the adaptive bump entirely.
+  long_utterance_threshold_seconds: 8.0
+  long_utterance_silence_duration_ms: 2400
 
 # ---------------------------------------------------------------------------
 # Wake word
@@ -306,6 +315,13 @@ addressing:
   warm_mode_duration_seconds: 30.0
   default_uncertain_to_not_addressed: true   # when classifier is uncertain, stay silent
   rule_confidence_threshold: 0.8             # rule verdicts above this short-circuit zero-shot
+  # 2026-05-11 false-positive guard: flan-t5-small zero-shot saturates
+  # around 0.75 on borderline third-person utterances ("got him to the
+  # point where he's workable. You'll see"). Require this confidence
+  # before treating zero-shot YES as direct address; below the bar
+  # falls through to ``default_uncertain_to_not_addressed``. Set to
+  # 0.0 to disable the gate (legacy permissive behaviour).
+  zero_shot_addressed_min_confidence: 0.80
   zero_shot_model: "google/flan-t5-small"
   load_eagerly: true                         # load Flan-T5 at startup (~8 s) vs first ambiguous utt
   log_path: "logs/addressing.jsonl"
@@ -376,8 +392,25 @@ coding:
     lint_timeout_seconds: 30
 
   session_audit_dir: "logs/sessions"
-  token_budget_per_session: 100000
+  # 2026-05-11 budget bump: 100k was enough for incremental edits but
+  # left zero headroom for new projects -- a PDF->docx scratch project
+  # burned 134k on tool exploration alone before writing any files.
+  # 400k gives new-project sessions room to discover the environment,
+  # decide on structure, write files, install deps, and verify. The
+  # warning still fires at 80% so the user has visibility.
+  token_budget_per_session: 400000
   token_warning_threshold: 0.8 # warn user at 80% of budget
+  # 2026-05-11 token-efficiency: voice-dispatched tasks previously
+  # hardcoded ``require_testing=True``, which prepended a "MUST write
+  # tests, run them, fix failures, re-run" discipline preamble. For
+  # ad-hoc voice asks like "build a quick utility", this 3-5x'd the
+  # token spend -- Claude wrote the script, then tests, then fixed
+  # import errors, then re-ran. A direct Claude Code call of the
+  # same ask cost ~2 k tokens; the testing-mandated voice path burned
+  # 130 k+. Default false restores the natural cadence. Set true to
+  # bring back the testing mandate on every voice coding dispatch
+  # (or just say "with unit tests" in your voice request).
+  voice_task_require_testing: false
   progress_timeout_seconds: 300 # warn if no events from Claude for 5 min
 
   test_sandbox_path: "tests/coding/sandbox"
@@ -488,6 +521,12 @@ tts:
     # buffer end. 200 ms is the audible portion of v3's reverb;
     # offline standalone samples use 500 ms for full decay.
     filter_tail_silence_ms: 200.0
+    # 2026-05-11 cadence tune: XTTS native default is 1.0; bumping to
+    # 1.15 makes speech ~15% faster without slurring. Adjusts XTTS
+    # duration tokens at synthesis time -- the v3 pedalboard filter
+    # (pitch shift / delay / reverb / etc.) is unaffected and processes
+    # the shorter audio buffer identically. Safe range ~0.7-1.4.
+    speed: 1.15
 
 # ---------------------------------------------------------------------------
 # Logging

@@ -127,6 +127,37 @@ _THIRD_PERSON_MENTION = re.compile(
     re.IGNORECASE,
 )
 
+# 2026-05-11 false-positive guard: tight patterns that catch the
+# common "I'm narrating Ultron's behaviour to a third party in the
+# room" cases observed in real session logs. These were sliding
+# through the rule layer at exactly 0.75 zero-shot confidence and
+# getting wrongly routed to ADDRESSED.
+#
+# The patterns are deliberately narrow -- legitimate Ultron commands
+# like "tell him to send the email" or "ask her about the meeting"
+# don't match, but "I'm talking to him", "got him to the point...",
+# "you'll see", "watch this/him" all do.
+_THIRD_PARTY_NARRATIVE = re.compile(
+    r"(?:"
+    # "I'm talking to him/her/it/them" / "I am talking to ..." -- meta
+    # commentary about who you're addressing, not a command.
+    r"\b(?:i'?m|i\s+am)\s+talking\s+(?:to|about|at|with)\s+(?:him|her|it|them)\b"
+    # Causative "got/made/let him to <something>" -- past-tense
+    # narrative about Ultron's state, not a directive to Ultron.
+    r"|\b(?:got|made|let|forced|coaxed)\s+(?:him|her|it)\s+to\s+(?:the\s+)?\w+"
+    # Meta-narration to a third party: "you'll see", "watch this/him",
+    # "look at this/him" at the start of an utterance.
+    r"|^\s*you'?ll\s+see\b"
+    r"|^\s*watch\s+(?:this|him|it|what\s+he|what\s+it|what\s+she)\b"
+    # Subject-pronoun status updates: "he's workable / broken / done /
+    # ready / stuck / thinking / good / working" -- describing Ultron's
+    # state to someone else.
+    r"|^\s*(?:he|it|she)(?:'s|\s+is)\s+(?:workable|broken|done|ready|stuck|"
+    r"thinking|working|good|fine|set|set\s+up|all\s+set)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 # Phone-call / interpersonal openers. If we hear these in WARM mode the user
 # is almost certainly addressing another human.
 _PHONE_OPENERS = re.compile(
@@ -182,6 +213,10 @@ def classify(
         return RuleHit(
             AddressingDecision.NOT_ADDRESSED, 0.85, "third-person mention of Ultron"
         )
+    if _THIRD_PARTY_NARRATIVE.search(text):
+        return RuleHit(
+            AddressingDecision.NOT_ADDRESSED, 0.85, "narrating Ultron to a third party"
+        )
     if lowered in _INTERJECTIONS:
         return RuleHit(
             AddressingDecision.NOT_ADDRESSED, 0.85, "standalone interjection / self-talk"
@@ -226,6 +261,7 @@ def explain_rules() -> List[Tuple[str, str]]:
     return [
         ("phone_openers", "interpersonal openers like 'hey mom', 'yo', \"it's me\""),
         ("third_person_mention", "'Ultron said ...', talking about Ultron not to him"),
+        ("third_party_narrative", "'I'm talking to him', 'got him to ...', 'you'll see' -- narrating Ultron to a third party"),
         ("interjections", "'oh god', 'lol', 'shit' -- self-talk"),
         ("direct_address", "starts with 'Ultron, ...' (vocative)"),
         ("imperative_verbs", "starts with command verb: play, find, turn on, ..."),

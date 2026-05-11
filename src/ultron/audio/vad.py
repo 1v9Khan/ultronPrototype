@@ -62,7 +62,11 @@ class VoiceActivityDetector:
 
         # Convert hysteresis durations to consecutive-window counts.
         self._speech_windows_required = max(1, int(min_speech_ms / self.window_ms))
-        self._silence_windows_required = max(1, int(min_silence_ms / self.window_ms))
+        # Default silence requirement -- captured separately from the
+        # currently-active one so ``reset()`` can restore the baseline
+        # after the orchestrator's adaptive end-of-turn bump.
+        self._default_silence_windows_required = max(1, int(min_silence_ms / self.window_ms))
+        self._silence_windows_required = self._default_silence_windows_required
 
         self._is_speech_active = False
         self._consecutive_speech = 0
@@ -93,10 +97,23 @@ class VoiceActivityDetector:
         self._consecutive_speech = 0
         self._consecutive_silence = 0
         self._tail = np.zeros(0, dtype=np.float32)
+        # Restore baseline silence requirement; an adaptive bump from
+        # the previous utterance shouldn't leak into the next one.
+        self._silence_windows_required = self._default_silence_windows_required
         try:
             self._model.reset_states()
         except AttributeError:
             pass
+
+    def set_min_silence_duration_ms(self, ms: int) -> None:
+        """Adjust the trailing-silence requirement at runtime.
+
+        Used by the orchestrator's adaptive end-of-turn policy: long
+        utterances get a longer silence requirement so a thinking
+        pause mid-description doesn't close the capture. ``reset()``
+        restores the baseline configured at construction.
+        """
+        self._silence_windows_required = max(1, int(ms / self.window_ms))
 
     def process(self, audio: np.ndarray) -> Optional[VadResult]:
         """Feed a chunk of audio. Returns the most recent event for the chunk.

@@ -71,9 +71,16 @@ class AddressingClassifier:
         zero_shot_model_name: str = "google/flan-t5-small",
         load_zero_shot_eagerly: bool = False,
         recent_turns_provider: Optional[Callable[[int], List[Tuple[str, str]]]] = None,
+        zero_shot_addressed_min_confidence: float = 0.0,
     ) -> None:
         self.rule_threshold = rule_confidence_threshold
         self.default_silent = default_silent_on_uncertain
+        # 2026-05-11: low-confidence zero-shot YES verdicts saturate
+        # around 0.75 on borderline third-person utterances. When this
+        # threshold is non-zero, a zero-shot YES below the bar is
+        # downgraded (per ``default_silent_on_uncertain``). Default 0.0
+        # preserves legacy behaviour for callers that don't opt in.
+        self.zero_shot_addressed_min_confidence = float(zero_shot_addressed_min_confidence)
         self.log_path = Path(log_path) if log_path else None
         if self.log_path is not None:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +159,23 @@ class AddressingClassifier:
             return verdict
 
         decision = _map_zero_shot_to_decision(raw_verdict, self.default_silent)
+        # 2026-05-11 false-positive guard: borderline third-person
+        # narration was triggering zero-shot YES at exactly 0.75. When
+        # the min-confidence gate is configured, demote low-confidence
+        # YES verdicts to UNCERTAIN/NOT_ADDRESSED per default_silent.
+        gated_for_low_confidence = False
+        if (
+            self.zero_shot_addressed_min_confidence > 0.0
+            and decision == AddressingDecision.ADDRESSED
+            and zs_conf < self.zero_shot_addressed_min_confidence
+        ):
+            decision = (
+                AddressingDecision.NOT_ADDRESSED
+                if self.default_silent
+                else AddressingDecision.UNCERTAIN
+            )
+            gated_for_low_confidence = True
+
         # If the rule layer had a soft hint (>0.5) and zero-shot agrees, take
         # the higher confidence; otherwise trust the zero-shot.
         if rule_hit is not None and rule_hit.decision == decision:
@@ -160,6 +184,11 @@ class AddressingClassifier:
         else:
             confidence = zs_conf
             reason = f"zero-shot {raw_verdict}"
+        if gated_for_low_confidence:
+            reason = (
+                f"zero-shot {raw_verdict} below ADDRESSED threshold "
+                f"({zs_conf:.2f} < {self.zero_shot_addressed_min_confidence:.2f})"
+            )
 
         verdict = AddressingVerdict(
             decision=decision,
