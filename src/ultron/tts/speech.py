@@ -20,7 +20,7 @@ import threading
 import time
 import wave
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+from typing import Callable, Iterable, NamedTuple, Optional, Tuple
 
 import numpy as np
 import sounddevice as sd
@@ -35,6 +35,45 @@ logger = get_logger("tts.speech")
 # A clip is (pcm_int16, sample_rate). Sample rate may vary per clip when RVC
 # is in the loop because it can up-rate output beyond Piper's native 22050.
 Clip = Tuple[np.ndarray, int]
+
+
+class ClipItem(NamedTuple):
+    """A queued audio clip with a producer-signaled "is this the last?" hint.
+
+    Pushed by synth workers onto the playback queues (``piper_q`` and
+    ``audio_q``). The producer-signaled lookahead pattern lets the
+    playback path play each clip IMMEDIATELY on receipt without first
+    blocking on the next clip to determine "is this last?". The old
+    play-after-peek pattern would delay the first clip (commonly the
+    web-search ack phrase) until the next clip arrived OR a 10 s
+    timeout fired -- which made the ack arrive AFTER the response
+    instead of before it.
+
+    Conventions:
+
+    * ``is_known_last=False`` (default): producer doesn't know if this
+      is the last. Playback plays it, then waits for the next item or
+      end-of-stream sentinel (``None``).
+    * ``is_known_last=True``: producer knows this is the final clip.
+      Playback plays it with the standard tail silence and exits
+      without waiting for a next item.
+    * ``None`` sentinel pushed onto the queue marks end-of-stream.
+      The most recently received clip is treated as final; tail
+      silence is written and playback exits.
+    """
+
+    audio: np.ndarray
+    sample_rate: int
+    is_known_last: bool = False
+
+
+# How long playback / RVC stage waits for the next clip from upstream
+# before giving up. The previous 10 s value timed out during long web
+# searches (3 Brave + 2 Jina = ~10 s wall, plus LLM TTFT) which killed
+# audio playback mid-response. 60 s is generous enough to span the
+# longest realistic search + LLM stall without burning excess CPU on
+# spinning waits.
+_QUEUE_GET_TIMEOUT_SECONDS = 60.0
 
 
 class TextToSpeech:
@@ -170,7 +209,12 @@ class TextToSpeech:
             spec_sr = settings.TTS_OUTPUT_SAMPLE_RATE
             low_latency = False
 
-        audio_q: queue.Queue[Optional[Clip]] = queue.Queue(maxsize=8)
+        # Queue carries ClipItem (audio, sample_rate, is_known_last)
+        # tuples; ``None`` is the end-of-stream sentinel. Playback uses
+        # the producer-signaled is_known_last flag (or the sentinel) to
+        # avoid the play-after-peek pattern that delayed first-clip
+        # playback in the legacy implementation.
+        audio_q: queue.Queue[Optional[ClipItem]] = queue.Queue(maxsize=8)
         # Track threads so we can join cleanly on every exit path.
         workers: list[threading.Thread] = []
 
@@ -179,35 +223,56 @@ class TextToSpeech:
             # -> audio_q. The bounded piper_q (maxsize=2) gives natural
             # backpressure if RVC falls behind without ever growing
             # unbounded.
-            piper_q: queue.Queue[Optional[Clip]] = queue.Queue(maxsize=2)
+            piper_q: queue.Queue[Optional[ClipItem]] = queue.Queue(maxsize=2)
 
             def piper_worker() -> None:
                 try:
                     self._run_synth_loop(
                         fragments=fragments,
-                        push=lambda clip: piper_q.put(clip),
+                        push=lambda item: piper_q.put(item),
                         synth_fn=self._piper_synth_only,
                     )
                 except Exception as e:
                     logger.error("TTS piper worker error: %s", e)
                 finally:
+                    # End-of-stream sentinel ALWAYS goes through, even
+                    # on exception. Downstream waits indefinitely for
+                    # this rather than timing out, so we must push it.
                     piper_q.put(None)
 
             def rvc_worker() -> None:
                 try:
                     while not self._stop_event.is_set():
                         try:
-                            piper_clip = piper_q.get(timeout=10.0)
+                            piper_item = piper_q.get(
+                                timeout=_QUEUE_GET_TIMEOUT_SECONDS
+                            )
                         except queue.Empty:
-                            logger.warning("TTS RVC stage starved; aborting")
+                            # Generous timeout; only fires on a real
+                            # producer hang (e.g. piper_worker dead
+                            # without finally executing). Treat as
+                            # end-of-stream so downstream wraps up.
+                            logger.warning(
+                                "TTS RVC stage waited %.0fs for piper "
+                                "without a clip; treating as end-of-stream",
+                                _QUEUE_GET_TIMEOUT_SECONDS,
+                            )
                             break
-                        if piper_clip is None:
+                        if piper_item is None:
                             break
-                        if piper_clip[0].size == 0:
+                        if piper_item.audio.size == 0:
                             continue
-                        out_clip = self._apply_rvc(piper_clip)
+                        out_clip = self._apply_rvc(
+                            (piper_item.audio, piper_item.sample_rate)
+                        )
                         if out_clip[0].size > 0:
-                            audio_q.put(out_clip)
+                            audio_q.put(
+                                ClipItem(
+                                    out_clip[0],
+                                    out_clip[1],
+                                    piper_item.is_known_last,
+                                )
+                            )
                 except Exception as e:
                     logger.error("TTS rvc worker error: %s", e)
                 finally:
@@ -230,7 +295,7 @@ class TextToSpeech:
                 try:
                     self._run_synth_loop(
                         fragments=fragments,
-                        push=lambda clip: audio_q.put(clip),
+                        push=lambda item: audio_q.put(item),
                         synth_fn=self._synthesize,
                     )
                 except Exception as e:
@@ -272,14 +337,16 @@ class TextToSpeech:
 
                 # Pull first clip; this blocks until first sentence is ready.
                 try:
-                    first_clip = audio_q.get(timeout=10.0)
+                    first_item = audio_q.get(
+                        timeout=_QUEUE_GET_TIMEOUT_SECONDS
+                    )
                 except queue.Empty:
                     logger.warning("TTS playback queue starved before first clip")
                     return
-                if first_clip is None:
+                if first_item is None:
                     return
 
-                actual_sr = first_clip[1]
+                actual_sr = first_item.sample_rate
                 if not spec_open:
                     # Legacy: open the stream now that we know the rate.
                     sr = actual_sr
@@ -314,18 +381,17 @@ class TextToSpeech:
                     stream.start()
                     self._write_silence(stream, sr, 0.05)
 
-                # One-clip lookahead so we know which clip is last in
-                # time to fade out its tail before writing.
-                clip = first_clip
+                # Producer-signaled lookahead: play each clip
+                # IMMEDIATELY on receipt, then ask for the next. The
+                # producer signals "is this the last?" either via the
+                # ClipItem.is_known_last flag or by pushing the
+                # end-of-stream sentinel (None). This is the ack-first
+                # path: the web-search ack clip arrives, plays, THEN
+                # the search begins -- instead of waiting for the
+                # search result clip to determine "is the ack last?".
+                item = first_item
                 while True:
-                    try:
-                        nxt = audio_q.get(timeout=10.0)
-                    except queue.Empty:
-                        logger.warning("TTS playback queue starved; aborting")
-                        nxt = None
-                    is_last = nxt is None
-
-                    audio = self._stereo_pcm(clip[0])
+                    audio = self._stereo_pcm(item.audio)
                     # Tiny fade on every clip edge so the inter-clip
                     # silence gap doesn't introduce a click.
                     edge_ms = settings.TTS_EDGE_FADE_MS
@@ -333,31 +399,58 @@ class TextToSpeech:
                         audio = self._apply_fade_in(audio, sr, ms=edge_ms)
                         audio = self._apply_fade_out(audio, sr, ms=edge_ms)
 
+                    # Play the current clip BEFORE asking for next. The
+                    # block-write loop respects the stop_event so a
+                    # barge-in interrupt still terminates promptly.
                     for start in range(0, audio.shape[0], block_frames):
                         if self._stop_event.is_set():
                             return
                         stream.write(audio[start : start + block_frames])
 
-                    if is_last:
-                        # Brief silence tail for clean driver flush.
+                    if item.is_known_last:
+                        # Producer told us this was the final clip.
                         self._write_silence(stream, sr, 0.05)
                         break
 
-                    # Inter-sentence pause.
+                    # Inter-sentence pause comes before next clip.
                     pause_ms = settings.TTS_PAUSE_MS
                     if pause_ms > 0 and not self._stop_event.is_set():
                         self._write_silence(stream, sr, pause_ms / 1000.0)
 
-                    if nxt[1] != sr:
+                    # Now block for the next clip. Generous timeout so
+                    # long generator stalls (web search, slow LLM TTFT)
+                    # don't kill playback mid-stream.
+                    try:
+                        nxt = audio_q.get(
+                            timeout=_QUEUE_GET_TIMEOUT_SECONDS
+                        )
+                    except queue.Empty:
+                        # Real upstream hang. We already played the
+                        # inter-sentence pause; finish with tail
+                        # silence so the driver flushes cleanly.
+                        logger.warning(
+                            "TTS playback waited %.0fs for next clip "
+                            "without one; treating as end-of-stream",
+                            _QUEUE_GET_TIMEOUT_SECONDS,
+                        )
+                        self._write_silence(stream, sr, 0.05)
+                        break
+
+                    if nxt is None:
+                        # End-of-stream sentinel: previous was final.
+                        self._write_silence(stream, sr, 0.05)
+                        break
+
+                    if nxt.sample_rate != sr:
                         # Sample-rate change between clips is rare. Reopen.
                         stream.stop()
                         stream.close()
-                        sr = nxt[1]
+                        sr = nxt.sample_rate
                         block_frames = max(1, int(sr * 0.05))
                         stream = self._open_output_stream(sr, low_latency)
                         stream.start()
                         self._write_silence(stream, sr, 0.05)
-                    clip = nxt
+                    item = nxt
         except Exception as e:
             logger.warning("TTS streaming playback error: %s", e)
         finally:
@@ -372,17 +465,27 @@ class TextToSpeech:
 
     # --- streaming helpers (extracted for the parallel pipeline) -------------
 
-    def _run_synth_loop(self, *, fragments, push, synth_fn) -> None:
+    def _run_synth_loop(
+        self,
+        *,
+        fragments: Iterable[str],
+        push: Callable[[ClipItem], None],
+        synth_fn: Callable[[str], Clip],
+    ) -> None:
         """Walk ``fragments`` token-by-token, synthesise on flush chars,
-        and push each completed clip via ``push``.
+        and push each completed clip via ``push`` as a :class:`ClipItem`.
 
-        Used by both the legacy single-worker path and the new piper
-        worker in the parallel pipeline. Same buffer + flush + tail
-        logic as before, factored out so both paths share it.
+        Used by both the legacy single-worker path and the piper
+        worker in the parallel pipeline. Each push carries
+        ``is_known_last=False``; the producer cannot know in advance
+        whether the next fragment yields another sentence, since the
+        upstream generator may still produce tokens. End-of-stream is
+        signalled by the worker's ``finally`` block pushing ``None``
+        onto the queue (handled by the worker, not this loop).
 
         Args:
             fragments: iterable of LLM token strings.
-            push: callable invoked with each non-empty clip.
+            push: callable invoked with each non-empty :class:`ClipItem`.
             synth_fn: ``str -> Clip`` synthesiser. Either ``_synthesize``
                 (legacy: Piper + RVC fused) or ``_piper_synth_only``
                 (parallel: Piper alone, RVC happens in a downstream stage).
@@ -414,15 +517,15 @@ class TextToSpeech:
                 buffer.clear()
                 remaining = remaining[flush_pos + 1 :]
                 if sentence:
-                    clip = synth_fn(sentence)
-                    if clip[0].size > 0:
-                        push(clip)
+                    pcm, sr = synth_fn(sentence)
+                    if pcm.size > 0:
+                        push(ClipItem(pcm, sr, is_known_last=False))
 
         tail = "".join(buffer).strip()
         if tail and not self._stop_event.is_set():
-            clip = synth_fn(tail)
-            if clip[0].size > 0:
-                push(clip)
+            pcm, sr = synth_fn(tail)
+            if pcm.size > 0:
+                push(ClipItem(pcm, sr, is_known_last=False))
 
     def _piper_synth_only(self, text: str) -> Clip:
         """Synthesise text with Piper alone (no RVC).

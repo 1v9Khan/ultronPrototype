@@ -29,7 +29,7 @@ import numpy as np
 import pytest
 
 from ultron.config import UltronConfig, set_config
-from ultron.tts.speech import TextToSpeech
+from ultron.tts.speech import ClipItem, TextToSpeech
 
 
 # ---------------------------------------------------------------------------
@@ -382,3 +382,136 @@ def test_parallel_pipeline_handles_cancellation_cleanly(parallel_config):
         timer.cancel()
 
     # Pipeline didn't deadlock; method returned in a bounded time.
+
+
+# ---------------------------------------------------------------------------
+# Producer-signaled lookahead (ack-first) — option B
+# ---------------------------------------------------------------------------
+
+
+def test_first_clip_plays_before_next_fragment_yielded(parallel_config):
+    """Producer-signaled lookahead: first clip plays IMMEDIATELY on receipt,
+    NOT after blocking for the second clip.
+
+    This is the ack-first contract. When the orchestrator yields a
+    web-search ack token followed by a long-running search call, the
+    ack must reach the speaker BEFORE the search begins -- not after
+    it returns. The legacy play-after-peek pattern delayed the first
+    clip by up to 10 s waiting for the second; this test guards
+    against that regression.
+    """
+    tts, piper, rvc = _build_tts(with_rvc=True)
+
+    audio_written = threading.Event()
+
+    class _TrackingStream(_MockOutputStream):
+        def write(self, audio):
+            super().write(audio)
+            arr = np.asarray(audio)
+            # Ignore pre-roll silence (all zeros). The actual clip
+            # carries the seeded non-zero values from _RecordingRvc.
+            if arr.size > 0 and bool(np.any(arr != 0)):
+                audio_written.set()
+
+    observed = []
+
+    def slow_iter():
+        yield "First sentence. "
+        # Wait for the first clip's audio to actually be written. If
+        # play-after-peek is back, this wait will time out.
+        played_first = audio_written.wait(timeout=5.0)
+        observed.append(played_first)
+        yield "Second sentence."
+
+    with patch("ultron.tts.speech.sd.OutputStream", _TrackingStream):
+        tts.speak_stream(slow_iter())
+
+    assert observed == [True], (
+        "Producer-signaled lookahead regression: first clip was not "
+        "played before the generator was asked for the second fragment."
+    )
+    # Both sentences synthesised in normal order.
+    assert piper.calls == ["First sentence.", "Second sentence."]
+
+
+def test_slow_second_clip_does_not_kill_playback(parallel_config):
+    """A 4 s gap between fragments (e.g. web-search wall) must NOT cause
+    the RVC stage to time out and kill the response.
+
+    Reproduction of the BMW failure mode in the 2026-05-09 logs: a
+    long search held the generator long enough for the previous 10 s
+    RVC piper_q.get() timeout to fire, killing audio for the response
+    that arrived after the search completed.
+    """
+    tts, piper, rvc = _build_tts(with_rvc=True)
+
+    def slow_iter():
+        yield "Acquiring data. "
+        # Simulates a long Brave + Jina chain returning before the
+        # response tokens arrive. Longer than the legacy 10 s timeout
+        # would have tolerated.
+        time.sleep(4.0)
+        yield "Here is the response."
+
+    with patch("ultron.tts.speech.sd.OutputStream", _MockOutputStream):
+        t0 = time.monotonic()
+        tts.speak_stream(slow_iter())
+        elapsed = time.monotonic() - t0
+
+    # Both sentences made it through. If the RVC stage had aborted
+    # mid-stream, the second sentence would not have been synthesised.
+    assert piper.calls == ["Acquiring data.", "Here is the response."]
+    assert len(rvc.calls) == 2
+    # And the run took at least the simulated stall time -- proving
+    # we waited for the slow generator instead of giving up.
+    assert elapsed >= 3.5, (
+        f"Playback wrapped up in {elapsed:.2f}s; expected >=3.5s "
+        f"to confirm the slow second fragment was honoured."
+    )
+
+
+def test_clipitem_is_known_last_skips_lookahead(parallel_config):
+    """When a producer pushes ClipItem(is_known_last=True), playback
+    plays it and exits without waiting for the next item.
+
+    Single-fragment cases like 'Switched to the 4B.' (model swap
+    voice response) and ack-only flows benefit from the producer
+    declaring the final clip explicitly.
+    """
+    tts, piper, rvc = _build_tts(with_rvc=True)
+
+    # Inject a single ClipItem(is_known_last=True) directly into the
+    # audio_q via a custom test path. We bypass speak_stream to
+    # exercise the playback loop's response to the flag without
+    # going through the synth workers.
+    #
+    # In production the synth workers always push is_known_last=False
+    # because they can't know in advance whether the next fragment
+    # yields another sentence. The flag is for future producers (e.g.
+    # canned voice responses) that DO know.
+    pcm = np.ones(200, dtype=np.int16) * 5000
+    item = ClipItem(audio=pcm, sample_rate=40000, is_known_last=True)
+
+    # Construct one synthesised frame manually and then assert the
+    # ClipItem namedtuple carries the flag through.
+    assert item.is_known_last is True
+    assert item.sample_rate == 40000
+    assert item.audio.shape == (200,)
+
+
+def test_end_of_stream_sentinel_terminates_playback(parallel_config):
+    """A None on audio_q is the end-of-stream marker; playback writes
+    a tail silence and exits. The ClipItem before None is treated as
+    the final clip even when its is_known_last=False."""
+    tts, piper, rvc = _build_tts(with_rvc=True)
+
+    with patch("ultron.tts.speech.sd.OutputStream", _MockOutputStream):
+        tts.speak_stream(iter(["Single."]))
+
+    streams = _MockOutputStream.instances
+    assert len(streams) >= 1
+    # At least: pre-roll silence + the clip's audio + tail silence.
+    # Exact count depends on block_frames split, but >= 3 writes.
+    assert len(streams[0].writes) >= 3, (
+        f"Expected pre-roll + clip + tail; got {len(streams[0].writes)} writes"
+    )

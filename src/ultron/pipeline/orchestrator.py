@@ -62,6 +62,7 @@ from ultron.coding import (
 from ultron.coding.coordinator import ConversationCoordinator
 from ultron.coding.narration import StatusNarrator
 from ultron.uncertainty import apply as apply_uncertainty
+from ultron.response_style import apply_brevity_hint
 from ultron.web_search import (
     AcknowledgmentSource,
     BraveSearchClient,
@@ -100,16 +101,46 @@ class Orchestrator:
 
     def __init__(self) -> None:
         self.audio = AudioCapture()
+        # Mode-aware pre-roll: ring buffer is sized to the LARGER of
+        # cold/warm pre-roll so the WARM path can take a longer slice
+        # while the COLD path takes a shorter one. The defaults keep
+        # legacy behaviour: ring_buffer_seconds=0.5 was the size before
+        # the 2026-05-09 audio pass, and the COLD-mode shortening
+        # (cold_pre_roll_seconds=0.15) was that pass's anti-Tron-prefix
+        # fix -- which inadvertently clipped the leading word in WARM
+        # mode follow-ups. Mode-aware slicing restores both behaviours.
+        try:
+            from ultron.config import get_config
+            _audio_cfg = get_config().audio
+            self._cold_pre_roll_seconds = float(_audio_cfg.cold_pre_roll_seconds)
+            self._warm_pre_roll_seconds = float(_audio_cfg.warm_pre_roll_seconds)
+            ring_capacity_seconds = max(
+                float(_audio_cfg.ring_buffer_seconds),
+                self._cold_pre_roll_seconds,
+                self._warm_pre_roll_seconds,
+            )
+        except Exception:
+            # Defensive: tests / scripts may construct Orchestrator
+            # without a fully built config. Fall back to the shim.
+            self._cold_pre_roll_seconds = float(settings.RING_BUFFER_SECONDS)
+            self._warm_pre_roll_seconds = float(settings.RING_BUFFER_SECONDS)
+            ring_capacity_seconds = float(settings.RING_BUFFER_SECONDS)
         self.ring = RingBuffer(
-            int(settings.RING_BUFFER_SECONDS * settings.SAMPLE_RATE)
+            int(ring_capacity_seconds * settings.SAMPLE_RATE)
         )
         self.wake = WakeWordDetector()
         self.vad = VoiceActivityDetector()
         self.stt = WhisperEngine()
         self.memory = self._load_memory_if_enabled()
         self.llm = LLMEngine(memory=self.memory)
-        self.rvc = self._load_rvc_if_enabled()
-        self.tts = TextToSpeech(rvc=self.rvc)
+        # 2026-05-10 voice swap: select TTS engine via ``tts.engine`` config.
+        # ``"piper_rvc"`` (default) keeps the legacy Piper + RVC stack;
+        # ``"xtts_v3"`` swaps in the XTTS v2 streaming + v3 Ultron filter
+        # stack. The engines share the same ``speak`` / ``speak_stream``
+        # / ``warmup`` / ``stop`` interface so the orchestrator's
+        # downstream playback path (the producer-signaled lookahead in
+        # speak_stream) doesn't change.
+        self.rvc, self.tts = self._load_tts_engine()
         self.tts.warmup()
         self.addressing = self._load_addressing_classifier()
         self.web_gate, self.web_executor, self.ack_source = (
@@ -448,6 +479,37 @@ class Orchestrator:
             logger.warning("RVC load failed (%s) — falling back to plain Piper", e)
             return None
 
+    def _load_tts_engine(self):
+        """Construct the configured TTS engine.
+
+        Returns a ``(rvc_or_none, tts_engine)`` pair. The ``rvc``
+        attribute is kept on Orchestrator for diagnostic purposes
+        even though only the legacy engine uses it.
+
+        Raises any engine-construction error -- TTS is not optional;
+        the orchestrator can't run without a voice path.
+        """
+        from ultron.config import get_config
+        try:
+            engine_name = get_config().tts.engine
+        except Exception:
+            engine_name = "piper_rvc"
+
+        if engine_name == "xtts_v3":
+            from ultron.tts.xtts_v3 import XttsV3Speech
+            logger.info("TTS engine: xtts_v3 (XTTS v2 streaming + v3 filter)")
+            tts = XttsV3Speech()
+            return None, tts
+        if engine_name == "piper_rvc":
+            logger.info("TTS engine: piper_rvc (legacy Piper + RVC)")
+            rvc = self._load_rvc_if_enabled()
+            tts = TextToSpeech(rvc=rvc)
+            return rvc, tts
+        raise RuntimeError(
+            f"Unknown tts.engine: {engine_name!r}. "
+            f"Valid: 'piper_rvc' | 'xtts_v3'."
+        )
+
     # --- context manager -----------------------------------------------------
 
     def __enter__(self) -> "Orchestrator":
@@ -473,6 +535,14 @@ class Orchestrator:
         if self.rvc is not None:
             try:
                 self.rvc.close()
+            except Exception:
+                pass
+        # 2026-05-10 voice swap: when xtts_v3 engine is active, the
+        # TTS instance owns a server subprocess. Make sure it gets
+        # torn down with the orchestrator.
+        if hasattr(self.tts, "_stop_server_subprocess"):
+            try:
+                self.tts._stop_server_subprocess()
             except Exception:
                 pass
         if self.memory is not None:
@@ -675,9 +745,14 @@ class Orchestrator:
     def _capture_utterance(self) -> np.ndarray:
         """Record from now until VAD reports end-of-speech (or timeout)."""
         self.vad.reset()
-        # Pre-roll: include the half-second before the wake word so an
-        # immediately-following request isn't clipped.
-        chunks: list[np.ndarray] = [self.ring.snapshot()]
+        # Pre-roll: take the COLD slice (short) from the ring so the
+        # wake-word "Ultron" tail does not bleed into Whisper as a
+        # "Tron" prefix. The full ring is sized for the larger WARM
+        # slice; the COLD path explicitly limits how much it consumes.
+        cold_pre_roll_samples = int(
+            self._cold_pre_roll_seconds * settings.SAMPLE_RATE
+        )
+        chunks: list[np.ndarray] = [self.ring.snapshot(cold_pre_roll_samples)]
         speech_seen = False
         elapsed_samples = 0
         max_samples = int(self.MAX_UTTERANCE_SECONDS * settings.SAMPLE_RATE)
@@ -743,7 +818,16 @@ class Orchestrator:
 
             if not speech_started:
                 if result.event == SpeechEvent.SPEECH_START:
-                    pre_roll = self.ring.snapshot()
+                    # WARM pre-roll: take the longer slice so the
+                    # leading word isn't clipped. Silero VAD has
+                    # ~100-200 ms detection latency on speech-start;
+                    # without enough pre-roll we capture audio FROM
+                    # the speech-start moment forward, missing the
+                    # first phoneme(s) the user already produced.
+                    warm_pre_roll_samples = int(
+                        self._warm_pre_roll_seconds * settings.SAMPLE_RATE
+                    )
+                    pre_roll = self.ring.snapshot(warm_pre_roll_samples)
                     speech_chunks.append(chunk)
                     speech_started = True
                     speech_samples = chunk.shape[0]
@@ -1039,14 +1123,14 @@ class Orchestrator:
             generation (LLM at least apologizes accurately).
         """
         if self.web_gate is None or self.web_executor is None:
-            yield from self.llm.generate_stream(user_text)
+            yield from self.llm.generate_stream(apply_brevity_hint(user_text))
             return
 
         try:
             verdict = self.web_gate.classify(user_text)
         except Exception as e:
             logger.warning("Web gate failed (%s) -- falling through to base", e)
-            yield from self.llm.generate_stream(user_text)
+            yield from self.llm.generate_stream(apply_brevity_hint(user_text))
             return
 
         # Phase 5: translate preflight uncertainty signals into behavior.
@@ -1061,6 +1145,15 @@ class Orchestrator:
             verdict.reason,
         )
         if verdict.decision != GateDecision.SEARCH:
+            # 2026-05-10 brevity reinforcement: prepend a 1-3-sentence
+            # directive when the user's question is brief and isn't an
+            # explicit ask for depth. Counters the 4B model's habit of
+            # producing 4-paragraph essays in response to "What are
+            # the Orcs in 40k?". The search path already carries its
+            # own length directive in the augmented prompt so this is
+            # only applied off the search branch. Pure-text addendum;
+            # no SOUL.md / persona changes (voice-quality lock).
+            augmented_text = apply_brevity_hint(augmented_text)
             # V1-gap A2: thread the verdict through so multi-pass
             # retrieval activates (when configured + categories present).
             yield from self.llm.generate_stream(

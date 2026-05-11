@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from typing import Deque
+from typing import Deque, Optional
 
 import numpy as np
 
@@ -44,10 +44,27 @@ class RingBuffer:
         with self._lock:
             self._buffer.extend(samples.tolist())
 
-    def snapshot(self) -> np.ndarray:
-        """Return a contiguous copy of the current contents."""
+    def snapshot(self, last_n_samples: Optional[int] = None) -> np.ndarray:
+        """Return a contiguous copy of the current contents.
+
+        Args:
+            last_n_samples: When given, return only the most recent
+                ``last_n_samples`` samples (or all of them if the
+                buffer holds fewer). When ``None`` (default), return
+                the full buffer. Callers use this to slice
+                mode-specific pre-roll from a single shared buffer:
+                COLD (post-wake) wants a short slice so the wake-word
+                tail is not transcribed as a prefix; WARM (post-TTS)
+                wants a longer slice so the user's leading word is
+                not clipped.
+        """
         with self._lock:
-            return np.array(self._buffer, dtype=np.float32)
+            full = np.array(self._buffer, dtype=np.float32)
+        if last_n_samples is None or last_n_samples >= full.shape[0]:
+            return full
+        if last_n_samples <= 0:
+            return np.zeros(0, dtype=np.float32)
+        return full[-last_n_samples:].copy()
 
     def clear(self) -> None:
         with self._lock:

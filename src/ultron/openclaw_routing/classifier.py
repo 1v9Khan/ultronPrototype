@@ -405,6 +405,21 @@ _BROWSER_NAVIGATE = re.compile(
     r"open\s+(?:up\s+)?(?:the\s+)?(?:tab|page|browser|website|url|link)\s+|"
     r"open\s+(?:up\s+)?(?:hacker\s+news|wikipedia|youtube|github|reddit|twitter|x\.com|"
     r"google|gmail|stack\s*overflow|claude\.ai|chatgpt)\b|"
+    # "open [a/an/the/your/my] [new] browser [window|tab]" with optional
+    # destination ("with|to|for|on" + target). Catches "Can you open a
+    # browser window with Google's homepage for me?" which the
+    # determiner-less pattern above missed (it required "the" or no
+    # determiner at all). Destination is optional so a bare "open a
+    # new browser window" (no target) still routes to the browser
+    # tool with the default landing page.
+    r"open\s+(?:up\s+)?(?:a\s+new\s+|new\s+|a\s+|an\s+|the\s+|your\s+|my\s+)?"
+    r"browser(?:\s+(?:window|tab))?\b|"
+    # "open a/an/the/your/my [new] (window|tab) (with|to|for|on) X" -- the
+    # window/tab variant without explicit "browser" word. Destination
+    # required here so it doesn't false-match "open a new tab" in a
+    # general non-browser sense (terminal tab, IDE tab, etc.).
+    r"open\s+(?:up\s+)?(?:a\s+new\s+|new\s+|a\s+|an\s+|the\s+|your\s+|my\s+)"
+    r"(?:window|tab)\s+(?:with|to|for|on)\s+|"
     r"navigate\s+to\s+|"
     r"go\s+to\s+(?:the\s+)?(?:url|link|page|site|website)\b|"
     r"pull\s+up\s+(?:the\s+)?(?:url|link|page|site|website|wikipedia|hacker\s+news)\b|"

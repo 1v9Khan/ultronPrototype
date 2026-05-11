@@ -46,6 +46,63 @@ def test_ring_buffer_rejects_zero_capacity():
         RingBuffer(capacity_samples=0)
 
 
+# ---- RingBuffer.snapshot(last_n_samples=...) ------------------------------
+# Mode-aware pre-roll relies on slicing the same buffer to different
+# lengths -- COLD pulls a short slice (no Tron prefix), WARM pulls a
+# longer one (no first-word clip). These tests lock the slicing
+# semantics down so a future refactor can't quietly regress them.
+
+
+def test_ring_buffer_snapshot_returns_full_when_unsliced():
+    rb = RingBuffer(capacity_samples=10)
+    rb.write(np.arange(10, dtype=np.float32))
+    snap = rb.snapshot()
+    assert snap.shape == (10,)
+    assert np.array_equal(snap, np.arange(10, dtype=np.float32))
+
+
+def test_ring_buffer_snapshot_returns_last_n_samples():
+    rb = RingBuffer(capacity_samples=10)
+    rb.write(np.arange(10, dtype=np.float32))
+    snap = rb.snapshot(last_n_samples=3)
+    assert snap.shape == (3,)
+    assert np.array_equal(snap, np.array([7.0, 8.0, 9.0], dtype=np.float32))
+
+
+def test_ring_buffer_snapshot_returns_full_when_n_exceeds_size():
+    rb = RingBuffer(capacity_samples=10)
+    rb.write(np.arange(5, dtype=np.float32))
+    snap = rb.snapshot(last_n_samples=20)
+    assert snap.shape == (5,)
+    assert np.array_equal(snap, np.arange(5, dtype=np.float32))
+
+
+def test_ring_buffer_snapshot_returns_empty_when_n_is_zero_or_negative():
+    rb = RingBuffer(capacity_samples=10)
+    rb.write(np.arange(10, dtype=np.float32))
+    assert rb.snapshot(last_n_samples=0).shape == (0,)
+    assert rb.snapshot(last_n_samples=-5).shape == (0,)
+
+
+def test_ring_buffer_cold_warm_slices_share_same_buffer():
+    """Concrete scenario: a 0.5 s @ 16 kHz buffer is sliced to 0.15 s
+    (COLD) and 0.5 s (WARM). Verifies both slices come from the same
+    underlying audio so the orchestrator can use one ring for both
+    modes."""
+    sr = 16000
+    rb = RingBuffer(capacity_samples=int(0.5 * sr))
+    audio = np.arange(0.5 * sr, dtype=np.float32)
+    rb.write(audio)
+
+    cold = rb.snapshot(last_n_samples=int(0.15 * sr))
+    warm = rb.snapshot(last_n_samples=int(0.5 * sr))
+
+    assert cold.shape == (int(0.15 * sr),)
+    assert warm.shape == (int(0.5 * sr),)
+    # COLD slice is the tail of the WARM slice.
+    assert np.array_equal(cold, warm[-int(0.15 * sr):])
+
+
 # ---- Audio device resolution (pure, no I/O) -------------------------------
 
 

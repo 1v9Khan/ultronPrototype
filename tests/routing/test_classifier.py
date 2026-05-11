@@ -80,6 +80,19 @@ _BROWSER = [
     "scroll the page down",
     "scroll the window up",
     "scroll the tab to the bottom",
+    # 2026-05-10 live-session regression: "Can you open a browser
+    # window with Google's homepage for me?" fell through to the
+    # CONVERSATIONAL LLM which apologised that it couldn't open
+    # browsers. The determiner-less navigate pattern required either
+    # nothing or "the" before the noun; "a browser window" missed.
+    "open a browser window with Google's homepage",
+    "Can you open a browser window with Google's homepage for me?",
+    "open a browser to YouTube",
+    "open a browser tab with Reddit",
+    "open the browser to YouTube",
+    "open a new browser window",
+    "open a new tab to GitHub",
+    "open my browser tab with hacker news",
 ]
 
 
