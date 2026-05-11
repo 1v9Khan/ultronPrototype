@@ -97,7 +97,12 @@ class Orchestrator:
     rather than on the first wake-word trigger.
     """
 
-    MAX_UTTERANCE_SECONDS = 15.0  # hard cap to avoid unbounded recording
+    # Legacy class-level default. Config-driven via ``vad.max_utterance_seconds``;
+    # the instance attribute ``_max_utterance_seconds`` wins at runtime. Kept
+    # for callers that reference the constant directly. 2026-05-11 follow-up
+    # fix raised the production default from 15 s -> 30 s after a real session
+    # got cut off mid-sentence at the 15 s ceiling.
+    MAX_UTTERANCE_SECONDS = 30.0
 
     def __init__(self) -> None:
         self.audio = AudioCapture()
@@ -131,6 +136,11 @@ class Orchestrator:
             self._long_utterance_silence_duration_ms = int(
                 _vad_cfg.long_utterance_silence_duration_ms
             )
+            # 2026-05-11 follow-up fix: hard ceiling on a single
+            # VAD-bounded capture is now configurable. Legacy class
+            # constant was 15 s; a real session got cut off
+            # mid-sentence at that ceiling. Default raised to 30 s.
+            self._max_utterance_seconds = float(_vad_cfg.max_utterance_seconds)
         except Exception:
             # Defensive: tests / scripts may construct Orchestrator
             # without a fully built config. Fall back to the shim.
@@ -139,6 +149,7 @@ class Orchestrator:
             ring_capacity_seconds = float(settings.RING_BUFFER_SECONDS)
             self._long_utterance_threshold_seconds = 8.0
             self._long_utterance_silence_duration_ms = 2400
+            self._max_utterance_seconds = float(self.MAX_UTTERANCE_SECONDS)
         self.ring = RingBuffer(
             int(ring_capacity_seconds * settings.SAMPLE_RATE)
         )
@@ -780,7 +791,7 @@ class Orchestrator:
         speech_start_samples = 0
         long_utterance_bump_applied = False
         elapsed_samples = 0
-        max_samples = int(self.MAX_UTTERANCE_SECONDS * settings.SAMPLE_RATE)
+        max_samples = int(self._max_utterance_seconds * settings.SAMPLE_RATE)
         # Allow up to MIN_SILENCE * 2 of leading silence before bailing.
         silence_grace = int(2.0 * settings.SAMPLE_RATE)
         leading_silence = 0
@@ -850,7 +861,7 @@ class Orchestrator:
         speech_chunks: list[np.ndarray] = []
         pre_roll: Optional[np.ndarray] = None
         speech_samples = 0
-        max_samples = int(self.MAX_UTTERANCE_SECONDS * settings.SAMPLE_RATE)
+        max_samples = int(self._max_utterance_seconds * settings.SAMPLE_RATE)
 
         while not self._shutdown.is_set() and time.monotonic() < deadline:
             chunk = self.audio.get_chunk(timeout=0.1)

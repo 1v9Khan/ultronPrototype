@@ -203,7 +203,12 @@ def test_completion_narration_summarizes_success(tmp_path: Path):
     narration = runner.completion_narration()
     assert "Done." in narration
     assert "2 files" in narration or "2 file" in narration
-    assert str(tmp_path) in narration
+    # 2026-05-11 follow-up fix: narration speaks the project folder
+    # leaf name only, never the absolute path. The absolute path
+    # caused XTTS to hang trying to pronounce backslashes/drive
+    # letters and pinned the GPU at 100 % in a real session.
+    assert tmp_path.name in narration
+    assert str(tmp_path) not in narration
 
 
 def test_completion_narration_handles_failure(tmp_path: Path):
@@ -245,9 +250,60 @@ def test_completion_narration_honest_when_success_but_zero_files(tmp_path: Path)
     # Generic tail line is suppressed (noise on top of the honest
     # opener -- the bug log showed this confused the user).
     assert "What would you like me to work on" not in narration
-    # Project root + elapsed are still surfaced for visibility.
-    assert str(tmp_path) in narration
+    # 2026-05-11 follow-up fix: project FOLDER NAME + elapsed are
+    # still surfaced for visibility (the absolute path was dropped
+    # because XTTS hung trying to pronounce Windows paths).
+    assert tmp_path.name in narration
+    assert str(tmp_path) not in narration
     assert "Elapsed:" in narration
+
+
+def test_completion_narration_does_not_leak_full_path(tmp_path: Path):
+    """2026-05-11 follow-up fix regression test. The legacy completion
+    narration interpolated ``state.cwd`` (absolute Path) directly,
+    producing voice text like ``"Project root: C:\\STC\\...\\sandbox\\X."``
+    The XTTS-v2 neural TTS choked on the backslash-colon-drive-letter
+    sequence in a live session: GPU pinned at 100 %, synth eventually
+    timed out, computer lagged. The fix speaks only ``path.name`` (the
+    project folder leaf). This test pins the no-backslashes /
+    no-drive-letter invariant against future regressions.
+
+    The Path-leaf approach also keeps the narration speakable on any
+    platform: Posix tmpdirs (``/tmp/pytest-of-x/...``) and Windows
+    tmpdirs (``C:\\Users\\...\\AppData\\Local\\Temp\\...``) both
+    collapse to a single leaf component when ``.name`` is applied.
+    """
+    bridge = _FakeBridge()
+    runner = CodingTaskRunner(bridge=bridge, log_path=tmp_path / "log.jsonl")
+    runner.start_task(TaskRequest(task_prompt="t", cwd=tmp_path, label="task"))
+    h = bridge.last_handle
+    assert h is not None
+    h.fire(TaskEvent(kind=EventKind.FILE_CHANGE, file_path=Path("main.py"),
+                     file_change_kind=FileChangeKind.CREATED))
+    h.finish(success=True, summary="implemented main.py")
+
+    narration = runner.completion_narration()
+
+    # No backslashes anywhere in the narration text -- they were the
+    # exact character class that hung XTTS in the live session log.
+    assert "\\" not in narration, (
+        f"narration must not contain backslashes; got: {narration!r}"
+    )
+    # No Windows drive-letter prefix (e.g. ``C:\\`` or ``D:``).
+    # Match anywhere in narration to catch path-like strings that
+    # might be interpolated from elsewhere in the future.
+    import re
+    assert not re.search(r"\b[A-Za-z]:[\\/]", narration), (
+        f"narration must not contain a Windows drive-letter path; "
+        f"got: {narration!r}"
+    )
+    # And no full absolute path interpolation.
+    assert str(tmp_path) not in narration, (
+        f"narration must not contain the absolute path; "
+        f"got: {narration!r}"
+    )
+    # The project folder leaf IS expected for human context.
+    assert tmp_path.name in narration
 
 
 def test_completion_narration_keeps_done_when_files_were_written(tmp_path: Path):

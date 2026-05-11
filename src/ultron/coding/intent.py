@@ -91,12 +91,43 @@ _ADJUSTMENT_PATTERNS = re.compile(
 )
 
 
+# 2026-05-11 follow-up fix: the original pattern required ``going`` (or
+# ``doing`` / ``done``) immediately after a tight subject group --
+# ``it / things / claude / the task / that``. A real session ("How is
+# that project going?") fell through to the conversational LLM because
+# ``project`` appeared between ``that`` and ``going`` and the regex
+# never re-anchored. The user got a generic hallucinated "progressing
+# as expected" reply instead of the runner's actual status narration.
+#
+# Broadened to accept ``<determiner> [coding-noun]`` everywhere the old
+# pattern accepted ``the task``. Determiners: the / that / this / your
+# / our / my. Coding nouns: task / project / build / app / code / work /
+# thing / run / job. The noun is optional so the legacy ``that going`` /
+# ``the doing`` phrasings still fire. Added "coming (along)" as an
+# alternate to "going" for "How's the project coming along?".
+#
+# Safety: these patterns only fire when has_active_task=True, so even
+# the ungrammatical edge cases (``is the done``) can't hijack ordinary
+# conversation -- there has to be a coding task in flight.
+_DETERMINER_NOUN = (
+    r"(?:the|that|this|your|our|my)"
+    r"(?:\s+(?:task|project|build|app|code|work|thing|run|job))?"
+)
+
 _PROGRESS_PATTERNS = re.compile(
     r"(?:"
-    r"\bhow(?:'s|\s+is|\s+are)\s+(?:it|things|claude|the\s+task|that)\s+going|"
-    r"\bwhat(?:'s|\s+is|\s+are)\s+(?:claude|it|the\s+task)?\s*(?:doing|working\s+on|up\s+to)|"
+    # "How's it going" / "How is that project going" / "How are things going"
+    r"\bhow(?:'s|\s+is|\s+are)\s+"
+    r"(?:it|things|claude|" + _DETERMINER_NOUN + r")"
+    r"\s+(?:going|coming(?:\s+along)?)|"
+    # "What's claude doing" / "What's the project doing" / "What's it up to"
+    r"\bwhat(?:'s|\s+is|\s+are)\s+"
+    r"(?:claude|it|" + _DETERMINER_NOUN + r")?"
+    r"\s*(?:doing|working\s+on|up\s+to)|"
+    # "Are you done" / "Is it done" / "Is the project done yet"
     r"\bare\s+you\s+done|"
-    r"\bis\s+(?:it|claude)\s+done|"
+    r"\bis\s+(?:it|claude|" + _DETERMINER_NOUN + r")\s+done|"
+    # Generic status markers
     r"\b(?:any\s+)?progress\b|"
     r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:status|update)|"
     r"\bgive\s+me\s+(?:a\s+)?(?:status|update)|"

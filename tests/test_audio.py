@@ -234,3 +234,38 @@ def test_vad_set_min_silence_duration_floors_at_one_window(monkeypatch):
     vad = _make_vad_without_loading_silero(monkeypatch, min_silence_ms=500)
     vad.set_min_silence_duration_ms(0)
     assert vad._silence_windows_required >= 1
+
+
+# ---- vad.max_utterance_seconds schema (2026-05-11 follow-up fix) ----------
+# Hard ceiling on a single VAD-bounded capture is now configurable. The
+# legacy class-level constant on ``Orchestrator`` (15.0 s) cut a real
+# user off mid-sentence on a complex coding ask. The orchestrator now
+# reads ``vad.max_utterance_seconds`` (default 30.0 s) at construction
+# and falls back to the class constant only on config failure.
+
+
+def test_vad_max_utterance_seconds_default_is_thirty():
+    """Default must give complex one-breath asks comfortable headroom
+    without unbounded runaway. 30 s was chosen because the live-session
+    cut-off happened at 15 s, and we want ~2x to absorb similarly
+    detailed asks while still bounding pathological captures."""
+    from ultron.config import VADConfig
+    assert VADConfig().max_utterance_seconds == 30.0
+
+
+def test_vad_max_utterance_seconds_too_small_rejected():
+    """Below 5 s isn't a useful ceiling (typical complete-sentence ask
+    is 3-8 s; 5 s minimum keeps the schema honest)."""
+    from pydantic import ValidationError
+    from ultron.config import VADConfig
+    with pytest.raises(ValidationError):
+        VADConfig(max_utterance_seconds=3.0)
+
+
+def test_vad_max_utterance_seconds_too_large_rejected():
+    """Above 120 s is unbounded by any practical voice-prompt standard;
+    catches typos (e.g. ``1200`` thinking it's milliseconds)."""
+    from pydantic import ValidationError
+    from ultron.config import VADConfig
+    with pytest.raises(ValidationError):
+        VADConfig(max_utterance_seconds=200.0)

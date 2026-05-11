@@ -108,10 +108,62 @@ def test_progress_queries_with_active_task(utterance):
     assert intent.kind == CodingIntentKind.PROGRESS_QUERY
 
 
+# 2026-05-11 follow-up fix: broadened progress patterns to accept
+# ``<determiner> <coding-noun>`` after ``how is / what's / is``. The
+# live-session bug was "How is that project going?" -- the original
+# regex required ``going`` immediately after ``that`` and didn't
+# tolerate the ``project`` in between. The fix is documented in
+# ``intent.py`` next to ``_DETERMINER_NOUN``.
+@pytest.mark.parametrize("utterance", [
+    # The actual live-session phrasing that fell through.
+    "How is that project going?",
+    # Determiner variants paired with "project".
+    "How's the project going?",
+    "How is my project going?",
+    "How's your project going?",
+    "How is our project going?",
+    "How is this project going?",
+    # Other coding nouns.
+    "How is the build going?",
+    "How's the app going?",
+    "How is my code going?",
+    "How's the run going?",
+    # Coming / coming along.
+    "How is the project coming along?",
+    "How's it coming?",
+    # "what's the project doing" variants.
+    "What's the project doing?",
+    "What's my build doing?",
+    "What is your app working on?",
+    # "is the project done" variants.
+    "Is the project done?",
+    "Is my build done yet?",
+    "Is the app done?",
+])
+def test_progress_queries_broadened_phrasings(utterance):
+    """Regression coverage for the 2026-05-11 follow-up fix: the
+    ``<determiner> <coding-noun>`` subject group must match the same
+    way the legacy ``it / things / claude / the task / that`` group
+    did."""
+    intent = classify(utterance, has_active_task=True)
+    assert intent.kind == CodingIntentKind.PROGRESS_QUERY, (
+        f"expected PROGRESS_QUERY for {utterance!r} but got "
+        f"{intent.kind.value} ({intent.reason})"
+    )
+
+
 @pytest.mark.parametrize("utterance", [
     "How's it going?",
     "Any progress?",
     "Status?",
+    # 2026-05-11 follow-up fix: the broadened patterns must still
+    # respect the has_active_task gate -- they cannot hijack the
+    # utterance when no coding task is running. Otherwise asking
+    # "How's the project going?" in passing conversation would be
+    # misrouted.
+    "How is that project going?",
+    "How's the build going?",
+    "Is the project done?",
 ])
 def test_progress_queries_without_active_task_fall_through(utterance):
     """No coding task running -> progress patterns must NOT hijack the

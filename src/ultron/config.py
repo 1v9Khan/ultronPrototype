@@ -135,6 +135,16 @@ class VADConfig(_Strict):
     # to 0 or a very large number disables the adaptive bump.
     long_utterance_threshold_seconds: float = Field(default=8.0, ge=0.0, le=60.0)
     long_utterance_silence_duration_ms: int = Field(default=2400, ge=0)
+    # 2026-05-11 follow-up fix: hard ceiling on a single VAD-bounded
+    # capture. The orchestrator stops recording when ``elapsed_samples``
+    # exceeds this value even if speech is still active -- a guard
+    # against unbounded recording (background noise that never resolves
+    # to SPEECH_END, a stuck microphone, etc.). A real session hit the
+    # legacy 15 s ceiling mid-sentence on a long technical coding ask
+    # ("write me a program that converts PDF to Docx..." -- 244 chars,
+    # cut off at "a button with a box show"). 30 s comfortably covers
+    # detailed one-breath asks while still bounding pathological cases.
+    max_utterance_seconds: float = Field(default=30.0, ge=5.0, le=120.0)
 
 
 class WakeWordConfig(_Strict):

@@ -488,7 +488,26 @@ class CodingTaskRunner:
             )
         if change_bits:
             parts.append(", ".join(change_bits).capitalize() + ".")
-        parts.append(f"Project root: {path}.")
+        # 2026-05-11 follow-up fix: speak ONLY the project folder name,
+        # never the absolute path. The legacy ``f"Project root: {path}."``
+        # forced XTTS to synthesise the full Windows path verbatim
+        # ("C:\STC\ultronPrototype\data\sandbox\<slug>"). XTTS-v2 chokes
+        # on backslash/colon/drive-letter sequences -- the live session
+        # log shows ``XTTS server synth failed ... timed out`` on exactly
+        # that string while the GPU pinned at 100 % trying to pronounce
+        # it. The full path is still on disk in the per-session JSONL
+        # audit log + the `coding_tasks.jsonl` start event; the voice
+        # narration only needs the leaf for human context. ``Path.name``
+        # is the trailing component for both ``Path`` (the typed
+        # ``state.cwd``) and ``str`` (defensive). StatusNarrator already
+        # speaks the leaf name only -- this brings completion_narration
+        # in line.
+        try:
+            project_name = path.name if isinstance(path, Path) else Path(str(path)).name
+        except Exception:
+            project_name = ""
+        if project_name:
+            parts.append(f"Saved under {project_name}.")
         if state.error and not state.success:
             parts.append(f"Error: {state.error}.")
         elif state.final_summary and not no_file_activity:

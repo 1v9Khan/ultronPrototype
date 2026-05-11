@@ -92,6 +92,16 @@ vad:
   # disable the adaptive bump entirely.
   long_utterance_threshold_seconds: 8.0
   long_utterance_silence_duration_ms: 2400
+  # 2026-05-11 follow-up fix: hard ceiling on a single VAD-bounded
+  # capture. Legacy value was 15 s (orchestrator class constant); a
+  # real session captured a 15.16 s recording that was cut off
+  # mid-sentence on a complex "write me a program that converts PDF
+  # to Docx..." ask because the user was still talking at the cap.
+  # Raising to 30 s comfortably covers detailed one-breath asks
+  # while still bounding pathological cases (stuck mic, background
+  # noise that never resolves to SPEECH_END, etc.). Schema range is
+  # 5-120 s; values outside trip validate_config.py.
+  max_utterance_seconds: 30.0
 
 # ---------------------------------------------------------------------------
 # Wake word
