@@ -973,14 +973,32 @@ class OpenClawDispatcher:
         goal: str,
         tool_args: Dict[str, Any],
     ) -> Optional[DispatchResult]:
-        """Run the block-and-revise validator. Returns ``None`` when the
-        call should proceed (validator allows OR feature is disabled OR
-        no LLM is wired). Returns a ``DispatchResult`` to short-circuit
-        when the validator BLOCKs.
+        """Two-layer pre-flight check.
 
-        Failure-safe: any exception inside the validator path falls
-        open (returns None), preserving the dispatch path's behaviour.
+        Layer 1 (2026-05-12 -- new): the runtime tool-call validator
+        (rule-based, paired with the abliterated default LLM). Hard
+        block on any rule verdict that isn't ``ALLOW`` or ``LOG_ONLY``.
+        Construction failures and rule exceptions fail closed inside
+        the validator itself; this method's contract is "returns None
+        when the call should proceed, returns a DispatchResult to
+        short-circuit when blocked".
+
+        Layer 2 (4B plan Item 8 -- existing): the LLM-based block-and-
+        revise validator. Only runs when layer 1 allowed; provides a
+        soft check that the tool call advances the user's stated goal.
+        Requires an LLM to be wired; falls open when missing.
+
+        Failure-safe: any exception inside either layer falls open
+        (returns None), preserving the dispatch path's behaviour.
         """
+        # ----- Layer 1: runtime tool-call validator (Category K et al.) -----
+        runtime_block = self._runtime_safety_check(
+            tool_name=tool_name, goal=goal, tool_args=tool_args,
+        )
+        if runtime_block is not None:
+            return runtime_block
+
+        # ----- Layer 2: LLM-based block-and-revise -----
         try:
             from ultron.openclaw_routing.block_and_revise import (
                 ToolCallValidator, is_enabled,
@@ -1017,6 +1035,115 @@ class OpenClawDispatcher:
                 "tool_name": tool_name,
                 "verdict": result.verdict,
                 "reason": result.reason,
+            },
+        )
+
+    def _runtime_safety_check(
+        self,
+        *,
+        tool_name: str,
+        goal: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[DispatchResult]:
+        """Layer 1 of :meth:`_maybe_block`: runtime rule-based validator.
+
+        Builds a :class:`RuleContext` from the dispatcher's arguments
+        and runs every registered rule. Returns a short-circuit
+        :class:`DispatchResult` when the aggregated verdict is anything
+        other than ALLOW / LOG_ONLY. Returns None on ALLOW / LOG_ONLY
+        (proceed) and on any validator-side exception (fail-open to
+        preserve dispatch availability).
+
+        Path arguments in ``tool_args`` are extracted and pre-
+        canonicalised so each rule doesn't re-resolve. The keys we
+        recognise: ``path``, ``paths``, ``file``, ``files``,
+        ``target_path``, ``destination``. Add more here when new
+        intent shapes are added.
+        """
+        try:
+            from ultron.safety import (
+                RuleContext, Verdict, get_validator,
+            )
+            from ultron.safety.path_resolver import (
+                PathResolveError, get_path_resolver,
+            )
+        except Exception as e:
+            logger.debug(
+                "runtime safety validator unavailable (%s); falling open",
+                e,
+            )
+            return None
+
+        validator = get_validator()
+        # The no-op validator's check() returns ALLOW; the production
+        # validator returns rule-based verdicts. Either way the call
+        # path below handles it.
+
+        # Extract path-shaped arguments. Keep raw originals around so
+        # rules can re-inspect if needed.
+        candidate_paths: list = []
+        resolver = get_path_resolver()
+        for key in (
+            "path", "paths", "file", "files",
+            "target_path", "destination", "dest",
+        ):
+            v = tool_args.get(key)
+            if v is None:
+                continue
+            if isinstance(v, (list, tuple)):
+                for item in v:
+                    if isinstance(item, str) and item:
+                        try:
+                            candidate_paths.append(resolver.resolve(item))
+                        except PathResolveError:
+                            # An unresolvable path is suspicious. Let
+                            # the rules decide -- pass through the raw
+                            # string so they can flag it.
+                            candidate_paths.append(item)
+            elif isinstance(v, str) and v:
+                try:
+                    candidate_paths.append(resolver.resolve(v))
+                except PathResolveError:
+                    candidate_paths.append(v)
+
+        ctx = RuleContext(
+            tool_name=f"openclaw.{tool_name}",
+            arguments=dict(tool_args),
+            capability="openclaw_dispatcher",
+            paths=tuple(candidate_paths),
+            user_text=goal or "",
+            has_pending_clarification=False,
+        )
+        try:
+            verdict = validator.check(ctx)
+        except Exception as e:
+            logger.warning(
+                "runtime safety validator crashed (%s); failing open "
+                "for this call only", e,
+            )
+            return None
+
+        if verdict.is_allowed:
+            return None
+
+        logger.info(
+            "runtime safety validator blocked %s call: rule=%s reason=%s",
+            tool_name, verdict.triggered_rule_id, verdict.reason,
+        )
+        return DispatchResult(
+            success=False,
+            voice_message=(
+                verdict.user_message
+                or f"I held off on that — {verdict.reason}"
+            ),
+            error="blocked by runtime safety validator",
+            metadata={
+                "blocked": True,
+                "blocked_by": "safety_validator",
+                "tool_name": tool_name,
+                "verdict": verdict.verdict.value,
+                "rule_id": verdict.triggered_rule_id,
+                "reason": verdict.reason,
             },
         )
 

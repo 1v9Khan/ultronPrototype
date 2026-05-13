@@ -76,10 +76,12 @@ def test_listener_not_attached_when_disabled() -> None:
         )
         runner.start_task(request)
 
-    # Look for any listener that names the canonical monitor — there
-    # should be none. Default runner (log_path=None, no bound session)
-    # only attaches the canonical monitor when enabled.
-    assert len(handle._listeners) == 0
+    # When the canonical monitor is disabled the only listener
+    # attached is the 2026-05-12 safety validator FILE_CHANGE
+    # listener (always-on; degrades to no-op if the safety subsystem
+    # is unavailable). Default runner has log_path=None + no bound
+    # session, so no log listener / usage listener attach.
+    assert len(handle._listeners) == 1
 
 
 def test_listener_attached_when_enabled() -> None:
@@ -92,7 +94,9 @@ def test_listener_attached_when_enabled() -> None:
             task_prompt="x", cwd="C:/tmp", model="haiku", label="t",
         )
         runner.start_task(request)
-    assert len(handle._listeners) == 1
+    # Canonical-monitor listener + safety-validator FILE_CHANGE
+    # listener (always-on as of 2026-05-12 Phase 2).
+    assert len(handle._listeners) == 2
 
 
 # ---------------------------------------------------------------------------

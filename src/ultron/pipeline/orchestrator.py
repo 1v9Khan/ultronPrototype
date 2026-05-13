@@ -73,6 +73,10 @@ from ultron.conversational_ack import (
     is_conversational_ack_eligible,
 )
 from ultron.response_style import apply_brevity_hint
+from ultron.safety.validator import (
+    build_validator_from_config as _build_safety_validator_from_config,
+    set_validator as _set_safety_validator,
+)
 from ultron.web_search import (
     AcknowledgmentSource,
     BraveSearchClient,
@@ -187,6 +191,30 @@ class Orchestrator:
         self.ring = RingBuffer(
             int(ring_capacity_seconds * settings.SAMPLE_RATE)
         )
+        # 2026-05-12 Phase 2 -- runtime tool-call validator. Pairs with
+        # the abliterated default LLM (Josiefied-Qwen3-8B): the model can
+        # ask for anything; the validator decides what actually runs.
+        # Constructed here and pushed into the module singleton so call
+        # sites (OpenClaw dispatcher, coding bridge, MCP tools) read it
+        # via :func:`ultron.safety.get_validator`. Fail-open: if
+        # construction raises (missing config / package not installed /
+        # etc.), the singleton stays at the permissive no-op default
+        # and a WARN is logged on first use.
+        try:
+            self.safety_validator = _build_safety_validator_from_config()
+            _set_safety_validator(self.safety_validator)
+            logger.info(
+                "safety validator initialised: %d rules registered "
+                "(safety.enabled=%s)",
+                len(self.safety_validator.rules),
+                self.safety_validator.policy.enabled,
+            )
+        except Exception as e:
+            self.safety_validator = None
+            logger.warning(
+                "safety validator construction failed (%s); call sites "
+                "will see the permissive no-op validator", e,
+            )
         self.wake = WakeWordDetector()
         # 2026-05-12 Smart Turn V3: build the detector BEFORE the VAD so
         # we can wire the fast-path silence baseline into the VAD's

@@ -1375,6 +1375,59 @@ class WindowControlConfig(_Strict):
     tool_slug_type: str = "windows_type_text"
 
 
+class SafetyConfig(_Strict):
+    """Runtime tool-call validator configuration (Phase 2 -- 2026-05-12).
+
+    Paired with the abliterated default LLM (Josiefied-Qwen3-8B,
+    ``llm.preset = "josiefied-qwen3-8b"``). The validator gates the
+    actual capability surface even when the model is willing to
+    attempt anything at the content level.
+
+    Master switch: ``enabled``. Off = validator is a permissive
+    no-op (every tool call returns ALLOW). When false the model has
+    no policy enforcement at the runtime layer; this should only be
+    used for testing / one-off troubleshooting.
+
+    Per-rule toggles live in ``rules`` -- e.g.
+    ``rules: {"K1": false, "A4": true}``. Missing keys default to
+    True (rules are on unless explicitly disabled). The user's
+    2026-05-12 restriction-list rule IDs (K1-K10, A1-A12, B1-B9,
+    C1-C12, D1-D17, E1-E8, F1-F9, G1-G5, H1-H12, I1-I7, J1-J9,
+    K1-K10, L1-L4, M1-M12, N1-N6, O1-O8, P1-P5, Q1-Q5, R1-R7,
+    S1-S5) are the addressable units. Phase 2 ships K1-K10 only;
+    Phases 3-5 add the rest.
+
+    Sandbox + protected-path overrides let operators extend the
+    in-code defaults (e.g. mark an additional training-data
+    directory as protected). Paths are PROJECT_ROOT-relative.
+    """
+
+    # Master switch. False = permissive no-op for every tool call.
+    enabled: bool = True
+    # Per-rule enable map. Missing keys default to True.
+    rules: dict[str, bool] = Field(default_factory=dict)
+    # Project-root-relative directory roots where destructive ops are
+    # allowed. Defaults to data/sandbox if empty.
+    sandbox_roots: list[str] = Field(default_factory=list)
+    # Additional protected files (on top of the built-in K-list).
+    extra_protected_files: list[str] = Field(default_factory=list)
+    # Additional protected directory trees (on top of the built-in
+    # K-list).
+    extra_protected_dirs: list[str] = Field(default_factory=list)
+    # Cap-1 screen-context capture cache directory (Phase 4 wiring).
+    # PROJECT_ROOT-relative; the Cap-1 OUT-gate blocks writes of
+    # captured frames outside this directory.
+    screen_cache_dir: Optional[str] = None
+    # Hostnames the model is allowed to reach via outbound network
+    # calls (Brave, Jina, Anthropic API). Used by Categories I / J
+    # in Phase 4.
+    approved_outbound_apis: list[str] = Field(
+        default_factory=lambda: ["api.search.brave.com", "r.jina.ai", "api.anthropic.com"]
+    )
+    # Audit log path. Relative to PROJECT_ROOT.
+    audit_log_path: str = "logs/safety_audit.jsonl"
+
+
 class UltronConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -1403,6 +1456,9 @@ class UltronConfig(_Strict):
     gaming_mode: GamingModeConfig = Field(default_factory=GamingModeConfig)
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
     window_control: WindowControlConfig = Field(default_factory=WindowControlConfig)
+    # 2026-05-12 Phase 2 -- runtime tool-call validator (paired with the
+    # abliterated Josiefied Qwen3-8B default LLM).
+    safety: "SafetyConfig" = Field(default_factory=lambda: SafetyConfig())
 
 
 # ---------------------------------------------------------------------------

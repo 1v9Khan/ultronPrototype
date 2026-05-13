@@ -231,6 +231,15 @@ class CodingTaskRunner:
         canonical_listener = self._make_canonical_monitor_listener(handle)
         if canonical_listener is not None:
             handle.add_listener(canonical_listener)
+        # 2026-05-12 Phase 2 -- runtime safety validator FILE_CHANGE
+        # listener. When Claude Code spawns a write to a K-protected
+        # (or any other rule-protected) path, the listener cancels the
+        # handle and audits the abort. Belt-and-braces on top of the
+        # OpenClaw dispatcher gate -- coding-bridge file writes never
+        # go through that dispatcher, so they need their own check.
+        safety_listener = self._make_safety_validator_listener(handle)
+        if safety_listener is not None:
+            handle.add_listener(safety_listener)
         # Also log a structured "start" record for offline inspection.
         self._log_record({
             "ts": time.time(),
@@ -687,6 +696,105 @@ class CodingTaskRunner:
                 # The listener must NEVER raise back into the bridge —
                 # would break event delivery.
                 logger.debug("canonical monitor listener error: %s", e)
+
+        return _listener
+
+    def _make_safety_validator_listener(self, handle):
+        """Build the runtime-safety FILE_CHANGE listener.
+
+        Whenever the coding bridge reports a FILE_CHANGE event, this
+        listener runs the safety validator with capability=
+        ``coding_bridge`` and the changed path. Block verdicts cancel
+        the task handle and queue an in-character abort narration
+        (consumed via :meth:`pop_canonical_abort_warning` -- we
+        deliberately reuse that slot so the voice path doesn't need
+        a separate poll for safety-validator aborts).
+
+        Returns ``None`` when the safety subsystem is unavailable
+        (import error / no rules registered). The listener itself
+        never raises -- exceptions are logged at DEBUG.
+        """
+        try:
+            from ultron.safety import (
+                RuleContext, get_validator,
+            )
+            from ultron.safety.path_resolver import (
+                PathResolveError, get_path_resolver,
+            )
+            from ultron.coding.bridge import EventKind
+        except Exception as e:
+            logger.debug(
+                "safety validator listener unavailable (%s); skipping", e,
+            )
+            return None
+
+        resolver = get_path_resolver()
+        # Per-handle latch so a single block aborts at most once.
+        state = {"fired": False}
+
+        def _listener(event):
+            try:
+                if state["fired"]:
+                    return
+                # Only act on FILE_CHANGE events. STATUS / TEXT /
+                # TOOL_USE / etc. aren't directly path-driven (paths
+                # in TOOL_USE call arguments would need parsing per-
+                # tool; FILE_CHANGE is the post-fact ground truth).
+                if getattr(event, "kind", None) != EventKind.FILE_CHANGE:
+                    return
+                path_str = getattr(event, "path", None)
+                if not path_str:
+                    return
+                try:
+                    canonical = resolver.resolve(path_str)
+                except PathResolveError as e:
+                    logger.warning(
+                        "safety listener: unresolvable path in FILE_CHANGE "
+                        "event (%s); treating as a block trigger", e,
+                    )
+                    canonical = None
+
+                ctx = RuleContext(
+                    tool_name="coding_bridge.file_change",
+                    arguments={
+                        "path": path_str,
+                        "change_kind": str(getattr(event, "change_kind", "")),
+                        "write": True,
+                    },
+                    capability="coding_bridge",
+                    paths=tuple([canonical] if canonical is not None else []),
+                    user_text="",  # explicit-intent not consulted on
+                    # file changes -- writes are already past the
+                    # prompt-side check.
+                    has_pending_clarification=False,
+                )
+                validator = get_validator()
+                verdict = validator.check(ctx)
+                if verdict.is_allowed:
+                    return
+                # Block: cancel the task and queue the narration.
+                state["fired"] = True
+                logger.warning(
+                    "safety validator blocked FILE_CHANGE event "
+                    "(rule=%s reason=%s); cancelling coding task",
+                    verdict.triggered_rule_id, verdict.reason,
+                )
+                with self._canonical_lock:
+                    self._pending_canonical_abort = (
+                        f"I'm stopping that task. "
+                        f"It tried to {('write' if 'write' in path_str.lower() else 'modify')} "
+                        f"a protected file. {verdict.reason}"
+                    )
+                try:
+                    handle.cancel()
+                except Exception as e:
+                    logger.warning(
+                        "safety listener cancel failed: %s", e,
+                    )
+            except Exception as e:
+                # The listener must NEVER raise back into the bridge --
+                # would break event delivery.
+                logger.debug("safety listener error: %s", e)
 
         return _listener
 

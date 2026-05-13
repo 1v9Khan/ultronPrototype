@@ -880,3 +880,49 @@ error_phrases:
     - "The coding subprocess failed. Want me to retry, or abandon the task?"
   config_invalid:
     - "Configuration is invalid. I can't start."
+
+# ---------------------------------------------------------------------------
+# Runtime tool-call validator (2026-05-12 Phase 2)
+# ---------------------------------------------------------------------------
+# Pairs with the abliterated default LLM (llm.preset = "josiefied-qwen3-8b").
+# The validator gates the actual capability surface even when the model is
+# willing to attempt anything at the content level.
+#
+# Master switch (enabled: false) disables ALL safety enforcement. Per-rule
+# toggles live under "rules" -- missing keys default to True. The rule ids
+# match the user's 2026-05-12 restriction list (K1-K10, A1-A12, B1-B9, ...).
+#
+# Phase 2 ships Category K (Ultron self-protection / meta -- K1-K10).
+# Phases 3-5 add the remaining categories.
+
+safety:
+  enabled: true
+
+  # Per-rule toggles. Leave empty to use the in-code defaults (every rule
+  # ON). Example to disable a specific rule:
+  #   rules:
+  #     K7: false   # allow the model to edit dependency manifests
+  rules: {}
+
+  # Project-root-relative directory roots where destructive operations are
+  # allowed. Leave empty to use the default (data/sandbox/).
+  sandbox_roots: []
+
+  # Extra files / dirs to protect on top of the built-in K list.
+  # Project-root-relative paths.
+  extra_protected_files: []
+  extra_protected_dirs: []
+
+  # Cap-1 screen-context capture cache (Phase 4 wiring).
+  screen_cache_dir: null
+
+  # Hostnames the model is allowed to reach via outbound network calls
+  # (Categories I / J in Phase 4 consult this).
+  approved_outbound_apis:
+    - "api.search.brave.com"
+    - "r.jina.ai"
+    - "api.anthropic.com"
+
+  # Audit log path. Every block / log-only / explicit-intent-needed verdict
+  # writes one JSONL line here.
+  audit_log_path: "logs/safety_audit.jsonl"
