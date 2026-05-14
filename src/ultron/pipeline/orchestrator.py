@@ -269,6 +269,15 @@ class Orchestrator:
         # (Phase 4 onwards).
         self.openclaw_bridge = self._load_openclaw_bridge_if_enabled()
         self.coding_voice = self._load_coding_voice_if_enabled()
+        # 2026-05-12 Phase 12 -- wire moondream2 VLM for SCREEN_CONTEXT_QUERY
+        # responses. Construction is lazy + fail-open: it validates the
+        # transformers stack is importable but does NOT load weights at
+        # orchestrator startup. The ~3.5 GB weight load happens on first
+        # describe() call, which only fires on a voice "explain what I'm
+        # looking at" with VLM enabled. Set the singleton so the
+        # screen_context module can call into it via the registered
+        # describe-bridge.
+        self._load_desktop_vlm_if_enabled()
         self._last_response_finished_monotonic: float = 0.0
         self._last_search_payload = None
 
@@ -337,6 +346,34 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Coordinator init failed (%s) -- disabled", e)
             return None
+
+    def _load_desktop_vlm_if_enabled(self) -> None:
+        """2026-05-12 Phase 12 -- construct the moondream2 VLM singleton.
+
+        Lazy + fail-open: the constructor validates importability but
+        does NOT load weights (those load on first describe() call).
+        Sets the module-level VLM singleton via :func:`set_vlm`, which
+        also wires the screen_context describe-bridge so
+        :func:`build_screen_context` can include moondream2 scene
+        descriptions when ``include_vlm=True``.
+
+        Any construction failure (missing transformers, missing model
+        weights on disk, etc.) leaves the singleton unset and
+        screen_context falls back to text-only context (window title +
+        UIA tree + foreground app). The voice path is never blocked.
+        """
+        try:
+            from ultron.desktop.vlm import build_vlm_from_config, set_vlm
+
+            vlm = build_vlm_from_config(enabled=True, device="cpu")
+            if vlm is not None:
+                set_vlm(vlm)
+                logger.info("VLM (moondream2) constructed -- lazy-loads on first use.")
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning(
+                "VLM construction skipped (%s) -- screen-context queries "
+                "will fall back to text-only window/UIA context.", e,
+            )
 
     def _load_openclaw_bridge_if_enabled(self):
         """Phase 3.5: build the OpenClaw bridge holder (or return None
