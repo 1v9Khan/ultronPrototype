@@ -386,9 +386,34 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
     # quality and VRAM headroom (~5.5 GB on disk; peak ~10 GB stack vs
     # the 11.5 GB cap on the user's 4070 Ti). No matching 0.8B draft is
     # published, so speculative decoding is off for this preset.
+    # NOTE 2026-05-14: retained for swap-back; default rolled forward to
+    # the 4B abliterated variant below for VRAM relief on the 4070 Ti.
     "josiefied-qwen3-8b": {
         "model_path": "models/Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf",
         "n_ctx": 8192,
+        "draft_model_path": None,
+    },
+    # 2026-05-14 -- Josiefied-Qwen3-4B-abliterated-v2 (Goekdeniz-Guelmez)
+    # quantised by mradermacher. Base model: Qwen/Qwen3-4B-Instruct-2507.
+    # Same abliterated + Josiefied fine-tune lineage as the 8B variant
+    # above; preserves the runtime tool-call validator pairing at
+    # roughly half the VRAM footprint (~3.0 GB on disk vs 5.85 GB for
+    # the 8B Q5_K_M). New default 2026-05-14 to recover ~3 GB VRAM
+    # headroom on the 4070 Ti so the voice stack runs with a real
+    # buffer instead of right against the cap. No matching abliterated
+    # 0.6B / 0.8B draft is published, so speculative decoding stays off
+    # for this preset.
+    #
+    # n_ctx=6144 (down from the 8192 default the other presets use):
+    # Q8_0 KV cache at n_ctx=8192 costs ~580 MB for this model; 6144
+    # saves ~150 MB without affecting voice typical use (history capped
+    # at 4 turns + RAG top-3 + system prompt fits in ~2k tokens; even
+    # the heaviest screen-context query with 30+ windows + UIA tree +
+    # VLM description lands well under 4k). The user's setup peaks at
+    # 12 GB so every MB matters until the buffer is comfortable.
+    "josiefied-qwen3-4b": {
+        "model_path": "models/Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf",
+        "n_ctx": 6144,
         "draft_model_path": None,
     },
 }
@@ -403,12 +428,15 @@ class LLMConfig(_Strict):
     #   "qwen3.5-4b"        — 4B target + 0.8B draft for speculative
     #                         decoding, n_ctx=8192. Default through 2026-05-11.
     #   "josiefied-qwen3-8b" — Goekdeniz-Guelmez Josiefied + abliterated
-    #                         Qwen3-8B Q5_K_M; new default 2026-05-12.
-    #                         Combines an abliterated/personality-tuned
-    #                         conversational layer with the runtime
+    #                         Qwen3-8B Q5_K_M (default 2026-05-12 ->
+    #                         2026-05-13). Retained for swap-back.
+    #   "josiefied-qwen3-4b" — Goekdeniz-Guelmez Josiefied + abliterated
+    #                         Qwen3-4B-v2 Q5_K_M; new default 2026-05-14.
+    #                         Same abliterated lineage as the 8B above
+    #                         at ~half the VRAM. Pairs with the runtime
     #                         tool-call validator in src/ultron/safety/.
-    #                         No paired draft model (no compatible 0.8B
-    #                         abliterated GGUF exists).
+    #                         No paired abliterated draft published, so
+    #                         speculative decoding stays off for now.
     #   "custom"            — no auto-resolution; raw model_path / n_ctx /
     #                         draft_model_path fields are used as-is. For
     #                         tests and ad-hoc model swaps.
@@ -418,8 +446,9 @@ class LLMConfig(_Strict):
         "qwen3.5-9b",
         "qwen3.5-4b",
         "josiefied-qwen3-8b",
+        "josiefied-qwen3-4b",
         "custom",
-    ] = "josiefied-qwen3-8b"
+    ] = "josiefied-qwen3-4b"
     # Where the model actually runs:
     #   "in_process"  — load via llama-cpp-python in this Python process
     #                   (current default; what the voice pipeline uses today).

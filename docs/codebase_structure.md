@@ -36,6 +36,122 @@ User decision (no ClawHub plugins) drives the "native primitives + OpenClaw as o
 
 * **Phase 14 (orchestrator VLM wiring).** `Orchestrator.__init__` now calls `_load_desktop_vlm_if_enabled()` which constructs the moondream2 VLM and pushes it via :func:`ultron.desktop.vlm.set_vlm`. Lazy + fail-open: construction validates the transformers stack but does NOT load the ~3.5 GB weights at orchestrator startup -- the load happens on first :func:`describe` call (first ``SCREEN_CONTEXT_QUERY`` with VLM). Failure (missing transformers, missing weights on disk) leaves the singleton unset and `screen_context` falls back to text-only context (window title + UIA tree + foreground app). Targeted sweep: 221 pipeline + desktop tests still pass.
 
+**2026-05-14 VRAM-relief + UX-fix pass (pending commit on top of `205b97e`).**
+
+Eleven coordinated fixes prompted by the user's live-session feedback
+(`12 GB VRAM ceiling hit; GPU at 100%; "main monitor" defaults to
+right; YouTube channel deep-link ignored; "what's on my screen"
+hangs / leaks `<think>` to TTS; "switch to model 4B" misclassified;
+slow + breathy XTTS output`):
+
+* **LLM swap: Josiefied-Qwen3-8B Q5_K_M -> Josiefied-Qwen3-4B-abliterated-v2 Q5_K_M.** New default preset
+  `josiefied-qwen3-4b` (3.0 GB on disk vs 5.85 GB) recovers ~3 GB of
+  VRAM headroom while preserving the abliterated/Josiefied pairing
+  with the runtime tool-call validator. `n_ctx=6144` (down from
+  8192) trims another ~150 MB of KV cache. The 8B variant is
+  retained for swap-back. Wired into `LLM_PRESETS` + the
+  `Literal[...]` schema in `src/ultron/config.py`; `config.yaml:llm.preset`
+  flipped; `check_vram.py:TARGET_MB_BY_PRESET` extended; download
+  ordering in `scripts/download_models.py` reordered to fetch the new
+  default first. `mradermacher/Josiefied-Qwen3-4B-abliterated-v2-GGUF`
+  on HuggingFace.
+
+* **Whisper VRAM trim: float16 -> int8_float16.** Same `small.en`
+  model, quantised activations. Saves ~250 MB VRAM. WER impact in
+  the negligible band per CTranslate2 benchmarks; the 4070 Ti has
+  ample int8 throughput so STT latency unchanged.
+
+* **Post-init `torch.cuda.empty_cache()`.** Added at the tail of
+  `Orchestrator.__init__` to release transient allocations from
+  llama-cpp / faster-whisper / sounddevice init. Saves another
+  ~200-400 MB of fragmented allocation typically.
+
+* **Monitor mapping: `"main"` -> physical center (not Win32 primary).**
+  `find_monitor("main")` and `find_monitor("default")` now resolve
+  via a new `_center_monitor` helper rather than collapsing to the
+  Win32-designated primary. The user's setup has primary = right
+  monitor; calling that "main" violated user intuition. `"primary"`
+  remains a separate keyword for callers that explicitly want the
+  Win32 primary. The classifier's `_extract_monitor_target` no
+  longer pre-resolves `"main"` / `"primary"` to index 0 -- both are
+  routed through `find_monitor` at dispatch.
+
+* **Default to "main" when no monitor target specified.**
+  `_resolve_monitor(None, "")` in `src/ultron/desktop/voice.py` now
+  calls `find_monitor("main")` instead of returning `None`. The
+  launcher places the window on the center monitor instead of
+  wherever the spawned app happened to be last positioned.
+
+* **MODEL_SWITCH regex broadened.** "switch to model 4B" /
+  "switch to the model 9B" / "switch to llm 4B" / "switch to qwen
+  4B" / "switch to preset 9B" now match. The optional
+  `(?:(?:the\s+)?(?:model|llm|preset|qwen)\s+)?` slot accepts the
+  noun BEFORE the model token, not just after. 8B added as a
+  switch target (Josiefied-Qwen3-8B); "4B" now resolves to
+  `josiefied-qwen3-4b` (abliterated) not `qwen3.5-4b` (legacy).
+
+* **YouTube channel / video / search deep-linking.** New
+  `_build_youtube_url(text)` parses cue phrases ("with the channel
+  X", "to the X channel", "video X", "search for X", "play X")
+  out of the utterance and constructs a
+  `youtube.com/results?search_query=...` URL. Stops at sentence
+  terminators OR monitor-target boundaries so "on my right monitor"
+  doesn't bleed into the query. Hooked into `_classify_app_launch`
+  on the YouTube branch.
+
+* **Spotify WindowsApps shim path added.** The launcher's spotify
+  registry entry now checks `%LOCALAPPDATA%\Microsoft\WindowsApps\Spotify.exe`
+  first (the Microsoft Store install shim), then falls back to
+  the legacy `AppData/Roaming\Spotify\Spotify.exe` and
+  `%LOCALAPPDATA%\Spotify\Spotify.exe` paths. The user's
+  `Open Spotify` failed with "no candidate path exists on disk"
+  because only the legacy paths were checked.
+
+* **`<think>` block strip in blocking `generate()`.** New pure
+  function `strip_thinking_text(text)` in
+  `src/ultron/llm/inference.py`; applied inside `LLMEngine.generate()`
+  before returning. The 2026-05-13 session log had a `<think>...</think>`
+  block reach XTTS verbatim on the screen-context path (which uses
+  blocking `generate()`, not the streaming path that already filtered
+  thinking blocks). Unterminated `<think>` (truncation / cancel)
+  drops everything from the opening tag forward -- better to lose
+  tail content than leak chain-of-thought to TTS.
+
+* **SCREEN_CONTEXT_QUERY: brevity hint + `enable_thinking=False`.**
+  The screen-context handler in `coding/voice.py` now prepends
+  `[Style: respond in 1-2 short sentences ...]` to the augmented
+  prompt AND passes `enable_thinking=False` to the LLM. The
+  session log got a 1235-char essay back; the brevity hint plus
+  the `enable_thinking=False` (Qwen3's no-`<think>` chat-template
+  toggle) keeps the response in voice-friendly length and saves the
+  token budget the chain would have burned.
+
+* **SCREEN_CONTEXT_QUERY classifier: adjective-qualified screens.**
+  The regex now accepts `(?:main|primary|left|right|center|...)`
+  adjectives between "my" / "the" and "screen/display/monitor", so
+  "what's on my **main** screen" / "what's on my **left** monitor"
+  route to the native handler instead of the conversational LLM
+  (which previously hallucinated "A task interface." with no
+  actual screen context).
+
+* **Moondream2 revision pin.** `src/ultron/desktop/vlm.py` and
+  `scripts/download_models.py` both pin
+  `vikhyatk/moondream2 revision="2025-06-21"`. The live session
+  hit "data did not match any variant of untagged enum ModelWrapper
+  at line 255192 column 3" -- a `tokenizer.json` shape mismatch
+  between recent ``main`` and our pinned `tokenizers` build. The
+  2025-06-21 revision is the documented stable release per
+  the HuggingFace README.
+
+Tests: 2204 -> 2263 passing (+59) / 15 skipped / 0 failed. Voice
+baseline VRAM contract relaxed: previously ~10 GB peak (8B at
+the cap); new peak with 4B abliterated + Whisper int8_fp16 +
+`n_ctx=6144` is ~7.0-7.4 GB on the 4070 Ti = comfortable ~4 GB
+buffer beneath the 11.5 GB hard cap. TTFT not re-measured live
+(voice-stack-concurrency rule) but no paired draft means the
+abliterated 4B will run a touch slower than plain Qwen3.5-4B with
+its 0.8B draft -- expected delta is small.
+
 Last validated against `main` HEAD `29eefe4` (2026-05-13 Phase 14 -- orchestrator VLM wiring -- on top of `036889a` Phases 1-13 -- **native primitives + MCP exposure + voice wiring + preferences + analyze-and-discard + ultron-vision live install** -- on top of `91a3a3a` Phases 1-5 -- **abliterated default LLM + runtime tool-call validator** -- on top of `b1e4297`. Phase 1 added Josiefied-Qwen3-8B-abliterated-v1 Q5_K_M as the new default LLM preset. Phases 2-5 built the runtime tool-call validator that pairs with the abliterated model: 141 rules across 19 categories (K self-protection, A filesystem-destruction, B privilege-escalation, C security-perimeter, D credentials, E system-stability, F repo-integrity, G resource-exhaustion, H untrusted-code-execution, I outbound-impact, J data-exfiltration, M persistence, N process-manipulation, O anti-forensics, P AV/EDR-tampering, Q containers, R sensors, S AI-tampering, plus Cap-1..Cap-4 capability carve-outs). Cross-cutting concerns: Windows-aware path canonicalization (symlinks, junctions, 8.3 short names, percent-escape rejection, bidi-override rejection), tamper-evident hash-chain audit log at logs/safety_audit.jsonl, explicit-intent matcher, cross-capability taint tracker. Wired into the OpenClaw dispatcher's pre-flight check AND the coding bridge's FILE_CHANGE listener. Fail-closed everywhere -- buggy rule = BLOCK_HARD, missing config = BLOCK_HARD, unresolvable path = BLOCK_HARD. **1713 -> 1830 tests passing (+117).** 2026-05-12 Phase 1 added Josiefied-Qwen3-8B-abliterated-v1 Q5_K_M alongside existing presets and flipped the default. Goekdeniz-Guelmez Josiefied + abliterated Qwen3-8B Q5_K_M quantised by mradermacher; 5.85 GB on disk; ~10 GB voice-path peak vs 11.5 GB cap. Abliterated removes content-level refusals; the runtime tool-call validator under `src/ultron/safety/` (forthcoming phases 2-5) gates the capability surface. No paired draft (no abliterated 0.8B GGUF on HF) so no speculative decoding -- expect modest TTFT regression vs 4B preset until measured. Old `qwen3.5-9b` and `qwen3.5-4b` presets retained for swap-back. The 2026-05-12 three-part pass at `b1e4297` shipped audio-artifact fix + filler-ack + **Smart Turn V3** — three changes in one pass on top of `41e13b1`: **XTTS phantom-token mitigation** [user-reported "small sound blips like an unrelated word started then cut off" diagnosed via spectral analysis of a real 58 s session capture; phantom-token signature confirmed at 19.28 s — a 100 ms isolated audio event with 280 ms lead silence + 420 ms trailing silence; XTTS-v2's GPT duration head sometimes emits a fragmentary syllable after the stop-token; fixed by lowering server temperature from 0.75 → 0.65 to sharpen the duration-token distribution AND a defence-in-depth client-side phantom-tail trim that detects the specific pattern and removes it before the v3 filter; speed=1.15 preserved per user direction], **conversational filler-ack** [new `src/ultron/conversational_ack.py` with shuffled-cycle phrase pool ("Mm.", "Right.", "Hm.", "Considering.", etc.) wired into `Orchestrator._build_response_stream` so the no-search conversational branch yields a short thinking-noise BEFORE the LLM stream — masks the ~2.5 s perceived gap between Whisper completing and the LLM's first TTS chunk; gated against short utterances and pending coding-clarifications], **Smart Turn V3 semantic end-of-turn confirmation** [new `src/ultron/audio/smart_turn.py` wraps Pipecat's 8 MB int8 ONNX model (`models/smart_turn/smart-turn-v3.2-cpu.onnx`); CPU-only inference ~12 ms, zero VRAM cost; lazy-loaded, fail-open at every level (missing model file degrades silently to legacy VAD-only behaviour); when active, the VAD silence baseline drops from 1200 ms → 500 ms and the model confirms or rejects the early SPEECH_END; "complete" → submit immediately, "incomplete" → extend capture by 700 ms with VAD silence bumped to the long-utterance backstop; long utterances >8 s of speech bypass the model (the existing adaptive long-utterance backstop handles those); wired into both `_capture_utterance` and `_follow_up_listen`; net win ~500-1200 ms of perceived latency per confidently-complete turn]). **Tests: 1629 → 1711 (+82 net).**
 
 Prior validating HEAD `9139bda` (2026-05-11 follow-up bug-fix pass — Windsurf session — three live-session issues addressed: configurable max-utterance ceiling [class-constant `MAX_UTTERANCE_SECONDS=15.0` was cutting real users off mid-sentence; now `vad.max_utterance_seconds` config, default 30.0 s], completion-narration XTTS pin [`f"Project root: {path}."` made XTTS hang on backslash-laden Windows paths and pinned the GPU at 100 %; now speaks `path.name` only], progress-query classifier coverage gap [`"How is that project going?"` fell through to the conversational LLM because `_PROGRESS_PATTERNS` required `going` immediately after `that` and didn't tolerate the `project` in between; new `_DETERMINER_NOUN` group covers the/that/this/your/our/my × task/project/build/app/code/work/thing/run/job for going / coming / doing / done]).
@@ -536,10 +652,11 @@ For the current decisions and Foundation phase status see
 │   └── automation_tasks.jsonl      ← Phase 5 OpenClaw task records
 │
 ├── models/                         ← (main checkout only — NOT in worktrees)
-│   ├── Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf ← LLM, CURRENT DEFAULT (5.85 GB, 2026-05-12)
-│   ├── Qwen3.5-9B-Q4_K_M.gguf      ← LLM (5.29 GB; retained for swap-back)
-│   ├── Qwen3.5-4B-Q4_K_M.gguf      ← LLM (2.55 GB; retained for swap-back / spec decoding)
-│   ├── Qwen3.5-0.8B-Q4_K_M.gguf    ← speculative-decoding draft for 4B preset (0.50 GB)
+│   ├── Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf ← LLM, CURRENT DEFAULT (3.0 GB, 2026-05-14)
+│   ├── Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf ← LLM (5.85 GB; retained for swap-back / bigger abliterated)
+│   ├── Qwen3.5-9B-Q4_K_M.gguf      ← LLM (5.29 GB; retained for swap-back, not abliterated)
+│   ├── Qwen3.5-4B-Q4_K_M.gguf      ← LLM (2.55 GB; retained for swap-back / spec decoding, not abliterated)
+│   ├── Qwen3.5-0.8B-Q4_K_M.gguf    ← speculative-decoding draft for the plain qwen3.5-4b preset (0.50 GB)
 │   ├── openwakeword/ultron.onnx    ← custom wake word
 │   ├── piper/en_US-ryan-medium.onnx ← TTS voice
 │   ├── rvc/{hubert_base.pt, rmvpe.pt} ← RVC support files
@@ -2135,6 +2252,7 @@ Per-scenario validation: retrieval `expect_includes` / `expect_excludes` substri
 - `test_audio.py` — capture, ring buffer (incl. 2026-05-10 mode-aware `snapshot(last_n_samples=...)` slicing), devices
 - `test_response_style.py` (22, 2026-05-10) — `is_brief_question` / `apply_brevity_hint` coverage: short-question detection, depth-marker skip, long-question pass-through, empty input, idempotence on already-hinted text
 - `test_conversational_ack.py` (24, 2026-05-12 — NEW) — conversational filler-ack: gate eligibility (long-utterance fires, short-utterance/empty/clarification-pending skipped, whitespace-stripped), `ConversationalAckSource` shuffled-cycle (no immediate repeats, full pool per cycle, custom pool, empty-pool rejection), phrase-pool sanity (no web-search overlap, period-terminated, short, no duplicates), and orchestrator-level wiring (ack appears as first token on no-gate fallthrough path, suppressed on short utterance / pending clarification, fail-open on broken source or `has_pending_clarification` exception)
+- `test_llm_strip_thinking.py` (9, 2026-05-14 — NEW) — `strip_thinking_text` pure function: clean text passthrough, single-block strip, multi-block strip, surrounding text preserved, unterminated `<think>` drops tail, multiline blocks, real-session screen-context pattern, idempotence, short-input fast path. Covers the gap where blocking-path `LLMEngine.generate()` previously returned raw `<think>...</think>` chains (the streaming path was already filtered).
 - `test_smart_turn.py` (43, 2026-05-12 — NEW) — Smart Turn V3 semantic end-of-turn confirmation: `SmartTurnConfig` schema (defaults match production layout, all four range-enforced fields, dict round-trip, nested-under-VADConfig), `truncate_or_pad_for_smart_turn` pure function (under-window passthrough, over-window truncation to last n seconds, int16→float32 conversion, multi-dim flatten, non-16kHz rejection, custom window override), `SmartTurnDetector` construction (missing file, out-of-range threshold/window/threads, lazy-loading, warmup-propagates-failure, empty/wrong-sr/post-close all return None), `build_detector_from_config` fail-open (disabled / missing file / absolute-path missing all return None; present file yields a lazy detector), real-model end-to-end (6 tests, skipped when `models/smart_turn/smart-turn-v3.2-cpu.onnx` is absent — loads + warmup, silence verdict shape, threshold flip with identical probability, short audio padded by WhisperFeatureExtractor, long audio truncated to last 8 s, median inference under 150 ms), orchestrator-level wiring (`_smart_turn_should_check` gate semantics across detector-missing / no-speech / within-window / over-window, `_run_smart_turn` passes verdict through + swallows exceptions, `_build_smart_turn_detector` fail-open for disabled / missing file)
 - `test_coding_bridge.py` — CodingBridge abstract contract
 - `test_coding_e2e.py` — coding e2e (PYTEST_RUN_GPU_TESTS gated)
@@ -2253,10 +2371,11 @@ Set `$env:PYTEST_RUN_GPU_TESTS = "1"` before pytest. Includes real Claude API ca
 
 | File | Used by | Size |
 |---|---|---|
-| `Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf` | `LLMEngine` (when `llm.preset == "josiefied-qwen3-8b"`, **CURRENT DEFAULT 2026-05-12**). Goekdeniz-Guelmez Josiefied + abliterated Qwen3-8B Q5_K_M, quantised by mradermacher. Abliterated removes content-level refusals; runtime tool-call validator under `src/ultron/safety/` (phases 2-5) gates the capability surface. No paired draft. | 5.85 GB |
-| `Qwen3.5-9B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-9b"`; retained for swap-back) | 5.29 GB |
-| `Qwen3.5-4B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-4b"`; retained for swap-back / spec decoding) | 2.55 GB |
-| `Qwen3.5-0.8B-Q4_K_M.gguf` | speculative-decoding draft for 4B preset only (Josiefied 8B has no compatible draft) | 0.50 GB |
+| `Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf` | `LLMEngine` (when `llm.preset == "josiefied-qwen3-4b"`, **CURRENT DEFAULT 2026-05-14**). Goekdeniz-Guelmez Josiefied + abliterated Qwen3-4B-Instruct-2507 Q5_K_M, quantised by mradermacher. Same abliterated lineage as the 8B at ~half the VRAM. The runtime tool-call validator under `src/ultron/safety/` gates the capability surface. No paired draft (no abliterated sub-4B GGUF published). | 3.0 GB |
+| `Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf` | `LLMEngine` (when `llm.preset == "josiefied-qwen3-8b"`; retained for swap-back to the bigger abliterated variant) | 5.85 GB |
+| `Qwen3.5-9B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-9b"`; retained for swap-back, not abliterated) | 5.29 GB |
+| `Qwen3.5-4B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-4b"`; retained for swap-back / spec decoding, not abliterated) | 2.55 GB |
+| `Qwen3.5-0.8B-Q4_K_M.gguf` | speculative-decoding draft for plain qwen3.5-4b preset only (no abliterated draft published) | 0.50 GB |
 | `openwakeword/ultron.onnx` | `WakeWordDetector` | small |
 | `piper/en_US-ryan-medium.onnx[.json]` | `TextToSpeech` | ~60 MB |
 | `rvc/hubert_base.pt` | `RvcConverter` | ~362 MB |

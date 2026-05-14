@@ -39,9 +39,14 @@ HARD_CAP_MB = 11500
 WARN_FRACTION = 0.85   # warn at 85 % of hard cap
 
 # 4B optimization plan — preset-aware soft target table.
+# 2026-05-14: added the Josiefied 4B / 8B abliterated targets. The
+# 4B abliterated lands near the same VRAM as plain qwen3.5-4b; the
+# 8B abliterated lands near the 9B target.
 TARGET_MB_BY_PRESET: dict[str, int] = {
     "qwen3.5-9b": 9216,
     "qwen3.5-4b": 6700,
+    "josiefied-qwen3-8b": 9216,
+    "josiefied-qwen3-4b": 6700,
 }
 DEFAULT_TARGET_MB = 9216  # conservative fallback when preset unknown
 

@@ -97,9 +97,97 @@ def test_find_monitor_out_of_range_returns_none(fake_monitors):
 
 
 def test_find_monitor_primary_aliases(fake_monitors):
+    # In this fixture, primary IS the center monitor (DISPLAY1 at x=0..2048
+    # spanning the virtual-screen midpoint), so "primary"/"main"/"default"
+    # all happen to return the same monitor. The semantic split is
+    # exercised by test_find_monitor_main_is_center_not_win32_primary
+    # below using a fixture where they diverge.
     assert find_monitor("primary").is_primary
     assert find_monitor("main").is_primary
     assert find_monitor("default").is_primary
+
+
+def test_find_monitor_main_is_center_not_win32_primary(monkeypatch):
+    """2026-05-14: 'main' resolves to physical center, not Win32 primary.
+
+    User's setup has primary = right monitor; calling that "main" doesn't
+    match how they think of the displays. Build a fixture mirroring the
+    user's layout and assert the new semantics.
+    """
+    fakes = [
+        # Index 0 in our enumeration order: Win32 primary -- the RIGHT one.
+        # (Primary sorts to index 0 per enumerate_monitors' sort key.)
+        Monitor(
+            index=0, name="\\\\.\\DISPLAY2",
+            x=3840, y=0, width=1920, height=1080,
+            work_x=3840, work_y=0, work_width=1920, work_height=1040,
+            is_primary=True,
+        ),
+        Monitor(  # Index 1 = leftmost
+            index=1, name="\\\\.\\DISPLAY3",
+            x=0, y=0, width=1920, height=1080,
+            work_x=0, work_y=0, work_width=1920, work_height=1040,
+            is_primary=False,
+        ),
+        Monitor(  # Index 2 = center
+            index=2, name="\\\\.\\DISPLAY4",
+            x=1920, y=0, width=1920, height=1080,
+            work_x=1920, work_y=0, work_width=1920, work_height=1040,
+            is_primary=False,
+        ),
+    ]
+    monkeypatch.setattr(
+        "ultron.desktop.monitors.enumerate_monitors", lambda: fakes,
+    )
+    # "primary" still maps to Win32 primary (right).
+    assert find_monitor("primary").name == "\\\\.\\DISPLAY2"
+    # "main" / "default" / "center" / "middle" map to physical center.
+    assert find_monitor("main").name == "\\\\.\\DISPLAY4"
+    assert find_monitor("default").name == "\\\\.\\DISPLAY4"
+    assert find_monitor("center").name == "\\\\.\\DISPLAY4"
+    assert find_monitor("middle").name == "\\\\.\\DISPLAY4"
+    # Left / right by virtual-screen position.
+    assert find_monitor("left").name == "\\\\.\\DISPLAY3"
+    assert find_monitor("right").name == "\\\\.\\DISPLAY2"
+
+
+def test_find_monitor_main_single_monitor(monkeypatch):
+    """'main' on a 1-monitor setup returns that monitor."""
+    fakes = [
+        Monitor(
+            index=0, name="\\\\.\\DISPLAY1",
+            x=0, y=0, width=1920, height=1080,
+            work_x=0, work_y=0, work_width=1920, work_height=1040,
+            is_primary=True,
+        ),
+    ]
+    monkeypatch.setattr(
+        "ultron.desktop.monitors.enumerate_monitors", lambda: fakes,
+    )
+    assert find_monitor("main").index == 0
+    assert find_monitor("center").index == 0
+
+
+def test_find_monitor_main_two_monitor_falls_back_left(monkeypatch):
+    """'main' on a 2-monitor setup collapses to leftmost (deterministic)."""
+    fakes = [
+        Monitor(  # primary, right
+            index=0, name="\\\\.\\DISPLAY1",
+            x=1920, y=0, width=1920, height=1080,
+            work_x=1920, work_y=0, work_width=1920, work_height=1040,
+            is_primary=True,
+        ),
+        Monitor(  # left
+            index=1, name="\\\\.\\DISPLAY2",
+            x=0, y=0, width=1920, height=1080,
+            work_x=0, work_y=0, work_width=1920, work_height=1040,
+            is_primary=False,
+        ),
+    ]
+    monkeypatch.setattr(
+        "ultron.desktop.monitors.enumerate_monitors", lambda: fakes,
+    )
+    assert find_monitor("main").name == "\\\\.\\DISPLAY2"  # leftmost
 
 
 def test_find_monitor_ordinal_words(fake_monitors):

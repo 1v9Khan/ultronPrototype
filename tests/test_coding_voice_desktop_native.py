@@ -274,7 +274,8 @@ def test_handle_screen_context_no_llm_returns_voice_error(tmp_path):
 def test_handle_screen_context_happy_path(monkeypatch, tmp_path):
     from ultron.desktop.voice import ScreenContextVoiceResult
 
-    captured_prompt = []
+    captured_prompts = []
+    captured_kwargs = []
 
     def fake_handle(intent):
         return ScreenContextVoiceResult(
@@ -288,9 +289,13 @@ def test_handle_screen_context_happy_path(monkeypatch, tmp_path):
         "ultron.desktop.voice.handle_screen_context_query", fake_handle,
     )
     fake_llm = MagicMock()
-    fake_llm.generate.side_effect = (
-        lambda prompt: captured_prompt.append(prompt) or "It's a Python file."
-    )
+
+    def _fake_generate(prompt, **kwargs):
+        captured_prompts.append(prompt)
+        captured_kwargs.append(kwargs)
+        return "It's a Python file."
+
+    fake_llm.generate.side_effect = _fake_generate
 
     controller = _build_controller(
         llm_engine=fake_llm, tmp_path=tmp_path,
@@ -305,9 +310,16 @@ def test_handle_screen_context_happy_path(monkeypatch, tmp_path):
     assert response.text == "It's a Python file."
     # The augmented prompt should include both the screen context AND
     # the user's question.
-    assert len(captured_prompt) == 1
-    assert "Cursor showing main.py" in captured_prompt[0]
-    assert "what is this" in captured_prompt[0]
+    assert len(captured_prompts) == 1
+    assert "Cursor showing main.py" in captured_prompts[0]
+    assert "what is this" in captured_prompts[0]
+    # 2026-05-14: brevity hint baked into the prompt so the response
+    # stays 1-2 sentences instead of an essay.
+    assert "1-2 short sentences" in captured_prompts[0]
+    # 2026-05-14: thinking-mode disabled so the model doesn't burn
+    # tokens on <think>...</think> chains AND there's no way for a
+    # thought trace to leak to TTS even if the strip filter regressed.
+    assert captured_kwargs[0].get("enable_thinking") is False
 
 
 def test_handle_screen_context_snapshot_failure(monkeypatch, tmp_path):

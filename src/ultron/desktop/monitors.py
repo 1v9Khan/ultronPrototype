@@ -9,6 +9,17 @@ index 0; the rest are ordered left-to-right by x-coordinate. This
 matches how users count ("my second monitor", "my third monitor")
 and avoids depending on Windows' internal monitor handle ordering
 (which can change after display configuration changes).
+
+User-facing labels (2026-05-14): the ``find_monitor`` helper resolves
+``"main"`` to the *physical center* monitor by virtual-screen
+coordinate, not the Windows-designated primary. On the user's setup
+the primary is the right monitor; calling that "main" doesn't match
+how the user thinks of the displays. ``"left"`` and ``"right"`` use
+physical position (leftmost / rightmost by x). With three monitors
+this gives the natural mapping; with two, ``"main"`` collapses to
+``"left"`` (the only non-right monitor). When the user wants the
+Windows-primary specifically, use ``"primary"`` or the explicit
+display index.
 """
 
 from __future__ import annotations
@@ -147,7 +158,16 @@ def find_monitor(query: Union[str, int, None]) -> Optional[Monitor]:
 
     - ``int`` -- direct index.
     - numeric string (``"0"``, ``"2"``) -- direct index.
-    - ordinal words (``"first"``, ``"second"``, ``"primary"``, ``"main"``).
+    - ``"main"`` / ``"default"`` -- the *physical center* monitor
+      (matches user intuition for "main" on a 3-monitor setup).
+      Collapses to ``"left"`` on a 2-monitor setup, or the sole
+      monitor on a 1-monitor setup. 2026-05-14: this was changed
+      from "Windows-designated primary" because the user's primary
+      is their right monitor physically, not their center one.
+    - ``"primary"`` -- the Windows-designated primary monitor (kept
+      separate from "main" so callers who specifically want the
+      Win32 primary still have a way to ask for it).
+    - ordinal words (``"first"``, ``"second"``, etc.).
     - directional (``"left"``, ``"right"``, ``"center"``,
       ``"top"``, ``"bottom"``).
     - device name substring (``"DISPLAY2"``).
@@ -175,8 +195,11 @@ def find_monitor(query: Union[str, int, None]) -> Optional[Monitor]:
     except ValueError:
         pass
 
-    # Primary / main.
-    if q in {"primary", "main", "default"}:
+    # "main" / "default" -- physical center monitor (user-facing semantic).
+    # "primary" -- Windows-designated primary (Win32 semantic).
+    if q in {"main", "default"}:
+        return _center_monitor(monitors)
+    if q == "primary":
         for m in monitors:
             if m.is_primary:
                 return m
@@ -197,10 +220,7 @@ def find_monitor(query: Union[str, int, None]) -> Optional[Monitor]:
     if q in {"bottom", "lower", "below"}:
         return max(monitors, key=lambda m: m.y + m.height)
     if q in {"center", "middle", "centre"}:
-        all_left = min(m.x for m in monitors)
-        all_right = max(m.x + m.width for m in monitors)
-        target_cx = (all_left + all_right) // 2
-        return min(monitors, key=lambda m: abs(m.center[0] - target_cx))
+        return _center_monitor(monitors)
 
     # Device name substring match (last-ditch).
     for m in monitors:
@@ -208,6 +228,25 @@ def find_monitor(query: Union[str, int, None]) -> Optional[Monitor]:
             return m
 
     return None
+
+
+def _center_monitor(monitors: list[Monitor]) -> Monitor:
+    """Pick the monitor whose center x is closest to the virtual-screen
+    midpoint -- the user's "main" monitor on a multi-display setup.
+
+    For 1 monitor: returns it. For 2 monitors: returns the leftmost
+    (arbitrary but stable; users with 2 monitors typically use "left"
+    / "right" or "primary" / "secondary" rather than "main"). For 3+
+    monitors with a clear physical layout: returns the middle one.
+    """
+    if len(monitors) <= 1:
+        return monitors[0]
+    if len(monitors) == 2:
+        return min(monitors, key=lambda m: m.x)
+    all_left = min(m.x for m in monitors)
+    all_right = max(m.x + m.width for m in monitors)
+    target_cx = (all_left + all_right) // 2
+    return min(monitors, key=lambda m: abs(m.center[0] - target_cx))
 
 
 def point_to_monitor(x: int, y: int) -> Optional[Monitor]:

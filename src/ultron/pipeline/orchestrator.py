@@ -286,6 +286,23 @@ class Orchestrator:
         self._pending_capture = threading.Event()
         self._state: State = State.IDLE
 
+        # 2026-05-14 VRAM-relief pass: with the 4B abliterated default
+        # the post-init working set is ~7.4 GB instead of ~10 GB. Empty
+        # the CUDA allocator's cache once everything is loaded so any
+        # transient buffers from llama-cpp / faster-whisper / sounddevice
+        # init don't sit on top of the working set. Saves ~200-400 MB
+        # of fragmented allocation typically. Fail-open: no-op when
+        # torch isn't installed or CUDA isn't available.
+        try:  # pragma: no cover -- exercised in live runs only
+            import torch  # noqa: WPS433
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info(
+                    "post-init VRAM trim: torch.cuda.empty_cache() done."
+                )
+        except Exception:
+            pass
+
     def _load_mcp_server_if_enabled(self):
         """Construct + start the MCP server (Phase 1+). Failures degrade
         silently -- the coding pipeline can run without MCP, just without

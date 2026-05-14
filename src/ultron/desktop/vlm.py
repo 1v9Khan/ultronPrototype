@@ -57,6 +57,15 @@ logger = get_logger("desktop.vlm")
 # author; trust_remote_code is required (their custom inference code).
 DEFAULT_MOONDREAM_REPO = "vikhyatk/moondream2"
 
+# Pin to a stable revision. The model author updates ``main`` regularly
+# and recent ``tokenizer.json`` revisions are incompatible with the
+# tokenizers builds we have pinned -- surfaces as the runtime error
+# "data did not match any variant of untagged enum ModelWrapper at
+# line 255192 column 3" during from_pretrained(). ``2025-06-21`` is
+# the documented stable release per huggingface.co/vikhyatk/moondream2
+# README. Must match the value in scripts/download_models.py.
+DEFAULT_MOONDREAM_REVISION = "2025-06-21"
+
 # Default prompt when the caller doesn't supply one. Intentionally
 # open-ended -- Ultron will frame the answer in its own voice via the
 # LLM, not parrot back the description.
@@ -145,7 +154,7 @@ class Moondream2VLM:
         self,
         *,
         repo: str = DEFAULT_MOONDREAM_REPO,
-        revision: Optional[str] = None,
+        revision: Optional[str] = DEFAULT_MOONDREAM_REVISION,
         device: str = "cpu",
         max_tokens: int = 200,
     ) -> None:
@@ -355,7 +364,7 @@ def build_vlm_from_config(
     *,
     enabled: bool,
     repo: str = DEFAULT_MOONDREAM_REPO,
-    revision: Optional[str] = None,
+    revision: Optional[str] = DEFAULT_MOONDREAM_REVISION,
     device: str = "cpu",
     max_tokens: int = 200,
 ) -> Optional[Moondream2VLM]:
@@ -381,6 +390,7 @@ def build_vlm_from_config(
 
 __all__ = [
     "DEFAULT_MOONDREAM_REPO",
+    "DEFAULT_MOONDREAM_REVISION",
     "DEFAULT_DESCRIBE_PROMPT",
     "Moondream2VLM",
     "VLMResult",

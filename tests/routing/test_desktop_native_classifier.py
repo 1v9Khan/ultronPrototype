@@ -35,7 +35,6 @@ from ultron.openclaw_routing.intents import (
 @pytest.mark.parametrize("text,expected_idx,expected_query_partial", [
     ("open chrome on my second monitor", 1, "second"),
     ("on my 2nd monitor", 1, "2nd"),
-    ("open it on my primary monitor", 0, "primary"),
     ("on my first monitor", 0, "first"),
     ("on my third monitor", 2, "third"),
     ("on my 3rd monitor", 2, "3rd"),
@@ -58,6 +57,11 @@ def test_extract_monitor_target_explicit_index(text, expected_idx, expected_quer
     ("on the center display", "center"),
     ("on my top monitor", "top"),
     ("on my bottom monitor", "bottom"),
+    # 2026-05-14: "main" and "primary" are now position-based (resolved by
+    # find_monitor at dispatch) so they don't collapse to index 0 at parse
+    # time. "main" -> physical center; "primary" -> Win32-primary.
+    ("on my main monitor", "main"),
+    ("open it on my primary monitor", "primary"),
 ])
 def test_extract_monitor_target_directional(text, expected_word):
     idx, query = _extract_monitor_target(text)
@@ -221,6 +225,96 @@ def test_classify_app_launch_chrome_with_youtube_url():
     assert intent.app_name == "chrome"
     assert "youtube.com" in (intent.url or "")
     assert intent.monitor_index == 1
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-14: YouTube channel / video / search deep-linking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text,fragment", [
+    # "with the channel <name>" -- the user's reported phrasing
+    ("Open YouTube on my right monitor with the channel Ordinary Things",
+     "Ordinary+Things"),
+    # "to channel <name>"
+    ("open youtube to channel Veritasium on my main monitor", "Veritasium"),
+    # Trailing "the <name> channel" form (channel noun AFTER the name)
+    ("open youtube to the Veritasium channel on monitor 2", "Veritasium"),
+    # "for the channel <name>"
+    ("launch youtube for the channel Vsauce on the right monitor", "Vsauce"),
+])
+def test_classify_app_launch_youtube_channel(text, fragment):
+    """Channel cues build a YouTube results URL biased toward the channel."""
+    intent = _classify_app_launch(text)
+    assert intent is not None, f"failed for {text!r}"
+    assert intent.app_name == "chrome"
+    assert intent.url is not None
+    assert "youtube.com/results?search_query=" in intent.url
+    assert fragment in intent.url
+    # The word "channel" is appended to bias the YouTube search result.
+    assert "channel" in intent.url.lower()
+
+
+@pytest.mark.parametrize("text,fragment", [
+    ("open youtube to video boston dynamics atlas on monitor 2",
+     "boston+dynamics+atlas"),
+    ("launch youtube playing the video Inception trailer on my right monitor",
+     "Inception+trailer"),
+    ("open youtube searching for octopus camouflage on the main monitor",
+     "octopus+camouflage"),
+    ("open youtube search for python tutorial on monitor 1",
+     "python+tutorial"),
+])
+def test_classify_app_launch_youtube_video_or_search(text, fragment):
+    """Video / search cues build a generic YouTube search URL."""
+    intent = _classify_app_launch(text)
+    assert intent is not None, f"failed for {text!r}"
+    assert intent.app_name == "chrome"
+    assert intent.url is not None
+    assert "youtube.com/results?search_query=" in intent.url
+    assert fragment in intent.url
+
+
+def test_classify_app_launch_youtube_no_channel_falls_back_to_home():
+    """Plain "open youtube on monitor X" still opens the home page."""
+    intent = _classify_app_launch("open youtube on monitor 2")
+    assert intent is not None
+    assert intent.url == "https://www.youtube.com"
+    assert "results?search_query" not in (intent.url or "")
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-14: SCREEN_CONTEXT_QUERY -- position-adjective qualified screens
+# ("what's on my MAIN screen?" / "what's on my LEFT monitor?")
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", [
+    # User's actual session-log phrasing that previously fell through to
+    # the conversational LLM and returned "A task interface."
+    "What's on my main screen?",
+    "what's on my main monitor",
+    "what is on my main screen",
+    "what's on my primary monitor",
+    "what's on my left monitor",
+    "what's on my right screen",
+    "what's on my second monitor",
+    "what's on my center display",
+    "what's on my third screen",
+    "what is on the active monitor",
+    "what's on my current screen",
+    "tell me about what's on my main screen",
+    "describe my left monitor",
+    "look at my right screen",
+])
+def test_classify_screen_context_adjective_qualified(text):
+    """Position adjectives between 'my' and 'screen' must still route
+    to SCREEN_CONTEXT_QUERY instead of falling through to the
+    conversational LLM."""
+    intent = _classify_screen_context(text)
+    assert intent is not None, f"failed to match: {text!r}"
+    assert isinstance(intent, ScreenContextIntent)
+    assert intent.include_vlm is True
 
 
 @pytest.mark.parametrize("text,query_fragment", [

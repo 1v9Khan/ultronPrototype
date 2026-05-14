@@ -89,9 +89,13 @@ class ScreenContextVoiceResult:
 def _resolve_monitor(monitor_index: Optional[int], monitor_query: str):
     """Resolve a monitor target from an intent.
 
-    Returns the :class:`Monitor` instance, or ``None`` when the target
-    can't be resolved (caller treats as "no monitor placement"). Fails
-    open: any pywin32 / enum failure returns ``None``.
+    Returns the :class:`Monitor` instance, or ``None`` when the
+    desktop module can't be imported (caller treats as "no monitor
+    placement"). When the caller provides no target (``monitor_index
+    is None`` AND ``monitor_query`` is empty), defaults to the user's
+    main monitor -- physical center on multi-display setups -- per
+    user direction 2026-05-14 ("if no monitor is selected do the main
+    monitor"). Fails open: any pywin32 / enum failure returns ``None``.
     """
     try:
         from ultron.desktop.monitors import enumerate_monitors, find_monitor
@@ -108,7 +112,10 @@ def _resolve_monitor(monitor_index: Optional[int], monitor_query: str):
     if monitor_query:
         return find_monitor(monitor_query)
 
-    return None
+    # 2026-05-14 default-to-main: when the utterance gives no monitor
+    # cue, place on the user's main (physical center) monitor instead
+    # of letting the launched app pick wherever it was last positioned.
+    return find_monitor("main")
 
 
 # ---------------------------------------------------------------------------

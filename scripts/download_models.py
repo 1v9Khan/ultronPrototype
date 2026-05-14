@@ -57,9 +57,17 @@ LLM_DRAFT_FILE = "Qwen3.5-0.8B-Q4_K_M.gguf"
 # Quantised by mradermacher (community-trusted quantiser). Pairs with
 # the runtime tool-call validator under src/ultron/safety/ — the model
 # is abliterated (no content-level refusals) but the validator gates
-# the actual capability surface.
+# the actual capability surface. Retained for swap-back as of 2026-05-14.
 LLM_JOSIEFIED_REPO = "mradermacher/Josiefied-Qwen3-8B-abliterated-v1-GGUF"
 LLM_JOSIEFIED_FILE = "Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf"
+
+# 2026-05-14 — Josiefied-Qwen3-4B-abliterated-v2 (Goekdeniz-Guelmez).
+# Base: Qwen/Qwen3-4B-Instruct-2507. Same abliterated + Josiefied
+# fine-tune lineage as the 8B above at ~half the VRAM footprint
+# (~3.0 GB on disk for Q5_K_M; ~7.4 GB voice-path peak vs 11.5 GB cap
+# — ~4 GB buffer, comfortable on the 4070 Ti). New default 2026-05-14.
+LLM_JOSIEFIED_4B_REPO = "mradermacher/Josiefied-Qwen3-4B-abliterated-v2-GGUF"
+LLM_JOSIEFIED_4B_FILE = "Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf"
 
 # Moondream2 -- 1.9B vision-language model for "explain what I'm looking at"
 # voice flows. CPU-only on-demand inference (~5-8 s per query). Total ~3.5 GB
@@ -67,7 +75,15 @@ LLM_JOSIEFIED_FILE = "Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf"
 # inference code via trust_remote_code=True -- vikhyatk is the model author.
 # Pulled in by transformers.AutoModelForCausalLM on first VLM query; the
 # pre-fetch here populates the cache so the first user query is fast.
+#
+# 2026-05-14: pin to a stable revision. The model author updates ``main``
+# regularly and a recent ``tokenizer.json`` revision is incompatible with
+# pinned ``tokenizers`` builds (error: "data did not match any variant of
+# untagged enum ModelWrapper"). ``2025-06-21`` is the documented stable
+# release at https://huggingface.co/vikhyatk/moondream2 and matches the
+# revision pinned in src/ultron/desktop/vlm.py.
 MOONDREAM_REPO = "vikhyatk/moondream2"
+MOONDREAM_REVISION = "2025-06-21"
 
 # Smart Turn V3 — semantic end-of-turn detector (BSD-2-Clause).
 # 8 MB int8 ONNX; CPU inference ~12 ms. Runs AFTER Silero detects silence
@@ -154,13 +170,30 @@ def _prefetch_moondream2() -> None:
     a normal HF download. The model lazy-loads on first VLM query in
     the running orchestrator; this just warms the cache so that first
     query doesn't pay the ~3.5 GB download cost.
+
+    Pins ``revision=MOONDREAM_REVISION`` (currently ``2025-06-21``) to
+    avoid the ``tokenizer.json``-mismatch error that comes from main
+    being updated faster than the ``tokenizers`` library can keep up
+    with. Must match the revision pinned in
+    :mod:`src/ultron/desktop/vlm.py`.
     """
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        print(f"  → pulling tokenizer + weights from {MOONDREAM_REPO}")
-        AutoTokenizer.from_pretrained(MOONDREAM_REPO, trust_remote_code=True)
-        AutoModelForCausalLM.from_pretrained(MOONDREAM_REPO, trust_remote_code=True)
+        print(
+            f"  → pulling tokenizer + weights from {MOONDREAM_REPO} "
+            f"@ {MOONDREAM_REVISION}"
+        )
+        AutoTokenizer.from_pretrained(
+            MOONDREAM_REPO,
+            revision=MOONDREAM_REVISION,
+            trust_remote_code=True,
+        )
+        AutoModelForCausalLM.from_pretrained(
+            MOONDREAM_REPO,
+            revision=MOONDREAM_REVISION,
+            trust_remote_code=True,
+        )
         print("  ✓ moondream2 cached")
     except Exception as e:  # noqa: BLE001
         print(f"  ✗ failed: {e}")
@@ -172,23 +205,26 @@ def main() -> int:
 
     settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("\n[1/10] LLM (Josiefied-Qwen3-8B-abliterated-v1 Q5_K_M) — current default")
+    print("\n[1/11] LLM (Josiefied-Qwen3-4B-abliterated-v2 Q5_K_M) — current default")
+    _hf_download(LLM_JOSIEFIED_4B_REPO, LLM_JOSIEFIED_4B_FILE, settings.MODELS_DIR)
+
+    print("\n[2/11] LLM (Josiefied-Qwen3-8B-abliterated-v1 Q5_K_M) — retained for swap-back")
     _hf_download(LLM_JOSIEFIED_REPO, LLM_JOSIEFIED_FILE, settings.MODELS_DIR)
 
-    print("\n[2/10] LLM (Qwen3.5-9B Q4_K_M) — retained for swap-back")
+    print("\n[3/11] LLM (Qwen3.5-9B Q4_K_M) — retained for swap-back")
     _hf_download(LLM_REPO, LLM_FILE, settings.MODELS_DIR)
 
-    print("\n[3/10] LLM (Qwen3.5-4B Q4_K_M) — retained for swap-back / spec decoding")
+    print("\n[4/11] LLM (Qwen3.5-4B Q4_K_M) — retained for swap-back / spec decoding")
     _hf_download(LLM_4B_REPO, LLM_4B_FILE, settings.MODELS_DIR)
 
-    print("\n[4/10] LLM (Qwen3.5-0.8B Q4_K_M) — speculative-decoding draft for 4B preset")
+    print("\n[5/11] LLM (Qwen3.5-0.8B Q4_K_M) — speculative-decoding draft for 4B preset")
     _hf_download(LLM_DRAFT_REPO, LLM_DRAFT_FILE, settings.MODELS_DIR)
 
-    print("\n[5/10] Piper voice (en_US-ryan-medium)")
+    print("\n[6/11] Piper voice (en_US-ryan-medium)")
     _download(PIPER_VOICE_URL, settings.TTS_VOICE_PATH)
     _download(PIPER_CONFIG_URL, settings.TTS_VOICE_CONFIG_PATH)
 
-    print("\n[6/10] faster-whisper (downloads on first transcription)")
+    print("\n[7/11] faster-whisper (downloads on first transcription)")
     print("  → triggering pre-fetch…")
     try:
         from faster_whisper import WhisperModel
@@ -202,7 +238,7 @@ def main() -> int:
     except Exception as e:
         print(f"  ✗ failed: {e}")
 
-    print("\n[7/10] openWakeWord pretrained models (downloads on first use)")
+    print("\n[8/11] openWakeWord pretrained models (downloads on first use)")
     try:
         import openwakeword.utils as ow_utils
 
@@ -211,14 +247,14 @@ def main() -> int:
     except Exception as e:
         print(f"  ✗ failed: {e}")
 
-    print("\n[8/10] Smart Turn V3.2 (cpu) — semantic end-of-turn detector (~8.7 MB int8)")
+    print("\n[9/11] Smart Turn V3.2 (cpu) — semantic end-of-turn detector (~8.7 MB int8)")
     smart_turn_dir = settings.MODELS_DIR / "smart_turn"
     _hf_download(SMART_TURN_REPO, SMART_TURN_FILE, smart_turn_dir)
 
-    print("\n[9/10] moondream2 — vision-language model (~3.5 GB FP16, CPU inference)")
+    print(f"\n[10/11] moondream2 @ {MOONDREAM_REVISION} — vision-language model (~3.5 GB FP16, CPU inference)")
     _prefetch_moondream2()
 
-    print("\n[10/10] RVC support models + voice-conversion model")
+    print("\n[11/11] RVC support models + voice-conversion model")
     _download(RVC_SUPPORT_BASE_URL + "hubert_base.pt", settings.RVC_HUBERT_PATH)
     _download(RVC_SUPPORT_BASE_URL + "rmvpe.pt", settings.RVC_RMVPE_PATH)
     if settings.RVC_MODEL_PATH.is_file() and settings.RVC_INDEX_PATH.is_file():

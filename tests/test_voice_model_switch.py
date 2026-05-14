@@ -135,10 +135,16 @@ def test_model_switch_missing_intent_payload_speaks_clarification(tmp_path: Path
 
 
 @pytest.mark.parametrize("utterance,expected_target", [
-    ("switch to the 4B", "qwen3.5-4b"),
+    # 2026-05-14: "switch to 4B" now resolves to josiefied-qwen3-4b
+    # (the abliterated variant; new default). "9B" stays plain qwen3.5-9b.
+    # "8B" added as a switch target for the abliterated 8B swap-back.
+    ("switch to the 4B", "josiefied-qwen3-4b"),
     ("use the 9B model", "qwen3.5-9b"),
-    ("load 4B", "qwen3.5-4b"),
+    ("load 4B", "josiefied-qwen3-4b"),
     ("swap over to the nine B", "qwen3.5-9b"),
+    ("switch to model 4B", "josiefied-qwen3-4b"),
+    ("switch to the 8B", "josiefied-qwen3-8b"),
+    ("use the 8B model", "josiefied-qwen3-8b"),
 ])
 def test_classifier_then_voice_controller_end_to_end(
     utterance: str, expected_target: str, tmp_path: Path,

@@ -795,6 +795,8 @@ class CapabilityVoiceController:
         return {
             "qwen3.5-9b": "the 9B",
             "qwen3.5-4b": "the 4B",
+            "josiefied-qwen3-8b": "the 8B",
+            "josiefied-qwen3-4b": "the 4B",
         }.get(preset, preset)
 
     # --- Phase 13: system-status voice queries -----------------------------
@@ -1007,8 +1009,17 @@ class CapabilityVoiceController:
         # Compose the LLM prompt: screen context first, then the user's
         # actual question. Ultron's system prompt + persona apply
         # normally on top.
+        # 2026-05-14: lead with a hard length cap so the screen-context
+        # answer stays a 1-2 sentence voice line instead of a 1235-char
+        # essay (the 2026-05-13 session log got "YouTube - Google Chrome.
+        # Extensions like Dark Reader and uBlock Origin are active. Tabs
+        # include YouTube videos..." -- correct, but 8+ s of TTS for
+        # what could have been "YouTube in Chrome.").
         question = intent.question or routing_intent.raw_text
         augmented_prompt = (
+            "[Style: respond in 1-2 short sentences. Identify the "
+            "foreground app + what the user is doing. No lists, no "
+            "preamble.]\n\n"
             f"{sc_result.injection_text}\n\n"
             f"User question: {question}\n\n"
             "Answer the user concisely, in your normal voice, "
@@ -1016,7 +1027,14 @@ class CapabilityVoiceController:
         )
 
         try:
-            response_text = self.llm_engine.generate(augmented_prompt)
+            # 2026-05-14: disable the <think>...</think> chain so the
+            # blocking generate() call doesn't burn tokens on reasoning
+            # and doesn't risk leaking thought-traces to TTS even if the
+            # strip helper had a bug. Screen-context Q&A is "simple
+            # conversation" by the 4B-plan thinking-mode table.
+            response_text = self.llm_engine.generate(
+                augmented_prompt, enable_thinking=False,
+            )
         except Exception as e:                                    # noqa: BLE001
             get_routing_log().record(
                 routing_intent,

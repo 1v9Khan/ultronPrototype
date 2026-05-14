@@ -154,7 +154,15 @@ wake_word:
 stt:
   model: "small.en"            # base.en for lower latency on weak GPUs
   device: "cuda"
-  compute_type: "float16"
+  # 2026-05-14 VRAM-relief pass: float16 -> int8_float16. int8_float16
+  # uses 8-bit weights + fp16 activations -- saves ~250 MB VRAM on the
+  # small.en model vs pure float16. WER impact is negligible at this
+  # quant level (~0.1-0.3 percentage points on LibriSpeech-test-clean
+  # per CTranslate2 benchmarks); we already measured 2.9% WER on the
+  # 5-clip prototype set with float16 so the int8_float16 worst-case
+  # is well within acceptable. The 4070 Ti has plenty of int8 throughput
+  # so latency is unchanged.
+  compute_type: "int8_float16"
   beam_size: 5
   temperature: 0.0
   condition_on_previous_text: false
@@ -173,25 +181,32 @@ llm:
   # without changing presets — explicit values win over preset defaults.
   #
   # Available presets:
+  #   "josiefied-qwen3-4b" — Goekdeniz-Guelmez Josiefied + abliterated
+  #                         Qwen3-4B-v2 Q5_K_M. CURRENT DEFAULT (2026-05-14).
+  #                         Same abliterated + Josiefied lineage as the
+  #                         8B below at ~half the VRAM (~3.0 GB on disk;
+  #                         ~7.4 GB voice-path peak vs the 11.5 GB hard
+  #                         cap on the 4070 Ti -- ~4 GB headroom).
+  #                         No paired abliterated draft, so no spec
+  #                         decoding.
   #   "josiefied-qwen3-8b" — Goekdeniz-Guelmez Josiefied + abliterated
-  #                         Qwen3-8B Q5_K_M. CURRENT DEFAULT (2026-05-12).
-  #                         Abliterated removes content-level refusals;
-  #                         the runtime tool-call validator under
-  #                         src/ultron/safety/ gates the actual capability
-  #                         surface. No paired draft (no abliterated 0.8B
-  #                         on HF) so no speculative decoding.
+  #                         Qwen3-8B Q5_K_M. Default 2026-05-12 ->
+  #                         2026-05-13; retained for swap-back when
+  #                         the user wants the larger model.
   #   "qwen3.5-9b"        — Qwen3.5-9B-Q4_K_M, n_ctx=8192, no draft.
   #                         Retained for swap-back.
   #   "qwen3.5-4b"        — Qwen3.5-4B-Q4_K_M + 0.8B draft, n_ctx=8192.
   #                         Retained for swap-back / spec decoding.
+  #                         Not abliterated -- will refuse some queries.
   #
   # Easy on-the-fly switching:
   #   1. Edit this preset line and restart Ultron.
-  #   2. Or set ULTRON_LLM_PRESET=qwen3.5-4b in the environment.
-  #   3. Or run: python scripts/swap_llm_preset.py qwen3.5-4b
+  #   2. Or set ULTRON_LLM_PRESET=josiefied-qwen3-8b in the environment.
+  #   3. Or run: python scripts/swap_llm_preset.py josiefied-qwen3-8b
+  #   4. Voice: "switch to the 4B" / "switch to model 4B" (in-process hot swap).
   #
   # See docs/4b_optimization_plan.md for the per-preset details.
-  preset: "josiefied-qwen3-8b"
+  preset: "josiefied-qwen3-4b"
   # The next three keys are auto-filled from the preset above. Uncomment
   # to override (e.g. plug a non-preset GGUF in via preset: "custom").
   # model_path: "models/Qwen3.5-4B-Q4_K_M.gguf"

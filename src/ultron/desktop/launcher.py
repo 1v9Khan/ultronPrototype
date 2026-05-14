@@ -223,6 +223,16 @@ def _default_registry() -> list[AppEntry]:
         AppEntry(
             name="spotify",
             candidate_paths=[
+                # Microsoft Store install shim (most common on Win 11) --
+                # 0-byte alias under %LOCALAPPDATA%\Microsoft\WindowsApps\
+                # that the OS resolves to the real Spotify package under
+                # %ProgramFiles%\WindowsApps\SpotifyAB.SpotifyMusic_*\.
+                # Added 2026-05-14 after a live-session "Open Spotify"
+                # failed with "no candidate path exists on disk" because
+                # only the legacy install paths below were checked.
+                _localappdata("Microsoft", "WindowsApps", "Spotify.exe"),
+                # Legacy direct-install paths (older Spotify versions
+                # and corporate installs).
                 _home("AppData", "Roaming", "Spotify", "Spotify.exe"),
                 _localappdata("Spotify", "Spotify.exe"),
             ],

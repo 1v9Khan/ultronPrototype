@@ -235,6 +235,41 @@ def _strip_thinking_blocks(stream: Iterator[str]) -> Iterator[str]:
         yield buf
 
 
+def strip_thinking_text(text: str) -> str:
+    """Strip ``<think>...</think>`` blocks from a fully-materialised string.
+
+    Used by :meth:`LLMEngine.generate` (blocking) so callers that take
+    the whole response in one shot don't have to filter manually.
+    Streamed callers should still go through :func:`_strip_thinking_blocks`
+    because it handles tags split across token boundaries.
+
+    Returns the input unchanged when no ``<think>`` tag is present. When
+    an opening tag exists without a closing tag (truncation / cancel),
+    drops everything from the opening tag onward so the partial block
+    can't leak to TTS.
+    """
+    if not text or "<think>" not in text:
+        return text
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        start = text.find("<think>", i)
+        if start == -1:
+            out.append(text[i:])
+            break
+        if start > i:
+            out.append(text[i:start])
+        end = text.find("</think>", start + len("<think>"))
+        if end == -1:
+            # Unterminated -- drop the rest (model was cancelled or
+            # output was truncated). Better to lose tail content than
+            # leak chain-of-thought to TTS.
+            break
+        i = end + len("</think>")
+    return "".join(out).strip()
+
+
 class LLMEngine:
     """LLM client with chat history.
 
@@ -814,7 +849,15 @@ class LLMEngine:
             out = self._http_chat_completion(
                 messages, _llm_cfg, stream=False, enable_thinking=enable_thinking,
             )
-        text = out["choices"][0]["message"]["content"].strip()
+        raw_text = out["choices"][0]["message"]["content"]
+        # 2026-05-14: defensively strip <think>...</think> blocks from the
+        # blocking-path output too. Streaming callers already went through
+        # _strip_thinking_blocks; blocking callers (screen-context Q&A,
+        # decomposer JSON pass, etc.) previously returned raw chains-of-
+        # thought, which leaked into TTS on the screen-context path
+        # ("XTTS produced no audio for '<think>...'" warning in the
+        # 2026-05-13 session log).
+        text = strip_thinking_text(raw_text).strip()
         logger.info(
             "LLM: %d chars in %.2fs (%d tokens)",
             len(text),

@@ -94,13 +94,25 @@ _MODEL_SWITCH_VERBS = (
     r"go|move|use|load|run|activate|engage|select"
 )
 _MODEL_SWITCH_4B_TOKEN = r"(?:4\s*[Bb]|four\s*[Bb]|for\s*[Bb]|4\s*-\s*[Bb])"
+# 2026-05-14: 8B added because Josiefied-Qwen3-8B is the swap-back path
+# from the new 4B default. Whisper transcribes spoken "8B" reliably as
+# "8B" / "8 b" / "eight B".
+_MODEL_SWITCH_8B_TOKEN = r"(?:8\s*[Bb]|eight\s*[Bb]|ate\s*[Bb]|8\s*-\s*[Bb])"
 _MODEL_SWITCH_9B_TOKEN = r"(?:9\s*[Bb]|nine\s*[Bb]|9\s*-\s*[Bb])"
 _MODEL_SWITCH_TOKEN = (
-    rf"(?P<model>{_MODEL_SWITCH_4B_TOKEN}|{_MODEL_SWITCH_9B_TOKEN})"
+    rf"(?P<model>{_MODEL_SWITCH_4B_TOKEN}|{_MODEL_SWITCH_8B_TOKEN}|"
+    rf"{_MODEL_SWITCH_9B_TOKEN})"
 )
 _MODEL_SWITCH_PATTERNS = re.compile(
     rf"\b(?:{_MODEL_SWITCH_VERBS})\s+(?:over\s+)?(?:to\s+|on\s+to\s+|onto\s+)?"
-    rf"(?:the\s+)?{_MODEL_SWITCH_TOKEN}"
+    # 2026-05-14: allow optional "the model" / "model" / "the llm" / etc.
+    # between the verb and the model token so "switch to model 4B" /
+    # "switch to the model 4B" both match. Previously only the trailing
+    # "(?:\s+(?:model|llm|qwen))?\b" was honored, so users saying the
+    # noun BEFORE the token (which Whisper transcribes naturally) hit
+    # the conversational LLM instead of MODEL_SWITCH.
+    rf"(?:the\s+)?(?:(?:the\s+)?(?:model|llm|preset|qwen)\s+)?"
+    rf"{_MODEL_SWITCH_TOKEN}"
     r"(?:\s+(?:model|llm|qwen))?\b",
     re.IGNORECASE,
 )
@@ -173,12 +185,19 @@ def _resolve_model_switch_target(matched_token: str) -> str:
     """Map the matched-text variant back to the canonical preset name.
 
     ``matched_token`` is the contents of the ``(?P<model>...)`` group —
-    e.g. "4B", "four B", "9 b", "for B". Returns one of the canonical
-    preset names: ``"qwen3.5-4b"`` / ``"qwen3.5-9b"``.
+    e.g. "4B", "four B", "9 b", "for B", "8 b", "eight B". Returns one
+    of the canonical preset names. 2026-05-14: "4B" / "8B" route to
+    the Josiefied (abliterated) variants because those are the
+    intentionally-maintained presets the user is choosing between
+    after the 4B default landed; "9B" keeps the plain qwen3.5-9b
+    swap-back path. Users who specifically want plain qwen3.5-4b set
+    that in YAML or via ``ULTRON_LLM_PRESET``.
     """
     t = matched_token.lower().replace("-", "").replace(" ", "")
     if t.startswith("4") or t.startswith("four") or t.startswith("for"):
-        return "qwen3.5-4b"
+        return "josiefied-qwen3-4b"
+    if t.startswith("8") or t.startswith("eight") or t.startswith("ate"):
+        return "josiefied-qwen3-8b"
     if t.startswith("9") or t.startswith("nine"):
         return "qwen3.5-9b"
     # Defensive — regex shouldn't allow other tokens through.
@@ -891,16 +910,23 @@ _MONITOR_TARGET_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Ordinal-words map for monitor extraction.
+# Ordinal-words map for monitor extraction. Pure ordinals (first / second /
+# etc.) resolve to a zero-based index. "main" and "primary" are NOT in
+# this map -- they're position-based / Win32-based and need to flow
+# through ``find_monitor`` at dispatch time so they pick up the user's
+# physical layout instead of a hardcoded index.
 _MONITOR_ORDINAL_TO_INDEX = {
-    "first": 0, "1st": 0, "one": 0, "primary": 0, "main": 0,
+    "first": 0, "1st": 0, "one": 0,
     "second": 1, "2nd": 1, "two": 1,
     "third": 2, "3rd": 2, "three": 2,
     "fourth": 3, "4th": 3, "four": 3,
 }
-# Directional words preserved as strings; resolved by find_monitor.
+# Words preserved as strings and resolved by find_monitor at dispatch.
+# "main" -> physical center (user-direction 2026-05-14).
+# "primary" -> Win32-primary (kept for callers who explicitly want it).
 _MONITOR_DIRECTIONAL_WORDS = (
     "left", "right", "center", "centre", "middle", "top", "bottom",
+    "main", "primary",
 )
 
 
@@ -952,21 +978,36 @@ def _extract_monitor_target(text: str) -> tuple[Optional[int], str]:
 # SCREEN_CONTEXT_QUERY: utterances asking about the current screen state.
 # Higher priority than BROWSER -- "show me my screen" shouldn't route
 # to browser. Tight regex so it doesn't swallow general "what is X" queries.
+# 2026-05-14: allow position adjectives (main / primary / left / right /
+# center / second / etc.) between "my" and "screen|display|monitor" so
+# "what's on my MAIN screen" / "what's on my left monitor" still route
+# to SCREEN_CONTEXT_QUERY instead of falling through to the conversational
+# LLM (which the user's session log showed answering "A task interface."
+# with no actual screen context).
+_SCREEN_NOUN_ADJ = (
+    r"(?:main\s+|primary\s+|center\s+|centre\s+|middle\s+|"
+    r"left\s+|right\s+|top\s+|bottom\s+|"
+    r"first\s+|1st\s+|second\s+|2nd\s+|third\s+|3rd\s+|fourth\s+|4th\s+|"
+    r"other\s+|active\s+|current\s+|focused\s+)?"
+)
+_SCREEN_NOUN = r"(?:screen|display|monitor)"
+_SCREEN_DET = r"(?:my\s+|the\s+)?"
 _SCREEN_CONTEXT_PATTERNS = re.compile(
     r"\b(?:"
     # "explain what I'm/I am looking at"
     r"explain\s+(?:what\s+)?(?:i'm|i\s+am|im)\s+(?:looking\s+at|seeing|doing|working\s+on)|"
-    # "what(s) on my screen", "what's on screen"
-    r"what(?:'s|\s+is)?\s+(?:on\s+)?(?:my\s+)?(?:screen|display|monitor)|"
+    # "what(s) on my main screen" / "what's on my screen" / "what's on the active monitor"
+    rf"what(?:'s|\s+is)?\s+(?:on\s+)?{_SCREEN_DET}{_SCREEN_NOUN_ADJ}{_SCREEN_NOUN}|"
     # "what am I looking at", "what are you seeing"
     r"what\s+am\s+i\s+(?:looking\s+at|seeing)|"
     r"what\s+(?:do|can)\s+you\s+(?:see|see\s+(?:right\s+)?now)|"
     # "look at my screen and ...", "look at what I'm doing"
-    r"look\s+at\s+(?:my\s+)?(?:screen|what\s+i'm\s+doing|this)|"
-    # "tell me about (what's) on my screen"
-    r"tell\s+me\s+(?:about\s+)?(?:what(?:'s|\s+is)\s+on\s+)?my\s+screen|"
-    # "describe (what's on) my screen"
-    r"describe\s+(?:what(?:'s|\s+is)\s+on\s+)?my\s+screen|"
+    rf"look\s+at\s+{_SCREEN_DET}(?:{_SCREEN_NOUN_ADJ}{_SCREEN_NOUN}|"
+    r"what\s+i'm\s+doing|this)|"
+    # "tell me about (what's) on my screen / monitor / display"
+    rf"tell\s+me\s+(?:about\s+)?(?:what(?:'s|\s+is)\s+on\s+)?{_SCREEN_DET}{_SCREEN_NOUN_ADJ}{_SCREEN_NOUN}|"
+    # "describe (what's on) my screen / left monitor / etc."
+    rf"describe\s+(?:what(?:'s|\s+is)\s+on\s+)?{_SCREEN_DET}{_SCREEN_NOUN_ADJ}{_SCREEN_NOUN}|"
     # "what is this (on the screen)" -- requires "this" alone or with screen context
     r"what(?:'s|\s+is)\s+this\s+(?:on\s+(?:my\s+|the\s+)?screen|here)|"
     # "help me with this", "help me with what I'm working on"
@@ -1062,6 +1103,120 @@ _SITE_TO_URL = {
 }
 
 
+# 2026-05-14: YouTube deep-link parsing. When the utterance specifies a
+# channel / video / search target alongside "open YouTube", build the
+# matching results URL so the user lands on what they asked for instead
+# of the YouTube home page. Anchors:
+#   - "...channel Ordinary Things"      -> search "Ordinary Things channel"
+#   - "...the Ordinary Things channel"  -> search "Ordinary Things channel"
+#   - "...video <name>"                 -> search "<name>"
+#   - "...searching for <name>"         -> search "<name>"
+#   - "...play <name> on youtube"       -> search "<name>"  (handled by
+#       a separate matcher below because the verb comes before "youtube")
+# Each pattern stops at a sentence terminator OR an "on <monitor>"
+# phrase (so monitor targeting doesn't bleed into the query).
+_YT_STOP_TAIL = (
+    r"(?=\s+on\s+(?:my\s+|the\s+)?(?:left|right|main|primary|center|centre|"
+    r"middle|first|second|third|fourth|1st|2nd|3rd|4th|monitor|screen|"
+    r"display)\b|\s*[.?!]|\s*$)"
+)
+_YT_CHANNEL_RE = re.compile(
+    rf"(?:to|with|for|on|via|under)\s+(?:the\s+)?channel\s+"
+    rf"(?P<name>.+?){_YT_STOP_TAIL}",
+    re.IGNORECASE,
+)
+_YT_CHANNEL_TRAILING_RE = re.compile(
+    # "the <name> channel" form -- noun comes BEFORE "channel".
+    rf"(?:to|with|for|on)\s+(?:the\s+)?(?P<name>.+?)\s+channel{_YT_STOP_TAIL}",
+    re.IGNORECASE,
+)
+_YT_VIDEO_RE = re.compile(
+    rf"(?:to|with|for|playing|play|search(?:ing)?\s+for|search(?:ing)?)\s+"
+    rf"(?:the\s+)?video\s+(?P<name>.+?){_YT_STOP_TAIL}",
+    re.IGNORECASE,
+)
+_YT_GENERIC_SEARCH_RE = re.compile(
+    # "search(ing) (for) X" -- no "video" keyword required. Comes last
+    # in priority so the channel/video matchers above win first.
+    rf"\bsearch(?:ing)?\s+(?:for\s+)?(?P<name>.+?){_YT_STOP_TAIL}",
+    re.IGNORECASE,
+)
+_YT_PLAY_RE = re.compile(
+    # "play X" -- last-resort. We require it to be tail of the utterance
+    # so "play Valorant" (gaming-mode trigger) doesn't accidentally
+    # match here -- though gaming-mode runs at higher priority anyway.
+    rf"\bplay\s+(?P<name>.+?){_YT_STOP_TAIL}",
+    re.IGNORECASE,
+)
+
+
+def _build_youtube_url(text: str) -> Optional[str]:
+    """Try to parse a channel / video / search target out of the utterance
+    and return the matching ``youtube.com/results?search_query=...`` URL.
+
+    Returns ``None`` when no deep-link cue is present. The caller falls
+    back to the bare ``https://www.youtube.com`` URL in that case.
+
+    Detection priority:
+
+    1. ``channel <name>`` / ``<name> channel`` -> append " channel" to
+       the search query so YouTube biases toward the channel result.
+    2. ``video <name>`` -> raw search.
+    3. ``search(ing) (for) <name>`` -> raw search.
+    4. Bare ``play <name>`` -> raw search (only when "youtube" is in
+       the utterance, which the caller already ensured).
+
+    Stops at monitor / sentence boundaries so "on my right monitor"
+    doesn't get baked into the search query.
+    """
+    if not text:
+        return None
+    m = _YT_CHANNEL_RE.search(text)
+    if m:
+        name = m.group("name").strip()
+        if name:
+            return (
+                "https://www.youtube.com/results?search_query="
+                + _url_quote(f"{name} channel")
+            )
+    m = _YT_CHANNEL_TRAILING_RE.search(text)
+    if m:
+        name = m.group("name").strip()
+        # Guard against grabbing "youtube" as the channel name when the
+        # match window catches the verb-noun before the site word.
+        lowered = name.lower()
+        if name and lowered not in {"youtube", "the youtube"}:
+            return (
+                "https://www.youtube.com/results?search_query="
+                + _url_quote(f"{name} channel")
+            )
+    m = _YT_VIDEO_RE.search(text)
+    if m:
+        name = m.group("name").strip()
+        if name:
+            return (
+                "https://www.youtube.com/results?search_query="
+                + _url_quote(name)
+            )
+    m = _YT_GENERIC_SEARCH_RE.search(text)
+    if m:
+        name = m.group("name").strip()
+        if name:
+            return (
+                "https://www.youtube.com/results?search_query="
+                + _url_quote(name)
+            )
+    m = _YT_PLAY_RE.search(text)
+    if m:
+        name = m.group("name").strip()
+        if name and name.lower() not in {"youtube"}:
+            return (
+                "https://www.youtube.com/results?search_query="
+                + _url_quote(name)
+            )
+    return None
+
+
 # Map matched app phrase to launcher-registry name.
 _APP_PHRASE_TO_NAME = {
     "google chrome": "chrome",
@@ -1133,6 +1288,15 @@ def _classify_app_launch(text: str) -> Optional[AppLaunchIntent]:
             return None
         app_name = _APP_PHRASE_TO_NAME.get(phrase, phrase)
         url = _SITE_TO_URL.get(phrase) or _SITE_TO_URL.get(app_name)
+        # 2026-05-14: YouTube channel / video / search parsing. When the
+        # site is YouTube and the utterance carries a "channel X" /
+        # "video X" / "search for X" / "play X" hint, build the search
+        # URL so the user lands on what they asked for instead of the
+        # YouTube home page.
+        if phrase == "youtube":
+            yt_url = _build_youtube_url(text)
+            if yt_url:
+                url = yt_url
         fullscreen = bool(re.search(r"\bfull[- ]?screen\b", text, re.IGNORECASE))
         maximize = bool(re.search(
             r"\bmaximize|maximised|maximized|full(?:\s+window)?\b",

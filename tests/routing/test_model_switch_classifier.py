@@ -24,42 +24,66 @@ from ultron.openclaw_routing.intents import RoutingIntentKind
 
 @pytest.mark.parametrize("text,expected", [
     # Canonical "switch to" + identifier
-    ("switch to 4B", "qwen3.5-4b"),
+    ("switch to 4B", "josiefied-qwen3-4b"),
     ("switch to 9B", "qwen3.5-9b"),
-    ("switch to the 4B", "qwen3.5-4b"),
+    ("switch to the 4B", "josiefied-qwen3-4b"),
     ("switch to the 9B", "qwen3.5-9b"),
-    ("switch to the 4B model", "qwen3.5-4b"),
+    ("switch to the 4B model", "josiefied-qwen3-4b"),
     ("switch to the 9B model", "qwen3.5-9b"),
-    ("Switch to 4B.", "qwen3.5-4b"),
+    ("Switch to 4B.", "josiefied-qwen3-4b"),
     ("Switch to 9b model", "qwen3.5-9b"),
     # Synonyms — swap / change / load / use / go to / move to
-    ("swap to 4B", "qwen3.5-4b"),
+    ("swap to 4B", "josiefied-qwen3-4b"),
     ("swap to the 9B model", "qwen3.5-9b"),
-    ("change to the 4B", "qwen3.5-4b"),
+    ("change to the 4B", "josiefied-qwen3-4b"),
     ("load the 9B", "qwen3.5-9b"),
-    ("load 4B model", "qwen3.5-4b"),
-    ("use the 4B", "qwen3.5-4b"),
+    ("load 4B model", "josiefied-qwen3-4b"),
+    ("use the 4B", "josiefied-qwen3-4b"),
     ("use the 9B model", "qwen3.5-9b"),
-    ("go to 4B", "qwen3.5-4b"),
+    ("go to 4B", "josiefied-qwen3-4b"),
     ("move to 9B", "qwen3.5-9b"),
-    ("activate 4B", "qwen3.5-4b"),
+    ("activate 4B", "josiefied-qwen3-4b"),
     ("engage the 9B", "qwen3.5-9b"),
-    ("run the 4B model", "qwen3.5-4b"),
+    ("run the 4B model", "josiefied-qwen3-4b"),
     ("select 9B", "qwen3.5-9b"),
     # Whisper homophones / number words
-    ("switch to four B", "qwen3.5-4b"),
+    ("switch to four B", "josiefied-qwen3-4b"),
     ("switch to nine B", "qwen3.5-9b"),
-    ("use the four B model", "qwen3.5-4b"),
-    ("switch to for B", "qwen3.5-4b"),  # "for" homophone of "four"
+    ("use the four B model", "josiefied-qwen3-4b"),
+    ("switch to for B", "josiefied-qwen3-4b"),  # "for" homophone of "four"
     # Spacing / punctuation variants
-    ("switch to 4 B", "qwen3.5-4b"),
+    ("switch to 4 B", "josiefied-qwen3-4b"),
     ("switch to 9 b", "qwen3.5-9b"),
-    ("switch to 4-B", "qwen3.5-4b"),
+    ("switch to 4-B", "josiefied-qwen3-4b"),
     ("switch to 9-b model", "qwen3.5-9b"),
     # Verb variants with prepositions
-    ("switch over to 4B", "qwen3.5-4b"),
+    ("switch over to 4B", "josiefied-qwen3-4b"),
     ("switch over to the 9B", "qwen3.5-9b"),
-    ("change over to 4B", "qwen3.5-4b"),
+    ("change over to 4B", "josiefied-qwen3-4b"),
+    # 2026-05-14: noun BEFORE the token ("switch to model 4B").
+    # Whisper transcribes the user's actual phrasing this way; the old
+    # regex only allowed the noun AFTER the token, so this leaked to
+    # the conversational LLM (which hallucinated "Model 4B engaged.").
+    ("switch to model 4B", "josiefied-qwen3-4b"),
+    ("switch to model 9B", "qwen3.5-9b"),
+    ("switch to the model 4B", "josiefied-qwen3-4b"),
+    ("change to model 4B", "josiefied-qwen3-4b"),
+    ("use the model 4B", "josiefied-qwen3-4b"),
+    ("load the model 9B", "qwen3.5-9b"),
+    ("switch to llm 4B", "josiefied-qwen3-4b"),
+    ("switch to preset 9B", "qwen3.5-9b"),
+    ("switch to qwen 4B", "josiefied-qwen3-4b"),
+    # 2026-05-14: 8B added as a switch target (swap-back from new 4B default).
+    ("switch to 8B", "josiefied-qwen3-8b"),
+    ("switch to the 8B", "josiefied-qwen3-8b"),
+    ("switch to the 8B model", "josiefied-qwen3-8b"),
+    ("switch to model 8B", "josiefied-qwen3-8b"),
+    ("use the 8B model", "josiefied-qwen3-8b"),
+    ("switch to eight B", "josiefied-qwen3-8b"),
+    ("load the 8B", "josiefied-qwen3-8b"),
+    ("activate 8B", "josiefied-qwen3-8b"),
+    ("switch to 8 B", "josiefied-qwen3-8b"),
+    ("switch to 8-B", "josiefied-qwen3-8b"),
 ])
 def test_classify_routes_to_model_switch(text: str, expected: str) -> None:
     intent = classify_routing(text)
@@ -133,7 +157,7 @@ def test_active_coding_task_does_not_block_model_switch() -> None:
         "switch to the 4B model", has_active_coding_task=True,
     )
     assert intent.kind == RoutingIntentKind.MODEL_SWITCH
-    assert intent.model_switch_intent.target_preset == "qwen3.5-4b"
+    assert intent.model_switch_intent.target_preset == "josiefied-qwen3-4b"
 
 
 # ---------------------------------------------------------------------------
@@ -143,17 +167,17 @@ def test_active_coding_task_does_not_block_model_switch() -> None:
 
 def test_resolve_model_switch_target_canonical() -> None:
     from ultron.openclaw_routing.classifier import _resolve_model_switch_target
-    assert _resolve_model_switch_target("4B") == "qwen3.5-4b"
+    assert _resolve_model_switch_target("4B") == "josiefied-qwen3-4b"
     assert _resolve_model_switch_target("9B") == "qwen3.5-9b"
 
 
 def test_resolve_model_switch_target_variants() -> None:
     from ultron.openclaw_routing.classifier import _resolve_model_switch_target
-    assert _resolve_model_switch_target("four B") == "qwen3.5-4b"
-    assert _resolve_model_switch_target("for B") == "qwen3.5-4b"
+    assert _resolve_model_switch_target("four B") == "josiefied-qwen3-4b"
+    assert _resolve_model_switch_target("for B") == "josiefied-qwen3-4b"
     assert _resolve_model_switch_target("nine B") == "qwen3.5-9b"
     assert _resolve_model_switch_target("9 b") == "qwen3.5-9b"
-    assert _resolve_model_switch_target("4-B") == "qwen3.5-4b"
+    assert _resolve_model_switch_target("4-B") == "josiefied-qwen3-4b"
 
 
 def test_resolve_model_switch_target_unknown_raises() -> None:
