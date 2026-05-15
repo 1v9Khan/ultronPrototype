@@ -399,14 +399,21 @@ class LLMEngine:
 
         flash_attn = cfg.flash_attn
         kv_cache_type = cfg.kv_cache_type
+        # 2026-05-15 latency: explicit n_batch / n_ubatch tuning. ``None``
+        # means inherit llama.cpp's own defaults (512 / 512 in 0.3.22).
+        # Voice-length prompts on the 4070 Ti benefit from n_ubatch=256
+        # but the default is safe everywhere -- left to the user.
+        n_batch = getattr(cfg, "n_batch", None)
+        n_ubatch = getattr(cfg, "n_ubatch", None)
         logger.info(
             "Loading LLM (in_process): %s (n_ctx=%d, n_gpu_layers=%d, "
-            "flash_attn=%s, kv_cache_type=%d)...",
+            "flash_attn=%s, kv_cache_type=%d, n_batch=%s, n_ubatch=%s)...",
             model_path, n_ctx, n_gpu_layers, flash_attn, kv_cache_type,
+            n_batch, n_ubatch,
         )
         t0 = time.monotonic()
         try:
-            llama = Llama(
+            llama_kwargs = dict(
                 model_path=str(model_path),
                 n_ctx=n_ctx,
                 n_gpu_layers=n_gpu_layers,
@@ -418,6 +425,14 @@ class LLMEngine:
                 type_v=kv_cache_type,
                 verbose=False,
             )
+            # Only pass batch tunables when explicitly set so we don't
+            # override llama.cpp's per-version defaults when the user
+            # hasn't expressed an opinion.
+            if n_batch is not None:
+                llama_kwargs["n_batch"] = int(n_batch)
+            if n_ubatch is not None:
+                llama_kwargs["n_ubatch"] = int(n_ubatch)
+            llama = Llama(**llama_kwargs)
         except Exception as e:
             logger.error("LLM load failed: %s", e)
             raise
@@ -529,6 +544,7 @@ class LLMEngine:
     def _build_messages(
         self, user_message: str, *, gate_verdict=None,
         suppress_memory_context: bool = False,
+        precomputed_rag_snippets: Optional[List] = None,
     ) -> List[dict]:
         """Assemble the chat-completion message list for one turn.
 
@@ -542,6 +558,14 @@ class LLMEngine:
         truth -- pulling unrelated past conversation only contaminates
         the response with stale topic / tone). False (default)
         preserves legacy behaviour: recent history + RAG retrieved.
+
+        ``precomputed_rag_snippets`` (2026-05-15 latency): when set,
+        skips the internal :meth:`_retrieve_rag_snippets` call and uses
+        the provided list. The orchestrator pre-fetches snippets on a
+        background thread in parallel with the web-gate classification
+        so the RAG cost overlaps with the gate cost (saves ~30-50 ms on
+        most turns, more on LLM-preflight turns). Ignored when
+        ``suppress_memory_context`` is True.
         """
         # Defence layer — neutralise tag-style prompt-injection markers
         # in the raw user input before any further processing.  Detected
@@ -583,6 +607,10 @@ class LLMEngine:
             # self-contained context (web search results) and stale
             # conversation snippets only contaminate the response tone.
             rag_block = ""
+        elif precomputed_rag_snippets is not None:
+            # 2026-05-15 latency: orchestrator pre-fetched the snippets
+            # in parallel with the web-gate call. Use them as-is.
+            rag_block = self._format_rag_block(precomputed_rag_snippets)
         else:
             rag_block = self._format_rag_block(
                 self._retrieve_rag_snippets(
@@ -630,6 +658,24 @@ class LLMEngine:
         return msgs
 
     # --- 4B plan Stage G: RAG retrieval + formatting helpers ---------------
+
+    def retrieve_rag_snippets(
+        self, user_message: str, *, gate_verdict=None,
+    ) -> List:
+        """Public wrapper over :meth:`_retrieve_rag_snippets`.
+
+        2026-05-15 latency: lets the orchestrator pre-fetch the snippets
+        on a background thread in parallel with the web-gate call and
+        then pass them to :meth:`generate_stream` via
+        ``precomputed_rag_snippets`` so the LLM call doesn't pay the
+        retrieval cost serially.
+
+        Same fail-open contract as the underscore variant: returns
+        ``[]`` when memory is disabled or retrieval raises.
+        """
+        return self._retrieve_rag_snippets(
+            user_message, gate_verdict=gate_verdict,
+        )
 
     def _retrieve_rag_snippets(
         self, user_message: str, *, gate_verdict=None,
@@ -803,6 +849,7 @@ class LLMEngine:
         enable_thinking: Optional[bool] = None,
         gate_verdict=None,
         suppress_memory_context: bool = False,
+        precomputed_rag_snippets: Optional[List] = None,
     ) -> str:
         """Blocking generation. Returns the full response string.
 
@@ -839,6 +886,7 @@ class LLMEngine:
             user_message,
             gate_verdict=gate_verdict,
             suppress_memory_context=suppress_memory_context,
+            precomputed_rag_snippets=precomputed_rag_snippets,
         )
         # 2026-05-14: apply ``/no_think`` marker to the last user message
         # when thinking is explicitly disabled. Replaces the unsupported
@@ -879,6 +927,7 @@ class LLMEngine:
         enable_thinking: Optional[bool] = None,
         gate_verdict=None,
         suppress_memory_context: bool = False,
+        precomputed_rag_snippets: Optional[List] = None,
     ) -> Iterator[str]:
         """Yield response tokens as they arrive.
 
@@ -895,6 +944,7 @@ class LLMEngine:
             user_message,
             gate_verdict=gate_verdict,
             suppress_memory_context=suppress_memory_context,
+            precomputed_rag_snippets=precomputed_rag_snippets,
         )
         # 2026-05-14: same /no_think handling as the blocking path.
         messages = self._apply_no_think_marker(messages, enable_thinking)

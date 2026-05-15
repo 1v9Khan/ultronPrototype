@@ -249,6 +249,16 @@ class Orchestrator:
         # speak_stream) doesn't change.
         self.rvc, self.tts = self._load_tts_engine()
         self.tts.warmup()
+        # 2026-05-15 latency: pre-render the ack phrase pools. On cache
+        # hit (every conversational filler-ack + every web-search ack)
+        # the engine skips its HTTP + filter chain and returns the
+        # pre-filtered clip from memory -- saves ~350-400 ms (XTTS) or
+        # ~310 ms (legacy piper_rvc) per first-spoken phrase. Runs on a
+        # daemon thread so orchestrator construction stays fast; the
+        # first turn may miss while the cache is still populating,
+        # subsequent turns hit. Fail-open: engine is unchanged on
+        # failures.
+        self._ack_clip_prewarm_thread = self._kick_off_ack_clip_prewarm()
         self.addressing = self._load_addressing_classifier()
         self.web_gate, self.web_executor, self.ack_source = (
             self._load_web_search_if_enabled()
@@ -771,6 +781,59 @@ class Orchestrator:
             f"Valid: 'piper_rvc' | 'xtts_v3'."
         )
 
+    def _kick_off_ack_clip_prewarm(self) -> Optional[threading.Thread]:
+        """Build + populate the pre-computed ack clip cache.
+
+        Runs on a daemon thread so orchestrator construction stays
+        fast (~5-7 s of total synth across the conversational +
+        web-search ack pools). The first user turn may still hit the
+        live path (cache not warm yet); subsequent turns hit the cache.
+
+        Fail-open at every level: missing engine support, server
+        unreachable mid-prewarm, or partial population all leave the
+        engine in its pre-existing state.
+        """
+        if not hasattr(self.tts, "set_ack_cache"):
+            logger.debug(
+                "TTS engine %s has no set_ack_cache hook; skipping ack prewarm",
+                type(self.tts).__name__,
+            )
+            return None
+        try:
+            from ultron.tts.precomputed_ack import (
+                build_default_ack_clip_cache,
+                prewarm_in_background,
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "Could not import precomputed_ack (%s); engine will use "
+                "live synth for every ack phrase.", e,
+            )
+            return None
+        cache = build_default_ack_clip_cache()
+        if not cache.phrases:
+            logger.info("Ack clip prewarm: no phrases to cache; skipping")
+            return None
+        try:
+            self.tts.set_ack_cache(cache)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "set_ack_cache on %s raised (%s); cache will be unused",
+                type(self.tts).__name__, e,
+            )
+            return None
+        try:
+            return prewarm_in_background(
+                cache,
+                self.tts._synthesize,  # noqa: SLF001 -- internal API by design
+                name="ack-prewarm",
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "Failed to kick off ack-prewarm thread (%s); cache stays empty.", e,
+            )
+            return None
+
     # --- context manager -----------------------------------------------------
 
     def __enter__(self) -> "Orchestrator":
@@ -910,6 +973,15 @@ class Orchestrator:
                     continue
 
                 self._state = State.PROCESSING
+                # 2026-05-15 latency: pre-open the TTS output stream on
+                # a daemon thread BEFORE Whisper runs. The ~50 ms
+                # PortAudio device-open cost overlaps with STT
+                # (~80-150 ms on this hardware) instead of landing on
+                # the critical path after the first LLM token. Engine
+                # consumes the pre-open inside speak_stream; on cache
+                # miss falls back to its own open. Fail-open at every
+                # level.
+                self._kick_off_tts_preopen()
                 user_text = self.stt.transcribe(speech)
                 if not user_text.strip():
                     if not came_from_follow_up:
@@ -1609,6 +1681,122 @@ class Orchestrator:
             logger.warning("Conversational ack source failed: %s", e)
             return None
 
+    def _kick_off_tts_preopen(self) -> Optional[threading.Thread]:
+        """Start the TTS output-stream pre-open on a daemon thread.
+
+        2026-05-15 latency: opening ``sd.OutputStream`` takes ~50 ms
+        on Windows (PortAudio + WASAPI handshake). Doing it BEFORE
+        Whisper STT (which runs ~80-150 ms) overlaps the cost so by
+        the time the LLM yields its first token + ack, the stream
+        is ready to write to.
+
+        Fail-open at every level: missing engine method (legacy /
+        unit-test fixture), exception in pre-open, or pool failure
+        all leave the engine in its pre-existing state -- the live
+        ``speak_stream`` path falls back to opening fresh.
+        """
+        tts = getattr(self, "tts", None)
+        if tts is None:
+            return None
+        prep = getattr(tts, "prepare_output_stream", None)
+        if not callable(prep):
+            return None
+        try:
+            t = threading.Thread(
+                target=prep, daemon=True, name="tts-stream-preopen",
+            )
+            t.start()
+            return t
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "TTS stream pre-open kickoff failed (%s); live path will "
+                "open fresh inside speak_stream.", e,
+            )
+            return None
+
+    def _kick_off_rag_prefetch(self, user_text: str):
+        """Start Qdrant RAG retrieval on a background thread.
+
+        Returns ``(future, used_async)``. ``used_async`` is False when
+        the multi-pass retrieval flag is on (in which case the LLM
+        needs the gate_verdict's category list to drive its fan-out,
+        so we can't pre-fetch single-pass) -- in that branch the
+        future is ``None`` and the caller falls back to in-line
+        retrieval inside the LLM call.
+
+        2026-05-15 latency: pre-fetch overlaps the ~30-50 ms Qdrant
+        round-trip with the ~5-150 ms web-gate classification. On
+        rule-based gate turns (the common case) this is the bigger
+        win because the gate finishes in microseconds and the LLM
+        would otherwise pay the RAG cost serially.
+
+        Defensive ``getattr`` reads on ``self.memory`` / ``self.llm``
+        keep this method usable in unit-test fixtures that bypass
+        :meth:`__init__` and only set the attributes their tests
+        actually touch.
+        """
+        memory = getattr(self, "memory", None)
+        llm = getattr(self, "llm", None)
+        if memory is None or llm is None:
+            return None, False
+        retrieve_fn = getattr(llm, "retrieve_rag_snippets", None)
+        if retrieve_fn is None:
+            return None, False
+        try:
+            from ultron.config import get_config
+            mem_cfg = get_config().memory
+            multi_pass = bool(
+                getattr(mem_cfg.retrieval, "multi_pass_enabled", False)
+            )
+        except Exception:
+            multi_pass = False
+        if multi_pass:
+            # The multi-pass path keys off ``gate_verdict.context_categories``
+            # which the LLM preflight populates inside ``web_gate.classify``.
+            # Pre-fetching now (without a verdict) would silently downgrade
+            # to single-pass. Skip the pre-fetch; LLM handles it serially.
+            return None, False
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            pool = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="rag-prefetch",
+            )
+            future = pool.submit(retrieve_fn, user_text)
+            # Daemon-shutdown semantics: we shut the pool down WITHOUT
+            # waiting so a slow Qdrant doesn't pin the orchestrator.
+            pool.shutdown(wait=False)
+            return future, True
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "RAG pre-fetch kickoff failed (%s); LLM will retrieve serially.",
+                e,
+            )
+            return None, False
+
+    @staticmethod
+    def _collect_rag_future(
+        future, *, deadline_s: float = 5.0,
+    ) -> Optional[list]:
+        """Best-effort join on the RAG pre-fetch future.
+
+        Returns the snippet list on success, ``None`` on timeout /
+        exception (caller falls back to in-line retrieval inside the
+        LLM call). The deadline is generous because the only failure
+        mode worth blocking on is "Qdrant hung" -- 5 s comfortably
+        covers a healthy retrieval (~30-50 ms typical) and lets a
+        misbehaving store time out cleanly.
+        """
+        if future is None:
+            return None
+        try:
+            return future.result(timeout=deadline_s)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "RAG pre-fetch result unavailable (%s); LLM will "
+                "retrieve serially.", e,
+            )
+            return None
+
     def _build_response_stream(self, user_text: str):
         """Yield tokens for the response, applying the web-search gate.
 
@@ -1619,12 +1807,28 @@ class Orchestrator:
             search-augmented prompt.
           * SEARCH with empty/failed retrieval -> ack phrase, then base
             generation (LLM at least apologizes accurately).
+
+        2026-05-15 latency: kicks off RAG retrieval on a background
+        thread BEFORE the web-gate call so the two costs overlap. The
+        precomputed snippets are passed to ``generate_stream`` so the
+        LLM doesn't pay the retrieval cost serially. Falls back to
+        in-line retrieval when memory is disabled or multi-pass is on
+        (the multi-pass path needs the verdict).
         """
+        # Kick off the RAG pre-fetch first so it overlaps everything
+        # that follows. The future is consumed by the LLM call below
+        # (or discarded on the search-augmented branch).
+        rag_future, _ = self._kick_off_rag_prefetch(user_text)
+
         if self.web_gate is None or self.web_executor is None:
             ack = self._maybe_conversational_ack(user_text)
             if ack:
                 yield ack + " "
-            yield from self.llm.generate_stream(apply_brevity_hint(user_text))
+            snippets = self._collect_rag_future(rag_future)
+            yield from self.llm.generate_stream(
+                apply_brevity_hint(user_text),
+                precomputed_rag_snippets=snippets,
+            )
             return
 
         try:
@@ -1634,7 +1838,11 @@ class Orchestrator:
             ack = self._maybe_conversational_ack(user_text)
             if ack:
                 yield ack + " "
-            yield from self.llm.generate_stream(apply_brevity_hint(user_text))
+            snippets = self._collect_rag_future(rag_future)
+            yield from self.llm.generate_stream(
+                apply_brevity_hint(user_text),
+                precomputed_rag_snippets=snippets,
+            )
             return
 
         # Phase 5: translate preflight uncertainty signals into behavior.
@@ -1670,11 +1878,25 @@ class Orchestrator:
             augmented_text = apply_brevity_hint(augmented_text)
             # V1-gap A2: thread the verdict through so multi-pass
             # retrieval activates (when configured + categories present).
+            snippets = self._collect_rag_future(rag_future)
             yield from self.llm.generate_stream(
-                augmented_text, gate_verdict=verdict,
+                augmented_text,
+                gate_verdict=verdict,
+                precomputed_rag_snippets=snippets,
             )
             return
 
+        # SEARCH branch: the search-augmented prompt sets the LLM up
+        # with self-contained context (Brave + Jina sources). Drop the
+        # pre-fetched RAG -- ``_search_augmented_tokens`` uses
+        # ``suppress_memory_context=True`` implicitly by routing
+        # through a different prompt body, and unrelated past chatter
+        # would contaminate the search-only answer.
+        if rag_future is not None:
+            try:
+                rag_future.cancel()
+            except Exception:
+                pass
         yield from self._search_augmented_tokens(augmented_text, verdict)
 
     def _search_augmented_tokens(self, user_text: str, verdict):

@@ -163,7 +163,12 @@ stt:
   # is well within acceptable. The 4070 Ti has plenty of int8 throughput
   # so latency is unchanged.
   compute_type: "int8_float16"
-  beam_size: 5
+  # 2026-05-15 latency: 5 -> 1 (greedy). Bench on the 4070 Ti with
+  # small.en int8_float16 showed beam=1 trims ~80 ms median STT
+  # latency on 5s audio (78 ms vs 157 ms). WER impact is negligible
+  # for short English voice queries. Raise to 3 or 5 if downstream
+  # accuracy regresses on noisier audio.
+  beam_size: 1
   temperature: 0.0
   condition_on_previous_text: false
   vad_filter: false             # we already gated on VAD upstream

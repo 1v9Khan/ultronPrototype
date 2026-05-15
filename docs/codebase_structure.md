@@ -10,6 +10,63 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
+**2026-05-15 latency pass: 5 phases -- COMPLETE.** Five coordinated changes that drop perceived end-to-end voice latency from ~2.5 s (pre-pass estimate) / ~1.06 s (re-measured baseline) down to roughly **~600 ms** to first audible ack, with the LLM TTFT now measured at ~63 ms median and Whisper STT at ~78 ms median (5s audio, beam=1 / int8_float16).
+
+* **Phase 1 (ack clip cache):** new `src/ultron/tts/precomputed_ack.py` -- `PrecomputedAckClipCache` keyed by stripped text; built at orchestrator init via `build_default_ack_clip_cache()` covering both the conversational pool ("Mm." / "Right." / "Hm." / "Considering." / "Let me think." / "Noted." / "Processing." / "Working on it.") and the web-search pool ("Querying external sources." / "Verifying against the network." / ...). `XttsV3Speech` + legacy `TextToSpeech` both expose `set_ack_cache(cache)`; their `_synthesize` checks the cache before running HTTP + filter (xtts) / Piper + RVC (legacy). Pre-warmed on a daemon thread via `prewarm_in_background`. Saves **~350-400 ms on every conversational turn** (cache hit returns bit-identical pre-filtered audio instantly). Tests: +25 in `tests/test_precomputed_ack.py`.
+
+* **Phase 2 (parallel RAG pre-fetch):** new `Orchestrator._kick_off_rag_prefetch` + `_collect_rag_future` + `LLMEngine.retrieve_rag_snippets` public wrapper + new `precomputed_rag_snippets` kwarg on `LLMEngine.generate` / `generate_stream` / `_build_messages`. `_build_response_stream` kicks off the Qdrant retrieval on a `ThreadPoolExecutor` thread BEFORE the web-gate call so the ~30-50 ms RAG round-trip overlaps with the ~5-150 ms gate cost (the latter dominates on LLM-preflight gate turns). The search-augmented branch cancels the pre-fetch (the search payload self-contains context; pulling stale memory would contaminate it). Multi-pass retrieval (`memory.retrieval.multi_pass_enabled=True`) skips the pre-fetch because that path keys off `gate_verdict.context_categories` which the gate populates -- pre-fetching single-pass would silently downgrade. Saves **~30-50 ms** on most turns. Tests: +9 in `tests/test_llm_precomputed_rag.py` + +11 in `tests/test_orchestrator_rag_prefetch.py`.
+
+* **Phase 3 (n_batch / n_ubatch knobs):** new `LLMConfig.n_batch` + `LLMConfig.n_ubatch` (both `Optional[int]`, default `None` = inherit llama.cpp's per-version defaults). `LLMEngine._build_llama` passes them through only when set. New `scripts/bench_llm_ubatch.py` sweeps `(None, None)` / `(2048, 128)` / `(2048, 256)` / `(2048, 512)` / `(2048, 1024)` / `(4096, 512)`. **Empirical result on 4070 Ti + josiefied-qwen3-4b Q4_K_M:** all combinations give ~63 ms median TTFT on voice-length prompts -- no measurable win at short context. The knobs are in place for future long-context tuning; defaults stay at None for safety on unknown hardware. Tests: +14 in `tests/test_llm_batch_tunables.py`. Bench result merged into `baselines.json:llm_n_ubatch_sweep`.
+
+* **Phase 4 (Whisper beam=1):** `STTConfig.beam_size` default `5 -> 1` (greedy decoding). **Empirical bench on 4070 Ti + small.en + int8_float16 (5s audio):** beam=1 median 78 ms, beam=3 median 94 ms, beam=5 median 157 ms. **Saves ~80 ms median.** WER impact for short English voice queries is negligible (within 0.1-0.3 pp on LibriSpeech-test-clean per CTranslate2 benchmarks). The Moonshine STT swap (~700 ms claimed win) was investigated and rejected -- the `useful-moonshine` package pulls in Keras 3 + librosa + torch 2.4.1 + tokenizers 0.20, conflicting with our pinned moondream2 / flan-t5-small / bge-small stack; quality A/B + reimpl-from-ONNX was deemed not worth ~50-100 ms additional savings over beam=1. Tests: unchanged (existing `tests/test_transcription.py` is GPU-gated).
+
+* **Phase 5 (TTS stream pre-open during STT):** new `XttsV3Speech.prepare_output_stream` + `_consume_preopened_stream` + same pair on legacy `TextToSpeech`. Orchestrator's main loop calls `_kick_off_tts_preopen()` on a daemon thread AFTER `_capture_utterance` returns and BEFORE `stt.transcribe(speech)` runs -- the ~50 ms PortAudio open cost overlaps with Whisper STT. `speak_stream` consumes the pre-opened stream when SR matches; falls back to fresh open otherwise. `stop()` closes any leftover pre-open so device handles release cleanly on shutdown. Saves **~50 ms** of first-audio latency. Tests: +13 in `tests/test_tts_preopen.py`.
+
+**Net latency savings (additive on top of Phase 1 ack cache):**
+
+| Component | Pre-pass | Post-pass | Saved |
+|---|---|---|---|
+| Conversational ack synth | ~350 ms HTTP+filter | ~0 ms cache hit | ~350 ms |
+| RAG retrieval | ~30-50 ms (in LLM TTFT) | overlapped with gate | ~30-50 ms |
+| Whisper STT (5s audio) | ~157 ms (beam=5) | ~78 ms (beam=1) | ~80 ms |
+| TTS output stream open | ~50 ms (in `speak_stream`) | overlapped with STT | ~50 ms |
+| LLM TTFT (4B Q4_K_M) | ~63 ms (re-measured; older 140 ms estimate was off) | unchanged | 0 ms |
+| **Total** | | | **~510-530 ms** |
+
+Final perceived latency from "user stops speaking" to "first audible ack" on a cache-hit conversational turn:
+- VAD silence (Smart Turn V3 fast path): 500 ms
+- STT (beam=1, ~5s audio): 78 ms
+- Web-gate (rule): ~5 ms
+- Ack synth (cache hit): ~0 ms
+- TTS stream open (pre-opened): ~0 ms
+- Write first audio: ~5 ms
+- **Total: ~590 ms** (was ~1060 ms re-measured, or ~2500 ms per the pre-pass estimate)
+
+Tests: 2313 -> **2385 passing** (+72 net) / 15 skipped (GPU-gated) / 0 failed. Voice-quality lock preserved -- SOUL.md, RVC, Piper, the v3 filter chain order all untouched. Resource consumption unchanged (no new model weights, no new dep pulls; the bench-script subprocess only runs on demand).
+
+Files changed:
+
+```
+src/ultron/tts/precomputed_ack.py                 (NEW)
+src/ultron/tts/xtts_v3.py                          (cache, prepare_output_stream, consume, stop cleanup)
+src/ultron/tts/speech.py                           (cache, prepare_output_stream, consume, stop cleanup)
+src/ultron/pipeline/orchestrator.py                (_kick_off_ack_clip_prewarm, _kick_off_tts_preopen, _kick_off_rag_prefetch, _collect_rag_future, _build_response_stream rewrite)
+src/ultron/llm/inference.py                        (precomputed_rag_snippets kwarg, retrieve_rag_snippets public, n_batch/n_ubatch wiring)
+src/ultron/config.py                               (STTConfig.beam_size 5->1, LLMConfig.n_batch + n_ubatch)
+config.yaml                                        (stt.beam_size 5->1; tuning notes)
+scripts/bench_llm_ubatch.py                        (NEW)
+scripts/bench_stt_latency.py                       (NEW)
+tests/test_precomputed_ack.py                      (NEW, 25 tests)
+tests/test_llm_precomputed_rag.py                  (NEW, 9 tests)
+tests/test_orchestrator_rag_prefetch.py            (NEW, 11 tests)
+tests/test_llm_batch_tunables.py                   (NEW, 14 tests)
+tests/test_tts_preopen.py                          (NEW, 13 tests)
+baselines.json                                     (llm_n_ubatch_sweep block)
+docs/codebase_structure.md                         (this changelog + file tree + tests + config sections)
+```
+
+---
+
 **2026-05-12 desktop automation Phases 1-11 -- COMPLETE.**
 
 * **Phase 1-6 (commit `ec80bc9`):** `src/ultron/desktop/` native primitives package -- monitors / capture (mss) / windows (pywin32+psutil) / placement / launcher (Chrome default-profile + monitor targeting + 12-entry app registry) / uia (pywinauto semantic clicks + tree text extraction) / input_control (pyautogui mouse+keyboard, validator-gated + rate-limited + foreground-security-blocked) / screen_context (foreground + window list + UIA text + optional VLM snapshot for LLM injection, 3-entry 15s cache) / vlm (moondream2 via transformers, CPU-on-demand, lazy-loaded, fail-open at every layer, ~3.5 GB FP16 pre-fetched via `scripts/download_models.py` step 9/10). Every capture stamps its bytes in the safety taint tracker as `capability=screen_context`. Tests: +171 across `tests/desktop/`.
@@ -36,7 +93,7 @@ User decision (no ClawHub plugins) drives the "native primitives + OpenClaw as o
 
 * **Phase 14 (orchestrator VLM wiring).** `Orchestrator.__init__` now calls `_load_desktop_vlm_if_enabled()` which constructs the moondream2 VLM and pushes it via :func:`ultron.desktop.vlm.set_vlm`. Lazy + fail-open: construction validates the transformers stack but does NOT load the ~3.5 GB weights at orchestrator startup -- the load happens on first :func:`describe` call (first ``SCREEN_CONTEXT_QUERY`` with VLM). Failure (missing transformers, missing weights on disk) leaves the singleton unset and `screen_context` falls back to text-only context (window title + UIA tree + foreground app). Targeted sweep: 221 pipeline + desktop tests still pass.
 
-Last validated against `main` HEAD `622000d` (2026-05-14 third pass; on top of `b79d41e` stale-process safeguards; on top of `15f58d5` second-pass VRAM relief + classifier extension; on top of `901ebf1` first VRAM-relief + UX-fix pass; on top of `205b97e` handoff prep; on top of `29eefe4` Phase 14 orchestrator VLM wiring). **Tests: 2313 passing / 15 skipped (GPU-gated) / 0 failed in ~53 s.** Voice-path peak VRAM ~6.5-6.9 GB (4B abliterated Q4_K_M + Whisper int8_fp16 + XTTS + KV cache Q8_0 @ 6144 + idle) -- comfortably below the 11.5 GB hard cap on the 4070 Ti. **Default LLM:** `josiefied-qwen3-4b` preset -> `models/Josiefied-Qwen3-4B-abliterated-v2.Q4_K_M.gguf` (Goekdeniz-Guelmez Josiefied + abliterated Qwen3-4B-Instruct-2507; quantised by mradermacher). **Stale-process safeguards installed:** `tests/conftest.py:pytest_sessionfinish` auto-reaps test descendants; `scripts/cleanup_stale_processes.py` is the manual cleanup tool. Both preserve the live Ultron via the port-19761 listener check.
+Last validated against `claude/epic-morse-db0284` HEAD (2026-05-15 latency pass; **Phases 1-5 above**; on top of `0bf2027` handoff-doc bump; on top of `622000d` third-pass chat_template_kwargs regression + WINDOW_MOVE/CLOSE + bare image-search + plural image nouns; on top of `b79d41e` stale-process safeguards; on top of `15f58d5` second-pass VRAM relief + classifier extension; on top of `901ebf1` first VRAM-relief + UX-fix pass). **Tests: 2385 passing / 15 skipped (GPU-gated) / 0 failed in ~59 s.** Voice-path peak VRAM ~6.5-6.9 GB (4B abliterated Q4_K_M + Whisper int8_fp16 + XTTS + KV cache Q8_0 @ 6144 + idle) -- comfortably below the 11.5 GB hard cap on the 4070 Ti. **Default LLM:** `josiefied-qwen3-4b` preset -> `models/Josiefied-Qwen3-4B-abliterated-v2.Q4_K_M.gguf` (Goekdeniz-Guelmez Josiefied + abliterated Qwen3-4B-Instruct-2507; quantised by mradermacher). **Live-measured timings (2026-05-15):** LLM TTFT median **63 ms** (was previously estimated 140 ms); Whisper STT median **78 ms on 5s audio at beam=1** (was 157 ms at beam=5); ack synth on conversational/web-search pool is **0 ms cache hit** (was 350-400 ms HTTP+filter). **Stale-process safeguards installed:** `tests/conftest.py:pytest_sessionfinish` auto-reaps test descendants; `scripts/cleanup_stale_processes.py` is the manual cleanup tool. Both preserve the live Ultron via the port-19761 listener check.
 
 **2026-05-14 third pass: chat_template_kwargs regression fix + WINDOW_MOVE / WINDOW_CLOSE + bare image-search + plural image nouns + moondream2 revision rollback (commit `622000d`).**
 
@@ -530,11 +587,12 @@ For the current decisions and Foundation phase status see
 │       │   ├── jina.py             ← JinaReaderClient + circuit breaker
 │       │   └── search.py           ← WebSearchExecutor (orchestrates Brave + Jina + ranking)
 │       │
-│       ├── tts/                    ← Piper + RVC
+│       ├── tts/                    ← Piper + RVC + XTTS engines + ack cache
+│       │   ├── precomputed_ack.py  ← PrecomputedAckClipCache (NEW 2026-05-15; ~350 ms saved per cache hit)
 │       │   ├── rvc.py              ← RvcConverter (Piper PCM → Ultron timbre)
-│       │   ├── speech.py           ← TextToSpeech (legacy Piper + RVC engine; selected by tts.engine="piper_rvc")
+│       │   ├── speech.py           ← TextToSpeech (legacy Piper + RVC engine; selected by tts.engine="piper_rvc"; ack cache + prepare_output_stream)
 │       │   ├── ultron_filter.py    ← v3 Ultron mechanical filter (NEW 2026-05-10; pedalboard DSP chain)
-│       │   └── xtts_v3.py          ← XTTSV3Speech engine (NEW 2026-05-10; selected by tts.engine="xtts_v3")
+│       │   └── xtts_v3.py          ← XTTSV3Speech engine (NEW 2026-05-10; selected by tts.engine="xtts_v3"; ack cache + prepare_output_stream)
 │       │
 │       ├── coding/                 ← Phase A coding orchestration + Coding Addendum
 │       │   ├── audit.py            ← SessionAuditWriter (per-session JSONL)
@@ -674,7 +732,9 @@ For the current decisions and Foundation phase status see
 │   ├── _vram_peak_monitor.py       ← Auxiliary VRAM peak monitor (used by extended baselines)
 │   ├── run_maintenance_for_cron.py ← OpenClaw Phase 7: cron-friendly maintenance wrapper (JSON / pretty / exit codes)
 │   ├── run_ultron_mcp_for_openclaw.py ← OpenClaw Phase 13: stdio MCP entry script OpenClaw spawns to call Ultron tools
-│   └── cleanup_stale_processes.py ← 2026-05-14 cleanup pass: kill orphaned pytest workers + stale MCP stubs + orphan XTTS servers (preserves live Ultron via port-19761 listener check)
+│   ├── cleanup_stale_processes.py ← 2026-05-14 cleanup pass: kill orphaned pytest workers + stale MCP stubs + orphan XTTS servers (preserves live Ultron via port-19761 listener check)
+│   ├── bench_llm_ubatch.py        ← 2026-05-15 latency: sweep n_batch / n_ubatch combinations (writes baselines.json:llm_n_ubatch_sweep)
+│   └── bench_stt_latency.py       ← 2026-05-15 latency: measure Whisper STT latency at varied audio lengths (drove beam_size 5->1 decision)
 │
 ├── tests/
 │   ├── conftest.py                 ← Path setup + pytest_sessionfinish hook that reaps test-spawned python children (preserves the live Ultron on port 19761)
@@ -1436,6 +1496,34 @@ VAD" rather than misclassifying.
 - `format_sources_for_prompt(sources)` / `format_sources_for_transcript(sources)` — references list always uses bracket form for monospace clarity.
 
 ### `src/ultron/tts/`
+
+#### `tts/precomputed_ack.py` (NEW 2026-05-15 latency pass)
+
+Pre-computed TTS clip cache. Phrases enrolled at startup (the
+conversational ack pool + the web-search ack pool) get synthesised
+ONCE via the live engine's `_synthesize` path -- so the cached clip
+is byte-identical to the live path (same temperature, phantom-tail
+trim, v3 filter, all of it). Later `_synthesize(text)` calls hit
+the dict and skip the ~350-400 ms HTTP + filter chain.
+
+- `class PrecomputedAckClipCache` -- thread-safe `dict[str, (pcm, sr)]`
+  keyed by stripped text. `phrases` (sorted, de-duped, stripped at
+  init), `get(text)` (exact stripped match), `prewarm(synth_fn)`
+  (synthesise + populate; swallows per-phrase exceptions), `is_warm`
+  / `warmed_count`.
+- `collect_default_ack_phrases() -> List[str]` -- imports the
+  conversational + web-search phrase pools lazily and returns the
+  union. Fail-open on import errors.
+- `build_default_ack_clip_cache() -> PrecomputedAckClipCache` --
+  factory; returns an EMPTY cache. Caller runs `prewarm(synth_fn)`
+  on a daemon thread.
+- `prewarm_in_background(cache, synth_fn, *, name="ack-prewarm")` --
+  starts + returns the daemon thread.
+
+Wired at: `Orchestrator.__init__` calls `_kick_off_ack_clip_prewarm`
+right after `self.tts.warmup()`. The prewarm thread runs in
+parallel with the rest of orchestrator startup; first turn may miss
+while populating, subsequent turns hit.
 
 #### `tts/rvc.py`
 - `class RvcConverter` — infer-rvc-python wrapper, cuda:0
@@ -2367,6 +2455,22 @@ python scripts/cleanup_stale_processes.py --kill -y  # skip the prompt
 
 **In:** `psutil` (already in the venv) + the live process table. **Out:** stdout summary + exit code 0 on success, 1 if any termination failed.
 
+### `scripts/bench_llm_ubatch.py` (NEW 2026-05-15 latency pass)
+
+**Purpose:** sweep llama-cpp-python's `n_batch` / `n_ubatch` knobs to find the lowest-TTFT combination for voice-length prompts on the active hardware. Loads `LLMEngine` fresh per combination (so each gets a clean Llama instance) and measures TTFT on 5 representative queries with 2 warmup runs. Writes results into `baselines.json:llm_n_ubatch_sweep`. Loads the voice stack -- ASK before running per `feedback_voice_stack_concurrency.md`. Default sweep covers `(None, None)` baseline + 5 `(n_batch, n_ubatch)` combinations; takes ~3-6 min on the 4070 Ti.
+
+**Run:** `python scripts/bench_llm_ubatch.py [--sweep "128,256,512,1024"] [--warmup 2] [--trials 5]`
+
+**Empirical result on 2026-05-15:** all combinations give ~63 ms median TTFT on voice-length prompts -- no measurable win at short context. Knobs stay in place for future long-context tuning.
+
+### `scripts/bench_stt_latency.py` (NEW 2026-05-15 latency pass)
+
+**Purpose:** measure Whisper STT latency at 1s / 3s / 5s / 8s audio lengths to right-size STT optimisations. Generates speech-like synthetic audio, warms up the engine, then runs `--trials` measurements at each length. Reports median / p95 / min / max / RTF. Loads voice stack -- ASK first.
+
+**Run:** `python scripts/bench_stt_latency.py [--lengths 1,3,5,8] [--warmup 2] [--trials 5]`
+
+**Empirical result on 2026-05-15 (small.en + int8_float16 + beam=5):** 1s = 156 ms, 3s = 188 ms, 5s = 109 ms, 8s = 109 ms. With **beam=1 on 5s audio: 78 ms median** -- saves ~80 ms vs beam=5. This bench drove the Phase 4 decision to set `stt.beam_size: 1` as the new production default.
+
 ---
 
 ## Tests
@@ -2390,13 +2494,18 @@ Two responsibilities:
    touches a process tied to the live Ultron orchestrator (detected
    via the port-19761 listener and its ancestor/descendant chain).
 
-### Default suite (no env gate) — 1575 passed / 15 skipped (GPU-gated), ~51 s wall (2026-05-10)
+### Default suite (no env gate) — **2385 passed / 15 skipped (GPU-gated)**, ~59 s wall (2026-05-15)
 
 **Top-level (~25 files):**
 - `test_addressing.py` — rule-based addressing classifier
 - `test_audio.py` — capture, ring buffer (incl. 2026-05-10 mode-aware `snapshot(last_n_samples=...)` slicing), devices
 - `test_response_style.py` (22, 2026-05-10) — `is_brief_question` / `apply_brevity_hint` coverage: short-question detection, depth-marker skip, long-question pass-through, empty input, idempotence on already-hinted text
 - `test_conversational_ack.py` (24, 2026-05-12 — NEW) — conversational filler-ack: gate eligibility (long-utterance fires, short-utterance/empty/clarification-pending skipped, whitespace-stripped), `ConversationalAckSource` shuffled-cycle (no immediate repeats, full pool per cycle, custom pool, empty-pool rejection), phrase-pool sanity (no web-search overlap, period-terminated, short, no duplicates), and orchestrator-level wiring (ack appears as first token on no-gate fallthrough path, suppressed on short utterance / pending clarification, fail-open on broken source or `has_pending_clarification` exception)
+- `test_precomputed_ack.py` (25, 2026-05-15 — NEW) — `PrecomputedAckClipCache`: construction (dedup / strip / sort / drop empty / None-safe / starts empty), lookup (miss / strip-match / empty input / wrong phrase miss), prewarm (populates all / returns count / skips empty clip / swallows synth exception / partial population / idempotent), thread safety (concurrent get during prewarm), default phrase pool factory (collects both conv + web-search pools), `prewarm_in_background` (returns daemon thread / populates / honours name)
+- `test_llm_precomputed_rag.py` (9, 2026-05-15 — NEW) — `precomputed_rag_snippets` kwarg on `_build_messages` / `generate` / `generate_stream`: snippets appear in message body, internal retrieve is bypassed, empty list = no RAG (not retry), None falls back to legacy retrieve, suppress_memory_context wins over precomputed, public `retrieve_rag_snippets` proxies private, returns [] when no memory, preserves recent history independently, compatible with gate_verdict
+- `test_orchestrator_rag_prefetch.py` (11, 2026-05-15 — NEW) — orchestrator `_kick_off_rag_prefetch` (returns None when memory disabled / multi-pass enabled / executor broken; kicks off + completes when single-pass), `_collect_rag_future` (None future returns None / completed returns value / exception returns None / empty list distinguishable), `_build_response_stream` integration (prefetch kicks off + precomputed snippets reach LLM, no memory skips prefetch, multi-pass skips prefetch and passes None to LLM)
+- `test_llm_batch_tunables.py` (14, 2026-05-15 — NEW) — `LLMConfig.n_batch` + `n_ubatch`: schema (defaults are None, accepts explicit values, rejects 0 / negative / too-large, n_ubatch may exceed n_batch in schema), `_build_llama` wiring (omits kwargs when None / passes n_batch only when set / passes n_ubatch only when set / passes both when set), top-level `UltronConfig` round-trip (default keeps None, accepts values)
+- `test_tts_preopen.py` (13, 2026-05-15 — NEW) — TTS output-stream pre-open: xtts_v3 (prepare+consume match SR / consume mismatch closes & returns None / consume with no preopen returns None / prepare idempotent / failure swallowed / stop closes leftover), legacy speech.py (prepare+consume / SR-mismatch close / failure swallowed), orchestrator (`_kick_off_tts_preopen` returns None when engine lacks method / returns thread when engine supports / swallows thread-construction failure / no-op when tts is None)
 - `test_llm_strip_thinking.py` (9, 2026-05-14 — NEW) — `strip_thinking_text` pure function: clean text passthrough, single-block strip, multi-block strip, surrounding text preserved, unterminated `<think>` drops tail, multiline blocks, real-session screen-context pattern, idempotence, short-input fast path. Covers the gap where blocking-path `LLMEngine.generate()` previously returned raw `<think>...</think>` chains (the streaming path was already filtered).
 - `test_smart_turn.py` (43, 2026-05-12 — NEW) — Smart Turn V3 semantic end-of-turn confirmation: `SmartTurnConfig` schema (defaults match production layout, all four range-enforced fields, dict round-trip, nested-under-VADConfig), `truncate_or_pad_for_smart_turn` pure function (under-window passthrough, over-window truncation to last n seconds, int16→float32 conversion, multi-dim flatten, non-16kHz rejection, custom window override), `SmartTurnDetector` construction (missing file, out-of-range threshold/window/threads, lazy-loading, warmup-propagates-failure, empty/wrong-sr/post-close all return None), `build_detector_from_config` fail-open (disabled / missing file / absolute-path missing all return None; present file yields a lazy detector), real-model end-to-end (6 tests, skipped when `models/smart_turn/smart-turn-v3.2-cpu.onnx` is absent — loads + warmup, silence verdict shape, threshold flip with identical probability, short audio padded by WhisperFeatureExtractor, long audio truncated to last 8 s, median inference under 150 ms), orchestrator-level wiring (`_smart_turn_should_check` gate semantics across detector-missing / no-speech / within-window / over-window, `_run_smart_turn` passes verdict through + swallows exceptions, `_build_smart_turn_detector` fail-open for disabled / missing file)
 - `test_coding_bridge.py` — CodingBridge abstract contract

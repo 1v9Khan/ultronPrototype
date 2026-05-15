@@ -47,6 +47,7 @@ import sounddevice as sd
 
 from config import settings
 from ultron.audio.devices import describe_device, resolve_device
+from ultron.tts.precomputed_ack import PrecomputedAckClipCache
 from ultron.tts.ultron_filter import apply_filter as apply_ultron_filter
 from ultron.utils.logging import get_logger
 
@@ -349,6 +350,26 @@ class XttsV3Speech:
         # Server lifecycle.
         self._server_proc: Optional[subprocess.Popen] = None
         self._sample_rate: int = 24000  # XTTS native; confirmed via /info after start
+
+        # 2026-05-15 latency: pre-computed ack clip cache. Populated by
+        # the orchestrator AFTER warmup via ``set_ack_cache`` + the
+        # ``PrecomputedAckClipCache.prewarm`` daemon thread. Until then
+        # (and on misses) ``_synthesize`` falls through to the live HTTP
+        # + v3 filter path. The cache stores already-filtered audio so
+        # cache hits are byte-identical to the live path.
+        self._ack_cache: Optional["PrecomputedAckClipCache"] = None
+
+        # 2026-05-15 latency: pre-opened output stream slot. The
+        # orchestrator calls :meth:`prepare_output_stream` on a daemon
+        # thread during Whisper STT so the ~50 ms PortAudio open cost
+        # overlaps with transcription rather than landing on the
+        # critical path before first audible audio. Consumed by
+        # :meth:`speak_stream` -- if present + SR matches, the engine
+        # reuses it instead of opening fresh. ``shutdown`` closes any
+        # surviving pre-open.
+        self._preopened_stream: Optional[sd.OutputStream] = None
+        self._preopened_lock = threading.Lock()
+
         self._start_server()
 
     # ------------------------------------------------------------------
@@ -462,6 +483,17 @@ class XttsV3Speech:
             sd.stop()
         except Exception:
             pass
+        # 2026-05-15: also close any pre-opened stream so shutdown
+        # releases the device handle cleanly.
+        with self._preopened_lock:
+            s = self._preopened_stream
+            self._preopened_stream = None
+        if s is not None:
+            try:
+                s.stop()
+                s.close()
+            except Exception:
+                pass
 
     def speak(self, text: str) -> None:
         """Synthesize + play ``text`` synchronously."""
@@ -471,6 +503,81 @@ class XttsV3Speech:
         clip = self._synthesize(text)
         if clip[0].size > 0 and not self._stop_event.is_set():
             self._play(clip)
+
+    def prepare_output_stream(self) -> None:
+        """Open the PortAudio output stream proactively.
+
+        2026-05-15 latency: the orchestrator calls this on a daemon
+        thread after VAD ends and BEFORE Whisper STT so the ~50 ms
+        ``sd.OutputStream`` open cost (Windows mixer round-trip)
+        overlaps with transcription. When :meth:`speak_stream` is
+        called shortly after, it consumes the pre-opened stream via
+        :meth:`_consume_preopened_stream` and skips the open path
+        entirely.
+
+        Idempotent: re-calling with an existing pre-open is a no-op.
+        Failures are swallowed and logged WARN -- the live path
+        falls back to its own open as before.
+        """
+        with self._preopened_lock:
+            if self._preopened_stream is not None:
+                return
+            try:
+                from ultron.config import get_config
+                tts_cfg = get_config().tts
+                low_latency = bool(tts_cfg.output_low_latency_mode)
+            except Exception:
+                low_latency = False
+            try:
+                stream = self._open_output_stream(
+                    self._sample_rate, low_latency,
+                )
+                stream.start()
+                # Write 50 ms of silence to make sure the device is
+                # actually emitting samples (avoids the first-write
+                # underrun some drivers exhibit).
+                self._write_silence(stream, self._sample_rate, 0.05)
+                self._preopened_stream = stream
+                logger.debug(
+                    "XTTS+v3: output stream pre-opened (%d Hz, %s latency)",
+                    self._sample_rate,
+                    "low" if low_latency else "default",
+                )
+            except Exception as e:
+                logger.warning(
+                    "XTTS+v3 stream pre-open failed (%s); live path "
+                    "will open fresh.", e,
+                )
+
+    def _consume_preopened_stream(self, sr: int) -> Optional[sd.OutputStream]:
+        """Atomically take ownership of any pre-opened stream.
+
+        Returns the stream when the cached one matches ``sr``;
+        otherwise closes the cached stream (sample-rate mismatch) and
+        returns None so the caller opens fresh.
+
+        Thread-safe via ``_preopened_lock``. Callers transfer
+        ownership to themselves -- the cache slot is cleared, so the
+        engine no longer holds a reference. Defensive ``getattr``
+        keeps the engine instantiable in unit-test fixtures that
+        bypass ``__init__``.
+        """
+        lock = getattr(self, "_preopened_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            s = getattr(self, "_preopened_stream", None)
+            self._preopened_stream = None
+        if s is None:
+            return None
+        if sr != self._sample_rate:
+            try:
+                s.stop()
+                s.close()
+            except Exception:
+                pass
+            return None
+        return s
 
     def warmup(self, text: str = "Online.") -> None:
         """Touch the server with a tiny request so the first real
@@ -542,9 +649,19 @@ class XttsV3Speech:
                     return
 
                 if spec_open:
-                    stream = self._open_output_stream(sr, low_latency)
-                    stream.start()
-                    self._write_silence(stream, sr, 0.05)
+                    # 2026-05-15 latency: prefer the pre-opened stream
+                    # (opened during STT on a daemon thread) so the
+                    # ~50 ms PortAudio open cost is already paid. SR
+                    # mismatch falls back to a fresh open.
+                    stream = self._consume_preopened_stream(sr)
+                    if stream is None:
+                        stream = self._open_output_stream(sr, low_latency)
+                        stream.start()
+                        self._write_silence(stream, sr, 0.05)
+                    else:
+                        logger.debug(
+                            "XTTS+v3: consumed pre-opened output stream",
+                        )
 
                 try:
                     first_item = audio_q.get(timeout=_QUEUE_GET_TIMEOUT_SECONDS)
@@ -672,8 +789,53 @@ class XttsV3Speech:
             if pcm.size > 0:
                 push(ClipItem(pcm, sr, is_known_last=False))
 
+    def set_ack_cache(self, cache: Optional[PrecomputedAckClipCache]) -> None:
+        """Wire a pre-computed ack clip cache.
+
+        Once installed, :meth:`_synthesize` checks the cache before
+        running the live HTTP + v3 filter path. Cache hits return the
+        stored ``(pcm, sr)`` clip directly. Misses fall through to the
+        live path unchanged.
+
+        Pass ``None`` to detach the cache (e.g. after a server restart
+        when the cached clips may no longer match the live engine
+        state).
+        """
+        self._ack_cache = cache
+        if cache is not None:
+            logger.info(
+                "XTTS+v3: ack clip cache attached (%d phrases enrolled)",
+                len(cache.phrases),
+            )
+
     def _synthesize(self, text: str) -> Clip:
-        """Synthesize one sentence: HTTP → assemble PCM → v3 filter → (pcm, sr)."""
+        """Synthesize one sentence: cache → HTTP → assemble PCM → v3 filter → (pcm, sr).
+
+        Cache lookup happens BEFORE the HTTP call so a hit returns
+        immediately, skipping ~350-400 ms of XTTS inference + filter
+        work. The cache stores already-filtered audio so cache hits
+        produce byte-identical output to the live path. On miss, the
+        existing live path runs unchanged.
+        """
+        # 2026-05-15 latency: precomputed ack clip cache. Phrases like
+        # "Mm." / "Querying external sources." / etc. are pre-rendered
+        # once at orchestrator startup and reused for the entire
+        # session. Cache hit = skip HTTP + filter; cache miss = live
+        # path. The cache is keyed by stripped text -- the strip
+        # convention must match what :meth:`_run_synth_loop` applies
+        # before calling here, which it does. ``getattr`` keeps the
+        # engine instantiable in unit-test fixtures that bypass
+        # ``__init__``.
+        ack_cache = getattr(self, "_ack_cache", None)
+        if ack_cache is not None:
+            cached = ack_cache.get(text)
+            if cached is not None:
+                logger.debug(
+                    "XTTS+v3: ack-cache hit for %r (skipped %.0fms synth)",
+                    text[:40], 0.0,  # actual saving logged in aggregate
+                )
+                return cached
+
         t0 = time.monotonic()
         try:
             pcm_i16 = self._http_synthesize(text)

@@ -115,6 +115,24 @@ class TextToSpeech:
         self._stop_event = threading.Event()
         self._playback_lock = threading.Lock()
 
+        # 2026-05-15 latency: pre-computed ack clip cache slot. Same
+        # contract as the xtts_v3 engine -- orchestrator installs the
+        # cache via ``set_ack_cache`` after warmup, then ``_synthesize``
+        # checks the cache before running the Piper + RVC path. Skips
+        # ~313 ms of synth on cache hits.
+        from ultron.tts.precomputed_ack import PrecomputedAckClipCache
+        self._ack_cache: Optional[PrecomputedAckClipCache] = None
+
+        # 2026-05-15 latency: pre-opened output stream slot. The
+        # orchestrator pre-opens via :meth:`prepare_output_stream` on
+        # a daemon thread during Whisper STT so the ~50 ms PortAudio
+        # open cost overlaps with transcription. Consumed by
+        # :meth:`speak_stream` / :meth:`speak`. Legacy engine uses
+        # the speculative-stream-open sample rate (matches the
+        # configured ``speculative_stream_sample_rate``).
+        self._preopened_stream: Optional[sd.OutputStream] = None
+        self._preopened_lock = threading.Lock()
+
         logger.info("Loading Piper voice: %s", voice_path)
         t0 = time.monotonic()
         try:
@@ -144,6 +162,21 @@ class TextToSpeech:
             sd.stop()
         except Exception:
             pass
+        # 2026-05-15: close any pre-opened stream so shutdown releases
+        # the device handle cleanly. Defensive ``getattr`` keeps the
+        # legacy stop() path safe on unit-test fixtures that bypass
+        # __init__.
+        lock = getattr(self, "_preopened_lock", None)
+        if lock is not None:
+            with lock:
+                s = self._preopened_stream
+                self._preopened_stream = None
+            if s is not None:
+                try:
+                    s.stop()
+                    s.close()
+                except Exception:
+                    pass
 
     def speak(self, text: str) -> None:
         """Synchronously synthesize and play ``text`` to completion."""
@@ -325,15 +358,25 @@ class TextToSpeech:
                     # Speculative open: stream is up while first sentence
                     # synthesises. The 50 ms pre-roll silence buys time
                     # for the device to settle before real samples land.
-                    stream = self._open_output_stream(sr, low_latency)
-                    stream.start()
-                    self._write_silence(stream, sr, 0.05)
-                    logger.info(
-                        "TTS stream opened (speculative %s): %d Hz via %s",
-                        "low-latency" if low_latency else "default",
-                        sr,
-                        describe_device(self.output_device, "output"),
-                    )
+                    #
+                    # 2026-05-15 latency: prefer a pre-opened stream
+                    # (opened during STT on a daemon thread) so the
+                    # ~50 ms PortAudio open cost is already paid.
+                    stream = self._consume_preopened_stream(sr)
+                    if stream is None:
+                        stream = self._open_output_stream(sr, low_latency)
+                        stream.start()
+                        self._write_silence(stream, sr, 0.05)
+                        logger.info(
+                            "TTS stream opened (speculative %s): %d Hz via %s",
+                            "low-latency" if low_latency else "default",
+                            sr,
+                            describe_device(self.output_device, "output"),
+                        )
+                    else:
+                        logger.debug(
+                            "TTS stream pre-opened consumed: %d Hz", sr,
+                        )
 
                 # Pull first clip; this blocks until first sentence is ready.
                 try:
@@ -586,8 +629,116 @@ class TextToSpeech:
 
     # --- internals -----------------------------------------------------------
 
+    def prepare_output_stream(self) -> None:
+        """Open the PortAudio output stream proactively.
+
+        2026-05-15 latency: legacy-engine sibling of
+        :meth:`ultron.tts.xtts_v3.XttsV3Speech.prepare_output_stream`.
+        The orchestrator pre-opens during STT so the ~50 ms PortAudio
+        open cost overlaps with Whisper. Speculative SR matches the
+        configured ``tts.speculative_stream_sample_rate`` (the Piper +
+        RVC pipeline's expected output rate).
+
+        Failures are swallowed -- live path falls back to its own
+        open inside :meth:`speak_stream`. Idempotent: re-calling with
+        an existing pre-open is a no-op.
+        """
+        with self._preopened_lock:
+            if self._preopened_stream is not None:
+                return
+            try:
+                from ultron.config import get_config
+                tts_cfg = get_config().tts
+                spec_sr = int(tts_cfg.speculative_stream_sample_rate)
+                low_latency = bool(tts_cfg.output_low_latency_mode)
+            except Exception:
+                spec_sr = int(self.piper_sample_rate)
+                low_latency = False
+            try:
+                stream = self._open_output_stream(spec_sr, low_latency)
+                stream.start()
+                # Track the SR so consume can validate.
+                stream._ultron_sr = spec_sr  # type: ignore[attr-defined]
+                self._preopened_stream = stream
+                logger.debug(
+                    "TextToSpeech: output stream pre-opened (%d Hz, %s latency)",
+                    spec_sr, "low" if low_latency else "default",
+                )
+            except Exception as e:
+                logger.warning(
+                    "TextToSpeech stream pre-open failed (%s); live path "
+                    "will open fresh.", e,
+                )
+
+    def _consume_preopened_stream(self, sr: int) -> Optional[sd.OutputStream]:
+        """Atomically take ownership of any pre-opened stream.
+
+        Returns the stream when the cached one matches ``sr``;
+        otherwise closes the cached stream and returns None so the
+        caller opens fresh. Mirrors the xtts_v3 contract.
+
+        Defensive ``getattr`` reads keep the engine instantiable in
+        unit-test fixtures that bypass ``__init__``.
+        """
+        lock = getattr(self, "_preopened_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            s = getattr(self, "_preopened_stream", None)
+            self._preopened_stream = None
+        if s is None:
+            return None
+        cached_sr = getattr(s, "_ultron_sr", None)
+        if cached_sr is not None and cached_sr != sr:
+            try:
+                s.stop()
+                s.close()
+            except Exception:
+                pass
+            return None
+        return s
+
+    def set_ack_cache(self, cache) -> None:
+        """Wire a pre-computed ack clip cache.
+
+        Once installed, :meth:`_synthesize` checks the cache before
+        running Piper + RVC. Cache hits return the stored ``(pcm, sr)``
+        clip directly. Misses fall through to the live path unchanged.
+
+        Pass ``None`` to detach the cache.
+
+        Type-checked at call time via duck-typing (must expose
+        ``get(text) -> Optional[Clip]``); avoiding an import dependency
+        on the cache module here means the legacy engine stays
+        instantiable in narrow unit-test fixtures that don't import
+        the cache module.
+        """
+        self._ack_cache = cache
+        if cache is not None:
+            try:
+                n = len(cache.phrases)
+            except Exception:
+                n = -1
+            logger.info(
+                "TextToSpeech: ack clip cache attached (%d phrases enrolled)", n,
+            )
+
     def _synthesize(self, text: str) -> Clip:
-        """Synthesize one sentence: Piper → optional RVC → (pcm, sample_rate)."""
+        """Synthesize one sentence: cache → Piper → optional RVC → (pcm, sample_rate).
+
+        2026-05-15 latency: precomputed ack clip cache. Phrases enrolled
+        at startup hit the cache and skip the Piper + RVC chain
+        (~313 ms median saved). Cache misses fall through to the live
+        path unchanged. ``getattr`` keeps the engine instantiable in
+        narrow unit-test fixtures that bypass ``__init__``.
+        """
+        ack_cache = getattr(self, "_ack_cache", None)
+        if ack_cache is not None:
+            cached = ack_cache.get(text)
+            if cached is not None:
+                logger.debug("TextToSpeech: ack-cache hit for %r", text[:40])
+                return cached
+
         t0 = time.monotonic()
         pcm, sr = self._piper_synth(text)
         if pcm.size == 0:

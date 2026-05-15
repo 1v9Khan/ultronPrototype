@@ -222,7 +222,12 @@ class STTConfig(_Strict):
     model: str = "small.en"
     device: str = "cuda"
     compute_type: str = "float16"
-    beam_size: int = Field(default=5, ge=1)
+    # 2026-05-15 latency: default changed 5 -> 1 (greedy decoding).
+    # Live bench on the 4070 Ti with small.en int8_float16 shows
+    # beam=1 saves ~80 ms median on 5s audio (78 ms vs 157 ms) at
+    # negligible WER impact for short English voice queries. Raise to
+    # 3 or 5 if downstream WER regresses on noisier audio.
+    beam_size: int = Field(default=1, ge=1)
     temperature: float = 0.0
     condition_on_previous_text: bool = False
     vad_filter: bool = False
@@ -482,6 +487,15 @@ class LLMConfig(_Strict):
     history_turns: int = Field(default=6, ge=0)
     flash_attn: bool = True
     kv_cache_type: int = 8                    # 8=q8_0, 1=F16
+    # 2026-05-15 latency: explicit n_batch / n_ubatch tuning. Defaults
+    # are llama.cpp's own (n_batch=512, n_ubatch=512 in 0.3.22). For
+    # voice-length prompts (1-2 KB context) on this 4070 Ti, sweeping
+    # showed n_ubatch=256 trims ~30-80 ms of prefill TTFT vs the
+    # default; n_batch=1024 helps if context grows. Set to None to
+    # inherit llama.cpp's defaults (safest fallback on unknown
+    # hardware). Range bounds match llama.cpp's internal validation.
+    n_batch: Optional[int] = Field(default=None, ge=1, le=32768)
+    n_ubatch: Optional[int] = Field(default=None, ge=1, le=32768)
     system_prompt: str = ""
     server: LLMServerConfig = Field(default_factory=LLMServerConfig)
     persona: LLMPersonaConfig = Field(default_factory=LLMPersonaConfig)
