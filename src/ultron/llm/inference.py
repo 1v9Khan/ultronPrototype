@@ -952,6 +952,35 @@ class LLMEngine:
         self._record_turn(user_message, text)
         return text
 
+    def record_completed_turn(self, user_message: str, response: str) -> None:
+        """Append a completed user/assistant exchange to history.
+
+        Public wrapper over :meth:`_record_turn`. Used by callers that
+        invoked :meth:`generate_stream` with ``record_history=False``
+        and now want to commit the turn after confirming the response
+        was actually consumed by the user-facing pipeline.
+
+        2026-05-18 latency pass 3 (Phase 3): the speculative-LLM path
+        on Orchestrator runs ``generate_stream`` during the silence
+        wait with ``record_history=False`` so a speculation that gets
+        invalidated (user resumed speaking) doesn't pollute history
+        with an orphan record. The orchestrator's response-stream
+        consumer calls this method once the buffered tokens have been
+        emitted to TTS -- at that point we know the turn was
+        consumed.
+
+        No-op on empty input. Idempotent at the storage layer: a
+        second call with the same arguments would record a second
+        copy, so callers are responsible for invoking it exactly once
+        per consumed turn.
+        """
+        if not user_message:
+            return
+        text = (response or "").strip()
+        if not text:
+            return
+        self._record_turn(user_message, text)
+
     def generate_stream(
         self,
         user_message: str,
@@ -960,12 +989,22 @@ class LLMEngine:
         gate_verdict=None,
         suppress_memory_context: bool = False,
         precomputed_rag_snippets: Optional[List] = None,
+        record_history: bool = True,
     ) -> Iterator[str]:
         """Yield response tokens as they arrive.
 
         See :meth:`generate` for the ``enable_thinking``,
         ``gate_verdict`` (V1-gap A2), and ``suppress_memory_context``
         (2026-05-09 contamination fix) semantics.
+
+        ``record_history`` (2026-05-18 latency pass 3): when ``True``
+        (default), a successful stream completion appends the turn to
+        the conversation history at the end of iteration -- matching
+        the pre-existing behaviour. When ``False``, the recording is
+        deferred to an explicit :meth:`record_completed_turn` call by
+        the caller. Used by the orchestrator's speculative-LLM path
+        so a speculation that gets invalidated (user resumed speaking)
+        doesn't leak an orphan record into history.
 
         The full response is appended to history once the stream completes
         normally; on cancel, partial output is recorded so the model
@@ -1019,8 +1058,14 @@ class LLMEngine:
                 yield visible
         finally:
             full = "".join(accumulated).strip()
-            if full and completed and not canceled:
+            if full and completed and not canceled and record_history:
                 self._record_turn(user_message, full)
+            elif full and completed and not canceled and not record_history:
+                # 2026-05-18 latency pass 3 (Phase 3): caller will commit
+                # via :meth:`record_completed_turn` once it knows the
+                # response was consumed. Skipping the auto-record here
+                # so an invalidated speculation doesn't leave orphans.
+                pass
             elif full:
                 logger.info("Skipping interrupted LLM stream in chat history")
             logger.info(

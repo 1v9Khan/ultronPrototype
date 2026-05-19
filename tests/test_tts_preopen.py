@@ -284,3 +284,76 @@ class TestOrchestratorKickoff:
         o.tts = None
         t = o._kick_off_tts_preopen()
         assert t is None
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-18 latency pass 3 (Phase 1): preopen kicked off at top of capture
+# ---------------------------------------------------------------------------
+
+
+class TestPreOpenAtCaptureStart:
+    """After 2026-05-16 latency pass 2 (Phase 4) hid Whisper STT behind
+    the silence wait, the legacy ``_kick_off_tts_preopen`` placement in
+    ``run()`` (after capture returns) only had ~5-10 ms of overlap before
+    the first TTS write -- not enough for the 50 ms PortAudio open. The
+    fix hoists the kick-off into ``_capture_utterance`` and
+    ``_follow_up_listen`` so the open overlaps the full speech + silence
+    window (typically 1-30 s).
+
+    These tests use source inspection because the full capture loop is a
+    heavy fixture; the kick-off helper itself is covered by the class
+    above. Source inspection is the right tool for "this call exists at
+    this position in this function" -- the contract is structural."""
+
+    def test_kick_off_present_in_capture_utterance(self):
+        import inspect
+        from ultron.pipeline.orchestrator import Orchestrator
+
+        src = inspect.getsource(Orchestrator._capture_utterance)
+        assert "_kick_off_tts_preopen" in src, (
+            "Phase 1 contract: _capture_utterance must kick off the "
+            "TTS preopen so the PortAudio device-open overlaps the "
+            "full speech + silence-wait window."
+        )
+
+    def test_kick_off_present_in_follow_up_listen(self):
+        import inspect
+        from ultron.pipeline.orchestrator import Orchestrator
+
+        src = inspect.getsource(Orchestrator._follow_up_listen)
+        assert "_kick_off_tts_preopen" in src, (
+            "Phase 1 contract: _follow_up_listen must kick off the "
+            "TTS preopen on the WARM path too -- mirrors the COLD-path "
+            "placement in _capture_utterance."
+        )
+
+    def test_kick_off_in_capture_runs_before_vad_loop(self):
+        """The kick-off must happen BEFORE the while-loop that consumes
+        audio chunks, so the ~50 ms PortAudio open overlaps the entire
+        capture instead of starting after speech ends."""
+        import inspect
+        from ultron.pipeline.orchestrator import Orchestrator
+
+        src = inspect.getsource(Orchestrator._capture_utterance)
+        kickoff_pos = src.find("_kick_off_tts_preopen")
+        while_pos = src.find("while not self._shutdown")
+        assert kickoff_pos > 0
+        assert while_pos > 0
+        assert kickoff_pos < while_pos, (
+            "Phase 1 contract: preopen must fire BEFORE the VAD loop "
+            "so it has the full capture window to complete."
+        )
+
+    def test_kick_off_in_follow_up_runs_before_vad_loop(self):
+        import inspect
+        from ultron.pipeline.orchestrator import Orchestrator
+
+        src = inspect.getsource(Orchestrator._follow_up_listen)
+        kickoff_pos = src.find("_kick_off_tts_preopen")
+        while_pos = src.find("while not self._shutdown")
+        assert kickoff_pos > 0
+        assert while_pos > 0
+        assert kickoff_pos < while_pos, (
+            "Phase 1 contract: preopen must fire BEFORE the VAD loop "
+            "in the follow-up listen path too."
+        )

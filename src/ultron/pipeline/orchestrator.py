@@ -291,6 +291,44 @@ class Orchestrator:
         self._speculative_stt_result: Optional[str] = None
         self._speculative_stt_active = False
         self._speculative_stt_invalidated = False
+        # 2026-05-18 latency pass 3 (Phase 2): speculative classification
+        # chained off speculative STT. When STT completes inside the
+        # silence-wait window, the same daemon thread runs the rule-path
+        # web-gate, picks the conversational ack phrase, and kicks off
+        # RAG pre-fetch -- saving ~10-50 ms on the cache-hit conversational
+        # turn (more if RAG retrieval is slow). Result stored as a
+        # ``_SpeculativeClassification`` dict keyed by the user_text it
+        # was computed for. Invalidated alongside STT on SPEECH_START.
+        self._speculative_classification_lock = threading.Lock()
+        self._speculative_classification: Optional[dict] = None
+        self._speculative_classification_invalidated = False
+        # 2026-05-18 latency pass 3 (Phase 3): speculative LLM generation
+        # chained off classification when the rule-path gate verdict
+        # resolves to NO_SEARCH. Tokens stream into a queue; the response
+        # path drains the queue instead of starting a fresh LLM call.
+        # History is recorded by the consumer only when the speculation
+        # was actually used (record_history=False on the speculative call;
+        # explicit ``llm.record_completed_turn`` after consumption) so
+        # invalidated speculations don't leave orphan turns.
+        #
+        # State invariant: each turn at most ONE speculation is in flight.
+        # The ``_active`` flag gates re-entrant kick-off attempts. The
+        # buffer is a fresh ``queue.Queue`` per speculation; ``_response``
+        # holds the accumulated text for history recording on
+        # consumption.
+        self._speculative_llm_lock = threading.Lock()
+        self._speculative_llm_thread: Optional[threading.Thread] = None
+        # ``_buffer`` holds a ``queue.Queue`` while a speculation is in
+        # flight or its tokens haven't been drained yet. ``None`` between
+        # speculations. Untyped at the attribute layer because
+        # ``Optional["queue.Queue"]`` would force a runtime ``queue``
+        # import on every Orchestrator construction.
+        self._speculative_llm_buffer = None
+        self._speculative_llm_text: Optional[str] = None
+        self._speculative_llm_response: Optional[str] = None
+        self._speculative_llm_completed = False
+        self._speculative_llm_active = False
+        self._speculative_llm_invalidated = False
         self.addressing = self._load_addressing_classifier()
         self.web_gate, self.web_executor, self.ack_source = (
             self._load_web_search_if_enabled()
@@ -1046,14 +1084,16 @@ class Orchestrator:
                     continue
 
                 self._state = State.PROCESSING
-                # 2026-05-15 latency: pre-open the TTS output stream on
-                # a daemon thread BEFORE Whisper runs. The ~50 ms
-                # PortAudio device-open cost overlaps with STT
-                # (~80-150 ms on this hardware) instead of landing on
-                # the critical path after the first LLM token. Engine
-                # consumes the pre-open inside speak_stream; on cache
-                # miss falls back to its own open. Fail-open at every
-                # level.
+                # 2026-05-15 latency: TTS output-stream pre-open. After
+                # 2026-05-18 latency pass 3 (Phase 1), the primary
+                # kick-off lives at the top of ``_capture_utterance`` /
+                # ``_follow_up_listen`` so the open overlaps the entire
+                # speech + silence-wait window (not just the post-capture
+                # tail). The call here is a belt-and-braces no-op: if the
+                # earlier kick-off completed, ``prepare_output_stream``
+                # short-circuits; if the engine has no method (legacy
+                # fixture), ``_kick_off_tts_preopen`` no-ops. Cheap and
+                # forgiving. Fail-open at every level.
                 self._kick_off_tts_preopen()
                 # 2026-05-16 latency pass 2: collect any speculative
                 # STT result kicked off DURING the silence wait inside
@@ -1192,6 +1232,19 @@ class Orchestrator:
         # never called _collect_speculative_stt). Without this, a stale
         # transcript could leak into this turn's main-loop user_text.
         self._reset_speculative_stt_state()
+        # 2026-05-18 latency pass 3 (Phase 1): kick off the PortAudio
+        # device open NOW, before any speech is captured. The ~50 ms
+        # open cost overlaps with the entire speech-plus-silence-wait
+        # window (typically 1-30 s) instead of only the post-capture
+        # tail. After Phase 4 of the prior pass collapsed Whisper to
+        # zero foreground time, the legacy "kick off after capture"
+        # placement no longer had enough overlap to complete before
+        # the first TTS write -- speak_stream was falling back to a
+        # fresh open. Idempotent at the engine layer (prepare_output_stream
+        # no-ops when a stream is already cached); fail-open at every
+        # level. Re-armed on every capture so the next turn benefits
+        # too (speak_stream consumes-and-clears the cache per turn).
+        self._kick_off_tts_preopen()
         # Pre-roll: take the COLD slice (short) from the ring so the
         # wake-word "Ultron" tail does not bleed into Whisper as a
         # "Tron" prefix. The full ring is sized for the larger WARM
@@ -1454,6 +1507,12 @@ class Orchestrator:
         # 2026-05-16 latency pass 2: drop any stale speculative STT
         # result from a prior turn (mirror of _capture_utterance).
         self._reset_speculative_stt_state()
+        # 2026-05-18 latency pass 3 (Phase 1): kick off the PortAudio
+        # device open now so the ~50 ms open cost overlaps the entire
+        # follow-up listen window. Mirrors the COLD-path placement in
+        # _capture_utterance. Idempotent / fail-open. See the prose in
+        # _capture_utterance for the full rationale.
+        self._kick_off_tts_preopen()
         # Don't clear the ring — we want pre-roll continuity from the moment
         # TTS finished.
 
@@ -2002,6 +2061,10 @@ class Orchestrator:
 
         If a previous thread is still running, we let it finish in
         the background (its result is discarded by the reset).
+
+        2026-05-18 latency pass 3 (Phase 2): also resets the chained
+        speculative-classification slot so a prior turn's cached
+        verdict / ack / RAG future doesn't leak into this turn.
         """
         with self._speculative_stt_lock:
             self._speculative_stt_thread = None
@@ -2013,6 +2076,41 @@ class Orchestrator:
             # completion path and let two concurrent kick-offs slip
             # through. The kick-off path checks _active to no-op
             # safely on overlap.
+        self._reset_speculative_classification_state()
+
+    def _reset_speculative_classification_state(self) -> None:
+        """Clear any leftover speculative classification state.
+
+        Called from :meth:`_reset_speculative_stt_state` so the slots
+        stay in lockstep. Best-effort: the existing classification's
+        RAG future (if any) is canceled so the rolled-over pool doesn't
+        keep retrieving for a turn that no longer cares. Defensive
+        against partial test fixtures that bypass :meth:`__init__` and
+        only set the STT slot.
+
+        Phase 3 extension: also chains to the speculative LLM reset so
+        all three speculation lanes (STT / classification / LLM) clear
+        atomically at the top of each capture.
+        """
+        lock = getattr(self, "_speculative_classification_lock", None)
+        if lock is None:
+            # Still reset LLM if its slot is set (test fixtures wire
+            # them independently).
+            self._reset_speculative_llm_state()
+            return
+        with lock:
+            state = getattr(self, "_speculative_classification", None)
+            self._speculative_classification = None
+            self._speculative_classification_invalidated = False
+        if state is not None:
+            rag_future = state.get("rag_future")
+            if rag_future is not None:
+                try:
+                    rag_future.cancel()
+                except Exception:
+                    pass
+        # Phase 3: chain to LLM reset.
+        self._reset_speculative_llm_state()
 
     def _kick_off_speculative_stt(self, audio: np.ndarray) -> None:
         """Start Whisper STT in a background thread on the captured audio.
@@ -2057,6 +2155,19 @@ class Orchestrator:
             with self._speculative_stt_lock:
                 self._speculative_stt_result = text
                 self._speculative_stt_active = False
+                stt_invalidated = self._speculative_stt_invalidated
+            # 2026-05-18 latency pass 3 (Phase 2): chain speculative
+            # classification work onto this thread. Cheap (rule-path
+            # gate + ack pick + RAG kick-off, ~5-10 ms total) so we
+            # collapse it into the STT thread rather than spinning a
+            # second one. Skipped on STT failure / invalidate / empty
+            # transcript -- the main loop falls back to fresh work.
+            if (
+                text is not None
+                and text.strip()
+                and not stt_invalidated
+            ):
+                self._run_speculative_classification(text)
 
         try:
             t = threading.Thread(
@@ -2073,6 +2184,113 @@ class Orchestrator:
             return
         self._speculative_stt_thread = t
 
+    def _run_speculative_classification(self, user_text: str) -> None:
+        """Compute the rule-path gate verdict + ack phrase + RAG future
+        for ``user_text`` and stash them in ``_speculative_classification``.
+
+        2026-05-18 latency pass 3 (Phase 2). Runs synchronously on the
+        speculative-STT thread (chained from :meth:`_kick_off_speculative_stt`'s
+        ``_run`` after STT completes successfully). Stays on the same
+        thread so we don't spin a second daemon; cumulative work is
+        only ~5-10 ms (gate rule classifier + ack-pool next pick +
+        thread-pool submit for RAG).
+
+        Skips the LLM-preflight branch of the web gate: the speculative
+        path uses ``classify_by_rules`` directly, which returns ``None``
+        on UNCERTAIN. The main loop's fresh :meth:`web_gate.classify`
+        call will run preflight when needed -- speculation only saves
+        time on the rule-determined fast path, which is the common
+        case for short conversational queries.
+
+        Fail-open at every stage: any exception leaves the slot empty
+        and the main loop falls back to the legacy fresh path. Defensive
+        against partial test fixtures: bails when the classification
+        lock isn't set up.
+        """
+        lock = getattr(self, "_speculative_classification_lock", None)
+        if lock is None:
+            return
+        # Check whether we were invalidated between STT result storage
+        # and now. If so, skip the work.
+        with lock:
+            if self._speculative_classification_invalidated:
+                return
+
+        verdict = None
+        try:
+            web_gate = getattr(self, "web_gate", None)
+            if web_gate is not None:
+                from ultron.web_search.gating import classify_by_rules
+                verdict = classify_by_rules(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug(
+                "Speculative gate (rule) failed: %s -- main loop will "
+                "classify fresh.", e,
+            )
+            verdict = None
+
+        ack_phrase = None
+        try:
+            ack_phrase = self._maybe_conversational_ack(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug(
+                "Speculative ack pick failed: %s -- main loop will "
+                "compute fresh.", e,
+            )
+            ack_phrase = None
+
+        rag_future = None
+        try:
+            rag_future, _used_async = self._kick_off_rag_prefetch(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug(
+                "Speculative RAG pre-fetch failed: %s -- main loop will "
+                "retrieve serially.", e,
+            )
+            rag_future = None
+
+        # Re-check invalidation before storing -- the user may have
+        # resumed speaking while we ran the classification work.
+        with lock:
+            if self._speculative_classification_invalidated:
+                if rag_future is not None:
+                    try:
+                        rag_future.cancel()
+                    except Exception:
+                        pass
+                return
+            self._speculative_classification = {
+                "text": user_text,
+                "gate_verdict": verdict,
+                "ack_phrase": ack_phrase,
+                "rag_future": rag_future,
+            }
+
+        # 2026-05-18 latency pass 3 (Phase 3): chain speculative LLM
+        # generation when the rule-path verdict resolves to NO_SEARCH.
+        # SEARCH path is skipped because the search-augmented prompt
+        # body differs. UNCERTAIN (verdict==None) is skipped because
+        # the main path will run the LLM preflight; speculating
+        # would race / cost double.
+        try:
+            from ultron.web_search import GateDecision
+            should_spec_llm = (
+                verdict is not None
+                and getattr(verdict, "decision", None) == GateDecision.NO_SEARCH
+            )
+        except Exception:                                            # noqa: BLE001
+            should_spec_llm = False
+        if should_spec_llm:
+            try:
+                self._kick_off_speculative_llm(
+                    user_text, verdict, rag_future,
+                )
+            except Exception as e:                                   # noqa: BLE001
+                logger.debug(
+                    "Speculative LLM kickoff failed: %s -- main loop "
+                    "will run fresh.", e,
+                )
+
     def _invalidate_speculative_stt(self) -> None:
         """Mark any in-flight speculative STT result as invalid.
 
@@ -2083,9 +2301,348 @@ class Orchestrator:
         continues running (we don't try to cancel CTranslate2; the
         wasted CPU is fine on a background daemon), but its result
         is discarded on collection.
+
+        2026-05-18 latency pass 3 (Phase 2): also invalidates the
+        chained classification slot. The STT thread checks
+        ``_speculative_classification_invalidated`` before storing
+        the classification result so a late-arriving invalidation
+        still wins the race.
         """
         with self._speculative_stt_lock:
             self._speculative_stt_invalidated = True
+        self._invalidate_speculative_classification()
+
+    def _invalidate_speculative_classification(self) -> None:
+        """Mark the speculative classification slot as invalid.
+
+        2026-05-18 latency pass 3 (Phase 2). Best-effort: cancels the
+        in-flight RAG future and stamps the invalidated flag so a
+        later-arriving STT thread that hasn't yet stored its
+        classification result drops it instead. Idempotent. Defensive
+        against partial test fixtures.
+
+        Phase 3 extension: also invalidates the speculative LLM slot
+        so the three speculation lanes stay in lockstep on
+        SPEECH_START.
+        """
+        lock = getattr(self, "_speculative_classification_lock", None)
+        if lock is None:
+            return
+        with lock:
+            state = getattr(self, "_speculative_classification", None)
+            self._speculative_classification_invalidated = True
+        if state is not None:
+            rag_future = state.get("rag_future")
+            if rag_future is not None:
+                try:
+                    rag_future.cancel()
+                except Exception:
+                    pass
+        # Phase 3: chain to LLM invalidation.
+        self._invalidate_speculative_llm()
+
+    def _collect_speculative_classification(
+        self, user_text: str,
+    ) -> Optional[dict]:
+        """Return the cached classification for ``user_text``, or None.
+
+        2026-05-18 latency pass 3 (Phase 2). Returns the state dict
+        with keys ``text``, ``gate_verdict``, ``ack_phrase``,
+        ``rag_future`` when:
+
+        * Classification was stored under this exact transcript.
+        * The slot was not invalidated.
+
+        Always clears the slot atomically so the caller takes
+        ownership of the RAG future (preventing double-collect by a
+        stale call). Returns None on miss; main loop falls back to
+        the legacy fresh-classification path. Defensive against
+        partial test fixtures.
+        """
+        lock = getattr(self, "_speculative_classification_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            was_invalidated = self._speculative_classification_invalidated
+            state = self._speculative_classification
+            self._speculative_classification = None
+            self._speculative_classification_invalidated = False
+        if state is None:
+            return None
+        if was_invalidated or state.get("text") != user_text:
+            # Invalidated mid-flight OR stale result from a prior turn:
+            # cancel RAG and return None so the main loop falls back to
+            # the legacy fresh path.
+            rag_future = state.get("rag_future")
+            if rag_future is not None:
+                try:
+                    rag_future.cancel()
+                except Exception:
+                    pass
+            return None
+        return state
+
+    # ----- 2026-05-18 latency pass 3 (Phase 3): speculative LLM ---------
+
+    def _kick_off_speculative_llm(
+        self, user_text: str, verdict, rag_future,
+    ) -> None:
+        """Start LLM generation on a background daemon thread.
+
+        Called from :meth:`_run_speculative_classification` after the
+        rule-path gate verdict resolves to NO_SEARCH. The thread:
+
+        1. Applies :func:`apply_uncertainty` to the verdict; aborts
+           if the uncertainty layer upgrades NO_SEARCH -> SEARCH
+           (the search-augmented prompt body is different).
+        2. Applies :func:`apply_brevity_hint` to the augmented text.
+        3. Resolves the RAG future (joining the in-flight retrieval).
+        4. Calls :meth:`LLMEngine.generate_stream` with
+           ``record_history=False`` so the speculation doesn't pollute
+           history if invalidated. Buffers each token into a
+           ``queue.Queue``. Accumulates the full response so the
+           consumer can record history explicitly via
+           :meth:`LLMEngine.record_completed_turn`.
+
+        On SPEECH_START during silence wait, the orchestrator calls
+        :meth:`_invalidate_speculative_llm` which sets the invalidated
+        flag and signals :meth:`LLMEngine.cancel`. The iteration loop
+        exits cleanly; the buffer gets a sentinel; no history record.
+
+        Fail-open at every level: missing LLM / verdict / state /
+        exceptions all leave the speculation silently inactive and
+        the main loop falls back to the legacy fresh-call path.
+
+        Args:
+            user_text: The transcript the speculation is keyed on.
+                Must match the main path's user_text for the
+                speculation to be consumed.
+            verdict: The gate verdict returned by
+                ``classify_by_rules``. Must have ``decision==NO_SEARCH``.
+            rag_future: The pre-fetched RAG retrieval future (from
+                :meth:`_kick_off_rag_prefetch`). May be ``None``.
+        """
+        # Defensive against partial fixtures.
+        lock = getattr(self, "_speculative_llm_lock", None)
+        llm = getattr(self, "llm", None)
+        if lock is None or llm is None or verdict is None:
+            return
+        with lock:
+            if self._speculative_llm_active:
+                return
+            try:
+                import queue as _queue
+                self._speculative_llm_buffer = _queue.Queue()
+            except Exception:
+                return
+            self._speculative_llm_active = True
+            self._speculative_llm_text = user_text
+            self._speculative_llm_response = None
+            self._speculative_llm_completed = False
+            self._speculative_llm_invalidated = False
+        buffer = self._speculative_llm_buffer
+
+        def _run() -> None:
+            # Local imports keep cold-start cheap on test fixtures
+            # that never construct a real orchestrator.
+            from ultron.uncertainty import apply as apply_uncertainty
+            from ultron.response_style import apply_brevity_hint
+            from ultron.web_search import GateDecision
+
+            accumulated: list = []
+            completed = False
+            try:
+                # apply_uncertainty may upgrade NO_SEARCH -> SEARCH on
+                # low-confidence + temporal patterns. The search path
+                # uses a different prompt body, so abort speculation
+                # in that branch.
+                final_verdict, augmented = apply_uncertainty(
+                    verdict, user_text,
+                )
+                if final_verdict.decision != GateDecision.NO_SEARCH:
+                    return
+                augmented = apply_brevity_hint(augmented)
+                snippets = self._collect_rag_future(rag_future)
+                stream = llm.generate_stream(
+                    augmented,
+                    gate_verdict=final_verdict,
+                    precomputed_rag_snippets=snippets,
+                    record_history=False,
+                )
+                for token in stream:
+                    # Check invalidation before pushing each token.
+                    # If invalidated, cancel the underlying stream so
+                    # the iterator exits on its next chunk.
+                    with lock:
+                        if self._speculative_llm_invalidated:
+                            try:
+                                llm.cancel()
+                            except Exception:
+                                pass
+                            return
+                    accumulated.append(token)
+                    buffer.put(token)
+                completed = True
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning(
+                    "Speculative LLM failed (%s); main path will run "
+                    "fresh.", e,
+                )
+            finally:
+                # Sentinel always emitted so consumers don't hang.
+                try:
+                    buffer.put(None)
+                except Exception:
+                    pass
+                with lock:
+                    self._speculative_llm_response = "".join(accumulated)
+                    self._speculative_llm_completed = completed
+                    self._speculative_llm_active = False
+
+        try:
+            t = threading.Thread(
+                target=_run, daemon=True, name="speculative-llm",
+            )
+            t.start()
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "Speculative LLM thread launch failed (%s); main path "
+                "will run fresh.", e,
+            )
+            with lock:
+                self._speculative_llm_active = False
+            return
+        self._speculative_llm_thread = t
+
+    def _invalidate_speculative_llm(self) -> None:
+        """Mark any in-flight speculative LLM as invalid.
+
+        Sets the invalidated flag and signals :meth:`LLMEngine.cancel`
+        so the streaming iterator exits at its next chunk. The
+        speculation thread's ``finally`` block still emits the
+        sentinel, so consumers waiting on the buffer don't hang.
+
+        Idempotent / defensive against partial fixtures.
+        """
+        lock = getattr(self, "_speculative_llm_lock", None)
+        if lock is None:
+            return
+        with lock:
+            self._speculative_llm_invalidated = True
+        llm = getattr(self, "llm", None)
+        if llm is not None:
+            try:
+                llm.cancel()
+            except Exception:
+                pass
+
+    def _collect_speculative_llm(self, user_text: str):
+        """Return ``(iter, response_committer)`` for the speculation, or
+        ``(None, None)`` on miss.
+
+        On hit, the iterator yields tokens from the buffer until the
+        sentinel arrives. The committer is a zero-arg function the
+        caller invokes after consuming the iterator successfully -- it
+        records the turn in history (so an unconsumed speculation
+        leaves no orphan). On invalidate, the iterator exits early
+        and the committer is a no-op.
+
+        Returns ``(None, None)`` when:
+        * Speculation was never started.
+        * Speculation is keyed on a different transcript (stale).
+        * Speculation was invalidated.
+
+        The slot is cleared atomically on every call so a second
+        attempt returns ``(None, None)``.
+
+        2026-05-18 latency pass 3 (Phase 3). Defensive against
+        partial fixtures.
+        """
+        lock = getattr(self, "_speculative_llm_lock", None)
+        if lock is None:
+            return None, None
+        with lock:
+            was_invalidated = self._speculative_llm_invalidated
+            spec_text = self._speculative_llm_text
+            buffer = self._speculative_llm_buffer
+            thread = self._speculative_llm_thread
+            # Clear slot atomically so a stale re-collect returns None.
+            self._speculative_llm_text = None
+            self._speculative_llm_buffer = None
+            self._speculative_llm_thread = None
+            self._speculative_llm_invalidated = False
+        if was_invalidated or buffer is None or spec_text != user_text:
+            # On mismatch / invalidate, drain the buffer (best-effort
+            # so the producer thread doesn't pile up). Don't yield.
+            return None, None
+
+        def _drain():
+            # Yield tokens until the sentinel. ``timeout`` is generous
+            # because the producer might be still generating; we exit
+            # promptly on EOF.
+            while True:
+                try:
+                    token = buffer.get(timeout=15.0)
+                except Exception:
+                    return
+                if token is None:
+                    return
+                yield token
+
+        def _commit_history():
+            """Record the consumed turn in history. No-op if the
+            speculation didn't complete cleanly (e.g., cancel)."""
+            if thread is not None and thread.is_alive():
+                # Producer hasn't finished -- wait briefly so the
+                # response/completed fields are populated.
+                thread.join(timeout=1.0)
+            with lock:
+                response = self._speculative_llm_response
+                completed = self._speculative_llm_completed
+                self._speculative_llm_response = None
+                self._speculative_llm_completed = False
+            llm = getattr(self, "llm", None)
+            if llm is None or not completed:
+                return
+            if not response or not response.strip():
+                return
+            try:
+                llm.record_completed_turn(spec_text, response)
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning(
+                    "Speculative-LLM history record failed: %s", e,
+                )
+
+        return _drain(), _commit_history
+
+    def _reset_speculative_llm_state(self) -> None:
+        """Clear leftover speculative LLM state from a prior capture.
+
+        Called from :meth:`_reset_speculative_stt_state` (via the
+        classification reset) so the three speculation slots stay in
+        lockstep. Best-effort: if a previous speculation thread is
+        still running, we set the invalidated flag and cancel the
+        LLM stream; the thread's ``finally`` block cleans up its
+        own state.
+        """
+        lock = getattr(self, "_speculative_llm_lock", None)
+        if lock is None:
+            return
+        with lock:
+            in_flight = self._speculative_llm_active
+            self._speculative_llm_text = None
+            self._speculative_llm_buffer = None
+            self._speculative_llm_thread = None
+            self._speculative_llm_response = None
+            self._speculative_llm_completed = False
+            self._speculative_llm_invalidated = False
+        if in_flight:
+            llm = getattr(self, "llm", None)
+            if llm is not None:
+                try:
+                    llm.cancel()
+                except Exception:
+                    pass
 
     def _collect_speculative_stt(
         self, *, timeout_s: float = 2.0,
@@ -2224,11 +2781,28 @@ class Orchestrator:
         LLM doesn't pay the retrieval cost serially. Falls back to
         in-line retrieval when memory is disabled or multi-pass is on
         (the multi-pass path needs the verdict).
+
+        2026-05-18 latency pass 3 (Phase 2): consume the speculative
+        classification slot if it was populated during silence wait.
+        On hit, the rule-path gate verdict + RAG future are reused
+        instead of being recomputed -- saving the ~5 ms rule classify
+        AND giving the RAG retrieval ~200-300 ms more overlap. On miss
+        (slot empty / invalidated / verdict UNCERTAIN at speculation
+        time), falls through to the legacy fresh-kick-off path.
         """
-        # Kick off the RAG pre-fetch first so it overlaps everything
-        # that follows. The future is consumed by the LLM call below
-        # (or discarded on the search-augmented branch).
-        rag_future, _ = self._kick_off_rag_prefetch(user_text)
+        # 2026-05-18 latency pass 3 (Phase 2): consume cached
+        # speculative classification when available. The slot is
+        # cleared atomically so the next turn starts fresh.
+        spec_class = self._collect_speculative_classification(user_text)
+        if spec_class is not None:
+            rag_future = spec_class.get("rag_future")
+            cached_verdict = spec_class.get("gate_verdict")
+        else:
+            # Kick off the RAG pre-fetch first so it overlaps everything
+            # that follows. The future is consumed by the LLM call below
+            # (or discarded on the search-augmented branch).
+            rag_future, _ = self._kick_off_rag_prefetch(user_text)
+            cached_verdict = None
 
         if self.web_gate is None or self.web_executor is None:
             ack = self._maybe_conversational_ack(user_text)
@@ -2241,19 +2815,29 @@ class Orchestrator:
             )
             return
 
-        try:
-            verdict = self.web_gate.classify(user_text)
-        except Exception as e:
-            logger.warning("Web gate failed (%s) -- falling through to base", e)
-            ack = self._maybe_conversational_ack(user_text)
-            if ack:
-                yield ack + " "
-            snippets = self._collect_rag_future(rag_future)
-            yield from self.llm.generate_stream(
-                apply_brevity_hint(user_text),
-                precomputed_rag_snippets=snippets,
-            )
-            return
+        # If speculation already pinned the rule-path verdict, skip the
+        # fresh classify call. The rule layer is deterministic on the
+        # transcript so the speculative + main verdicts agree by
+        # construction. ``cached_verdict is None`` covers both "no
+        # speculation" and "speculation hit UNCERTAIN" -- in either
+        # case we run the full classify (which may trigger LLM
+        # preflight on the UNCERTAIN branch, paid serially as before).
+        if cached_verdict is not None:
+            verdict = cached_verdict
+        else:
+            try:
+                verdict = self.web_gate.classify(user_text)
+            except Exception as e:
+                logger.warning("Web gate failed (%s) -- falling through to base", e)
+                ack = self._maybe_conversational_ack(user_text)
+                if ack:
+                    yield ack + " "
+                snippets = self._collect_rag_future(rag_future)
+                yield from self.llm.generate_stream(
+                    apply_brevity_hint(user_text),
+                    precomputed_rag_snippets=snippets,
+                )
+                return
 
         # Phase 5: translate preflight uncertainty signals into behavior.
         # May upgrade NO_SEARCH -> SEARCH (low confidence + temporal), and
@@ -2277,6 +2861,30 @@ class Orchestrator:
             ack = self._maybe_conversational_ack(user_text)
             if ack:
                 yield ack + " "
+
+            # 2026-05-18 latency pass 3 (Phase 3): try to consume the
+            # speculative LLM stream first. When speculation fired
+            # during silence wait and finished or is still running with
+            # buffered tokens, this saves the entire LLM TTFT (~63 ms)
+            # plus partial decode time. On miss / invalidation, falls
+            # through to the legacy fresh call.
+            spec_iter, commit_history = self._collect_speculative_llm(
+                user_text,
+            )
+            if spec_iter is not None:
+                try:
+                    yield from spec_iter
+                finally:
+                    if commit_history is not None:
+                        try:
+                            commit_history()
+                        except Exception as e:                       # noqa: BLE001
+                            logger.warning(
+                                "Speculative LLM history commit failed: %s",
+                                e,
+                            )
+                return
+
             # 2026-05-10 brevity reinforcement: prepend a 1-3-sentence
             # directive when the user's question is brief and isn't an
             # explicit ask for depth. Counters the 4B model's habit of
