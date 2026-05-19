@@ -577,6 +577,45 @@ def classify_routing(
     has_active_coding_task: bool = False,
     has_pending_clarification: bool = False,
 ) -> RoutingIntent:
+    """Public entry: time the classification + emit one observation.
+
+    Delegates the real work to :func:`_classify_routing_impl`; this
+    wrapper adds the latency measurement + an observation row so the
+    eval harness and learning loops can attribute outcomes back to the
+    classifier verdict. Observation IO is fail-open; routing never
+    blocks or raises on observation failure.
+    """
+    import time as _time
+
+    start = _time.perf_counter()
+    intent = _classify_routing_impl(
+        utterance,
+        has_active_coding_task=has_active_coding_task,
+        has_pending_clarification=has_pending_clarification,
+    )
+    latency_ms = (_time.perf_counter() - start) * 1000.0
+    try:
+        from ultron.observations import observe_routing_verdict
+
+        observe_routing_verdict(
+            utterance=utterance or "",
+            intent_kind=intent.kind.value,
+            confidence=float(intent.confidence or 0.0),
+            source=intent.source or "",
+            reason=intent.reason or "",
+            latency_ms=latency_ms,
+        )
+    except Exception:
+        # Observation IO must never break routing.
+        pass
+    return intent
+
+
+def _classify_routing_impl(
+    utterance: str,
+    has_active_coding_task: bool = False,
+    has_pending_clarification: bool = False,
+) -> RoutingIntent:
     """Classify ``utterance`` into a top-level :class:`RoutingIntent`.
 
     Order:

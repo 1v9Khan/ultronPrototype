@@ -943,12 +943,28 @@ class LLMEngine:
         # ("XTTS produced no audio for '<think>...'" warning in the
         # 2026-05-13 session log).
         text = strip_thinking_text(raw_text).strip()
+        elapsed_s = time.monotonic() - t0
+        completion_tokens = out.get("usage", {}).get("completion_tokens", -1)
         logger.info(
             "LLM: %d chars in %.2fs (%d tokens)",
             len(text),
-            time.monotonic() - t0,
-            out.get("usage", {}).get("completion_tokens", -1),
+            elapsed_s,
+            completion_tokens,
         )
+        try:
+            from ultron.observations import observe_llm_call
+
+            observe_llm_call(
+                event_type="generate",
+                user_message_len=len(user_message or ""),
+                tokens_used=int(completion_tokens) if completion_tokens >= 0 else None,
+                latency_ms=elapsed_s * 1000.0,
+                streamed=False,
+                enable_thinking=enable_thinking,
+                extra={"response_chars": len(text)},
+            )
+        except Exception:
+            pass
         self._record_turn(user_message, text)
         return text
 
@@ -1068,11 +1084,31 @@ class LLMEngine:
                 pass
             elif full:
                 logger.info("Skipping interrupted LLM stream in chat history")
+            elapsed_s = time.monotonic() - t0
             logger.info(
                 "LLM stream: %d chars in %.2fs",
                 len(full),
-                time.monotonic() - t0,
+                elapsed_s,
             )
+            try:
+                from ultron.observations import observe_llm_call
+
+                observe_llm_call(
+                    event_type="generate_stream",
+                    user_message_len=len(user_message or ""),
+                    tokens_used=None,
+                    latency_ms=elapsed_s * 1000.0,
+                    streamed=True,
+                    enable_thinking=enable_thinking,
+                    extra={
+                        "response_chars": len(full),
+                        "completed": bool(completed),
+                        "canceled": bool(canceled),
+                        "record_history": bool(record_history),
+                    },
+                )
+            except Exception:
+                pass
 
     # --- 4B plan Stage F: selective thinking mode ---------------------------
 

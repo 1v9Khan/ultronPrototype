@@ -826,6 +826,37 @@ class CodingFactsConfig(_Strict):
     max_age_days: Optional[float] = None
 
 
+class CodingGoalAnchorsConfig(_Strict):
+    """E2 goal-anchor planning (Phase 0+1 build, 2026-05-18+).
+
+    When enabled, the :class:`CodingTaskRunner` decomposes incoming
+    task prompts into named milestones (anchors) with per-anchor
+    token budgets. As USAGE events arrive from Claude Code, the
+    runner attributes tokens to the active anchor and surfaces voice
+    narration when an anchor completes, when it's near its budget,
+    and when the next anchor begins.
+
+    Resume support: when a task is paused mid-plan (budget exhausted,
+    user cancelled, etc.), the runner's :meth:`send_followup` can
+    prepend the next unfinished anchor's description to the
+    follow-up prompt so Claude Code resumes at the right milestone
+    instead of restarting from scratch.
+
+    Default OFF: the narration adds extra voice turns mid-task; the
+    operator opts in.
+    """
+
+    enabled: bool = False
+    min_anchors: int = Field(default=1, ge=1, le=10)
+    max_anchors: int = Field(default=6, ge=1, le=10)
+    # Per-anchor warning threshold. ``0.8`` matches the existing
+    # session-budget warning convention.
+    warn_threshold: float = Field(default=0.8, ge=0.1, le=1.0)
+    # When True, ``send_followup`` prepends the next unfinished
+    # anchor's description to the follow-up prompt.
+    resume_prepend_next_anchor: bool = True
+
+
 class CodingConfig(_Strict):
     enabled: bool = True
     bridge: str = "direct"
@@ -841,6 +872,10 @@ class CodingConfig(_Strict):
     # 4B plan Item 7 — canonical-path monitor (off by default).
     canonical_monitor: CodingCanonicalMonitorConfig = Field(
         default_factory=CodingCanonicalMonitorConfig,
+    )
+    # E2 goal-anchor planning (Phase 0+1 build) -- off by default.
+    goal_anchors: CodingGoalAnchorsConfig = Field(
+        default_factory=CodingGoalAnchorsConfig,
     )
     # A3 wiring -- stored-facts fast-path on clarifications.
     facts: CodingFactsConfig = Field(default_factory=CodingFactsConfig)
@@ -1057,6 +1092,24 @@ class RoutingClassifierConfig(_Strict):
     confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
+class AmbiguityBandClarificationConfig(_Strict):
+    """Confidence-band clarification (Phase 0+1 build, 2026-05-18+).
+
+    When a routing classifier returns an intent with confidence inside
+    ``[band_low, band_high)``, the orchestrator can be configured to
+    ask one clarifying question via :class:`IntentDisambiguator`
+    instead of executing the ambiguous verdict directly.
+
+    The pure predicate :func:`ultron.openclaw_routing.ambiguity.should_clarify`
+    consumes these knobs; the actual orchestrator wiring is a follow-up
+    behavioural change (default OFF preserves today's flow).
+    """
+
+    enabled: bool = False
+    band_low: float = Field(default=0.4, ge=0.0, le=1.0)
+    band_high: float = Field(default=0.65, ge=0.0, le=1.0)
+
+
 class RoutingIRMAConfig(_Strict):
     """4B optimization plan Item 5 — IRMA-style input reformulation.
 
@@ -1086,6 +1139,10 @@ class RoutingConfig(_Strict):
     classifier: RoutingClassifierConfig = Field(default_factory=RoutingClassifierConfig)
     # 4B plan Item 5 — IRMA-style input reformulation for the disambiguator.
     irma: RoutingIRMAConfig = Field(default_factory=RoutingIRMAConfig)
+    # Phase 0+1 build (2026-05-18+): confidence-band clarification knobs.
+    ambiguity_band_clarification: AmbiguityBandClarificationConfig = Field(
+        default_factory=AmbiguityBandClarificationConfig
+    )
     # Stub responses are emitted while the OpenClaw integration is incomplete;
     # the OpenClaw integration prompt sets this to false.
     stub_responses_enabled: bool = True

@@ -1033,6 +1033,9 @@ class Orchestrator:
                 self._announce_pending_budget_warning()
                 # 4B plan Item 7: surface canonical-path-monitor aborts.
                 self._announce_pending_canonical_abort()
+                # E2 goal-anchor planning: surface anchor lifecycle
+                # narration (opening / warning / transition / completion).
+                self._announce_pending_anchor_narration()
 
                 speech: Optional[np.ndarray] = None
                 came_from_follow_up = False
@@ -1931,6 +1934,27 @@ class Orchestrator:
             return
         if warning:
             self._speak(warning)
+            self._last_response_finished_monotonic = time.monotonic()
+
+    def _announce_pending_anchor_narration(self) -> None:
+        """E2 goal-anchor planning: surface per-anchor voice narration.
+
+        The runner queues opening / warning / transition / completion
+        lines as USAGE events advance the active anchor. This method
+        polls + speaks once per top-of-loop iteration. No-op when
+        goal-anchors are disabled (the pop returns ``None``).
+        """
+        if self.coding_voice is None:
+            return
+        try:
+            narration = self.coding_voice.pending_anchor_narration()
+        except Exception as e:
+            logger.warning(
+                "coding_voice.pending_anchor_narration failed: %s", e,
+            )
+            return
+        if narration:
+            self._speak(narration)
             self._last_response_finished_monotonic = time.monotonic()
 
     # --- phase: process ------------------------------------------------------

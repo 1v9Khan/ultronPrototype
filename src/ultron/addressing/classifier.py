@@ -221,6 +221,23 @@ class AddressingClassifier:
             verdict.latency_ms,
             utterance[:80],
         )
+        # Cross-cutting observation emit (fail-open). Stamped before the
+        # log-file write so a JSONL write failure doesn't suppress the
+        # observation row.
+        try:
+            from ultron.observations import observe_addressing_verdict
+
+            observe_addressing_verdict(
+                utterance=utterance,
+                decision=verdict.decision.value,
+                confidence=float(verdict.confidence or 0.0),
+                reason=verdict.reason or "",
+                seconds_since_response=0.0,
+                source=verdict.source or "",
+                latency_ms=float(verdict.latency_ms or 0.0),
+            )
+        except Exception:
+            pass
         if self.log_path is None:
             return
         record = {

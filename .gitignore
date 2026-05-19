@@ -58,6 +58,10 @@ logs/mem_qa_*.json
 logs/search_blend_*.json
 # Quality test pass-generated sandbox apps (regeneratable; not source code)
 data/sandbox/quality_q*/
+# 2026-05-19 Phase 0+1 observation framework runtime log -- accumulates per
+# call, regeneratable, never useful in repo history. The eval harness +
+# outcome resolver read this on demand from disk.
+data/observations.jsonl
 *.wav
 *.mp3
 *.ogg

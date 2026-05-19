@@ -25,6 +25,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from config import settings
+from ultron.coding.anchors import (
+    AnchorBudget,
+    AnchorPlan,
+    GoalAnchor,
+    decompose_into_anchors,
+    narration_for_anchor,
+    narration_for_completion,
+)
 from ultron.coding.bridge import (
     CodingBridge,
     EventKind,
@@ -152,6 +160,13 @@ class CodingTaskRunner:
         # monitor signals abort, consumed once by the voice loop.
         self._pending_canonical_abort: Optional[str] = None
         self._canonical_lock = threading.Lock()
+        # E2 goal-anchor planning (default-OFF in config). When the
+        # feature is enabled, ``start_task`` builds an
+        # :class:`AnchorPlan` from the task prompt + listener routes
+        # USAGE events to the active anchor's budget.
+        self._anchor_plan: Optional[AnchorPlan] = None
+        self._anchor_lock = threading.Lock()
+        self._pending_anchor_narration: Optional[str] = None
 
     # --- task lifecycle -----------------------------------------------------
 
@@ -240,6 +255,12 @@ class CodingTaskRunner:
         safety_listener = self._make_safety_validator_listener(handle)
         if safety_listener is not None:
             handle.add_listener(safety_listener)
+        # E2 goal-anchor planning -- off by default. When enabled,
+        # build a per-task AnchorPlan from the prompt + register a
+        # USAGE-listener that attributes tokens to the active anchor.
+        anchor_listener = self._build_anchor_plan_and_listener(handle, request)
+        if anchor_listener is not None:
+            handle.add_listener(anchor_listener)
         # Also log a structured "start" record for offline inspection.
         self._log_record({
             "ts": time.time(),
@@ -306,6 +327,13 @@ class CodingTaskRunner:
             except TimeoutError:
                 logger.warning("send_followup: prior task didn't finish in time")
                 return None
+
+        # E2 goal-anchor resume: when the operator has enabled the
+        # ``resume_prepend_next_anchor`` flag AND an unfinished anchor
+        # plan is still in flight, prepend a one-line "Continue with..."
+        # directive so Claude Code picks up at the right milestone
+        # instead of restarting from scratch.
+        prompt = self._maybe_prepend_anchor_resume(prompt)
 
         request = TaskRequest(
             task_prompt=prompt,
@@ -806,6 +834,272 @@ class CodingTaskRunner:
             text = self._pending_canonical_abort
             self._pending_canonical_abort = None
         return text
+
+    # --- E2 goal-anchor planning -------------------------------------------
+
+    def _goal_anchor_config(self):
+        """Read live goal-anchor config. Returns ``None`` on failure.
+
+        Fail-open: any pydantic / import / lookup hiccup short-circuits
+        the feature for the rest of the call.
+        """
+        try:
+            from ultron.config import get_config
+            return get_config().coding.goal_anchors
+        except Exception as e:
+            logger.debug("goal_anchors config read failed: %s", e)
+            return None
+
+    def _build_anchor_plan_and_listener(self, handle, request):
+        """Build the :class:`AnchorPlan` for this task + the listener.
+
+        Returns ``None`` when the feature is disabled or when an
+        unexpected failure prevents plan construction (fail-open --
+        the task still runs without anchor narration).
+        """
+        cfg = self._goal_anchor_config()
+        if cfg is None or not cfg.enabled:
+            with self._anchor_lock:
+                self._anchor_plan = None
+            return None
+
+        try:
+            total_budget = int(settings.CODING_TOKEN_BUDGET_PER_SESSION)
+        except Exception:
+            total_budget = 100_000
+
+        try:
+            plan = decompose_into_anchors(
+                request.task_prompt or "",
+                total_budget_tokens=total_budget,
+                min_anchors=int(cfg.min_anchors),
+                max_anchors=int(cfg.max_anchors),
+            )
+        except Exception as e:
+            logger.warning("anchor decomposition failed (%s); skipping", e)
+            return None
+
+        with self._anchor_lock:
+            self._anchor_plan = plan
+            # Queue the opening narration BEFORE any USAGE event lands,
+            # so the orchestrator's next pop_anchor_narration() poll
+            # surfaces "Starting anchor 1" before "60% of anchor 1".
+            opener = ""
+            if plan.active is not None:
+                opener = narration_for_anchor(plan.active.anchor, verb="Starting")
+            if opener:
+                self._pending_anchor_narration = opener
+
+        self._log_record({
+            "ts": time.time(),
+            "task_id": handle.task_id(),
+            "kind": "anchor_plan_created",
+            "anchor_count": len(plan),
+            "anchors": [a.anchor.as_dict() for a in plan.anchors],
+        })
+
+        warn_threshold = float(cfg.warn_threshold)
+        return self._make_anchor_listener(handle, warn_threshold)
+
+    def _make_anchor_listener(self, handle, warn_threshold: float):
+        """Listener: route USAGE events to the active anchor budget.
+
+        On crossing ``warn_threshold`` queues a budget-warning
+        narration. On exhaustion advances to the next anchor + queues
+        the next-anchor narration. Idempotent at task boundary.
+        """
+
+        def _listener(event: TaskEvent) -> None:
+            try:
+                if event.kind != EventKind.USAGE:
+                    return
+                tokens = int(
+                    (event.usage_input or 0)
+                    + (event.usage_output or 0)
+                    + (event.usage_cache_creation or 0)
+                    + (event.usage_cache_read or 0)
+                )
+                if tokens <= 0:
+                    return
+
+                with self._anchor_lock:
+                    plan = self._anchor_plan
+                    if plan is None or plan.active is None:
+                        return
+
+                    # Cascade overflow: a single USAGE event can over-
+                    # fill the active anchor, in which case the
+                    # leftover spills into the next anchor (and so on).
+                    # Production traffic almost never exhausts in one
+                    # event, but it can happen on long blocking LLM
+                    # calls that emit one big USAGE record.
+                    remaining = tokens
+                    last_narration: Optional[str] = None
+                    while remaining > 0 and plan.active is not None:
+                        active = plan.active
+                        pre_warn_latched = active.warning_emitted_at is not None
+                        budget_left = max(
+                            0,
+                            active.anchor.budget_tokens - active.tokens_spent,
+                        )
+                        if budget_left <= 0:
+                            # Already-exhausted active anchor (defensive).
+                            applied = remaining
+                        else:
+                            applied = min(remaining, budget_left)
+                        active.update(applied)
+                        remaining -= applied
+
+                        crossed_warn = (
+                            not pre_warn_latched
+                            and active.should_warn(threshold=warn_threshold)
+                        )
+                        exhausted = active.is_exhausted
+
+                        if crossed_warn and not exhausted:
+                            pct = int(round(active.utilisation * 100))
+                            anchor_desc = (
+                                active.anchor.description.strip().rstrip(".")
+                            )
+                            last_narration = (
+                                f"Heads up: anchor {active.anchor.order + 1} "
+                                f"({anchor_desc}) is at {pct}% of its budget."
+                            )
+                            self._log_record({
+                                "ts": time.time(),
+                                "task_id": handle.task_id(),
+                                "kind": "anchor_warning",
+                                "anchor_name": active.anchor.name,
+                                "anchor_order": active.anchor.order,
+                                "tokens_spent": active.tokens_spent,
+                                "budget_tokens": active.anchor.budget_tokens,
+                                "utilisation": round(active.utilisation, 3),
+                            })
+
+                        if exhausted:
+                            completed = active
+                            new_active = plan.advance()
+                            self._log_record({
+                                "ts": time.time(),
+                                "task_id": handle.task_id(),
+                                "kind": "anchor_completed",
+                                "anchor_name": completed.anchor.name,
+                                "anchor_order": completed.anchor.order,
+                                "tokens_spent": completed.tokens_spent,
+                                "budget_tokens": completed.anchor.budget_tokens,
+                                "utilisation": round(completed.utilisation, 3),
+                            })
+                            if new_active is not None:
+                                last_narration = narration_for_anchor(
+                                    new_active.anchor, verb="Moving to"
+                                )
+                                self._log_record({
+                                    "ts": time.time(),
+                                    "task_id": handle.task_id(),
+                                    "kind": "anchor_started",
+                                    "anchor_name": new_active.anchor.name,
+                                    "anchor_order": new_active.anchor.order,
+                                    "budget_tokens": new_active.anchor.budget_tokens,
+                                })
+                            else:
+                                last_narration = narration_for_completion(plan)
+                                self._log_record({
+                                    "ts": time.time(),
+                                    "task_id": handle.task_id(),
+                                    "kind": "anchor_plan_completed",
+                                    "total_anchors": len(plan),
+                                })
+                                # No more anchors; drop any overflow.
+                                break
+                        else:
+                            # Not exhausted means we've consumed the
+                            # full remaining budget of this anchor and
+                            # there's nothing left to cascade.
+                            break
+                    if last_narration is not None:
+                        self._pending_anchor_narration = last_narration
+            except Exception as e:
+                # The listener must NEVER raise back into the bridge.
+                logger.debug("anchor listener error: %s", e)
+
+        return _listener
+
+    def _maybe_prepend_anchor_resume(self, prompt: str) -> str:
+        """Conditionally prepend a "Continue with..." line to ``prompt``.
+
+        No-op when:
+        * goal-anchors are disabled in config
+        * resume_prepend_next_anchor is False
+        * no plan exists
+        * all anchors are already completed
+        Otherwise returns ``prompt`` with the next un-completed anchor's
+        description prepended.
+        """
+        cfg = self._goal_anchor_config()
+        if cfg is None or not cfg.enabled or not cfg.resume_prepend_next_anchor:
+            return prompt
+        nxt = self.next_unfinished_anchor()
+        if nxt is None:
+            return prompt
+        description = nxt.description.strip().rstrip(".")
+        if not description or description.lower() == "complete the task":
+            # No useful resume signal; leave the prompt alone.
+            return prompt
+        header = f"Continue with anchor {nxt.order + 1}: {description}.\n\n"
+        return header + prompt
+
+    def pop_anchor_narration(self) -> Optional[str]:
+        """Voice loop polls this each iteration to surface anchor
+        narration (opening / warning / transition / completion).
+        Returns the queued text once, then clears."""
+        with self._anchor_lock:
+            text = self._pending_anchor_narration
+            self._pending_anchor_narration = None
+        return text
+
+    def current_anchor(self) -> Optional[GoalAnchor]:
+        """Return the currently-active :class:`GoalAnchor` or ``None``.
+
+        Useful for tests + the orchestrator's progress_narration to
+        surface "anchor N of M" alongside the bridge-state delta.
+        """
+        with self._anchor_lock:
+            if self._anchor_plan is None:
+                return None
+            active = self._anchor_plan.active
+            return active.anchor if active is not None else None
+
+    def anchor_plan_snapshot(self) -> Optional[dict]:
+        """Return a JSON-shaped snapshot of the current plan + progress.
+
+        ``None`` when no plan exists.
+        """
+        with self._anchor_lock:
+            if self._anchor_plan is None:
+                return None
+            return self._anchor_plan.as_dict()
+
+    def has_unfinished_anchors(self) -> bool:
+        """Return True when an anchor plan exists with at least one
+        anchor that has not yet been marked completed."""
+        with self._anchor_lock:
+            if self._anchor_plan is None:
+                return False
+            return not self._anchor_plan.all_completed
+
+    def next_unfinished_anchor(self) -> Optional[GoalAnchor]:
+        """Return the next un-completed :class:`GoalAnchor`, or ``None``.
+
+        Used by the resume path to prepend "continue with: <desc>" to
+        follow-up prompts so the LLM picks up at the right milestone.
+        """
+        with self._anchor_lock:
+            if self._anchor_plan is None:
+                return None
+            for budget in self._anchor_plan.anchors:
+                if not budget.completed:
+                    return budget.anchor
+        return None
 
     # --- audit log ----------------------------------------------------------
 

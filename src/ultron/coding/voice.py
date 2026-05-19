@@ -202,6 +202,20 @@ class CapabilityVoiceController:
             logger.debug("pop_canonical_abort_warning failed: %s", e)
             return None
 
+    def pending_anchor_narration(self) -> Optional[str]:
+        """E2 goal-anchor planning: voice-loop poll for anchor-lifecycle
+        narration raised by the runner (opening / warning / transition /
+        completion). Returns once and clears. Mirrors
+        :meth:`pending_budget_warning`. No-op when goal-anchors are
+        disabled in config -- the runner never queues anything in that
+        case so the pop returns ``None`` cheaply.
+        """
+        try:
+            return self.runner.pop_anchor_narration()
+        except Exception as e:
+            logger.debug("pop_anchor_narration failed: %s", e)
+            return None
+
     def handle_utterance(self, text: str) -> Optional[VoiceResponse]:
         """Classify and (if coding-related) act on an utterance.
 

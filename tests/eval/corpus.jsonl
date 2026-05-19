@@ -1,0 +1,60 @@
+{"id": "conv_001", "utterance": "tell me a joke", "expected_routing_kind": "conversational", "tags": ["conversational"], "notes": "Plain chitchat"}
+{"id": "conv_002", "utterance": "what's your favorite color", "expected_routing_kind": "conversational", "tags": ["conversational"], "notes": "Persona question"}
+{"id": "conv_003", "utterance": "how are you doing today", "expected_routing_kind": "conversational", "tags": ["conversational"], "notes": "Small talk"}
+{"id": "conv_004", "utterance": "good morning ultron", "expected_routing_kind": "conversational", "expected_addressing": "NONE", "tags": ["conversational", "rule_layer_silent"], "notes": "Greeting with trailing name. _DIRECT_ADDRESS requires 'ultron' at start; the rule layer punts to zero-shot. NONE here documents that."}
+{"id": "conv_005", "utterance": "explain how transformers work in detail", "expected_routing_kind": "conversational", "tags": ["conversational", "depth"], "notes": "Long technical conversational - depth marker present"}
+{"id": "conv_006", "utterance": "what are the orcs in 40k", "expected_routing_kind": "conversational", "tags": ["conversational", "brief"], "notes": "Short factual - brevity hint should fire"}
+{"id": "conv_007", "utterance": "thanks", "expected_routing_kind": "conversational", "tags": ["conversational", "short"], "notes": "Acknowledgement"}
+{"id": "conv_008", "utterance": "alright", "expected_routing_kind": "conversational", "tags": ["conversational", "short"], "notes": "Continuation token"}
+{"id": "search_001", "utterance": "what's the latest on python 3.13 features", "expected_routing_kind": "conversational", "expected_web_gate": "SEARCH", "tags": ["search", "time_sensitive"], "notes": "Latest-marker triggers web search"}
+{"id": "search_002", "utterance": "current weather in belmont", "expected_routing_kind": "conversational", "expected_web_gate": "SEARCH", "tags": ["search", "time_sensitive"], "notes": "Current-marker triggers web search"}
+{"id": "search_003", "utterance": "what's happening in tech news today", "expected_routing_kind": "conversational", "expected_web_gate": "SEARCH", "tags": ["search", "time_sensitive"], "notes": "Today-marker triggers web search"}
+{"id": "search_004", "utterance": "https://example.com what does this page say", "expected_routing_kind": "conversational", "expected_web_gate": "SEARCH", "tags": ["search", "url"], "notes": "URL forces fetch"}
+{"id": "search_005", "utterance": "stock price of apple right now", "expected_routing_kind": "conversational", "expected_web_gate": "SEARCH", "tags": ["search", "time_sensitive"], "notes": "Stock-price + right-now triggers search"}
+{"id": "nosearch_001", "utterance": "what did i say earlier today", "expected_routing_kind": "conversational", "expected_web_gate": "NO_SEARCH", "tags": ["search", "personal_memory"], "notes": "Personal question - never web search"}
+{"id": "nosearch_002", "utterance": "write me a haiku about coffee", "expected_routing_kind": "conversational", "expected_web_gate": "NO_SEARCH", "tags": ["search", "creative"], "notes": "Creative task - never web search"}
+{"id": "nosearch_003", "utterance": "brainstorm names for my new project", "expected_routing_kind": "conversational", "expected_web_gate": "NO_SEARCH", "tags": ["search", "creative"], "notes": "Brainstorm = creative task"}
+{"id": "nosearch_004", "utterance": "what do you know about me", "expected_routing_kind": "conversational", "expected_web_gate": "NO_SEARCH", "tags": ["search", "personal_memory"], "notes": "Personal-knowledge query"}
+{"id": "code_001", "utterance": "write me a python script that converts pdf to docx", "expected_routing_kind": "code_task", "tags": ["coding"], "notes": "Plain CODE_TASK"}
+{"id": "code_002", "utterance": "build a flask app with a login page", "expected_routing_kind": "code_task", "tags": ["coding"], "notes": "Build verb"}
+{"id": "code_003", "utterance": "create a script to backup my documents folder", "expected_routing_kind": "code_task", "tags": ["coding"], "notes": "Create verb + script noun"}
+{"id": "code_004", "utterance": "fix the bug in my parser module", "expected_routing_kind": "code_task", "tags": ["coding"], "notes": "Fix verb on coding object"}
+{"id": "progress_001", "utterance": "how's it going", "expected_routing_kind": "progress_query", "has_active_coding_task": true, "tags": ["coding", "progress"], "notes": "Classic progress query during active task"}
+{"id": "progress_002", "utterance": "how is that project going", "expected_routing_kind": "progress_query", "has_active_coding_task": true, "tags": ["coding", "progress", "windsurf_fix"], "notes": "Windsurf fix - was falling through to LLM"}
+{"id": "progress_003", "utterance": "is it done yet", "expected_routing_kind": "progress_query", "has_active_coding_task": true, "tags": ["coding", "progress"], "notes": "Is X done? variant"}
+{"id": "progress_no_task", "utterance": "how is that project going", "expected_routing_kind": "conversational", "has_active_coding_task": false, "tags": ["coding", "progress", "gating"], "notes": "Same utterance falls through when no active task - gating regression"}
+{"id": "cancel_001", "utterance": "stop the task", "expected_routing_kind": "cancel", "has_active_coding_task": true, "tags": ["coding", "cancel"], "notes": "Direct cancel"}
+{"id": "cancel_002", "utterance": "abort the task", "expected_routing_kind": "cancel", "has_active_coding_task": true, "tags": ["coding", "cancel"], "notes": "Abort verb on task object"}
+{"id": "adjust_001", "utterance": "actually use postgres instead of sqlite", "expected_routing_kind": "mid_session_adjustment", "has_active_coding_task": true, "tags": ["coding", "adjustment"], "notes": "Actually-use pattern"}
+{"id": "model_switch_001", "utterance": "switch to the 4b model", "expected_routing_kind": "model_switch", "tags": ["model_switch"], "notes": "MODEL_SWITCH direct"}
+{"id": "model_switch_002", "utterance": "switch to model 8b", "expected_routing_kind": "model_switch", "tags": ["model_switch"], "notes": "MODEL_SWITCH noun-first variant (2026-05-14 fix)"}
+{"id": "model_switch_003", "utterance": "use the 9b", "expected_routing_kind": "model_switch", "tags": ["model_switch"], "notes": "Use-the variant"}
+{"id": "system_status_001", "utterance": "what is ultron working on", "expected_routing_kind": "system_status", "tags": ["system_status"], "notes": "SYSTEM_STATUS projects focus"}
+{"id": "system_status_002", "utterance": "any pending alerts", "expected_routing_kind": "system_status", "tags": ["system_status"], "notes": "SYSTEM_STATUS alerts focus"}
+{"id": "system_status_003", "utterance": "status report", "expected_routing_kind": "system_status", "tags": ["system_status"], "notes": "SYSTEM_STATUS all focus"}
+{"id": "app_launch_001", "utterance": "open youtube on my second monitor", "expected_routing_kind": "app_launch", "tags": ["desktop", "app_launch"], "notes": "Sites + explicit monitor -> APP_LAUNCH"}
+{"id": "app_launch_002", "utterance": "open cursor on my left monitor", "expected_routing_kind": "app_launch", "tags": ["desktop", "app_launch"], "notes": "Named app + monitor"}
+{"id": "app_launch_003", "utterance": "show me a picture of a golden retriever", "expected_routing_kind": "app_launch", "tags": ["desktop", "app_launch", "image_search"], "notes": "Image search via implicit Google Images path"}
+{"id": "app_launch_004", "utterance": "show me a chicken", "expected_routing_kind": "app_launch", "tags": ["desktop", "app_launch", "image_search", "bare"], "notes": "Bare image search (no monitor) - 2026-05-14 third pass"}
+{"id": "app_launch_005", "utterance": "show me pictures of resident evil requiem", "expected_routing_kind": "app_launch", "tags": ["desktop", "app_launch", "image_search", "plural"], "notes": "Plural picture noun - 2026-05-14 third pass"}
+{"id": "screen_ctx_001", "utterance": "explain what i'm looking at", "expected_routing_kind": "screen_context_query", "tags": ["desktop", "screen_context"], "notes": "Classic screen-context query"}
+{"id": "screen_ctx_002", "utterance": "what's on my screen", "expected_routing_kind": "screen_context_query", "tags": ["desktop", "screen_context"], "notes": "Direct screen-context query"}
+{"id": "screen_ctx_003", "utterance": "what's on my main screen", "expected_routing_kind": "screen_context_query", "tags": ["desktop", "screen_context", "adjective"], "notes": "Position adjective - 2026-05-14"}
+{"id": "screen_ctx_004", "utterance": "what does this error mean", "expected_routing_kind": "screen_context_query", "tags": ["desktop", "screen_context"], "notes": "Implicit screen reference"}
+{"id": "window_move_001", "utterance": "put discord on my right monitor", "expected_routing_kind": "window_move", "tags": ["desktop", "window_move"], "notes": "WINDOW_MOVE - 2026-05-14 third pass"}
+{"id": "window_move_002", "utterance": "move youtube to monitor 2", "expected_routing_kind": "window_move", "tags": ["desktop", "window_move"], "notes": "Move-to-monitor variant"}
+{"id": "window_close_001", "utterance": "close my youtube tab", "expected_routing_kind": "window_close", "tags": ["desktop", "window_close"], "notes": "WINDOW_CLOSE - 2026-05-14 third pass"}
+{"id": "window_close_002", "utterance": "close discord on my right monitor", "expected_routing_kind": "window_close", "tags": ["desktop", "window_close"], "notes": "WINDOW_CLOSE with monitor"}
+{"id": "addr_001", "utterance": "ultron, open chrome", "expected_addressing": "ADDRESSED", "tags": ["addressing", "direct"], "notes": "Direct address by name"}
+{"id": "addr_002", "utterance": "what time is it", "expected_addressing": "ADDRESSED", "tags": ["addressing", "factual"], "notes": "Factual question stem"}
+{"id": "addr_003", "utterance": "open chrome", "expected_addressing": "ADDRESSED", "tags": ["addressing", "imperative"], "notes": "Imperative command stem"}
+{"id": "addr_004", "utterance": "hey mom", "expected_addressing": "NOT_ADDRESSED", "tags": ["addressing", "phone_opener"], "notes": "Phone-call opener"}
+{"id": "addr_005", "utterance": "ultron said something weird earlier", "expected_addressing": "NOT_ADDRESSED", "tags": ["addressing", "third_person"], "notes": "Third-person mention of Ultron (said/earlier in _THIRD_PERSON_MENTION verb list)"}
+{"id": "addr_006", "utterance": "i'm talking to him", "expected_addressing": "NOT_ADDRESSED", "tags": ["addressing", "third_party_narrative"], "notes": "Third-party narrative - 2026-05-11"}
+{"id": "addr_007", "utterance": "got him to the point where he's workable", "expected_addressing": "NOT_ADDRESSED", "tags": ["addressing", "third_party_narrative"], "notes": "Causative third-party narrative"}
+{"id": "addr_008", "utterance": "hmm", "expected_addressing": "NOT_ADDRESSED", "tags": ["addressing", "interjection"], "notes": "Standalone interjection"}
+{"id": "addr_009", "utterance": "ouch", "expected_addressing": "NOT_ADDRESSED", "tags": ["addressing", "interjection"], "notes": "Pain interjection"}
+{"id": "addr_010", "utterance": "are you watching this", "expected_addressing": "UNCERTAIN", "tags": ["addressing", "ambiguous"], "notes": "Second-person question - ambiguous"}
+{"id": "empty_001", "utterance": "", "expected_routing_kind": "conversational", "expected_addressing": "NOT_ADDRESSED", "expected_web_gate": "NO_SEARCH", "tags": ["edge_case", "empty"], "notes": "Empty utterance - all defaults"}
+{"id": "edge_001", "utterance": "how is the weather in tokyo today", "expected_routing_kind": "conversational", "expected_web_gate": "SEARCH", "tags": ["search", "time_sensitive"], "notes": "Combination weather + today"}
+{"id": "edge_002", "utterance": "do you remember what we decided last week", "expected_routing_kind": "conversational", "expected_web_gate": "NO_SEARCH", "tags": ["search", "personal_memory"], "notes": "Personal recall via 'do you remember' marker"}

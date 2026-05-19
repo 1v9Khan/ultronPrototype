@@ -326,6 +326,41 @@ class ConversationMemory:
         k: Optional[int] = None,
         exclude_recent: Optional[int] = None,
     ) -> List[MemoryTurn]:
+        """Public entry: time the retrieval + emit one observation.
+
+        Delegates to :meth:`_retrieve_impl`; observation emit is
+        fail-open so retrieval never blocks on observation IO.
+        """
+        import time as _time
+
+        start = _time.perf_counter()
+        result = self._retrieve_impl(query, k=k, exclude_recent=exclude_recent)
+        latency_ms = (_time.perf_counter() - start) * 1000.0
+        try:
+            from ultron.observations import observe_retrieval
+
+            lineage_ids = tuple(str(t.id) for t in result if t is not None)
+            mem_cfg = get_config().memory
+            effective_k = k if k is not None else int(mem_cfg.rag_top_k)
+            observe_retrieval(
+                query=query or "",
+                lineage_ids=lineage_ids,
+                k=int(effective_k),
+                latency_ms=latency_ms,
+                collection="conversations",
+                extra={"returned_count": len(result)},
+            )
+        except Exception:
+            # Observation IO must never break retrieval.
+            pass
+        return result
+
+    def _retrieve_impl(
+        self,
+        query: str,
+        k: Optional[int] = None,
+        exclude_recent: Optional[int] = None,
+    ) -> List[MemoryTurn]:
         """Top-``k`` turns by hybrid (dense + BM25, RRF-fused), excluding the
         last ``exclude_recent`` turn ids (the recent window the LLM already sees).
 

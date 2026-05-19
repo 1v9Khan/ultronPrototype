@@ -18,9 +18,43 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+
+
+# ---------------------------------------------------------------------------
+# Suppress observation-writer IO during test runs.
+#
+# Otherwise every test that touches a wired call site (classify_routing,
+# AddressingClassifier, ConversationMemory.retrieve, LLMEngine.generate*)
+# would accumulate rows in data/observations.jsonl, polluting analytics
+# runs and adding spurious IO to the test sweep.
+#
+# Tests that specifically want to observe an emit can override the
+# singleton via :func:`ultron.observations.set_observation_writer`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _disable_observation_io_for_tests():
+    try:
+        from ultron.observations import (
+            ObservationWriter,
+            set_observation_writer,
+        )
+    except Exception:
+        # Module not importable for some reason -- don't block the run.
+        yield
+        return
+    disabled = ObservationWriter(Path("data") / "observations.jsonl", enabled=False)
+    set_observation_writer(disabled)
+    try:
+        yield
+    finally:
+        set_observation_writer(None)
 
 
 # ---------------------------------------------------------------------------
