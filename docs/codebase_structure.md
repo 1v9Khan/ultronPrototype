@@ -2516,6 +2516,16 @@ python scripts/cleanup_stale_processes.py --kill -y  # skip the prompt
 
 **Empirical result on 2026-05-15 (small.en + int8_float16 + beam=5):** 1s = 156 ms, 3s = 188 ms, 5s = 109 ms, 8s = 109 ms. With **beam=1 on 5s audio: 78 ms median** -- saves ~80 ms vs beam=5. This bench drove the Phase 4 decision to set `stt.beam_size: 1` as the new production default.
 
+### `scripts/bench_llm_prefix_cache.py` (NEW 2026-05-16 latency pass 2)
+
+**Purpose:** A/B benchmark of the in-process `LLMEngine` TTFT with `LlamaRAMCache` cache_bytes=0 (disabled) vs cache_bytes>0 (enabled). Builds a fresh `LLMEngine` per condition (so each gets a clean Llama instance + cache state) and measures TTFT on 5 representative voice queries with configurable warmup. Drove the Phase 2 decision to ship the cache infrastructure but flip the default to disabled. Loads the voice stack -- ASK before running per `feedback_voice_stack_concurrency.md`.
+
+**Run:** `python scripts/bench_llm_prefix_cache.py [--turns 5] [--warmup 1] [--out baselines.json]`
+
+**Empirical result on 2026-05-16 (4070 Ti + josiefied-qwen3-4b Q4_K_M):** cold-cache TTFT median **63 ms** (78, 79, 63, 62, 63 across 5 queries); warm-cache (2 GiB RAMCache) TTFT median **78 ms** (78, 78, 79, 63, 62). **The cache shows a -15 ms regression** -- llama.cpp's internal KV cache already handles intra-session prefix reuse; the explicit RAMCache's `load_state` memcpy exceeds the eval savings on our short ~280-token system prompts. Result merged into `baselines.json:llm_prefix_cache_bench`. The knob and bench stay shipped so operators with longer prompts / cross-session reload patterns can opt in.
+
+**Operator note:** the bench requires the production GGUF on disk. When run from a worktree (not the main checkout), set `ULTRON_LLM_MODEL_PATH=C:\STC\ultronPrototype\models\Josiefied-Qwen3-4B-abliterated-v2.Q4_K_M.gguf` (or the absolute path to the active preset's GGUF) so the engine resolves correctly -- the worktree's `models/` directory is empty.
+
 ---
 
 ## Tests
