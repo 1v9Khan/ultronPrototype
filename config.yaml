@@ -176,14 +176,24 @@ wake_word:
 # ---------------------------------------------------------------------------
 
 stt:
-  model: "small.en"            # base.en for lower latency on weak GPUs
+  # 2026-05-20 round 8b swap: small.en -> base.en. ~244M params ->
+  # ~74M params. Saves another ~300 MB VRAM (small.en int8_fp16 was
+  # ~520 MB; base.en int8_fp16 lands at ~200 MB). Faster inference --
+  # expect ~30-40% lower STT latency on the same audio. WER trade-off
+  # for short English voice queries is small but real (LibriSpeech-
+  # clean: ~3.4% small.en vs ~5.0% base.en); proper nouns / technical
+  # jargon / noisy audio are the typical regression vectors. Switch
+  # back via stt.model: "small.en" + re-run scripts/download_models.py
+  # if accuracy regresses on real-world use.
+  model: "base.en"
   device: "cuda"
   # 2026-05-14 VRAM-relief pass: float16 -> int8_float16. int8_float16
   # uses 8-bit weights + fp16 activations -- saves ~250 MB VRAM on the
-  # small.en model vs pure float16. WER impact is negligible at this
-  # quant level (~0.1-0.3 percentage points on LibriSpeech-test-clean
-  # per CTranslate2 benchmarks); we already measured 2.9% WER on the
-  # 5-clip prototype set with float16 so the int8_float16 worst-case
+  # small.en model vs pure float16 (proportional savings on base.en).
+  # WER impact is negligible at this quant level (~0.1-0.3 percentage
+  # points on LibriSpeech-test-clean per CTranslate2 benchmarks); we
+  # already measured 2.9% WER on the 5-clip prototype set with float16
+  # so the int8_float16 worst-case
   # is well within acceptable. The 4070 Ti has plenty of int8 throughput
   # so latency is unchanged.
   compute_type: "int8_float16"
@@ -235,7 +245,14 @@ llm:
   #   4. Voice: "switch to the 4B" / "switch to model 4B" (in-process hot swap).
   #
   # See docs/4b_optimization_plan.md for the per-preset details.
-  preset: "gemma-3-4b-abliterated"
+  #
+  # 2026-05-20 round 8 swap: gemma-3-4b-abliterated -> qwen3.5-4b
+  # (stock + 0.8B speculative draft). Re-enables spec decoding for
+  # ~63 ms median TTFT on conversational turns. Trades the
+  # abliteration off; the runtime safety validator under
+  # src/ultron/safety/ still gates the capability surface, but the
+  # model will refuse some queries at the content layer too.
+  preset: "qwen3.5-4b"
   # The next three keys are auto-filled from the preset above. Uncomment
   # to override (e.g. plug a non-preset GGUF in via preset: "custom").
   # model_path: "models/Qwen3.5-4B-Q4_K_M.gguf"
@@ -561,11 +578,15 @@ projections:
 tts:
   # 2026-05-10 voice swap: engine selector. "piper_rvc" is the legacy
   # stack (Piper + RVC timbre transfer; ~313 ms TTS synth median).
-  # "xtts_v3" is the new XTTS v2 streaming + v3 Ultron filter stack
+  # "xtts_v3" is the XTTS v2 streaming + v3 Ultron filter stack
   # (~375 ms TTFT but dramatically better voice naturalness; user
-  # accepted the latency trade-off 2026-05-10). Switching engines
-  # requires a process restart.
-  engine: "xtts_v3"
+  # accepted the latency trade-off 2026-05-10). "kokoro" is the
+  # 2026-05-20 round 8 default: lightweight StyleTTS2 + ISTFTNet on
+  # CPU; zero VRAM cost; faster TTFT than XTTS. Stock kokoro voice
+  # (am_michael) without the v3 filter chain -- different from the
+  # XTTS voice character but lower latency and ~2 GB VRAM reclaimed.
+  # Switching engines requires a process restart.
+  engine: "kokoro"
   piper_voice_path: "models/piper/en_US-ryan-medium.onnx"
   piper_voice_config_path: "models/piper/en_US-ryan-medium.onnx.json"
   output_sample_rate: 22050
@@ -657,6 +678,28 @@ tts:
     phantom_tail_silence_threshold: 0.005
     phantom_tail_max_event_ms: 200.0
     phantom_tail_min_lead_silence_ms: 150.0
+
+  # 2026-05-20 round 8 -- Kokoro TTS engine.
+  # Active only when ``tts.engine: "kokoro"`` (above). StyleTTS2 +
+  # ISTFTNet, ~330 MB on disk, near-realtime on CPU. CPU device keeps
+  # the GPU free for LLM + Whisper (saves ~2 GB VRAM vs XTTS). The
+  # ``kokoro`` PyPI package's KPipeline auto-downloads the weights
+  # into the HF cache on first use; ``model_path`` is a sanity-gate
+  # directory that must exist before the engine boots.
+  #
+  # Voice character: stock kokoro voice (am_michael -- American male
+  # baseline closest to current Ultron register). No v3 filter chain
+  # on this engine -- the Ultron mechanical character is forfeit on
+  # the swap. Round 7c/7d (XTTS-as-training-data + Kokoro fine-tune)
+  # is the path to restore Ultron's voice on Kokoro; deferred per
+  # user direction.
+  kokoro:
+    model_path: "models/kokoro"
+    voice: "am_michael"            # stock American English male voice
+    device: "cpu"                  # zero VRAM; ~realtime synthesis
+    speed: 1.0                     # native cadence
+    apply_runtime_filter: false    # no v3 pedalboard pass; stock voice
+    filter_preset: "v3_heavy"      # unused while apply_runtime_filter=false
 
 # ---------------------------------------------------------------------------
 # Logging

@@ -1022,7 +1022,7 @@ class Orchestrator:
         Raises any engine-construction error -- TTS is not optional;
         the orchestrator can't run without a voice path.
         """
-        from ultron.config import get_config
+        from ultron.config import get_config, resolve_path
         try:
             engine_name = get_config().tts.engine
         except Exception:
@@ -1033,6 +1033,30 @@ class Orchestrator:
             logger.info("TTS engine: xtts_v3 (XTTS v2 streaming + v3 filter)")
             tts = XttsV3Speech()
             return None, tts
+        if engine_name == "kokoro":
+            # 2026-05-20 round 8: lightweight StyleTTS2 + ISTFTNet on
+            # CPU. Stock voice (no v3 filter); ~330 MB on disk; zero
+            # VRAM. Config wiring reads tts.kokoro.* so the operator
+            # can swap voice / device / speed without code edits.
+            from ultron.tts.kokoro_engine import KokoroSpeech
+            kokoro_cfg = getattr(get_config().tts, "kokoro", None)
+            kwargs = {}
+            if kokoro_cfg is not None:
+                kwargs = {
+                    "model_path": resolve_path(kokoro_cfg.model_path),
+                    "voice": kokoro_cfg.voice,
+                    "device": kokoro_cfg.device,
+                    "speed": kokoro_cfg.speed,
+                    "apply_runtime_filter": kokoro_cfg.apply_runtime_filter,
+                    "filter_preset": kokoro_cfg.filter_preset,
+                }
+            logger.info(
+                "TTS engine: kokoro (StyleTTS2 + ISTFTNet, voice=%s, device=%s)",
+                kwargs.get("voice", "af_alloy"),
+                kwargs.get("device", "cpu"),
+            )
+            tts = KokoroSpeech(**kwargs)
+            return None, tts
         if engine_name == "piper_rvc":
             logger.info("TTS engine: piper_rvc (legacy Piper + RVC)")
             rvc = self._load_rvc_if_enabled()
@@ -1040,7 +1064,7 @@ class Orchestrator:
             return rvc, tts
         raise RuntimeError(
             f"Unknown tts.engine: {engine_name!r}. "
-            f"Valid: 'piper_rvc' | 'xtts_v3'."
+            f"Valid: 'piper_rvc' | 'xtts_v3' | 'kokoro'."
         )
 
     def _kick_off_ack_clip_prewarm(self) -> Optional[threading.Thread]:

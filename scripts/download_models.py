@@ -120,6 +120,15 @@ LLM_LLAMA_3_2_1B_FILE = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 MOONDREAM_REPO = "vikhyatk/moondream2"
 MOONDREAM_REVISION = "2024-08-26"
 
+# Kokoro TTS — 2026-05-20 round 8 default engine. StyleTTS2 +
+# ISTFTNet, ~330 MB on disk, near-realtime on CPU. The ``kokoro``
+# PyPI package's ``KPipeline`` downloads weights into the HF cache on
+# first use (transformers / huggingface_hub cache). The pre-fetch here
+# just constructs ``KPipeline(lang_code='a')`` so the cache is warm
+# before the first user query -- otherwise the orchestrator would pay
+# the download cost on its first synth call.
+KOKORO_LANG_CODE = "a"  # American English. Match src/ultron/tts/kokoro_engine.py.
+
 # Smart Turn V3 — semantic end-of-turn detector (BSD-2-Clause).
 # 8 MB int8 ONNX; CPU inference ~12 ms. Runs AFTER Silero detects silence
 # to confirm the user is actually done speaking (vs trailed off mid-
@@ -198,6 +207,42 @@ def _hf_download(repo_id: str, filename: str, dest_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _prefetch_kokoro() -> None:
+    """Pre-fetch Kokoro StyleTTS2 weights into the HF cache.
+
+    The ``kokoro`` PyPI package's ``KPipeline`` downloads
+    ``hexgrad/Kokoro-82M`` lazily on first use. Constructing the
+    pipeline once here warms the cache so the orchestrator's first
+    synth call doesn't pay the ~330 MB download cost.
+
+    Also creates ``models/kokoro/`` as a sanity-gate directory --
+    :class:`ultron.tts.kokoro_engine.KokoroSpeech` checks for its
+    existence before letting ``KPipeline`` load (so a missing-
+    directory state surfaces as a clear ``KokoroEngineLoadError``).
+
+    Fail-open: if the kokoro package isn't installed or the download
+    can't proceed, we print the error and continue. The orchestrator
+    will surface the same error on first synth call.
+    """
+    kokoro_dir = settings.MODELS_DIR / "kokoro"
+    kokoro_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  → ensuring {kokoro_dir} exists (sanity-gate directory)")
+    try:
+        from kokoro import KPipeline
+
+        # Constructing the pipeline triggers HF Hub downloads of the
+        # acoustic + vocoder weights. ``lang_code='a'`` selects
+        # American English; the engine module pins the same value.
+        print(f"  → pulling kokoro weights (lang_code={KOKORO_LANG_CODE!r})")
+        _ = KPipeline(lang_code=KOKORO_LANG_CODE, device="cpu")
+        print("  ✓ kokoro pipeline cached")
+    except ImportError as e:
+        print(f"  ✗ kokoro package not installed: {e}")
+        print("    Run: pip install kokoro")
+    except Exception as e:                                        # noqa: BLE001
+        print(f"  ✗ failed: {e}")
+
+
 def _prefetch_moondream2() -> None:
     """Pre-fetch the moondream2 weights into the HF cache.
 
@@ -240,23 +285,27 @@ def main() -> int:
 
     settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("\n[1/11] LLM (Josiefied-Qwen3-4B-abliterated-v2 Q4_K_M) — current default")
-    _hf_download(LLM_JOSIEFIED_4B_REPO, LLM_JOSIEFIED_4B_FILE, settings.MODELS_DIR)
-
-    print("\n[1b/11] LLM (Josiefied-Qwen3-4B-abliterated-v2 Q5_K_M) — retained for swap-back / quality A/B")
-    _hf_download(LLM_JOSIEFIED_4B_REPO, LLM_JOSIEFIED_4B_Q5_FILE, settings.MODELS_DIR)
-
-    print("\n[2/11] LLM (Josiefied-Qwen3-8B-abliterated-v1 Q5_K_M) — retained for swap-back")
-    _hf_download(LLM_JOSIEFIED_REPO, LLM_JOSIEFIED_FILE, settings.MODELS_DIR)
-
-    print("\n[3/11] LLM (Qwen3.5-9B Q4_K_M) — retained for swap-back")
-    _hf_download(LLM_REPO, LLM_FILE, settings.MODELS_DIR)
-
-    print("\n[4/11] LLM (Qwen3.5-4B Q4_K_M) — retained for swap-back / spec decoding")
+    # 2026-05-20 round 8 swap: current LLM default is qwen3.5-4b (stock
+    # Qwen 3.5 4B + 0.8B speculative draft). The abliterated / Gemma /
+    # Llama presets remain in this download script so a one-line
+    # ``swap_llm_preset.py <name>`` re-fetches and re-activates them.
+    print("\n[1/12] LLM (Qwen3.5-4B Q4_K_M) — current default")
     _hf_download(LLM_4B_REPO, LLM_4B_FILE, settings.MODELS_DIR)
 
-    print("\n[5/11] LLM (Qwen3.5-0.8B Q4_K_M) — speculative-decoding draft for 4B preset")
+    print("\n[2/12] LLM (Qwen3.5-0.8B Q4_K_M) — speculative-decoding draft for current default")
     _hf_download(LLM_DRAFT_REPO, LLM_DRAFT_FILE, settings.MODELS_DIR)
+
+    print("\n[3/12] LLM (Josiefied-Qwen3-4B-abliterated-v2 Q4_K_M) — retained for swap-back / abliterated")
+    _hf_download(LLM_JOSIEFIED_4B_REPO, LLM_JOSIEFIED_4B_FILE, settings.MODELS_DIR)
+
+    print("\n[3b/12] LLM (Josiefied-Qwen3-4B-abliterated-v2 Q5_K_M) — retained for swap-back / quality A/B")
+    _hf_download(LLM_JOSIEFIED_4B_REPO, LLM_JOSIEFIED_4B_Q5_FILE, settings.MODELS_DIR)
+
+    print("\n[4/12] LLM (Josiefied-Qwen3-8B-abliterated-v1 Q5_K_M) — retained for swap-back")
+    _hf_download(LLM_JOSIEFIED_REPO, LLM_JOSIEFIED_FILE, settings.MODELS_DIR)
+
+    print("\n[5/12] LLM (Qwen3.5-9B Q4_K_M) — retained for swap-back / larger context")
+    _hf_download(LLM_REPO, LLM_FILE, settings.MODELS_DIR)
 
     # 2026-05-19 Track 4 -- candidate swap presets. Optional; the
     # downloads only matter once the user sets ``llm.preset`` to one
@@ -264,25 +313,28 @@ def main() -> int:
     # intent. Setting OFFLINE_SKIP_OPTIONAL_LLMS=1 in the environment
     # skips these fetches (useful on a constrained connection).
     if not os.environ.get("OFFLINE_SKIP_OPTIONAL_LLMS"):
-        print("\n[5a/11] LLM (Gemma 3 4B abliterated Q4_K_M) — candidate daily-use swap (Track 4)")
+        print("\n[5a/12] LLM (Gemma 3 4B abliterated Q4_K_M) — candidate daily-use swap (Track 4)")
         _hf_download(LLM_GEMMA_3_4B_REPO, LLM_GEMMA_3_4B_FILE, settings.MODELS_DIR)
-        print("\n[5b/11] LLM (Gemma 3 1B IT Q4_K_M) — speculative draft for the Gemma preset")
+        print("\n[5b/12] LLM (Gemma 3 1B IT Q4_K_M) — speculative draft for the Gemma preset")
         _hf_download(LLM_GEMMA_3_1B_REPO, LLM_GEMMA_3_1B_FILE, settings.MODELS_DIR)
-        print("\n[5c/11] LLM (Llama 3.2 3B abliterated Q4_K_M) — gaming-mode preset")
+        print("\n[5c/12] LLM (Llama 3.2 3B abliterated Q4_K_M) — gaming-mode preset")
         _hf_download(LLM_LLAMA_3_2_3B_REPO, LLM_LLAMA_3_2_3B_FILE, settings.MODELS_DIR)
-        print("\n[5d/11] LLM (Llama 3.2 1B Instruct Q4_K_M) — speculative draft for the Llama preset")
+        print("\n[5d/12] LLM (Llama 3.2 1B Instruct Q4_K_M) — speculative draft for the Llama preset")
         _hf_download(LLM_LLAMA_3_2_1B_REPO, LLM_LLAMA_3_2_1B_FILE, settings.MODELS_DIR)
     else:
         print(
-            "\n[5a-5d/11] skipping optional swap-preset GGUFs "
+            "\n[5a-5d/12] skipping optional swap-preset GGUFs "
             "(OFFLINE_SKIP_OPTIONAL_LLMS=1)",
         )
 
-    print("\n[6/11] Piper voice (en_US-ryan-medium)")
+    print("\n[6/12] Kokoro TTS (StyleTTS2 + ISTFTNet) — current default engine")
+    _prefetch_kokoro()
+
+    print("\n[7/12] Piper voice (en_US-ryan-medium) — legacy TTS fallback")
     _download(PIPER_VOICE_URL, settings.TTS_VOICE_PATH)
     _download(PIPER_CONFIG_URL, settings.TTS_VOICE_CONFIG_PATH)
 
-    print("\n[7/11] faster-whisper (downloads on first transcription)")
+    print("\n[8/12] faster-whisper (downloads on first transcription)")
     print("  → triggering pre-fetch…")
     try:
         from faster_whisper import WhisperModel
@@ -296,7 +348,7 @@ def main() -> int:
     except Exception as e:
         print(f"  ✗ failed: {e}")
 
-    print("\n[8/11] openWakeWord pretrained models (downloads on first use)")
+    print("\n[9/12] openWakeWord pretrained models (downloads on first use)")
     try:
         import openwakeword.utils as ow_utils
 
@@ -305,14 +357,14 @@ def main() -> int:
     except Exception as e:
         print(f"  ✗ failed: {e}")
 
-    print("\n[9/11] Smart Turn V3.2 (cpu) — semantic end-of-turn detector (~8.7 MB int8)")
+    print("\n[10/12] Smart Turn V3.2 (cpu) — semantic end-of-turn detector (~8.7 MB int8)")
     smart_turn_dir = settings.MODELS_DIR / "smart_turn"
     _hf_download(SMART_TURN_REPO, SMART_TURN_FILE, smart_turn_dir)
 
-    print(f"\n[10/11] moondream2 @ {MOONDREAM_REVISION} — vision-language model (~3.5 GB FP16, CPU inference)")
+    print(f"\n[11/12] moondream2 @ {MOONDREAM_REVISION} — vision-language model (~3.5 GB FP16, CPU inference)")
     _prefetch_moondream2()
 
-    print("\n[11/11] RVC support models + voice-conversion model")
+    print("\n[12/12] RVC support models + voice-conversion model (legacy TTS fallback)")
     _download(RVC_SUPPORT_BASE_URL + "hubert_base.pt", settings.RVC_HUBERT_PATH)
     _download(RVC_SUPPORT_BASE_URL + "rmvpe.pt", settings.RVC_RMVPE_PATH)
     if settings.RVC_MODEL_PATH.is_file() and settings.RVC_INDEX_PATH.is_file():

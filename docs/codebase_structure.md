@@ -10,6 +10,65 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
+**2026-05-20 round 8b -- Whisper STT swap (small.en -> base.en) -- COMPLETE.** Follow-on to round 8. Single config line: `stt.model: "small.en" -> "base.en"` in [config.yaml](../config.yaml). Drops STT model from ~244M params to ~74M params. **Saves ~320 MB VRAM** (small.en int8_fp16 was ~520 MB; base.en int8_fp16 lands ~200 MB). Expect ~30-40% faster STT inference per audio second. WER trade-off for short English voice queries is small but real (LibriSpeech-clean ~3.4% small.en vs ~5.0% base.en); proper nouns / technical jargon / noisy audio are the typical regression vectors. Weights pre-fetched into the faster-whisper cache (`huggingface.co/Systran/faster-whisper-base.en`). One-line rollback: edit `stt.model` back to `"small.en"` -- weights are still cached locally. The downloader (`scripts/download_models.py`) reads `WHISPER_MODEL` from the config shim so it fetches whatever preset is active. Voice peak VRAM after both round-8 + round-8b swaps: **~4.7-5.2 GB** (down ~2.3 GB from the round-7 Gemma + XTTS + small.en stack). Tests 3513 passing unchanged.
+
+---
+
+**2026-05-20 round 8 -- LLM + TTS swap (Gemma -> Qwen 3.5 4B stock, XTTS -> Kokoro) + ~22 GB GGUF cleanup -- COMPLETE.** Two coordinated runtime swaps driven by user direction "reduced vram consumption and lower latency", plus a model-disk cleanup pass.
+
+* **LLM swap: `gemma-3-4b-abliterated` -> `qwen3.5-4b`.** Stock Qwen 3.5 4B Q4_K_M (~2.7 GB on disk; ~3.0 GB VRAM loaded) paired with Qwen 3.5 0.8B Q4_K_M draft (~0.5 GB on disk; ~0.6 GB VRAM) for speculative decoding. n_ctx=8192 (vs Gemma's 4096). The preset auto-fill table in [`config.py:LLM_PRESETS`](../src/ultron/config.py) handles model_path / draft_model_path / n_ctx; only one line changed in [config.yaml](../config.yaml). Trade-offs: Qwen 3.5 4B is NOT abliterated so the model carries content-level refusals -- the runtime safety validator under `src/ultron/safety/` is still wired but its primary motivation (model is willing to attempt anything; validator is the only gate) doesn't apply. Re-enables speculative decoding for ~63 ms median TTFT on conversational turns (per the 2026-05-15 latency bench; Gemma had no paired draft so it ran slightly slower).
+
+* **TTS swap: `xtts_v3` -> `kokoro`.** Lightweight StyleTTS2 + ISTFTNet engine on CPU. ~330 MB weights downloaded to HF cache via the `kokoro` PyPI package's `KPipeline` (`hexgrad/Kokoro-82M`). Zero VRAM cost (CPU device); near-realtime synthesis (warm-call RTF ~0.15 -- 6x faster than realtime). Stock voice `am_michael` (American English male baseline). **No v3 pedalboard filter chain** (`apply_runtime_filter: false`) per user direction -- the Ultron mechanical character is forfeit on this swap. Round 7c/7d (XTTS-as-training-data corpus generation + Kokoro fine-tune on Ultron voice) is the documented path to restore Ultron's voice on Kokoro; intentionally deferred.
+
+* **VRAM picture after the swap** (CPU TTS + spec-decoded 4B LLM + base.en Whisper -- round 8b):
+  - LLM Qwen3.5-4B Q4_K_M: ~3.0 GB
+  - Draft Qwen3.5-0.8B Q4_K_M: ~0.6 GB
+  - Whisper base.en int8_fp16: ~200 MB (was ~520 MB on small.en)
+  - Kokoro on CPU: **0 GB VRAM** (~500 MB RAM)
+  - KV cache (Q8_0 @ 8192): ~440 MB
+  - Idle GPU + compositor: ~500 MB
+  - **Voice peak: ~4.7-5.2 GB** vs ~7.0-7.5 GB on the Gemma + XTTS stack -> **~2.3 GB VRAM reclaimed**, well clear of the user's ~4.7 GB background-app overhead.
+
+* **Engine wiring.** [`Orchestrator._load_tts_engine`](../src/ultron/pipeline/orchestrator.py) gained a `kokoro` branch that reads `tts.kokoro.*` config and constructs [`KokoroSpeech`](../src/ultron/tts/kokoro_engine.py) with `voice` / `device` / `speed` / `apply_runtime_filter` / `filter_preset` passed through. The unknown-engine error message updated to `'piper_rvc' | 'xtts_v3' | 'kokoro'`. Engine classes share the `speak` / `speak_stream` / `warmup` / `prepare_output_stream` / `stop` surface so the orchestrator's playback path is unchanged.
+
+* **Download script.** [`scripts/download_models.py`](../scripts/download_models.py) renumbered 11 -> 12 steps. Step [6/12] is the new Kokoro pre-fetch (`_prefetch_kokoro` creates the sanity-gate `models/kokoro/` directory and constructs `KPipeline(lang_code='a', device='cpu')` to warm the HF cache). All LLM presets (Gemma 3 4B + 1B, Llama 3.2 3B + 1B, Josiefied Qwen3-4B + 8B, Qwen3.5-9B) retain their download blocks so `python scripts/swap_llm_preset.py <name>` followed by `python scripts/download_models.py` re-fetches them as needed.
+
+* **Model-disk cleanup: 8 GGUFs deleted, ~22 GB freed** (`C:` disk free 30 GB -> 52 GB).
+  - `gemma-3-4b-it-abliterated.Q4_K_M.gguf` (was current default; 2.49 GB)
+  - `google_gemma-3-1b-it-Q4_K_M.gguf` (was current Gemma draft; 0.81 GB)
+  - `Josiefied-Qwen3-4B-abliterated-v2.Q4_K_M.gguf` (2026-05-14 default; 2.50 GB)
+  - `Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf` (A/B variant; 2.89 GB)
+  - `Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf` (larger abliterated; 5.85 GB)
+  - `Qwen3.5-9B-Q4_K_M.gguf` (5.68 GB)
+  - `Llama-3.2-1B-Instruct-Q4_K_M.gguf` (0.81 GB)
+  - `Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf` (2.24 GB)
+
+  `models/` now retains: `Qwen3.5-4B-Q4_K_M.gguf` (active LLM), `Qwen3.5-0.8B-Q4_K_M.gguf` (active draft), `openwakeword/`, `piper/`, `rvc/`, `smart_turn/`, new `kokoro/` (empty sanity-gate dir), and the HF / openwakeword caches. **Re-download paths preserved in code:** every deleted GGUF has an active entry in `scripts/download_models.py` and `LLM_PRESETS`, so a one-line `swap_llm_preset.py <name>` + `download_models.py` re-fetches and re-activates them.
+
+**Files changed:**
+
+```
+config.yaml                                        (llm.preset: gemma -> qwen3.5-4b; tts.engine: xtts_v3 -> kokoro; new tts.kokoro subsection)
+src/ultron/pipeline/orchestrator.py                (_load_tts_engine: kokoro branch added; resolve_path imported)
+scripts/download_models.py                         (+ _prefetch_kokoro; step renumber 11 -> 12; Kokoro at step 6/12; keep entries for all deleted GGUFs)
+docs/codebase_structure.md                         (this section + validating-HEAD bump)
+CLAUDE.md                                          (MOST RECENT pointer + default LLM/TTS references + VRAM/test counts)
+~/.claude/projects/.../memory/MEMORY.md
+~/.claude/projects/.../memory/project_ultron_2026_05_20_round_8_llm_tts_swap.md
+```
+
+Plus venv: `pip install kokoro` (pulls misaki / phonemizer-fork / spaCy / blis / thinc / espeakng-loader; verified that pinned `tokenizers 0.19.1` + `transformers 4.41.2` + `torch 2.6.0+cu124` survived the install).
+
+Plus disk: 8 GGUF deletions from `models/` (~22 GB freed; all paths preserved in code).
+
+**Tests: 3513 passing / 15 skipped (GPU-gated) / 0 failed in 65.03 s** -- unchanged baseline. Voice baseline contract preserved (no SOUL.md / RVC / Piper / vocal WAV / LLM model file touch; the swap-back paths are intact for one-line rollback).
+
+**Rollback (one-liner each):**
+- LLM: `python scripts/swap_llm_preset.py gemma-3-4b-abliterated` after re-downloading the Gemma GGUFs via `python scripts/download_models.py`.
+- TTS: edit `config.yaml:tts.engine` back to `"xtts_v3"` (the XTTS server + venv + reference audio are untouched).
+
+---
+
 **2026-05-20 round 7a + 7b -- contamination loop + smarter TTS chunking -- COMPLETE.** Two surgical fixes triaged from the live-session logs the user accumulated across the previous round. Round 7c (XTTS-as-training-data sample generation) and 7d (Kokoro switch-in live) are deferred to the next session.
 
 * **Round 7a -- root cause of the residual contamination.** Even after rounds 1-6 had (a) made [`ConversationMemory.recent(n)`](../src/ultron/memory/conversation.py) session-scoped, (b) promoted the short-query suppression to full `suppress_memory_context=True`, and (c) stripped brevity hints BEFORE the short-query gate, the LLM kept replaying old-session content (FBI watch list, Imperium, Salesforce pricing, baking, Berlin weather, etc.). The trace log surfaced the actual root cause: `LLMEngine.generate` / `LLMEngine.generate_stream` were recording the FULL prompt body to memory as the user message -- including the augmented `"User question: X\n\nFresh information from web search:\n{sources}..."` (4-8 kB) on the search path and `apply_brevity_hint(text)` (which prepends `"[Style: ...]\n\n"`) on the conversational path. So every new memory write seeded fresh contamination by storing the synthesised prompt body that RAG then retrieved on the NEXT turn as "relevant earlier context".
@@ -269,7 +328,7 @@ User decision (no ClawHub plugins) drives the "native primitives + OpenClaw as o
 
 * **Phase 14 (orchestrator VLM wiring).** `Orchestrator.__init__` now calls `_load_desktop_vlm_if_enabled()` which constructs the moondream2 VLM and pushes it via :func:`ultron.desktop.vlm.set_vlm`. Lazy + fail-open: construction validates the transformers stack but does NOT load the ~3.5 GB weights at orchestrator startup -- the load happens on first :func:`describe` call (first ``SCREEN_CONTEXT_QUERY`` with VLM). Failure (missing transformers, missing weights on disk) leaves the singleton unset and `screen_context` falls back to text-only context (window title + UIA tree + foreground app). Targeted sweep: 221 pipeline + desktop tests still pass.
 
-Last validated against `main` HEAD `b7e1164` (2026-05-20 round 7a + 7b: contamination loop closed via `history_user_message` kwarg on `LLMEngine.generate*` + 5 callsites; smarter TTS sentence boundaries via `_is_safe_sentence_boundary` + cumulative pending buffer in `XttsV3Speech._run_synth_loop`; +30 tests -> 3513 passing); on top of `7c0cf14` (2026-05-20 doc-bump for round 6 + the 7-commit chain); on top of `b1a2d8c` (2026-05-20 round 6: extensive structured per-turn tracing module + wiring into orchestrator main loop / memory layer / gating; grep `turn=N` to see entire utterance lifecycle); on top of `3337749` (2026-05-20 round 5: greeting / ack rule short-circuits LLM preflight + date-detector Whisper variants + always-on synth-text + LLM-messages debug logs); on top of `7ee3574` (2026-05-20 round 4: brevity-hint strip BEFORE short-query gate + XTTS max_chars 240->600 retune for pacing + new `local_clock_reply.py` short-circuit for bare 'what time is it' / 'what's today's date'); on top of `171d68c` (2026-05-20: cross-session contamination root-cause -- `ConversationMemory.recent(n)` now filters by current session_id + short-query suppress promoted to full `suppress_memory_context=True` + UTF-8 stdio at startup + XTTS hard cap with preview log); on top of `3bd0604` (2026-05-20 Issue 7: second-person coding adjustment vocabulary in `_ADJUSTMENT_PATTERNS` + progress-bar negative lookahead); on top of `6f3adad` (2026-05-20 Issues 1-6: XTTS URL strip + `_split_for_synth` + cap; RAG short-query gate; Gemma terseness via IDENTITY.md; fake-citation guard; monitor left/right left-to-right sort; third-party possessive question rule); on top of `ac4c76f` (2026-05-20 Phase A/B/C: AST listener narration + BackgroundSummarizer orchestrator hook + Channel abstraction in memory write path); on top of `270af71` (2026-05-19 doc-bump to `3698da2`); on top of `3698da2` (2026-05-19 Gemma default + flaky-fix follow-up: `config.yaml:llm.preset: qwen3.5-4b -> gemma-3-4b-abliterated`); on top of `77b19c3` (2026-05-19 live-session bug fixes -- **trim_phantom_tail short-clip guard + comprehensive normalize_text_for_tts (paths/times/temperatures/currency/units/ordinals/titles/acronym-dots/Latin abbreviations/ampersand) + IDENTITY.md capability anchor** -- plus the full cross-cutting catalogue re-implemented locally: Tracks 1a/1b/1c-e/1f/1g/1h memory infrastructure, Track 2 parallel embedding, Track 3 response_style verbosity hints, Track 4 Gemma + Llama presets, Track 5 Kokoro engine, Track 6 channel abstraction + gaming-mode process flag, latency hygiene helpers, voice MODEL_SWITCH gemma/llama tokens, scripts/download_models.py extension); on top of `1b46427` preset-back-to-plain-4B + CLAUDE.md pointer; on top of `2b979c0` 2026-05-19 Phase 0+1 + E2 + E5 build; on top of `e3ac64e` 2026-05-18 latency pass 3 -- 3 phases; on top of `a6fc937` codebase_structure entry for bench_llm_prefix_cache; on top of `9a15c06` 2026-05-16 latency pass 2; on top of `5d5f65f` CLAUDE.md pointer bump; on top of `703c11f` 2026-05-15 latency pass; on top of `0bf2027` handoff-doc bump; on top of `622000d` third-pass chat_template_kwargs regression + WINDOW_MOVE/CLOSE + bare image-search + plural image nouns; on top of `b79d41e` stale-process safeguards; on top of `15f58d5` second-pass VRAM relief + classifier extension; on top of `901ebf1` first VRAM-relief + UX-fix pass). **Tests: 3483 -> 3513 passing (+30) / 15 skipped (GPU-gated) / 0 failed in 66.34 s** after round 7a + 7b. Cumulative on top of the 3054 baseline that was the prior most-recent: **+459 across rounds 1-7**. New modules added this round: `src/ultron/trace.py` (per-turn structured logging) and `src/ultron/local_clock_reply.py` (system-clock short-circuit for bare time/date asks). Voice-path peak VRAM ~7.0-7.5 GB (Gemma 3 4B abliterated Q4_K_M + 1B draft + Whisper int8_fp16 + XTTS + KV cache Q8_0 @ 4096 + idle) -- comfortably below the 11.5 GB hard cap on the 4070 Ti. **Default LLM:** `gemma-3-4b-abliterated` preset -> `models/gemma-3-4b-it-abliterated.Q4_K_M.gguf` (mradermacher quant) + `models/google_gemma-3-1b-it-Q4_K_M.gguf` draft from `bartowski/google_gemma-3-1b-it-GGUF` for speculative decoding (note `google_` prefix in repo slug + filename -- the unprefixed bartowski slug is a 404). **Swap-back presets** (`scripts/swap_llm_preset.py`): `josiefied-qwen3-4b`, `qwen3.5-4b`, `qwen3.5-9b`, `llama-3.2-3b-abliterated`, `josiefied-qwen3-8b`. **Live-measured timings (2026-05-15):** LLM TTFT median **63 ms** (was previously estimated 140 ms); Whisper STT median **78 ms on 5s audio at beam=1** (was 157 ms at beam=5); ack synth on conversational/web-search pool is **0 ms cache hit** (was 350-400 ms HTTP+filter). **Stale-process safeguards installed:** `tests/conftest.py:pytest_sessionfinish` auto-reaps test descendants; `scripts/cleanup_stale_processes.py` is the manual cleanup tool. Both preserve the live Ultron via the port-19761 listener check.
+Last validated against worktree HEAD (2026-05-20 round 8b: Whisper STT `small.en` -> `base.en` (244M -> 74M params; saves ~320 MB VRAM; ~30-40% faster STT)); on top of round 8 (LLM swap `gemma-3-4b-abliterated` -> `qwen3.5-4b` (stock Qwen3.5-4B Q4_K_M + 0.8B speculative draft, n_ctx=8192); TTS swap `xtts_v3` -> `kokoro` (stock StyleTTS2 + ISTFTNet on CPU, voice `am_michael`, no v3 filter chain); `Orchestrator._load_tts_engine` gained a `kokoro` branch reading `tts.kokoro.*`; `scripts/download_models.py` renumbered 11 -> 12 with new Kokoro pre-fetch step; 8 GGUFs deleted from `models/` (~22 GB freed, all swap-back paths preserved in code); tests unchanged at 3513 passing; voice peak VRAM ~4.7-5.2 GB after round 8b (down ~2.3 GB from round-7 baseline)); on top of `b7e1164` (2026-05-20 round 7a + 7b: contamination loop closed via `history_user_message` kwarg on `LLMEngine.generate*` + 5 callsites; smarter TTS sentence boundaries via `_is_safe_sentence_boundary` + cumulative pending buffer in `XttsV3Speech._run_synth_loop`; +30 tests -> 3513 passing); on top of `7c0cf14` (2026-05-20 doc-bump for round 6 + the 7-commit chain); on top of `b1a2d8c` (2026-05-20 round 6: extensive structured per-turn tracing module + wiring into orchestrator main loop / memory layer / gating; grep `turn=N` to see entire utterance lifecycle); on top of `3337749` (2026-05-20 round 5: greeting / ack rule short-circuits LLM preflight + date-detector Whisper variants + always-on synth-text + LLM-messages debug logs); on top of `7ee3574` (2026-05-20 round 4: brevity-hint strip BEFORE short-query gate + XTTS max_chars 240->600 retune for pacing + new `local_clock_reply.py` short-circuit for bare 'what time is it' / 'what's today's date'); on top of `171d68c` (2026-05-20: cross-session contamination root-cause -- `ConversationMemory.recent(n)` now filters by current session_id + short-query suppress promoted to full `suppress_memory_context=True` + UTF-8 stdio at startup + XTTS hard cap with preview log); on top of `3bd0604` (2026-05-20 Issue 7: second-person coding adjustment vocabulary in `_ADJUSTMENT_PATTERNS` + progress-bar negative lookahead); on top of `6f3adad` (2026-05-20 Issues 1-6: XTTS URL strip + `_split_for_synth` + cap; RAG short-query gate; Gemma terseness via IDENTITY.md; fake-citation guard; monitor left/right left-to-right sort; third-party possessive question rule); on top of `ac4c76f` (2026-05-20 Phase A/B/C: AST listener narration + BackgroundSummarizer orchestrator hook + Channel abstraction in memory write path); on top of `270af71` (2026-05-19 doc-bump to `3698da2`); on top of `3698da2` (2026-05-19 Gemma default + flaky-fix follow-up: `config.yaml:llm.preset: qwen3.5-4b -> gemma-3-4b-abliterated`); on top of `77b19c3` (2026-05-19 live-session bug fixes -- **trim_phantom_tail short-clip guard + comprehensive normalize_text_for_tts (paths/times/temperatures/currency/units/ordinals/titles/acronym-dots/Latin abbreviations/ampersand) + IDENTITY.md capability anchor** -- plus the full cross-cutting catalogue re-implemented locally: Tracks 1a/1b/1c-e/1f/1g/1h memory infrastructure, Track 2 parallel embedding, Track 3 response_style verbosity hints, Track 4 Gemma + Llama presets, Track 5 Kokoro engine, Track 6 channel abstraction + gaming-mode process flag, latency hygiene helpers, voice MODEL_SWITCH gemma/llama tokens, scripts/download_models.py extension); on top of `1b46427` preset-back-to-plain-4B + CLAUDE.md pointer; on top of `2b979c0` 2026-05-19 Phase 0+1 + E2 + E5 build; on top of `e3ac64e` 2026-05-18 latency pass 3 -- 3 phases; on top of `a6fc937` codebase_structure entry for bench_llm_prefix_cache; on top of `9a15c06` 2026-05-16 latency pass 2; on top of `5d5f65f` CLAUDE.md pointer bump; on top of `703c11f` 2026-05-15 latency pass; on top of `0bf2027` handoff-doc bump; on top of `622000d` third-pass chat_template_kwargs regression + WINDOW_MOVE/CLOSE + bare image-search + plural image nouns; on top of `b79d41e` stale-process safeguards; on top of `15f58d5` second-pass VRAM relief + classifier extension; on top of `901ebf1` first VRAM-relief + UX-fix pass). **Tests: 3513 passing / 15 skipped (GPU-gated) / 0 failed in 65.03 s** unchanged after round 8 (the swap is a config + engine-factory change; the existing tests didn't need updates). Voice-path peak VRAM **~5.0-5.5 GB** (Qwen3.5-4B Q4_K_M + 0.8B draft + Whisper int8_fp16 + Kokoro on CPU + KV cache Q8_0 @ 8192 + idle) -- ~2 GB headroom reclaimed vs the prior Gemma 3 4B + XTTS stack. **Default LLM (round 8):** `qwen3.5-4b` preset -> `models/Qwen3.5-4B-Q4_K_M.gguf` (unsloth quant) + `models/Qwen3.5-0.8B-Q4_K_M.gguf` draft for speculative decoding. NOT abliterated -- the runtime safety validator under `src/ultron/safety/` remains wired but is no longer load-bearing for content-level refusals (the model carries its own). **Default TTS engine (round 8):** `kokoro` (`hexgrad/Kokoro-82M`, StyleTTS2 + ISTFTNet, voice `am_michael`, CPU device, zero VRAM cost, no v3 filter chain). **Swap-back presets** (`scripts/swap_llm_preset.py`): `josiefied-qwen3-4b`, `gemma-3-4b-abliterated`, `qwen3.5-9b`, `llama-3.2-3b-abliterated`, `josiefied-qwen3-8b`. GGUFs deleted from disk to free ~22 GB; `scripts/download_models.py` retains every entry so re-download is one command away. **Live-measured timings (2026-05-15):** LLM TTFT median **63 ms** (was previously estimated 140 ms); Whisper STT median **78 ms on 5s audio at beam=1** (was 157 ms at beam=5); ack synth on conversational/web-search pool is **0 ms cache hit** (was 350-400 ms HTTP+filter). **Stale-process safeguards installed:** `tests/conftest.py:pytest_sessionfinish` auto-reaps test descendants; `scripts/cleanup_stale_processes.py` is the manual cleanup tool. Both preserve the live Ultron via the port-19761 listener check.
 
 **2026-05-14 third pass: chat_template_kwargs regression fix + WINDOW_MOVE / WINDOW_CLOSE + bare image-search + plural image nouns + moondream2 revision rollback (commit `622000d`).**
 
@@ -772,12 +831,13 @@ For the current decisions and Foundation phase status see
 │       │   ├── jina.py             ← JinaReaderClient + circuit breaker
 │       │   └── search.py           ← WebSearchExecutor (orchestrates Brave + Jina + ranking)
 │       │
-│       ├── tts/                    ← Piper + RVC + XTTS engines + ack cache
+│       ├── tts/                    ← Piper + RVC + XTTS + Kokoro engines + ack cache
+│       │   ├── kokoro_engine.py    ← KokoroSpeech engine (StyleTTS2 + ISTFTNet on CPU; CURRENT DEFAULT 2026-05-20 round 8 via tts.engine="kokoro"; voice am_michael; zero VRAM)
 │       │   ├── precomputed_ack.py  ← PrecomputedAckClipCache (NEW 2026-05-15; ~350 ms saved per cache hit)
 │       │   ├── rvc.py              ← RvcConverter (Piper PCM → Ultron timbre)
 │       │   ├── speech.py           ← TextToSpeech (legacy Piper + RVC engine; selected by tts.engine="piper_rvc"; ack cache + prepare_output_stream)
-│       │   ├── ultron_filter.py    ← v3 Ultron mechanical filter (NEW 2026-05-10; pedalboard DSP chain)
-│       │   └── xtts_v3.py          ← XTTSV3Speech engine (NEW 2026-05-10; selected by tts.engine="xtts_v3"; ack cache + prepare_output_stream)
+│       │   ├── ultron_filter.py    ← v3 Ultron mechanical filter (NEW 2026-05-10; pedalboard DSP chain; unused on kokoro engine when apply_runtime_filter=false)
+│       │   └── xtts_v3.py          ← XTTSV3Speech engine (NEW 2026-05-10; selected by tts.engine="xtts_v3"; retained for swap-back to XTTS+v3 stack)
 │       │
 │       ├── coding/                 ← Phase A coding orchestration + Coding Addendum
 │       │   ├── anchors.py          ← 2026-05-18 E2: goal-anchor planning primitives (GoalAnchor / AnchorBudget / AnchorPlan / decompose_into_anchors)
@@ -2855,20 +2915,32 @@ Set `$env:PYTEST_RUN_GPU_TESTS = "1"` before pytest. Includes real Claude API ca
 
 ### `models/` (main checkout only)
 
+State as of 2026-05-20 round 8: only the active LLM + draft remain on disk. All other GGUFs were deleted to free ~22 GB; their download blocks are retained in `scripts/download_models.py` and their presets are retained in `LLM_PRESETS` so one-line re-download + swap-back is intact.
+
 | File | Used by | Size |
 |---|---|---|
-| `Josiefied-Qwen3-4B-abliterated-v2.Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "josiefied-qwen3-4b"`, **CURRENT DEFAULT 2026-05-14 second-pass**). Same Goekdeniz-Guelmez Josiefied + abliterated Qwen3-4B-Instruct-2507 as the Q5_K_M below, just smaller quant. ~3.0 GB VRAM loaded; chosen to leave room for the user's typical ~4.7 GB of background GPU usage. | 2.4 GB |
-| `Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf` | retained for swap-back / quality A/B. Same model at Q5_K_M (~3.5 GB VRAM loaded). | 3.0 GB |
-| `Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf` | `LLMEngine` (when `llm.preset == "josiefied-qwen3-8b"`; retained for swap-back to the bigger abliterated variant) | 5.85 GB |
-| `Qwen3.5-9B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-9b"`; retained for swap-back, not abliterated) | 5.29 GB |
-| `Qwen3.5-4B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-4b"`; retained for swap-back / spec decoding, not abliterated) | 2.55 GB |
-| `Qwen3.5-0.8B-Q4_K_M.gguf` | speculative-decoding draft for plain qwen3.5-4b preset only (no abliterated draft published) | 0.50 GB |
+| `Qwen3.5-4B-Q4_K_M.gguf` | `LLMEngine` (when `llm.preset == "qwen3.5-4b"`, **CURRENT DEFAULT 2026-05-20 round 8**). Stock Qwen 3.5 4B (not abliterated); ~3.0 GB VRAM loaded. Paired with the 0.8B draft below for speculative decoding. | 2.55 GB |
+| `Qwen3.5-0.8B-Q4_K_M.gguf` | speculative-decoding draft for the qwen3.5-4b preset. | 0.50 GB |
+| `kokoro/` | `KokoroSpeech` (**CURRENT DEFAULT TTS engine 2026-05-20 round 8**). Sanity-gate directory; actual weights (`hexgrad/Kokoro-82M`) cached in HF Hub cache (~330 MB). CPU device; voice `am_michael`; no v3 filter chain. | empty dir |
 | `openwakeword/ultron.onnx` | `WakeWordDetector` | small |
-| `piper/en_US-ryan-medium.onnx[.json]` | `TextToSpeech` | ~60 MB |
-| `rvc/hubert_base.pt` | `RvcConverter` | ~362 MB |
-| `rvc/rmvpe.pt` | `RvcConverter` | ~178 MB |
+| `piper/en_US-ryan-medium.onnx[.json]` | `TextToSpeech` (legacy `piper_rvc` engine fallback) | ~60 MB |
+| `rvc/hubert_base.pt` | `RvcConverter` (legacy fallback) | ~362 MB |
+| `rvc/rmvpe.pt` | `RvcConverter` (legacy fallback) | ~178 MB |
 | `smart_turn/smart-turn-v3.2-cpu.onnx` | `SmartTurnDetector` (Smart Turn V3 semantic end-of-turn; NEW 2026-05-12) | 8.68 MB |
-| `.hf-cache/` | `HybridEmbedder`, addressing zero-shot | varies |
+| `.hf-cache/` | `HybridEmbedder`, addressing zero-shot, moondream2, Kokoro weights | varies |
+
+**Deleted 2026-05-20 round 8 (re-fetch via `python scripts/download_models.py` if a swap-back is desired):**
+
+| File | Repo | Size | Reason for deletion |
+|---|---|---|---|
+| `gemma-3-4b-it-abliterated.Q4_K_M.gguf` | `mradermacher/gemma-3-4b-it-abliterated-GGUF` | 2.49 GB | Was the round 7 default; replaced by stock Qwen 3.5 4B with spec decoding for the latency win |
+| `google_gemma-3-1b-it-Q4_K_M.gguf` | `bartowski/google_gemma-3-1b-it-GGUF` | 0.81 GB | Was the Gemma 4B draft; not needed once Gemma was retired |
+| `Josiefied-Qwen3-4B-abliterated-v2.Q4_K_M.gguf` | `mradermacher/Josiefied-Qwen3-4B-abliterated-v2-GGUF` | 2.50 GB | Was the 2026-05-14 second-pass default; swap-back preset |
+| `Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf` | same as above | 2.89 GB | A/B variant; deleted alongside Q4_K_M |
+| `Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf` | `mradermacher/Josiefied-Qwen3-8B-abliterated-v1-GGUF` | 5.85 GB | Larger abliterated swap-back; deleted to free disk |
+| `Qwen3.5-9B-Q4_K_M.gguf` | `unsloth/Qwen3.5-9B-GGUF` | 5.68 GB | Pre-4B baseline; swap-back |
+| `Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf` | `mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF` | 2.24 GB | Gaming-mode preset; swap-back |
+| `Llama-3.2-1B-Instruct-Q4_K_M.gguf` | `bartowski/Llama-3.2-1B-Instruct-GGUF` | 0.81 GB | Llama 3.2 3B draft; deleted alongside |
 
 ### `ultron_james_spader_mcu_6941/` (main checkout only)
 
