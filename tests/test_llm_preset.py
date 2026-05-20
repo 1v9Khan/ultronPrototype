@@ -193,7 +193,7 @@ def test_gemma_4b_abliterated_preset_resolves() -> None:
     assert cfg.preset == "gemma-3-4b-abliterated"
     assert cfg.model_path == "models/gemma-3-4b-it-abliterated.Q4_K_M.gguf"
     assert cfg.n_ctx == 4096
-    assert cfg.draft_model_path == "models/gemma-3-1b-it-Q4_K_M.gguf"
+    assert cfg.draft_model_path == "models/google_gemma-3-1b-it-Q4_K_M.gguf"
 
 
 def test_llama_3_2_3b_abliterated_preset_resolves() -> None:
@@ -232,7 +232,7 @@ def test_new_presets_match_download_script_filenames() -> None:
 
     expected_pairs = [
         ("gemma-3-4b-abliterated", "model_path", "gemma-3-4b-it-abliterated.Q4_K_M.gguf"),
-        ("gemma-3-4b-abliterated", "draft_model_path", "gemma-3-1b-it-Q4_K_M.gguf"),
+        ("gemma-3-4b-abliterated", "draft_model_path", "google_gemma-3-1b-it-Q4_K_M.gguf"),
         ("llama-3.2-3b-abliterated", "model_path", "Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf"),
         ("llama-3.2-3b-abliterated", "draft_model_path", "Llama-3.2-1B-Instruct-Q4_K_M.gguf"),
     ]

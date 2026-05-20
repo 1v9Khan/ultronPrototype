@@ -475,15 +475,21 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
     # via ``python scripts/swap_llm_preset.py gemma-3-4b-abliterated``
     # once weights are present on disk.
     "gemma-3-4b-abliterated": {
-        # mradermacher GGUF naming convention is ``{name}.Q4_K_M.gguf``
-        # (dot separator). bartowski drafts use hyphens
-        # (``{name}-Q4_K_M.gguf``). Filenames here MUST match what
-        # ``scripts/download_models.py`` writes -- otherwise
-        # ``swap_llm_preset.py``'s _validate_preset_files refuses the
-        # swap with "preset files missing".
+        # Filenames here MUST match what ``scripts/download_models.py``
+        # writes -- otherwise ``swap_llm_preset.py``'s
+        # _validate_preset_files refuses the swap with
+        # "preset files missing".
+        #
+        # Main 4B from mradermacher uses dot separator
+        # (``{name}.Q4_K_M.gguf``). The 1B draft comes from bartowski's
+        # ``google_gemma-3-1b-it-GGUF`` repo (note the ``google_``
+        # prefix in both the repo and the filename -- bartowski's
+        # plain ``gemma-3-1b-it-GGUF`` slug is a 404). The 1B and 4B
+        # share the same tokenizer so speculative decoding accepts
+        # ~60-75% of drafted tokens on conversational text.
         "model_path": "models/gemma-3-4b-it-abliterated.Q4_K_M.gguf",
         "n_ctx": 4096,
-        "draft_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
+        "draft_model_path": "models/google_gemma-3-1b-it-Q4_K_M.gguf",
     },
     # 2026-05-19 -- Llama 3.2 3B abliterated (mradermacher quants of
     # Meta's Llama-3.2-3B-Instruct base with refusal vectors removed).

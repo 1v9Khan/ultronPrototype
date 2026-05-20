@@ -85,8 +85,14 @@ LLM_JOSIEFIED_4B_Q5_FILE = "Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf"
 # the 60-75% acceptance rate holds on conversational text.
 LLM_GEMMA_3_4B_REPO = "mradermacher/gemma-3-4b-it-abliterated-GGUF"
 LLM_GEMMA_3_4B_FILE = "gemma-3-4b-it-abliterated.Q4_K_M.gguf"
-LLM_GEMMA_3_1B_REPO = "bartowski/gemma-3-1b-it-GGUF"
-LLM_GEMMA_3_1B_FILE = "gemma-3-1b-it-Q4_K_M.gguf"
+# bartowski's Gemma 3 1B GGUF repo carries the ``google_`` prefix in
+# both the repo slug and the upload filenames (verified live
+# 2026-05-19: the unprefixed ``bartowski/gemma-3-1b-it-GGUF`` is a
+# 404). Keep both fields in sync with the preset's
+# ``draft_model_path`` in :mod:`ultron.config` -- the
+# regression-guard test in ``tests/test_llm_preset.py`` enforces this.
+LLM_GEMMA_3_1B_REPO = "bartowski/google_gemma-3-1b-it-GGUF"
+LLM_GEMMA_3_1B_FILE = "google_gemma-3-1b-it-Q4_K_M.gguf"
 
 # 2026-05-19 Track 4 -- Llama 3.2 3B abliterated (mradermacher quants
 # of Meta's Llama-3.2-3B-Instruct base with refusal vectors removed).

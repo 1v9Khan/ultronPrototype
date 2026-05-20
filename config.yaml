@@ -235,7 +235,7 @@ llm:
   #   4. Voice: "switch to the 4B" / "switch to model 4B" (in-process hot swap).
   #
   # See docs/4b_optimization_plan.md for the per-preset details.
-  preset: "qwen3.5-4b"
+  preset: "gemma-3-4b-abliterated"
   # The next three keys are auto-filled from the preset above. Uncomment
   # to override (e.g. plug a non-preset GGUF in via preset: "custom").
   # model_path: "models/Qwen3.5-4B-Q4_K_M.gguf"

@@ -72,27 +72,44 @@ def test_encode_query_dense_sparse_parallel_returns_both():
 
 
 def test_encode_parallel_overlaps_dense_and_sparse():
-    """Wall-clock for parallel mode should be roughly max(dense, sparse)
-    rather than sum(dense, sparse). Verifies actual parallelism via
-    timing. Each stub sleeps 50 ms so the total should be ~50-65 ms
-    in parallel mode vs ~100+ ms in serial mode."""
-    e = _build_stubbed_embedder(dense_delay_ms=50.0, sparse_delay_ms=50.0)
+    """Wall-clock for parallel mode should be meaningfully shorter
+    than serial. Each stub sleeps 200 ms so the timing margin is
+    well above thread-launch noise (~20-40 ms on Windows under
+    contention) -- this keeps the assertion robust when the suite
+    runs alongside other heavy work.
 
-    t0 = time.monotonic()
-    e.encode_query_dense_sparse("x", parallel=False)
-    serial_ms = (time.monotonic() - t0) * 1000
+    Retries up to 3 times because the timing assertion is
+    contention-sensitive; an OS scheduler hiccup in the middle of
+    one timed call can blur the signal. Three independent samples
+    + a saved-ms floor avoids spurious failures on a busy machine
+    without weakening the parallelism contract.
+    """
+    e = _build_stubbed_embedder(dense_delay_ms=200.0, sparse_delay_ms=200.0)
 
-    t0 = time.monotonic()
-    e.encode_query_dense_sparse("x", parallel=True)
-    parallel_ms = (time.monotonic() - t0) * 1000
+    last_serial_ms = 0.0
+    last_parallel_ms = 0.0
+    for _attempt in range(3):
+        t0 = time.monotonic()
+        e.encode_query_dense_sparse("x", parallel=False)
+        last_serial_ms = (time.monotonic() - t0) * 1000
 
-    # Serial = ~100 ms; parallel = ~50 ms. We allow generous slack
-    # for thread launch overhead. The key invariant: parallel must
-    # be meaningfully shorter than serial.
-    assert serial_ms >= 90.0, f"serial too fast (stub broken?): {serial_ms} ms"
-    assert parallel_ms < serial_ms * 0.85, (
-        f"parallel ({parallel_ms} ms) not meaningfully faster than "
-        f"serial ({serial_ms} ms) -- no overlap?"
+        t0 = time.monotonic()
+        e.encode_query_dense_sparse("x", parallel=True)
+        last_parallel_ms = (time.monotonic() - t0) * 1000
+
+        # Serial should be ~400 ms; parallel should be ~200 ms.
+        # Verify both: serial is in the right ballpark (stub not
+        # broken) AND parallel saved at least 100 ms of wall-clock.
+        if last_serial_ms >= 380.0 and (last_serial_ms - last_parallel_ms) >= 100.0:
+            return
+
+    # All retries failed -- the parallelism path is not overlapping.
+    pytest.fail(
+        f"Parallel did not save enough wall-clock vs serial after 3 "
+        f"attempts: last serial={last_serial_ms:.0f} ms, "
+        f"last parallel={last_parallel_ms:.0f} ms. Either the "
+        f"ThreadPoolExecutor path is broken or the host is under "
+        f"extreme CPU contention."
     )
 
 
