@@ -641,15 +641,21 @@ class XttsV3Speech:
         self.flush_chars = set(flush_chars)
         self.filter_preset = filter_preset
         self.filter_tail_silence_ms = float(filter_tail_silence_ms)
-        # 2026-05-19 Issue 1 fix: cap per-synth-call text length so a
-        # single sentence can't overflow the 4096-audio-token XTTS-v2
-        # GPT context window. 240 chars is conservative (~3 sec of
-        # speech; even URL-heavy text stays well under 4096 tokens
-        # at this cap).
+        # 2026-05-19 Issue 1 fix + round 4 retune: cap per-synth-call
+        # text length so a single sentence can't overflow the 4096-
+        # audio-token XTTS-v2 GPT context window, but keep the cap
+        # high enough that ordinary multi-clause sentences pass
+        # through as a single call. Round 3 hit "horrible pacing,
+        # pauses randomly between words" because the 240-char cap was
+        # splitting normal sentences into 3-4 fragments, each picking
+        # up 200 ms of v3-filter tail silence. 600 chars at ~1.5
+        # audio tokens per char = ~900 tokens, comfortably under the
+        # 4096 cap. URL-laden text is handled separately by the
+        # url-strip in :func:`normalize_text_for_tts`.
         if xtts_cfg is not None and getattr(xtts_cfg, "max_chars_per_synth_call", None):
             self._max_chars_per_synth_call = int(xtts_cfg.max_chars_per_synth_call)
         else:
-            self._max_chars_per_synth_call = 240
+            self._max_chars_per_synth_call = 600
         # Cadence: passed to XTTS ``inference_stream(speed=...)`` on the
         # server side. Adjusts synthesis duration tokens; does NOT touch
         # the post-synthesis v3 filter chain.

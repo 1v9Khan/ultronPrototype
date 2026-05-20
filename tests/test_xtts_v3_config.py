@@ -1299,14 +1299,18 @@ def test_split_for_synth_long_sentence_with_urls_after_strip():
 
 
 def test_xtts_v3_config_default_max_chars_per_synth_call():
+    """Default bumped 240 -> 600 in round 4 retune so ordinary multi-
+    clause sentences don't get fragmented into 3-4 separate synth
+    calls (each picking up the v3 filter's 200 ms tail silence,
+    producing jagged pacing the user heard on 2026-05-19)."""
     cfg = XttsV3Config()
-    assert cfg.max_chars_per_synth_call == 240
+    assert cfg.max_chars_per_synth_call == 600
 
 
 def test_xtts_v3_config_max_chars_per_synth_call_range_validation():
-    XttsV3Config(max_chars_per_synth_call=80)   # boundary low
-    XttsV3Config(max_chars_per_synth_call=1000)  # boundary high
+    XttsV3Config(max_chars_per_synth_call=80)    # boundary low
+    XttsV3Config(max_chars_per_synth_call=2000)  # boundary high
     with pytest.raises(Exception):
         XttsV3Config(max_chars_per_synth_call=79)
     with pytest.raises(Exception):
-        XttsV3Config(max_chars_per_synth_call=1001)
+        XttsV3Config(max_chars_per_synth_call=2001)

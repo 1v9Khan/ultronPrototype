@@ -3072,7 +3072,33 @@ class Orchestrator:
         AND giving the RAG retrieval ~200-300 ms more overlap. On miss
         (slot empty / invalidated / verdict UNCERTAIN at speculation
         time), falls through to the legacy fresh-kick-off path.
+
+        2026-05-19 round 4: bare "what time is it" / "what day is
+        today" asks short-circuit to a local-clock reply (no gate, no
+        LLM, no search). The computer has a clock; consulting NIST
+        for the wall-clock time is absurd. Mixed-intent or richer
+        time-related queries fall through to the LLM path.
         """
+        # 2026-05-19 round 4: local clock / date short-circuit.
+        # The detector is strict -- only fires on bare time/date asks.
+        try:
+            from ultron.local_clock_reply import maybe_local_clock_reply
+            clock_reply = maybe_local_clock_reply(user_text)
+        except Exception as e:                                    # noqa: BLE001
+            logger.debug("local clock reply check failed (%s)", e)
+            clock_reply = None
+        if clock_reply:
+            logger.info("local clock reply: %r", clock_reply)
+            # Commit to memory as a normal assistant turn so follow-ups
+            # ("how about the time in London?") see the prior context.
+            try:
+                if self.llm is not None:
+                    self.llm.record_completed_turn(user_text, clock_reply)
+            except Exception as e:                                # noqa: BLE001
+                logger.debug("record clock-reply turn failed (%s)", e)
+            yield clock_reply
+            return
+
         # 2026-05-18 latency pass 3 (Phase 2): consume cached
         # speculative classification when available. The slot is
         # cleared atomically so the next turn starts fresh.

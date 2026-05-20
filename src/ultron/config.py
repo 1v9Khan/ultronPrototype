@@ -1235,14 +1235,20 @@ class XttsV3Config(_Strict):
     phantom_tail_min_lead_silence_ms: float = Field(default=150.0, ge=50.0, le=500.0)
     # 2026-05-19 Issue 1 fix: cap per-synth-call text length so a
     # single sentence can't overflow the XTTS-v2 GPT 4096-audio-token
-    # context window. The server errored on a live 2026-05-19 session
-    # at 4830 tokens for a search-augmented response. 240 chars is
-    # conservative (~3 sec of synthesised speech; well under 4096
-    # tokens even with URL char-by-char tokenisation). Sentences that
-    # exceed the cap get sub-split on clause / word boundaries via
-    # XttsV3Speech._split_for_synth -- behaviour is byte-for-byte
-    # unchanged for typical short responses.
-    max_chars_per_synth_call: int = Field(default=240, ge=80, le=1000)
+    # context window.
+    #
+    # 2026-05-19 round 4 retune: bumped from 240 -> 600. The original
+    # 240 was too aggressive -- it broke ordinary multi-clause
+    # sentences into 3-4 fragments, each picking up the v3 filter's
+    # ``tail_silence_ms=200`` padding, producing audibly jagged
+    # pacing with random mid-sentence pauses (live session feedback:
+    # "horrible pacing, pauses randomly between words"). 600 chars
+    # at typical English token-density (~1.5 audio tokens per char)
+    # is ~900 audio tokens -- well under the 4096 cap with plenty of
+    # margin for URL-laden content (URL strip in normalize_text_for_tts
+    # already pulls the worst offenders). Sentences longer than 600
+    # chars still get sub-split, just much less often.
+    max_chars_per_synth_call: int = Field(default=600, ge=80, le=2000)
 
 
 class KokoroConfig(_Strict):

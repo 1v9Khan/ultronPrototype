@@ -154,6 +154,35 @@ _FACTUAL_STEMS = frozenset({
 })
 
 
+# 2026-05-19 round 4: brevity-hint prefix that ``apply_brevity_hint``
+# prepends to user messages BEFORE they reach :meth:`_build_messages`.
+# Pattern shape::
+#
+#     [Style: respond in 1-3 short sentences. ...]
+#
+#     <actual user text>
+#
+# The hint inflates the token count enough that the short-query
+# detector below would see a "long" query and skip the suppression --
+# greetings then leaked into the LLM with full recent + RAG context
+# (live 2026-05-19 session: 'Thanks.' returned Berlin weather because
+# the hinted text appeared long, gate didn't fire, recent-turn history
+# replayed an old assistant turn). The strip helper below pulls the
+# hint off so the detector sees the bare user text.
+_BREVITY_HINT_PREFIX_RE = _re.compile(
+    r"^\s*\[Style:[^\]]*\]\s*\n\s*\n\s*",
+    _re.DOTALL,
+)
+
+
+def _strip_brevity_hint(text: str) -> str:
+    """Remove the ``[Style: ...]`` prefix that ``apply_brevity_hint``
+    prepends, if present. Idempotent on un-hinted text."""
+    if not text:
+        return text
+    return _BREVITY_HINT_PREFIX_RE.sub("", text)
+
+
 def _is_short_conversational_query(
     text: str, *, max_tokens: int = 4,
 ) -> bool:
@@ -174,12 +203,20 @@ def _is_short_conversational_query(
     Empty / whitespace input also returns True (nothing to retrieve
     for).
 
+    2026-05-19 round 4: the brevity-hint prefix
+    (``[Style: ...]\\n\\n...``) is stripped before evaluation so a
+    hinted "Thanks." still classifies as short. Without this strip,
+    the prefix made the text look long, the gate stayed off, and
+    recent-turn history flooded the prompt -- producing wildly off-
+    topic replays from prior sessions.
+
     Pure function. Used by :meth:`LLMEngine._retrieve_rag_snippets`
-    as a pre-retrieval gate.
+    as a pre-retrieval gate AND by :meth:`_build_messages` to promote
+    the gate to a full ``suppress_memory_context``.
     """
     if not text:
         return True
-    cleaned = text.strip()
+    cleaned = _strip_brevity_hint(text).strip()
     if not cleaned:
         return True
     if _GREETING_RE.match(cleaned):
