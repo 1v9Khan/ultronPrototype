@@ -307,9 +307,9 @@ TTS_VOICE_PATH = resolve_path(_cfg.tts.piper_voice_path)
 TTS_VOICE_CONFIG_PATH = resolve_path(_cfg.tts.piper_voice_config_path)
 TTS_OUTPUT_SAMPLE_RATE = _cfg.tts.output_sample_rate
 TTS_SENTENCE_FLUSH_CHARS = _cfg.tts.sentence_flush_chars
-TTS_INTER_SENTENCE_PAUSE_MS = _env_int(
-    "ULTRON_TTS_INTER_SENTENCE_PAUSE_MS", _cfg.tts.inter_sentence_pause_ms,
-)
+# TTS_INTER_SENTENCE_PAUSE_MS removed 2026-05-20 round 8e -- the
+# field had no consumer in src/ultron/. The actual inter-sentence
+# silence is TTS_PAUSE_MS below (tts.pause_ms).
 TTS_LENGTH_SCALE = _env_float(
     "ULTRON_TTS_LENGTH_SCALE", _cfg.tts.piper_length_scale,
 )

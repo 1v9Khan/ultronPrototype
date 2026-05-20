@@ -16,6 +16,51 @@
 # - addressing.warm_mode_duration_seconds: 30 (NOT 10, per user override)
 # - llm.provider: "llama_cpp" (NOT ollama, per Ollama compat-test outcome)
 # - qdrant.data_dir: "data/qdrant" (NOT ./qdrant_data/, matches existing layout)
+#
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                        TUNING SUMMARY                                    ║
+# ║      The knobs you'll touch most often live, with current values         ║
+# ╠══════════════════════════════════════════════════════════════════════════╣
+# ║                                                                          ║
+# ║   STT     stt.model                     "base.en"                        ║
+# ║           stt.compute_type              "int8_float16"                   ║
+# ║           stt.beam_size                 1                                ║
+# ║                                                                          ║
+# ║   LLM     llm.preset                    "qwen3.5-4b"                     ║
+# ║           llm.default_temperature       0.7                              ║
+# ║           llm.default_top_p             0.9                              ║
+# ║           llm.default_max_tokens        512                              ║
+# ║                                                                          ║
+# ║   TTS     tts.engine                    "kokoro"                         ║
+# ║           tts.pause_ms                  50    (inter-sentence silence)   ║
+# ║           tts.kokoro.voice              "am_michael"                     ║
+# ║           tts.kokoro.speed              1.3                              ║
+# ║           tts.kokoro.device             "cpu"                            ║
+# ║                                                                          ║
+# ║   VAD     vad.smart_turn.fast_path_silence_duration_ms   300             ║
+# ║           vad.smart_turn.early_completion_threshold      0.65            ║
+# ║           vad.smart_turn.incomplete_extension_ms         700             ║
+# ║                                                                          ║
+# ║   MIC     audio.input_device            "Focusrite"                      ║
+# ║           audio.input_gain_db           10.0                             ║
+# ║                                                                          ║
+# ║   MEM     memory.rag_min_relevance      0.6                              ║
+# ║           memory.history_turns_for_llm  4                                ║
+# ║                                                                          ║
+# ║   How to swap LLM presets without editing this file:                     ║
+# ║      python scripts/swap_llm_preset.py qwen3.5-4b                        ║
+# ║      $env:ULTRON_LLM_PRESET = "qwen3.5-9b"; python -m ultron             ║
+# ║      voice: "switch to the 9B" / "switch to the gemma"                   ║
+# ║                                                                          ║
+# ║   How to swap TTS engines: edit tts.engine then restart                  ║
+# ║      "kokoro"   = active default (CPU StyleTTS2; ~0 GB VRAM)             ║
+# ║      "xtts_v3"  = swap-back (XTTS v2 + v3 filter; +60 ms TTFT, +2 GB)    ║
+# ║      "piper_rvc"= legacy fallback (Piper + RVC; never deprecated)        ║
+# ║                                                                          ║
+# ║   Restart Ultron after any value change in this file:                    ║
+# ║      python -m ultron                                                    ║
+# ║                                                                          ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 
 version: "1.0"
 
@@ -213,45 +258,33 @@ stt:
 
 llm:
   provider: "llama_cpp"        # in-process llama-cpp-python; never ollama for this model
-  # 4B optimization plan — model preset is the single switch.
-  # Editing this one line flips model_path + n_ctx + draft_model_path
-  # together (resolved from src/ultron/config.py:LLM_PRESETS). The
-  # individual keys can still be set below to deviate from the preset
-  # without changing presets — explicit values win over preset defaults.
+  # Model preset is the single switch. Editing this one line flips
+  # model_path + n_ctx + draft_model_path together (resolved from
+  # src/ultron/config.py:LLM_PRESETS). Override individual keys below
+  # to deviate -- explicit values win over preset defaults.
   #
-  # Available presets:
-  #   "josiefied-qwen3-4b" — Goekdeniz-Guelmez Josiefied + abliterated
-  #                         Qwen3-4B-v2 Q5_K_M. CURRENT DEFAULT (2026-05-14).
-  #                         Same abliterated + Josiefied lineage as the
-  #                         8B below at ~half the VRAM (~3.0 GB on disk;
-  #                         ~7.4 GB voice-path peak vs the 11.5 GB hard
-  #                         cap on the 4070 Ti -- ~4 GB headroom).
-  #                         No paired abliterated draft, so no spec
-  #                         decoding.
-  #   "josiefied-qwen3-8b" — Goekdeniz-Guelmez Josiefied + abliterated
-  #                         Qwen3-8B Q5_K_M. Default 2026-05-12 ->
-  #                         2026-05-13; retained for swap-back when
-  #                         the user wants the larger model.
-  #   "qwen3.5-9b"        — Qwen3.5-9B-Q4_K_M, n_ctx=8192, no draft.
-  #                         Retained for swap-back.
-  #   "qwen3.5-4b"        — Qwen3.5-4B-Q4_K_M + 0.8B draft, n_ctx=8192.
-  #                         Retained for swap-back / spec decoding.
-  #                         Not abliterated -- will refuse some queries.
+  # ACTIVE PRESET (2026-05-20 round 8):
+  #   "qwen3.5-4b"  -- Qwen3.5-4B Q4_K_M stock + 0.8B speculative draft
+  #                    (n_ctx=8192). NOT abliterated -- model carries
+  #                    content-level refusals at the prompt layer; the
+  #                    runtime safety validator still gates capability.
   #
-  # Easy on-the-fly switching:
-  #   1. Edit this preset line and restart Ultron.
-  #   2. Or set ULTRON_LLM_PRESET=josiefied-qwen3-8b in the environment.
-  #   3. Or run: python scripts/swap_llm_preset.py josiefied-qwen3-8b
-  #   4. Voice: "switch to the 4B" / "switch to model 4B" (in-process hot swap).
+  # SWAP-BACK PRESETS (re-run scripts/download_models.py first; the
+  # round-8 cleanup deleted the GGUFs from disk -- their entries in
+  # LLM_PRESETS + download_models.py remain so re-fetch is one cmd):
+  #   "gemma-3-4b-abliterated"  -- Gemma 3 4B abl + 1B draft, n_ctx=4096
+  #   "josiefied-qwen3-4b"      -- 4B abliterated Q4_K_M, no draft
+  #   "josiefied-qwen3-8b"      -- 8B abliterated Q5_K_M, no draft
+  #   "qwen3.5-9b"              -- 9B stock Q4_K_M, no draft
+  #   "llama-3.2-3b-abliterated"-- Llama 3.2 3B abl + 1B draft, n_ctx=2048
+  #
+  # SWAP MECHANISMS:
+  #   1. Edit this preset line + restart.
+  #   2. python scripts/swap_llm_preset.py <name>   (writes config.yaml)
+  #   3. $env:ULTRON_LLM_PRESET = "<name>"; python -m ultron
+  #   4. Voice: "switch to the 9B" / "switch to the gemma" (hot-swap)
   #
   # See docs/4b_optimization_plan.md for the per-preset details.
-  #
-  # 2026-05-20 round 8 swap: gemma-3-4b-abliterated -> qwen3.5-4b
-  # (stock + 0.8B speculative draft). Re-enables spec decoding for
-  # ~63 ms median TTFT on conversational turns. Trades the
-  # abliteration off; the runtime safety validator under
-  # src/ultron/safety/ still gates the capability surface, but the
-  # model will refuse some queries at the content layer too.
   preset: "qwen3.5-4b"
   # The next three keys are auto-filled from the preset above. Uncomment
   # to override (e.g. plug a non-preset GGUF in via preset: "custom").
@@ -576,59 +609,90 @@ projections:
 # ---------------------------------------------------------------------------
 
 tts:
-  # 2026-05-10 voice swap: engine selector. "piper_rvc" is the legacy
-  # stack (Piper + RVC timbre transfer; ~313 ms TTS synth median).
-  # "xtts_v3" is the XTTS v2 streaming + v3 Ultron filter stack
-  # (~375 ms TTFT but dramatically better voice naturalness; user
-  # accepted the latency trade-off 2026-05-10). "kokoro" is the
-  # 2026-05-20 round 8 default: lightweight StyleTTS2 + ISTFTNet on
-  # CPU; zero VRAM cost; faster TTFT than XTTS. Stock kokoro voice
-  # (am_michael) without the v3 filter chain -- different from the
-  # XTTS voice character but lower latency and ~2 GB VRAM reclaimed.
-  # Switching engines requires a process restart.
+  # Engine selector. Switching engines requires a process restart.
+  #
+  # ACTIVE (2026-05-20 round 8):
+  #   "kokoro"    -- StyleTTS2 + ISTFTNet on CPU; zero VRAM; stock
+  #                  am_michael voice; ack-cached for instant fillers.
+  #
+  # SWAP-BACK:
+  #   "xtts_v3"   -- XTTS v2 + v3 Ultron pedalboard filter; +60 ms
+  #                  TTFT and +2 GB VRAM vs Kokoro, but the locked
+  #                  Ultron mechanical voice character. Engine spawns
+  #                  an HTTP subprocess in .venv-xtts on startup.
+  #   "piper_rvc" -- Legacy Piper + RVC timbre transfer (~313 ms
+  #                  synth median). Original voice baseline; never
+  #                  deprecated.
   engine: "kokoro"
+
+  # Shared playback knobs (apply to ALL engines).
+  pause_ms: 50                     # silence between consecutive sentence clips
+  edge_fade_ms: 4                  # short fade prevents clicks at clip boundaries
+  sentence_flush_chars: ".!?\n"    # only strong terminators trigger TTS flush
+
+  # Legacy piper-engine-only fields (still readable by piper_rvc).
   piper_voice_path: "models/piper/en_US-ryan-medium.onnx"
   piper_voice_config_path: "models/piper/en_US-ryan-medium.onnx.json"
   output_sample_rate: 22050
-  sentence_flush_chars: ".!?\n"   # only strong terminators trigger Piper synthesis
-  inter_sentence_pause_ms: 250
   piper_length_scale: 1.15        # >1.0 = slower / more deliberate
-  # 2026-05-20 round 8d -> 8e: 180 -> 100 -> 50 ms. Half of the
-  # 8d value per user direction "more accurately match real speech".
-  # With the Kokoro producer-consumer pipeline this is literally
-  # the only silence between consecutive sentences (synth of N+1
-  # already overlaps playback of N), so 50 ms reads as the natural
-  # micro-gap between spoken sentences without dragging.
-  pause_ms: 50                     # silence between consecutive sentence clips
-  edge_fade_ms: 4                  # short fade prevents clicks at clip boundaries
-  # 2026-05-09 latency hot-fix: split Piper and RVC into two worker
-  # stages connected by a bounded queue. With single-worker (legacy
-  # off-path), sentence N+1 Piper waited for sentence N RVC; with
-  # split, Piper N+1 runs in parallel with RVC N, saving ~50 ms per
-  # subsequent sentence on multi-sentence responses. Voice output is
-  # bit-identical (same Piper buffer feeds same RVC). Set false to
-  # revert to single-worker pipeline.
-  pipeline_parallel_enabled: true
-  # 2026-05-09 latency hot-fix: open the audio output stream
-  # speculatively at speculative_stream_sample_rate while Piper+RVC
-  # of the first sentence is still running, instead of waiting for
-  # the first clip to land. Saves ~20-30 ms first-sentence audio.
-  # Sample-rate mismatch is handled by the existing close+reopen
-  # path, so this is safe even if the actual rate differs.
+  # Output-stream pre-open + low-latency hints (apply to ALL engines).
+  # Pre-opens the sounddevice OutputStream during STT so the ~50 ms
+  # PortAudio handshake overlaps with Whisper; ``latency='low'`` asks
+  # PortAudio for the smallest acceptable buffer (saves 30-100 ms of
+  # OS-level audio buffering on most Windows hosts).
   speculative_stream_open_enabled: true
-  # Expected output sample rate for the speculative open. The Ultron
-  # RVC model outputs 48000 Hz; Piper-only (rvc.enabled=false) should
-  # be 22050. Keep this aligned with the actual first-clip sample
-  # rate to avoid the close-and-reopen path (~50-100 ms wasted per
-  # turn). Logs will show "TTS speculative SR X != actual Y;
-  # reopening" if they drift.
-  speculative_stream_sample_rate: 48000
-  # 2026-05-09 latency hot-fix: pass latency='low' to sd.OutputStream
-  # so PortAudio asks the host API for the smallest acceptable buffer.
-  # Saves 30-100 ms of OS-level audio buffering on most Windows
-  # systems. Falls back gracefully if the host API ignores the hint.
+  speculative_stream_sample_rate: 48000   # Ultron RVC native; Kokoro/XTTS override at runtime
   output_low_latency_mode: true
 
+  # Legacy piper_rvc two-stage pipeline parallelism (only consulted
+  # when tts.engine == "piper_rvc"; harmless overhead otherwise).
+  pipeline_parallel_enabled: true
+
+  # ┌────────────────────────────────────────────────────────────┐
+  # │ ENGINE SUBSECTIONS                                         │
+  # │ Each engine reads ONLY its own subsection at startup.      │
+  # └────────────────────────────────────────────────────────────┘
+
+  # ACTIVE WHEN tts.engine == "kokoro"  (current default).
+  # StyleTTS2 + ISTFTNet on CPU; ~330 MB on disk; zero VRAM. The
+  # kokoro PyPI package's KPipeline auto-downloads weights into the
+  # HF cache on first use; model_path is a sanity-gate directory.
+  # Voice character: stock am_michael (not Ultron). Round 7c/7d
+  # fine-tune path is the documented way to restore Ultron's voice.
+  kokoro:
+    model_path: "models/kokoro"
+    voice: "am_michael"            # stock American English male voice
+    device: "cpu"                  # "cuda" for ~3x synth at +330 MB VRAM
+    speed: 1.3                     # 1.0 native; safe range ~0.8-1.3
+    apply_runtime_filter: false    # set true to run v3 pedalboard over Kokoro output (CPU 10-30 ms/sentence)
+    filter_preset: "v3_heavy"      # unused while apply_runtime_filter=false
+
+  # ACTIVE WHEN tts.engine == "xtts_v3"  (swap-back).
+  # XTTS v2 streaming + v3 Ultron pedalboard filter. Engine spawns
+  # an HTTP subprocess in .venv-xtts on startup. Adds ~60 ms TTFT
+  # and ~2 GB VRAM vs Kokoro, but preserves the Ultron mechanical
+  # voice character.
+  xtts_v3:
+    server_python: "ultronVoiceAudio/.venv-xtts/Scripts/python.exe"
+    server_script: "ultronVoiceAudio/scripts/xtts_server.py"
+    reference_audio: "ultronVoiceAudio/Ultron_vocals_mono_v1.wav"
+    host: "127.0.0.1"
+    port: null                     # null = engine picks a free port
+    filter_preset: "v3_heavy"      # locked production preset
+    filter_tail_silence_ms: 200.0  # reverb-tail padding before clipping
+    speed: 1.15                    # native 1.0; safe range ~0.7-1.4
+    temperature: 0.65              # lower = sharper duration tokens (fewer phantoms)
+    # Phantom-tail trim catches residual XTTS-v2 phantom-token tails
+    # that slip past the temperature reduction. Set false for A/B.
+    phantom_tail_trim_enabled: true
+    phantom_tail_silence_threshold: 0.005
+    phantom_tail_max_event_ms: 200.0
+    phantom_tail_min_lead_silence_ms: 150.0
+
+  # ACTIVE WHEN tts.engine == "piper_rvc"  (legacy fallback).
+  # Original baseline voice character. Voice-quality lock applies
+  # here -- the RVC model + index are non-negotiable per the
+  # 2026-05-09 lock declaration.
   rvc:
     enabled: true
     model_dir: "ultron_james_spader_mcu_6941"
@@ -640,79 +704,10 @@ tts:
     device: "cuda:0"
     pitch_shift: -2              # semitones; lower = deeper
     index_rate: 0.66             # 0-1; higher = stricter match to trained timbre
-    protect: 0.45                # 0-0.5; higher preserves Piper consonants (crisp s/t/k)
+    protect: 0.45                # 0-0.5; higher preserves Piper consonants
     f0_method: "rmvpe"           # most accurate pitch extractor
-    rms_mix_rate: 0.35           # higher lets Piper loudness through; reads as more articulate
-    filter_radius: 1             # median filter on F0; lower preserves stressed-syllable detail
-
-  # 2026-05-10 voice swap: XTTS v2 streaming + v3 Ultron filter engine.
-  # Active only when ``tts.engine: "xtts_v3"`` (above). The engine
-  # spawns the XTTS HTTP server as a subprocess in the isolated
-  # ``.venv-xtts`` venv on Orchestrator startup; ports are picked
-  # automatically (port: null) unless pinned here.
-  xtts_v3:
-    server_python: "ultronVoiceAudio/.venv-xtts/Scripts/python.exe"
-    server_script: "ultronVoiceAudio/scripts/xtts_server.py"
-    reference_audio: "ultronVoiceAudio/Ultron_vocals_mono_v1.wav"
-    host: "127.0.0.1"
-    port: null                  # null -> engine picks a free port
-    filter_preset: "v3_heavy"   # user-locked production preset
-    # Trailing silence padded onto each clip BEFORE the v3 filter so
-    # the reverb tail decays into it instead of being clipped at the
-    # buffer end. 200 ms is the audible portion of v3's reverb;
-    # offline standalone samples use 500 ms for full decay.
-    filter_tail_silence_ms: 200.0
-    # 2026-05-11 cadence tune: XTTS native default is 1.0; bumping to
-    # 1.15 makes speech ~15% faster without slurring. Adjusts XTTS
-    # duration tokens at synthesis time -- the v3 pedalboard filter
-    # (pitch shift / delay / reverb / etc.) is unaffected and processes
-    # the shorter audio buffer identically. Safe range ~0.7-1.4.
-    speed: 1.15
-    # 2026-05-12 phantom-token mitigation: lower temperature sharpens
-    # the XTTS duration-token distribution so the model stops
-    # occasionally emitting fragmentary syllables at sentence ends.
-    # 0.65 keeps the voice character bit-identical (timbre is set by
-    # the locked speaker embedding + the v3 filter chain). Below 0.5
-    # prosody starts to collapse; above 0.8 phantoms creep back in.
-    temperature: 0.65
-    # 2026-05-12 phantom-tail trim, defence in depth. Catches the
-    # residual phantom-token tails that slip through the temperature
-    # reduction. Pattern detected: sustained speech -> >=150 ms silence
-    # -> <200 ms audio event -> silence to buffer end. Set false to
-    # disable (useful for A/B comparison).
-    phantom_tail_trim_enabled: true
-    phantom_tail_silence_threshold: 0.005
-    phantom_tail_max_event_ms: 200.0
-    phantom_tail_min_lead_silence_ms: 150.0
-
-  # 2026-05-20 round 8 -- Kokoro TTS engine.
-  # Active only when ``tts.engine: "kokoro"`` (above). StyleTTS2 +
-  # ISTFTNet, ~330 MB on disk, near-realtime on CPU. CPU device keeps
-  # the GPU free for LLM + Whisper (saves ~2 GB VRAM vs XTTS). The
-  # ``kokoro`` PyPI package's KPipeline auto-downloads the weights
-  # into the HF cache on first use; ``model_path`` is a sanity-gate
-  # directory that must exist before the engine boots.
-  #
-  # Voice character: stock kokoro voice (am_michael -- American male
-  # baseline closest to current Ultron register). No v3 filter chain
-  # on this engine -- the Ultron mechanical character is forfeit on
-  # the swap. Round 7c/7d (XTTS-as-training-data + Kokoro fine-tune)
-  # is the path to restore Ultron's voice on Kokoro; deferred per
-  # user direction.
-  kokoro:
-    model_path: "models/kokoro"
-    voice: "am_michael"            # stock American English male voice
-    device: "cpu"                  # zero VRAM; ~realtime synthesis
-    # 2026-05-20 round 8d -> 8e: 1.0 -> 1.15 -> 1.3. Kokoro's native
-    # speed multiplier. Audio plays ~30% faster than native cadence.
-    # 1.3 sits at the edge of the documented "before naturalness
-    # degrades" range -- if any slur surfaces in live use, back off
-    # to 1.25 or 1.2. The model adjusts prosody at synthesis time so
-    # voice character is preserved (no time-stretching artifacts).
-    # Schema-bounded [0.5, 2.0].
-    speed: 1.3
-    apply_runtime_filter: false    # no v3 pedalboard pass; stock voice
-    filter_preset: "v3_heavy"      # unused while apply_runtime_filter=false
+    rms_mix_rate: 0.35           # higher = more articulate
+    filter_radius: 1             # median filter on F0
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -723,13 +718,6 @@ logging:
   level: "INFO"
   format: "%(asctime)s | %(levelname)-7s | %(name)-24s | %(message)s"
   datefmt: "%Y-%m-%d %H:%M:%S"
-
-# ---------------------------------------------------------------------------
-# Error phrases (Phase 4) — user-facing voice messages for dependency failures
-# ---------------------------------------------------------------------------
-# Each list is a phrase pool. Empty list disables narration for that
-# failure mode. Errors still log to logs/errors.jsonl regardless.
-# Phrases stay in Ultron's voice (precise, weighted, slightly menacing).
 
 # ---------------------------------------------------------------------------
 # Capability routing (Phase 5) — extends intent classification beyond coding
@@ -996,18 +984,39 @@ error_phrases:
     - "Configuration is invalid. I can't start."
 
 # ---------------------------------------------------------------------------
-# Runtime tool-call validator (2026-05-12 Phase 2)
+# Runtime tool-call validator (2026-05-12 Phases 2-5)
 # ---------------------------------------------------------------------------
-# Pairs with the abliterated default LLM (llm.preset = "josiefied-qwen3-8b").
-# The validator gates the actual capability surface even when the model is
-# willing to attempt anything at the content level.
+# Gates the capability surface (tool calls, file writes, shell commands)
+# regardless of whether the LLM is willing to attempt the action. Was
+# originally introduced as a load-bearing pair with abliterated LLMs
+# (which lack content-level refusals); now also defence-in-depth on
+# non-abliterated presets like the round-8 default qwen3.5-4b.
 #
 # Master switch (enabled: false) disables ALL safety enforcement. Per-rule
-# toggles live under "rules" -- missing keys default to True. The rule ids
-# match the user's 2026-05-12 restriction list (K1-K10, A1-A12, B1-B9, ...).
-#
-# Phase 2 ships Category K (Ultron self-protection / meta -- K1-K10).
-# Phases 3-5 add the remaining categories.
+# toggles live under "rules" -- missing keys default to True. Rule ids
+# match the 2026-05-12 restriction list:
+#   K1-K10  Ultron self-protection / meta (NEVER disable without explicit
+#           direction -- this is the validator protecting itself)
+#   A1-A12  Filesystem destruction
+#   B1-B9   Privilege escalation / system config
+#   C1-C12  Security perimeter
+#   D1-D17  Credentials / secret access
+#   E1-E8   System stability
+#   F1-F8   Repo / data integrity
+#   G1-G5   Resource exhaustion
+#   H1-H12  Untrusted code execution
+#   I1-I6   Outbound impact (email, social, finance, paid APIs)
+#   J2-J7   Data exfiltration
+#   M1-M11  Persistence
+#   N1-N6   Process / memory manipulation
+#   O1-O8   Anti-forensics
+#   P1-P5   AV / EDR tampering
+#   Q1-Q4   Containers + virtualization
+#   R2      Sensors (webcam)
+#   S1, S4  AI-specific tampering
+#   Cap-1..Cap-4  Capability carve-outs (screen context, app launch,
+#                 browser default profile, window management)
+# 141 rules across 19 categories total.
 
 safety:
   enabled: true

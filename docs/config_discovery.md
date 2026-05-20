@@ -193,7 +193,6 @@ intentional — they reflect facts on the ground, recorded in memory:
 | `TTS_VOICE_CONFIG_PATH` | `...onnx.json` | n/a | `tts.piper_voice_config_path` |
 | `TTS_OUTPUT_SAMPLE_RATE` | 22050 | n/a | `tts.output_sample_rate` |
 | `TTS_SENTENCE_FLUSH_CHARS` | ".!?\n" | n/a | `tts.sentence_flush_chars` |
-| `TTS_INTER_SENTENCE_PAUSE_MS` | 250 | `ULTRON_TTS_INTER_SENTENCE_PAUSE_MS` | `tts.inter_sentence_pause_ms` |
 | `TTS_LENGTH_SCALE` | 1.15 | `ULTRON_TTS_LENGTH_SCALE` | `tts.piper_length_scale` |
 | `TTS_PAUSE_MS` | 180 | `ULTRON_TTS_PAUSE_MS` | `tts.pause_ms` |
 | `TTS_EDGE_FADE_MS` | 4 | `ULTRON_TTS_EDGE_FADE_MS` | `tts.edge_fade_ms` |

@@ -245,10 +245,9 @@ Top-level: `enabled`, `bridge` ("direct" runs Claude Code as a subprocess; an `o
 |---|---|---|
 | `piper_voice_path` | en_US-ryan-medium ONNX | |
 | `output_sample_rate` | 22050 | Piper's native rate for medium voices. |
-| `sentence_flush_chars` | ".!?\n" | Only strong sentence terminators trigger a Piper flush. |
-| `inter_sentence_pause_ms` | 250 | Silence between sentence clips. |
-| `piper_length_scale` | 1.15 | >1 = slower / more deliberate. **Voice tuning lever; don't touch without evaluating.** |
-| `pause_ms` | 180 | Silence at sentence boundaries. |
+| `sentence_flush_chars` | ".!?\n" | Only strong sentence terminators trigger a TTS flush. |
+| `piper_length_scale` | 1.15 | Legacy `piper_rvc` engine only; >1 = slower / more deliberate. |
+| `pause_ms` | 180 | Silence at sentence boundaries (all engines). Currently set to 50 in config.yaml for snappy cadence. |
 | `edge_fade_ms` | 4 | Short fade at clip edges to prevent clicks. |
 | `rvc.enabled` | true | Voice conversion (Piper → Ultron). |
 | `rvc.device` | "cuda:0" | RVC inference device. |

@@ -1295,8 +1295,10 @@ class TTSConfig(_Strict):
     piper_voice_config_path: str = "models/piper/en_US-ryan-medium.onnx.json"
     output_sample_rate: int = 22050
     sentence_flush_chars: str = ".!?\n"
-    inter_sentence_pause_ms: int = Field(default=250, ge=0)
     piper_length_scale: float = Field(default=1.15, ge=0.1)
+    # ``inter_sentence_pause_ms`` was removed 2026-05-20 round 8e --
+    # it had no consumer; ``pause_ms`` is the actual silence written
+    # between sentence clips by every TTS engine's speak_stream.
     pause_ms: int = Field(default=180, ge=0)
     edge_fade_ms: int = Field(default=4, ge=0)
     rvc: RVCConfig = Field(default_factory=RVCConfig)
