@@ -282,6 +282,16 @@ class ConversationMemory:
 
     # --- write path ---------------------------------------------------------
 
+    def _trace(self, msg: str, **kwargs):
+        """Best-effort trace log helper. Catches import errors so
+        Qdrant operations never depend on the trace module being
+        importable at construction time."""
+        try:
+            from ultron import trace
+            trace.tlog(logger, msg, **kwargs)
+        except Exception:
+            pass
+
     def add(
         self,
         role: str,
@@ -319,18 +329,29 @@ class ConversationMemory:
             )
             self._next_id += 1
             self._recent.append(turn)
-            if len(self._recent) > self._recent_cache_size:
+            cache_size = len(self._recent)
+            if cache_size > self._recent_cache_size:
                 # Drop oldest entries -- they remain in Qdrant and are still
                 # retrievable via the RAG path.
                 self._recent = self._recent[-self._recent_cache_size:]
+                cache_size = len(self._recent)
         try:
             self._write_queue.put_nowait(turn)
+            queued = True
         except queue.Full:
             logger.warning(
                 "Memory writer queue full (%d) -- dropping turn %d. "
                 "Hot path stays responsive but this turn won't be RAG-indexed.",
                 self._write_queue.maxsize, turn.id,
             )
+            queued = False
+        self._trace(
+            "memory:add",
+            turn_id=turn.id, role=role, channel=channel.value,
+            content_chars=len(content), preview=content[:100],
+            session_id=self.session_id, cache_size=cache_size,
+            queued=queued,
+        )
         return turn
 
     def _writer_loop(self) -> None:
@@ -455,8 +476,25 @@ class ConversationMemory:
         if n <= 0:
             return []
         with self._lock:
+            total = len(self._recent)
             scoped = [t for t in self._recent if t.session_id == self.session_id]
-            return list(scoped[-n:])
+            scoped_total = len(scoped)
+            out = list(scoped[-n:])
+        # 2026-05-20 round 6 trace: surface the filter ratio so we can
+        # confirm cross-session contamination is actually being filtered
+        # out (and isn't leaking through some other path).
+        try:
+            from ultron import trace
+            trace.tlog(
+                logger, "memory:recent",
+                requested=n, returned=len(out),
+                session_id=self.session_id,
+                cache_total=total, cache_current_session=scoped_total,
+                cache_other_sessions=total - scoped_total,
+            )
+        except Exception:
+            pass
+        return out
 
     def recent_all_sessions(self, n: int) -> List[MemoryTurn]:
         """Return the last ``n`` turns across ALL sessions (legacy behaviour).
@@ -484,9 +522,25 @@ class ConversationMemory:
         """
         import time as _time
 
+        self._trace(
+            "memory:retrieve:start",
+            query=(query or "")[:100], k=k, exclude_recent=exclude_recent,
+        )
         start = _time.perf_counter()
         result = self._retrieve_impl(query, k=k, exclude_recent=exclude_recent)
         latency_ms = (_time.perf_counter() - start) * 1000.0
+        # 2026-05-20 round 6: structured trace with returned-snippet
+        # ids + content previews so we can see exactly what's getting
+        # injected as RAG.
+        self._trace(
+            "memory:retrieve:end",
+            query=(query or "")[:100], k=k,
+            returned=len(result),
+            elapsed_ms=int(latency_ms),
+            ids=[t.id for t in result] if result else [],
+            previews=[t.content[:80] for t in result] if result else [],
+            session_ids=sorted({t.session_id for t in result}) if result else [],
+        )
         try:
             from ultron.observations import observe_retrieval
 

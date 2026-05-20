@@ -335,6 +335,15 @@ def _preflight_call(llm, prompt: str, max_tokens: int) -> str:
     return result.answer or ""
 
 
+def _trace(msg: str, **kwargs):
+    """Best-effort trace helper -- never breaks classification."""
+    try:
+        from ultron import trace
+        trace.tlog(logger, msg, **kwargs)
+    except Exception:
+        pass
+
+
 def classify_by_rules(utterance: str) -> Optional[GateVerdict]:
     """Stage-1 hard-rule classification.
 
@@ -342,8 +351,10 @@ def classify_by_rules(utterance: str) -> Optional[GateVerdict]:
     ``None`` (caller should escalate to the LLM pre-flight pass).
     """
     text = (utterance or "").strip()
+    _trace("gate:rules_start", chars=len(text), preview=text[:80])
     if not text:
         reason = "empty utterance"
+        _trace("gate:rules_match", rule="empty", decision="NO_SEARCH")
         return GateVerdict(
             GateDecision.NO_SEARCH, "high", "rule",
             reason,
@@ -359,6 +370,7 @@ def classify_by_rules(utterance: str) -> Optional[GateVerdict]:
     # AND was producing wrong verdicts on these obvious cases.
     if _GREETING_OR_ACK.match(text):
         reason = "greeting / ack -- no web lookup needed"
+        _trace("gate:rules_match", rule="greeting_or_ack", decision="NO_SEARCH")
         return GateVerdict(
             GateDecision.NO_SEARCH, "high", "rule",
             reason,
@@ -450,6 +462,7 @@ def classify_by_rules(utterance: str) -> Optional[GateVerdict]:
     # through, the LLM model will at worst answer from training.
     if _STABLE_FACTUAL_REQUEST.search(text):
         reason = "stable / conceptual question stem (no time / volatile markers)"
+        _trace("gate:rules_match", rule="stable_factual", decision="NO_SEARCH")
         return GateVerdict(
             GateDecision.NO_SEARCH, "medium", "rule",
             reason,
@@ -459,6 +472,7 @@ def classify_by_rules(utterance: str) -> Optional[GateVerdict]:
             ),
         )
 
+    _trace("gate:rules_no_match", next="preflight_llm")
     return None  # No rule fired; caller falls through to the LLM gate.
 
 

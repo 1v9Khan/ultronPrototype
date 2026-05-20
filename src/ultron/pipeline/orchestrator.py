@@ -1160,6 +1160,7 @@ class Orchestrator:
     def run(self) -> None:
         """Block forever, processing wake events until shutdown."""
         from ultron.config import get_config
+        from ultron import trace
         _addr_cfg = get_config().addressing
         self.audio.start()
         word = self.wake.active_word
@@ -1170,7 +1171,13 @@ class Orchestrator:
                 f"Train a custom model for true 'ultron' detection — see README.)\n"
             )
         if self.memory is not None:
-            print(f"  Memory: {len(self.memory)} prior turns loaded.\n")
+            mem_count = len(self.memory)
+            print(f"  Memory: {mem_count} prior turns loaded.\n")
+            trace.tlog(
+                logger, "memory:bootstrap",
+                cross_session_turns_in_cache=mem_count,
+                session_id=getattr(self.memory, "session_id", None),
+            )
 
         # When the follow-up window is open this holds the deadline (monotonic
         # time). ``None`` means we're in plain wake-word-gated IDLE mode.
@@ -1178,6 +1185,16 @@ class Orchestrator:
 
         try:
             while not self._shutdown.is_set():
+                # 2026-05-20 round 6: bump turn id at top of every voice
+                # loop iteration so all downstream logs grep by turn=N.
+                turn_id = trace.next_turn()
+                trace.set_phase("loop")
+                trace.tlog(
+                    logger, "loop:iteration_start",
+                    state=self._state.value,
+                    pending_capture=self._pending_capture.is_set(),
+                    follow_up_until=follow_up_until,
+                )
                 # Coding-task completion push: if a background Claude Code
                 # task just finished, announce it before we go back to
                 # listening. This gives the unsolicited "Done. Created X
@@ -1207,6 +1224,10 @@ class Orchestrator:
                     self._pending_capture.clear()
                     self._state = State.CAPTURING
                     print(f"  [{self._state.value}] capturing your request…")
+                    trace.tlog(
+                        logger, "loop:capture_path",
+                        reason="pending_capture", state=self._state.value,
+                    )
                     speech = self._capture_utterance()
                     follow_up_until = None
                 elif (
@@ -1215,6 +1236,11 @@ class Orchestrator:
                     and time.monotonic() < follow_up_until
                 ):
                     self._state = State.FOLLOW_UP_LISTENING
+                    trace.tlog(
+                        logger, "loop:follow_up_listen",
+                        state=self._state.value,
+                        remaining_s=follow_up_until - time.monotonic(),
+                    )
                     outcome = self._follow_up_listen(deadline=follow_up_until)
                     # outcome is either an ndarray (audio captured) or a
                     # sentinel string. Type-check first — comparing an ndarray
@@ -1223,32 +1249,64 @@ class Orchestrator:
                     if isinstance(outcome, str):
                         if outcome == _FU_TIMEOUT:
                             print("  (follow-up window closed; waiting for wake word)")
+                            trace.tlog(
+                                logger, "loop:follow_up_timeout",
+                                next_state="IDLE",
+                            )
                             follow_up_until = None
                             continue
                         if outcome == _FU_WAKE:
                             self._state = State.CAPTURING
                             print(f"  [{self._state.value}] capturing your request…")
+                            trace.tlog(
+                                logger, "loop:wake_during_follow_up",
+                                state=self._state.value,
+                            )
                             speech = self._capture_utterance()
                             follow_up_until = None
                     else:
                         # Got a VAD-bounded utterance during follow-up.
                         speech = outcome
                         came_from_follow_up = True
+                        trace.tlog(
+                            logger, "loop:follow_up_utterance_captured",
+                            audio_samples=outcome.size,
+                        )
                 else:
                     self._state = State.IDLE
                     follow_up_until = None
+                    trace.tlog(
+                        logger, "loop:waiting_for_wake_word",
+                        state=self._state.value,
+                    )
                     if not self._wait_for_wake_word():
+                        trace.tlog(logger, "loop:wake_wait_returned_false_shutdown")
                         break
                     self._state = State.CAPTURING
                     print(f"  [{self._state.value}] capturing your request…")
+                    trace.tlog(
+                        logger, "loop:wake_word_fired",
+                        state=self._state.value,
+                    )
                     speech = self._capture_utterance()
 
                 if speech is None or speech.size == 0:
                     if not came_from_follow_up:
                         print("  (heard nothing; standing down)")
+                    trace.tlog(
+                        logger, "loop:empty_capture",
+                        came_from_follow_up=came_from_follow_up,
+                    )
                     continue
 
                 self._state = State.PROCESSING
+                trace.tlog(
+                    logger, "loop:capture_complete",
+                    audio_samples=speech.size,
+                    audio_seconds=float(speech.size) / float(settings.SAMPLE_RATE),
+                    came_from_follow_up=came_from_follow_up,
+                    state=self._state.value,
+                )
                 # 2026-05-15 latency: TTS output-stream pre-open. After
                 # 2026-05-18 latency pass 3 (Phase 1), the primary
                 # kick-off lives at the top of ``_capture_utterance`` /
@@ -1269,15 +1327,28 @@ class Orchestrator:
                 # final transcript for the captured audio.
                 user_text = self._collect_speculative_stt()
                 if user_text is None:
+                    trace.set_phase("stt")
+                    trace.tlog(
+                        logger, "stt:foreground_start",
+                        audio_samples=speech.size,
+                    )
+                    stt_t0 = time.monotonic()
                     user_text = self.stt.transcribe(speech)
+                    trace.tlog(
+                        logger, "stt:foreground_end",
+                        chars=len(user_text or ""),
+                        elapsed_ms=int((time.monotonic() - stt_t0) * 1000),
+                        text=user_text[:160] if user_text else None,
+                    )
                 else:
-                    logger.debug(
-                        "Speculative STT hit: skipping foreground "
-                        "Whisper run (transcript=%r)", user_text[:40],
+                    trace.tlog(
+                        logger, "stt:speculative_hit",
+                        chars=len(user_text), text=user_text[:160],
                     )
                 if not user_text.strip():
                     if not came_from_follow_up:
                         print("  (no transcription; standing down)")
+                    trace.tlog(logger, "stt:empty_transcript")
                     continue
 
                 # In the follow-up window, gate every utterance through the
@@ -1285,21 +1356,39 @@ class Orchestrator:
                 # rejected speech -- we measure FOLLOW_UP_TIMEOUT_SECONDS from
                 # the *last response*, not from the last sound in the room.
                 if came_from_follow_up:
+                    trace.set_phase("addressing")
                     seconds_since = (
                         time.monotonic() - self._last_response_finished_monotonic
                     )
                     verdict = self.addressing.classify(
                         user_text, seconds_since_response=seconds_since
                     )
+                    trace.tlog(
+                        logger, "addressing:verdict",
+                        decision=verdict.decision.value,
+                        source=verdict.source,
+                        conf=float(verdict.confidence or 0.0),
+                        reason=verdict.reason,
+                        seconds_since_response=seconds_since,
+                        text=user_text[:160],
+                    )
                     if verdict.decision != AddressingDecision.ADDRESSED:
                         print(
                             f"  (heard: {user_text!r} -- not for me "
                             f"[{verdict.source}: {verdict.reason}])"
                         )
+                        trace.tlog(
+                            logger, "addressing:rejected_follow_up",
+                            decision=verdict.decision.value,
+                        )
                         continue
                     print(f"  (follow-up) you: {user_text}")
                 else:
                     print(f"  you: {user_text}")
+                    trace.tlog(
+                        logger, "addressing:wake_word_path_no_classify",
+                        text=user_text[:160],
+                    )
 
                 # Capability routing (Phase 5): classify the utterance into
                 # one of the routing kinds and let CapabilityVoiceController
@@ -1310,14 +1399,32 @@ class Orchestrator:
                 # in this Foundation phase. CONVERSATIONAL falls through to
                 # the normal LLM path below.
                 if self.coding_voice is not None:
+                    trace.set_phase("routing")
                     from ultron.openclaw_routing import classify_routing
+                    has_active = self.coding_voice.runner.has_active_task()
+                    has_pending = self.coding_voice.has_pending_clarification()
                     routing_intent = classify_routing(
                         user_text,
-                        has_active_coding_task=self.coding_voice.runner.has_active_task(),
-                        has_pending_clarification=self.coding_voice.has_pending_clarification(),
+                        has_active_coding_task=has_active,
+                        has_pending_clarification=has_pending,
+                    )
+                    trace.tlog(
+                        logger, "routing:classified",
+                        kind=routing_intent.kind.value,
+                        conf=float(routing_intent.confidence or 0.0),
+                        source=routing_intent.source,
+                        reason=routing_intent.reason,
+                        has_active_task=has_active,
+                        has_pending_clarification=has_pending,
                     )
                     capability_response = self.coding_voice.handle_capability_intent(routing_intent)
                     if capability_response is not None:
+                        trace.tlog(
+                            logger, "routing:capability_response",
+                            kind=routing_intent.kind.value,
+                            chars=len(capability_response.text or ""),
+                            preview=(capability_response.text or "")[:160],
+                        )
                         self._handle_capability_response(
                             capability_response, routing_intent,
                         )
@@ -1329,8 +1436,17 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="capability", follow_up=bool(follow_up_until),
+                        )
                         continue
+                    trace.tlog(
+                        logger, "routing:fallthrough_to_llm",
+                        kind=routing_intent.kind.value,
+                    )
 
+                trace.set_phase("respond")
                 self._respond(user_text)
                 self._last_response_finished_monotonic = time.monotonic()
                 if _addr_cfg.follow_up_enabled:
@@ -1344,6 +1460,10 @@ class Orchestrator:
                     )
                 else:
                     follow_up_until = None
+                trace.tlog(
+                    logger, "loop:iteration_end",
+                    via="respond", follow_up=bool(follow_up_until),
+                )
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
         finally:
@@ -3079,6 +3199,7 @@ class Orchestrator:
         for the wall-clock time is absurd. Mixed-intent or richer
         time-related queries fall through to the LLM path.
         """
+        from ultron import trace
         # 2026-05-19 round 4: local clock / date short-circuit.
         # The detector is strict -- only fires on bare time/date asks.
         try:
@@ -3088,7 +3209,10 @@ class Orchestrator:
             logger.debug("local clock reply check failed (%s)", e)
             clock_reply = None
         if clock_reply:
-            logger.info("local clock reply: %r", clock_reply)
+            trace.tlog(
+                logger, "build_response:local_clock_short_circuit",
+                user_text=user_text[:80], reply=clock_reply,
+            )
             # Commit to memory as a normal assistant turn so follow-ups
             # ("how about the time in London?") see the prior context.
             try:
@@ -3106,18 +3230,36 @@ class Orchestrator:
         if spec_class is not None:
             rag_future = spec_class.get("rag_future")
             cached_verdict = spec_class.get("gate_verdict")
+            trace.tlog(
+                logger, "speculation:classification_hit",
+                has_cached_verdict=cached_verdict is not None,
+                has_rag_future=rag_future is not None,
+            )
         else:
             # Kick off the RAG pre-fetch first so it overlaps everything
             # that follows. The future is consumed by the LLM call below
             # (or discarded on the search-augmented branch).
-            rag_future, _ = self._kick_off_rag_prefetch(user_text)
+            rag_future, kicked = self._kick_off_rag_prefetch(user_text)
             cached_verdict = None
+            trace.tlog(
+                logger, "rag:prefetch_kickoff",
+                kicked=kicked, has_future=rag_future is not None,
+            )
 
         if self.web_gate is None or self.web_executor is None:
+            trace.tlog(
+                logger, "gate:no_web_gate_configured",
+                next="conversational_llm",
+            )
             ack = self._maybe_conversational_ack(user_text)
             if ack:
+                trace.tlog(logger, "ack:conversational", text=ack)
                 yield ack + " "
             snippets = self._collect_rag_future(rag_future)
+            trace.tlog(
+                logger, "rag:collected",
+                snippet_count=len(snippets) if snippets else 0,
+            )
             yield from self.llm.generate_stream(
                 apply_brevity_hint(user_text),
                 precomputed_rag_snippets=snippets,
@@ -3133,11 +3275,26 @@ class Orchestrator:
         # preflight on the UNCERTAIN branch, paid serially as before).
         if cached_verdict is not None:
             verdict = cached_verdict
+            trace.tlog(
+                logger, "gate:cached_verdict_used",
+                decision=verdict.decision.value, source=verdict.source,
+            )
         else:
             try:
+                trace.set_phase("gate")
+                t0 = time.monotonic()
                 verdict = self.web_gate.classify(user_text)
+                trace.tlog(
+                    logger, "gate:classify_complete",
+                    decision=verdict.decision.value,
+                    confidence=verdict.confidence,
+                    source=verdict.source,
+                    reason=verdict.reason,
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                )
             except Exception as e:
                 logger.warning("Web gate failed (%s) -- falling through to base", e)
+                trace.tlog(logger, "gate:failure", error=str(e))
                 ack = self._maybe_conversational_ack(user_text)
                 if ack:
                     yield ack + " "
@@ -3152,7 +3309,14 @@ class Orchestrator:
         # May upgrade NO_SEARCH -> SEARCH (low confidence + temporal), and
         # may prepend a short [Confidence: ...] addendum to the user text
         # so the LLM matches its tone to the actual confidence level.
+        verdict_before = verdict.decision.value
         verdict, augmented_text = apply_uncertainty(verdict, user_text)
+        if verdict.decision.value != verdict_before:
+            trace.tlog(
+                logger, "gate:uncertainty_upgrade",
+                from_decision=verdict_before,
+                to_decision=verdict.decision.value,
+            )
 
         logger.info(
             "gate: %s (%s, %s) -- %s",
