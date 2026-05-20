@@ -593,12 +593,13 @@ tts:
   sentence_flush_chars: ".!?\n"   # only strong terminators trigger Piper synthesis
   inter_sentence_pause_ms: 250
   piper_length_scale: 1.15        # >1.0 = slower / more deliberate
-  # 2026-05-20 round 8d: 180 -> 100 ms. Snappier inter-sentence
-  # cadence. With the Kokoro producer-consumer pipeline, this is
-  # literally the only silence between consecutive sentences (synth
-  # of N+1 already overlaps playback of N). 100 ms reads as a
-  # natural breath without dragging.
-  pause_ms: 100                    # silence between consecutive sentence clips
+  # 2026-05-20 round 8d -> 8e: 180 -> 100 -> 50 ms. Half of the
+  # 8d value per user direction "more accurately match real speech".
+  # With the Kokoro producer-consumer pipeline this is literally
+  # the only silence between consecutive sentences (synth of N+1
+  # already overlaps playback of N), so 50 ms reads as the natural
+  # micro-gap between spoken sentences without dragging.
+  pause_ms: 50                     # silence between consecutive sentence clips
   edge_fade_ms: 4                  # short fade prevents clicks at clip boundaries
   # 2026-05-09 latency hot-fix: split Piper and RVC into two worker
   # stages connected by a bounded queue. With single-worker (legacy
