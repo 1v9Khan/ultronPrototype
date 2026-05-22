@@ -106,7 +106,10 @@ class _FakeKPipeline:
 
 
 def test_synthesize_with_stubbed_pipeline_returns_int16():
-    engine = KokoroSpeech(model_path=Path("/stub"), voice="af_alloy")
+    engine = KokoroSpeech(
+        model_path=Path("/stub"), voice="af_alloy",
+        apply_spectral_smooth=False,   # this test verifies synth shape, not smoothing
+    )
     # Bypass the load path with the stub.
     engine._model = _FakeKPipeline(audio_samples=2400)
     engine._loaded = True
@@ -185,6 +188,101 @@ def test_runtime_filter_does_not_crash_on_unimportable():
 
 
 # ---------------------------------------------------------------------------
+# Spectral smoothing (2026-05-22 partial-fine-tune ship)
+# ---------------------------------------------------------------------------
+
+
+def test_spectral_smooth_default_enabled_runs_on_synth():
+    """apply_spectral_smooth defaults to True; the engine should call
+    the smoothing function on every cache-miss synth."""
+    engine = KokoroSpeech(model_path=Path("/stub"))
+    assert engine.apply_spectral_smooth is True
+    assert engine.spectral_smooth_window == 5
+
+    # Wire a fake pipeline returning a long-enough clip for STFT
+    # (must be >= n_fft=2048 samples or smoothing returns unchanged).
+    engine._model = _FakeKPipeline(audio_samples=3000)
+    engine._loaded = True
+
+    pcm, sr = engine._synthesize("Hello there.")
+    assert sr == 24000
+    assert pcm.dtype == np.int16
+    # STFT framing trims the tail to ``(n_frames - 1) * hop + n_fft``;
+    # for 3000-sample input with n_fft=2048, hop=512 -> 2560 samples
+    # out. The output is always within (n_fft - hop) = 1536 samples
+    # of the input length.
+    assert abs(pcm.size - 3000) <= 1536
+
+
+def test_spectral_smooth_disabled_skips_call(monkeypatch):
+    """With apply_spectral_smooth=False the engine must NOT import
+    the smoothing module (saves the ~10 ms / sec audio cost)."""
+    engine = KokoroSpeech(
+        model_path=Path("/stub"),
+        apply_spectral_smooth=False,
+    )
+    engine._model = _FakeKPipeline(audio_samples=3000)
+    engine._loaded = True
+
+    # Replace spectral_smooth with a sentinel that records calls.
+    calls: list[int] = []
+    import ultron.tts.spectral_smooth as smooth_mod
+    real = smooth_mod.spectral_smooth
+
+    def _spy(*a, **kw):
+        calls.append(1)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(smooth_mod, "spectral_smooth", _spy)
+
+    pcm, _sr = engine._synthesize("Hello.")
+    assert calls == []
+    assert pcm.dtype == np.int16
+
+
+def test_spectral_smooth_fail_open_on_scipy_missing(monkeypatch):
+    """If scipy is missing in the runtime venv, the smoothing call
+    raises ImportError; the engine must log + pass through raw
+    output rather than crash."""
+    engine = KokoroSpeech(model_path=Path("/stub"))
+    engine._model = _FakeKPipeline(audio_samples=3000)
+    engine._loaded = True
+
+    import ultron.tts.spectral_smooth as smooth_mod
+
+    def _broken(*a, **kw):
+        raise ImportError("simulated missing scipy")
+
+    monkeypatch.setattr(smooth_mod, "spectral_smooth", _broken)
+
+    # Should not raise.
+    pcm, _sr = engine._synthesize("Hello.")
+    assert pcm.dtype == np.int16
+    # Raw output preserved (no smoothing tail length change).
+    assert pcm.size == 3000
+
+
+def test_spectral_smooth_cache_hit_skips_smoothing():
+    """Cached clips are pre-smoothed at cache-build time; the
+    cache-hit fast path must NOT re-run smoothing (it would double-
+    apply + cost ~10 ms / sec on every ack)."""
+    from ultron.tts.precomputed_ack import PrecomputedAckClipCache
+
+    cache = PrecomputedAckClipCache(["Mm."])
+    sentinel_pcm = np.array([42, 43, 44], dtype=np.int16)
+    cache._clips = {"Mm.": (sentinel_pcm, 24000)}
+
+    engine = _make_engine_with_fake_pipeline()
+    engine.apply_spectral_smooth = True   # would normally smooth
+    engine.set_ack_cache(cache)
+
+    pcm, _sr = engine._synthesize("Mm.")
+    # Smoothing would re-shape the values; verify the cached clip
+    # is returned bit-for-bit instead.
+    assert (pcm == sentinel_pcm).all()
+
+
+# ---------------------------------------------------------------------------
 # Public API surface mirrors XttsV3Speech
 # ---------------------------------------------------------------------------
 
@@ -257,6 +355,27 @@ def test_kokoro_config_has_sensible_defaults():
     assert cfg.device == "cpu"
     assert cfg.speed == 1.0
     assert cfg.apply_runtime_filter is False
+    # 2026-05-22 partial-fine-tune ship: spectral smoothing on by
+    # default. Window default 5 frames (~107 ms at hop=512, sr=24kHz)
+    # -- the post-A/B sweet spot on the partial-fine-tune corpus.
+    assert cfg.apply_spectral_smooth is True
+    assert cfg.spectral_smooth_window == 5
+
+
+def test_kokoro_config_spectral_smooth_window_validated():
+    """spectral_smooth_window has bounded range to avoid runaway
+    median filters that would smear consonants."""
+    from ultron.config import KokoroConfig
+    from pydantic import ValidationError
+    # Lower bound: 1 (no-op).
+    KokoroConfig(spectral_smooth_window=1)
+    with pytest.raises(ValidationError):
+        KokoroConfig(spectral_smooth_window=0)
+    # Upper bound: 15 frames (~320 ms at hop=512, sr=24 kHz; well
+    # beyond useful but not catastrophic).
+    KokoroConfig(spectral_smooth_window=15)
+    with pytest.raises(ValidationError):
+        KokoroConfig(spectral_smooth_window=16)
 
 
 # ---------------------------------------------------------------------------

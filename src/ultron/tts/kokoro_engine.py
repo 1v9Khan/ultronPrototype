@@ -126,6 +126,23 @@ class KokoroSpeech:
             filtered audio (filter baked into weights).
         filter_preset: pedalboard preset name when
             ``apply_runtime_filter`` is True.
+        apply_spectral_smooth: when True, run the lightweight
+            spectral magnitude smoothing pass (STFT median-filter
+            ISTFT) on every synth output. Designed to mask the
+            pitch wobble produced by an under-trained fine-tune
+            checkpoint (Stage 1 only, or Stage 2 pre-SLM-joint).
+            Cost is ~10 ms per second of audio; hidden by the
+            round-8c producer-consumer pipeline on clips 2+ and
+            pre-applied at cache-build time for cached acks.
+            Default True since shipping with the partial fine-tune
+            is the current state.
+        spectral_smooth_window: width of the STFT magnitude median
+            filter in frames. Default 5 frames at hop=512,
+            sr=24 kHz = ~107 ms smoothing window -- A/B sweet spot
+            on the partial-fine-tune corpus (2026-05-22). 3 frames
+            (~64 ms) leaves audible wobble; 7+ frames (~150 ms+)
+            starts softening fricatives. Pass 1 to no-op without
+            removing the call site.
     """
 
     def __init__(
@@ -137,6 +154,8 @@ class KokoroSpeech:
         speed: float = 1.0,
         apply_runtime_filter: bool = False,
         filter_preset: str = "v3_heavy",
+        apply_spectral_smooth: bool = True,
+        spectral_smooth_window: int = 5,
         flush_chars: str = ".!?\n",
         sample_rate: int = _KOKORO_DEFAULT_SAMPLE_RATE,
     ) -> None:
@@ -146,6 +165,8 @@ class KokoroSpeech:
         self.speed = float(speed)
         self.apply_runtime_filter = bool(apply_runtime_filter)
         self.filter_preset = filter_preset
+        self.apply_spectral_smooth = bool(apply_spectral_smooth)
+        self.spectral_smooth_window = int(spectral_smooth_window)
         self.flush_chars = set(flush_chars)
         self._sample_rate = int(sample_rate)
         self._model = None
@@ -543,6 +564,23 @@ class KokoroSpeech:
             return np.zeros(0, dtype=np.int16), self._sample_rate
 
         pcm_f32 = np.concatenate(audio_chunks)
+
+        # Spectral magnitude smoothing for under-trained fine-tunes.
+        # Lightweight (~10 ms/sec audio); masks pitch wobble without
+        # smearing consonants. Fail-open: any error degrades
+        # silently to the raw output rather than dropping the clip.
+        if self.apply_spectral_smooth:
+            try:
+                from ultron.tts.spectral_smooth import spectral_smooth
+                pcm_f32 = spectral_smooth(
+                    pcm_f32, sr=self._sample_rate,
+                    median_window_frames=self.spectral_smooth_window,
+                )
+            except Exception as e:                            # noqa: BLE001
+                logger.warning(
+                    "Kokoro spectral smoothing failed (passing through): %s",
+                    e,
+                )
 
         # Optional pre-fine-tune runtime filter pass.
         if self.apply_runtime_filter:

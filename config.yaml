@@ -666,6 +666,15 @@ tts:
     speed: 1.3                     # 1.0 native; safe range ~0.8-1.3
     apply_runtime_filter: false    # set true to run v3 pedalboard over Kokoro output (CPU 10-30 ms/sentence)
     filter_preset: "v3_heavy"      # unused while apply_runtime_filter=false
+    # 2026-05-22: spectral magnitude smoothing pass to mask pitch
+    # wobble from the partial Ultron fine-tune (Stage 1 done +
+    # Stage 2 epoch 0 only; SLM joint never ran). Cost ~10 ms/sec
+    # audio; hidden by producer-consumer overlap on clips 2+ and
+    # pre-applied at ack-cache build time. Flip OFF once the
+    # fine-tune is fully trained (epochs 3-9 add WavLM smoothing at
+    # the weight level).
+    apply_spectral_smooth: true
+    spectral_smooth_window: 5      # ~107 ms STFT median window at hop=512, sr=24 kHz (post-A/B sweet spot 2026-05-22)
 
   # ACTIVE WHEN tts.engine == "xtts_v3"  (swap-back).
   # XTTS v2 streaming + v3 Ultron pedalboard filter. Engine spawns

@@ -1280,6 +1280,25 @@ class KokoroConfig(_Strict):
     # (the filter character will be baked into the weights).
     apply_runtime_filter: bool = False
     filter_preset: str = "v3_heavy"
+    # 2026-05-22: lightweight spectral magnitude smoothing pass on
+    # the synth output. Masks the pitch wobble produced by the
+    # partial Ultron fine-tune (Stage 1 complete + Stage 2 epoch 0
+    # only; SLM joint adversarial training at epoch 3+ never ran).
+    # Cost ~10 ms / sec audio; hidden by the round-8c producer-
+    # consumer pipeline on clips 2+. Pre-applied at ack-cache build
+    # time so cached phrases pay zero runtime cost. Default ON
+    # while the fine-tune ships partially trained; flip OFF once
+    # the model is fully trained (epochs 3-9 add WavLM smoothing
+    # pressure at the weight level).
+    apply_spectral_smooth: bool = True
+    # STFT magnitude median-filter width in frames. 5 frames at
+    # hop=512, sr=24 kHz = ~107 ms window -- the post-A/B sweet spot
+    # on the partial-fine-tune corpus (2026-05-22 user pick after
+    # comparing windows 3/5/7/9 on the 16-sentence Ultron test set).
+    # 3 frames (~64 ms) leaves audible wobble; 7+ frames (~150 ms+)
+    # starts softening fricatives. Pass 1 to no-op without removing
+    # the call site.
+    spectral_smooth_window: int = Field(default=5, ge=1, le=15)
 
 
 class TTSConfig(_Strict):
