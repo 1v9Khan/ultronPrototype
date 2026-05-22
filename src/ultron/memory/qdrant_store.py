@@ -685,7 +685,10 @@ class ConversationMemory:
         """
         if not candidates or k <= 0:
             return list(candidates)[: max(0, k)]
-        if self._reranker is None:
+        # ``getattr`` defends against test fixtures that bypass __init__
+        # via ``object.__new__(ConversationMemory)`` -- the attribute
+        # would otherwise raise AttributeError on first access.
+        if getattr(self, "_reranker", None) is None:
             try:
                 from ultron.memory.reranker import CrossEncoderReranker
                 self._reranker = CrossEncoderReranker()
