@@ -143,9 +143,10 @@ def trim_and_fade(
     threshold_db: float = -40.0,
     frame_ms: float = 10.0,
     fade_in_ms: float = 25.0,
-    fade_out_ms: float = 30.0,
+    fade_out_ms: float = 45.0,
     pad_ms: float = 5.0,
-    hard_silence_pad_ms: float = 4.0,
+    hard_silence_pad_ms: float = 8.0,
+    tail_aggressive_trim_ms: float = 25.0,
 ) -> np.ndarray:
     """Trim boundary noise, apply fades, prepend/append hard silence.
 
@@ -235,6 +236,19 @@ def trim_and_fade(
     if fo > 1:
         ramp = 0.5 - 0.5 * np.cos(np.linspace(np.pi, 0.0, fo, dtype=np.float32))
         trimmed[-fo:] *= ramp
+
+    # 2026-05-22 -- aggressive last-N-samples mute. The partial fine-
+    # tune produces an audible "blip" right at the very end of clips
+    # (after the fade-out completes the audio decays but a residual
+    # decoder artifact is still above zero). Force the LAST N samples
+    # to byte-exact zero so the speaker sees clean silence regardless
+    # of any sample-level artifact the cosine fade left in. Cost: at
+    # most 25 ms of clipped speech tail, which on natural speech is
+    # already in the breath-decay zone.
+    if tail_aggressive_trim_ms > 0:
+        ta = min(int(sr * tail_aggressive_trim_ms / 1000), len(trimmed) // 4)
+        if ta > 0:
+            trimmed[-ta:] = 0.0
 
     if hard_silence_pad_ms > 0:
         pad_samples = max(1, int(sr * hard_silence_pad_ms / 1000))

@@ -619,13 +619,18 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
     #
     # NOT default. Intended as a swap target when ``MODEL_SWITCH``
     # voice intent or ``swap_llm_preset.py`` engages gaming mode.
-    # n_ctx=2048 because gaming-channel utterances are short and the
-    # smaller KV cache frees ~400 MB for Valorant + OBS headroom.
+    # n_ctx -- 2026-05-22 bumped 2048 -> 6144 after a live "what time in
+    # Frankfurt" turn during gaming mode silently produced 0 LLM chars
+    # because the search-augmented prompt (system 4156 chars + 3 web
+    # sources ~3000 chars + recent turns) totalled 2109 tokens, just
+    # past the 2048 cap. KV cache at 6144 F16 adds ~150 MB vs ~50 MB
+    # at 2048; on a 12 GB card the gain (search-augmented queries
+    # actually answer in gaming mode) is worth the marginal VRAM cost.
     "llama-3.2-3b-abliterated": {
         # See gemma note above on naming conventions -- main from
         # mradermacher (dot), draft from bartowski (hyphen).
         "model_path": "models/Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf",
-        "n_ctx": 2048,
+        "n_ctx": 6144,
         "draft_model_path": "models/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
     },
 }

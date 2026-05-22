@@ -219,11 +219,59 @@ def test_trim_preserves_speech_rms():
     than the raw-clip RMS since we removed the attenuating noise padding."""
     sr = 24000
     audio = _noisy_speech(sr)
-    out = trim_and_fade(audio, sr=sr, threshold_db=-20.0)
+    # Pin short fade durations + disable tail zero / silence pad so we
+    # isolate the "trim removes noise -> RMS up" property. Longer
+    # production fades (25/45 ms) attenuate enough of the synthetic
+    # speech that the gain from noise removal is partially cancelled.
+    out = trim_and_fade(
+        audio, sr=sr, threshold_db=-20.0,
+        fade_in_ms=2.0, fade_out_ms=2.0,
+        tail_aggressive_trim_ms=0, hard_silence_pad_ms=0,
+    )
     rms_raw = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
     rms_out = float(np.sqrt(np.mean(out.astype(np.float32) ** 2)))
     assert rms_out > rms_raw, (
         f"output should be louder after trimming noise; raw={rms_raw:.4f} out={rms_out:.4f}"
+    )
+
+
+def test_tail_aggressive_zero_silences_last_n_samples():
+    """The aggressive-tail-zero forces the LAST ``tail_aggressive_trim_ms``
+    samples to exact zero -- catches the partial-fine-tune "blip"
+    artifact that survives the cosine fade-out by hard-muting the
+    decay region."""
+    sr = 24000
+    # Steady tone -- no natural fade. Without the tail zero, the
+    # cosine fade-out would leave decaying audio; with it, we should
+    # see exact zeros at the very end.
+    t = np.arange(sr) / sr
+    audio = (np.sin(2 * np.pi * 440.0 * t) * 0.5).astype(np.float32)
+    out = trim_and_fade(audio, sr=sr, tail_aggressive_trim_ms=20.0)
+    # Last 20 ms (480 samples) should be exactly zero.
+    n_zero = int(sr * 0.020)
+    # Subtract hard_silence_pad_ms (8 ms = 192 samples) which is also zero.
+    tail = out[-(n_zero + int(sr * 0.008)):]
+    assert np.all(tail == 0.0), (
+        f"tail should be all zeros; got max abs = {np.abs(tail).max():.6f}"
+    )
+
+
+def test_tail_aggressive_zero_disabled_with_zero_ms():
+    """Pass tail_aggressive_trim_ms=0 to opt out of the hard-mute."""
+    sr = 24000
+    t = np.arange(sr) / sr
+    audio = (np.sin(2 * np.pi * 440.0 * t) * 0.5).astype(np.float32)
+    out = trim_and_fade(audio, sr=sr, tail_aggressive_trim_ms=0.0)
+    # The hard silence pad is still 8 ms at end (separate parameter).
+    # Strip THAT and look at what's left -- should NOT be all zeros
+    # (cosine fade leaves some non-zero residue).
+    pad_samples = int(sr * 0.008)
+    before_pad = out[-(pad_samples + int(sr * 0.005)):-pad_samples]
+    # Cosine fade-out: at the boundary just before the silence pad,
+    # the fade has already reached ~0 but there's still some content
+    # in the body of the fade region. Check a few samples in the body.
+    assert np.abs(out[-(pad_samples + 100):-pad_samples]).max() > 0.0, (
+        "without aggressive zero, fade-out region should have non-zero content"
     )
 
 

@@ -48,7 +48,10 @@ _TIME_QUERY_RE = re.compile(
     r"""
     ^\s*
     (?:(?:hey\s+|hi\s+|ok\s+|okay\s+)?ultron[,\s]+)?
-    (?:and\s+|so\s+|then\s+|but\s+)?
+    # STT-artifact prefixes that Moonshine sometimes prepends to short
+    # utterances ("you", "yeah", "uh", "um"). Tolerating them here so
+    # "you What time is it in Paris?" still routes to local clock.
+    (?:and\s+|so\s+|then\s+|but\s+|you\s+|yeah\s+|uh\s+|um\s+|hmm\s+)?
     (?:
         # "what time is it" / "what's the time" / "what is the time"
         what(?:'s|s|\s+is)?\s+(?:the\s+)?(?:current\s+|local\s+)?time\b
@@ -71,7 +74,10 @@ _DATE_QUERY_RE = re.compile(
     r"""
     ^\s*
     (?:(?:hey\s+|hi\s+|ok\s+|okay\s+)?ultron[,\s]+)?
-    (?:and\s+|so\s+|then\s+|but\s+)?
+    # STT-artifact prefixes that Moonshine sometimes prepends to short
+    # utterances ("you", "yeah", "uh", "um"). Tolerating them here so
+    # "you What time is it in Paris?" still routes to local clock.
+    (?:and\s+|so\s+|then\s+|but\s+|you\s+|yeah\s+|uh\s+|um\s+|hmm\s+)?
     (?:
         # Day of week
         what\s+day\s+(?:is\s+(?:it|today)|of\s+the\s+week(?:\s+is\s+it)?)\b
@@ -136,31 +142,88 @@ _CITY_TIMEZONES = {
     "dublin": "Europe/Dublin",
     "paris": "Europe/Paris",
     "berlin": "Europe/Berlin",
+    "frankfurt": "Europe/Berlin",
+    "munich": "Europe/Berlin",
+    "hamburg": "Europe/Berlin",
+    "cologne": "Europe/Berlin",
     "amsterdam": "Europe/Amsterdam",
+    "brussels": "Europe/Brussels",
+    "vienna": "Europe/Vienna",
+    "zurich": "Europe/Zurich",
+    "geneva": "Europe/Zurich",
     "madrid": "Europe/Madrid",
+    "barcelona": "Europe/Madrid",
+    "lisbon": "Europe/Lisbon",
     "rome": "Europe/Rome",
+    "milan": "Europe/Rome",
     "athens": "Europe/Athens",
+    "warsaw": "Europe/Warsaw",
+    "prague": "Europe/Prague",
+    "budapest": "Europe/Budapest",
+    "copenhagen": "Europe/Copenhagen",
+    "stockholm": "Europe/Stockholm",
+    "oslo": "Europe/Oslo",
+    "helsinki": "Europe/Helsinki",
+    "reykjavik": "Atlantic/Reykjavik",
     "moscow": "Europe/Moscow",
+    "saint petersburg": "Europe/Moscow",
+    "kiev": "Europe/Kiev",
+    "kyiv": "Europe/Kiev",
     "istanbul": "Europe/Istanbul",
-    # Asia
+    # Middle East
     "dubai": "Asia/Dubai",
+    "abu dhabi": "Asia/Dubai",
+    "riyadh": "Asia/Riyadh",
+    "doha": "Asia/Qatar",
+    "tel aviv": "Asia/Jerusalem",
+    "jerusalem": "Asia/Jerusalem",
+    "tehran": "Asia/Tehran",
+    # South Asia
     "mumbai": "Asia/Kolkata",
     "delhi": "Asia/Kolkata",
+    "bangalore": "Asia/Kolkata",
+    "karachi": "Asia/Karachi",
+    "dhaka": "Asia/Dhaka",
+    # Southeast Asia
     "bangkok": "Asia/Bangkok",
+    "ho chi minh city": "Asia/Ho_Chi_Minh",
+    "saigon": "Asia/Ho_Chi_Minh",
+    "hanoi": "Asia/Ho_Chi_Minh",
+    "jakarta": "Asia/Jakarta",
+    "manila": "Asia/Manila",
     "singapore": "Asia/Singapore",
+    "kuala lumpur": "Asia/Kuala_Lumpur",
+    # East Asia
     "hong kong": "Asia/Hong_Kong",
+    "taipei": "Asia/Taipei",
     "shanghai": "Asia/Shanghai",
     "beijing": "Asia/Shanghai",
     "tokyo": "Asia/Tokyo",
+    "osaka": "Asia/Tokyo",
     "seoul": "Asia/Seoul",
-    # Oceania / South America / Africa
+    # Oceania
     "sydney": "Australia/Sydney",
     "melbourne": "Australia/Melbourne",
+    "brisbane": "Australia/Brisbane",
+    "perth": "Australia/Perth",
     "auckland": "Pacific/Auckland",
+    "wellington": "Pacific/Auckland",
+    # South America
     "sao paulo": "America/Sao_Paulo",
+    "rio de janeiro": "America/Sao_Paulo",
     "buenos aires": "America/Argentina/Buenos_Aires",
+    "santiago": "America/Santiago",
+    "lima": "America/Lima",
+    "bogota": "America/Bogota",
+    "caracas": "America/Caracas",
+    # Africa
     "cairo": "Africa/Cairo",
+    "lagos": "Africa/Lagos",
+    "nairobi": "Africa/Nairobi",
     "johannesburg": "Africa/Johannesburg",
+    "cape town": "Africa/Johannesburg",
+    "addis ababa": "Africa/Addis_Ababa",
+    "casablanca": "Africa/Casablanca",
 }
 
 
@@ -170,7 +233,10 @@ _TIME_IN_LOCATION_RE = re.compile(
     r"""
     ^\s*
     (?:(?:hey\s+|hi\s+|ok\s+|okay\s+)?ultron[,\s]+)?
-    (?:and\s+|so\s+|then\s+|but\s+)?
+    # STT-artifact prefixes that Moonshine sometimes prepends to short
+    # utterances ("you", "yeah", "uh", "um"). Tolerating them here so
+    # "you What time is it in Paris?" still routes to local clock.
+    (?:and\s+|so\s+|then\s+|but\s+|you\s+|yeah\s+|uh\s+|um\s+|hmm\s+)?
     (?:
         what(?:'s|s|\s+is)?\s+(?:the\s+)?(?:current\s+|local\s+)?time
       | what\s+time\s+(?:is\s+it|do\s+they\s+have)
