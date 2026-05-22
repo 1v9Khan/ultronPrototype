@@ -1121,6 +1121,8 @@ class Orchestrator:
                     "filter_preset": kokoro_cfg.filter_preset,
                     "apply_spectral_smooth": kokoro_cfg.apply_spectral_smooth,
                     "spectral_smooth_window": kokoro_cfg.spectral_smooth_window,
+                    "apply_trim_fade": kokoro_cfg.apply_trim_fade,
+                    "trim_fade_threshold_db": kokoro_cfg.trim_fade_threshold_db,
                 }
             logger.info(
                 "TTS engine: kokoro (StyleTTS2 + ISTFTNet, voice=%s, device=%s)",

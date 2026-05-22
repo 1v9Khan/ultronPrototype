@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from ultron.tts.spectral_smooth import spectral_smooth
+from ultron.tts.spectral_smooth import spectral_smooth, trim_and_fade
 
 
 # ----------------------------------------------------------------------
@@ -185,6 +185,107 @@ def test_phase_preservation_at_low_freq():
 # ----------------------------------------------------------------------
 # Performance characterisation (informational; not a hard gate)
 # ----------------------------------------------------------------------
+
+
+# ----------------------------------------------------------------------
+# trim_and_fade
+# ----------------------------------------------------------------------
+
+
+def _noisy_speech(sr: int = 24000, noise_frames: int = 3, speech_frames: int = 20) -> np.ndarray:
+    """Build synthetic signal: noise_frames of low-level noise + speech_frames of
+    voiced speech + noise_frames of trailing noise."""
+    frame = sr // 100  # 10 ms frames at 24 kHz
+    rng = np.random.RandomState(42)
+    noise = rng.randn(noise_frames * frame).astype(np.float32) * 0.001
+    t = np.arange(speech_frames * frame) / sr
+    speech = (np.sin(2 * np.pi * 220.0 * t) * 0.3).astype(np.float32)
+    return np.concatenate([noise, speech, noise.copy()])
+
+
+def test_trim_removes_leading_trailing_noise():
+    """Trimmed output should be shorter than the input (noise stripped)."""
+    sr = 24000
+    audio = _noisy_speech(sr)
+    out = trim_and_fade(audio, sr=sr, threshold_db=-20.0)
+    assert out.size < audio.size, (
+        f"expected trimming; got same or larger: {out.size} vs {audio.size}"
+    )
+
+
+def test_trim_preserves_speech_rms():
+    """After trimming, the RMS of the output should be close to the speech
+    segment RMS (not the full noisy clip). Specifically, it should be higher
+    than the raw-clip RMS since we removed the attenuating noise padding."""
+    sr = 24000
+    audio = _noisy_speech(sr)
+    out = trim_and_fade(audio, sr=sr, threshold_db=-20.0)
+    rms_raw = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+    rms_out = float(np.sqrt(np.mean(out.astype(np.float32) ** 2)))
+    assert rms_out > rms_raw, (
+        f"output should be louder after trimming noise; raw={rms_raw:.4f} out={rms_out:.4f}"
+    )
+
+
+def test_trim_output_is_float32():
+    audio = _noisy_speech()
+    out = trim_and_fade(audio, sr=24000)
+    assert out.dtype == np.float32
+
+
+def test_trim_accepts_float64():
+    audio = _noisy_speech().astype(np.float64)
+    out = trim_and_fade(audio, sr=24000)
+    assert out.dtype == np.float32
+
+
+def test_trim_short_clip_passes_through():
+    """Clips shorter than 2 frames (< 2 * frame_ms * sr) pass through unchanged."""
+    audio = np.ones(100, dtype=np.float32) * 0.5
+    out = trim_and_fade(audio, sr=24000, frame_ms=10.0)
+    assert out.size == audio.size
+    np.testing.assert_array_equal(out, audio.astype(np.float32))
+
+
+def test_trim_all_silence_passes_through():
+    """If no speech is detected (all below threshold), return input unchanged."""
+    audio = np.zeros(4800, dtype=np.float32)  # 200 ms pure silence
+    out = trim_and_fade(audio, sr=24000, threshold_db=-40.0)
+    assert out.size == audio.size
+
+
+def test_trim_fade_in_starts_near_zero():
+    """The first sample of the faded output should be very close to 0
+    because of the fade-in applied after the trim."""
+    sr = 24000
+    # Strong speech from the very start (no leading silence to trim).
+    t = np.arange(sr) / sr
+    audio = (np.sin(2 * np.pi * 440.0 * t) * 0.5).astype(np.float32)
+    out = trim_and_fade(audio, sr=sr, threshold_db=-40.0, fade_in_ms=10.0)
+    assert abs(float(out[0])) < 0.05, (
+        f"fade-in should start near zero; out[0]={out[0]:.4f}"
+    )
+
+
+def test_trim_fade_out_ends_near_zero():
+    """The last sample of the faded output should be very close to 0."""
+    sr = 24000
+    t = np.arange(sr) / sr
+    audio = (np.sin(2 * np.pi * 440.0 * t) * 0.5).astype(np.float32)
+    out = trim_and_fade(audio, sr=sr, threshold_db=-40.0, fade_out_ms=10.0)
+    assert abs(float(out[-1])) < 0.05, (
+        f"fade-out should end near zero; out[-1]={out[-1]:.4f}"
+    )
+
+
+def test_trim_does_not_enlarge_clip():
+    """trim_and_fade should never return more samples than it received."""
+    sr = 24000
+    audio = _noisy_speech(sr)
+    out = trim_and_fade(audio, sr=sr)
+    assert out.size <= audio.size, (
+        f"output ({out.size}) must not exceed input ({audio.size})"
+    )
 
 
 def test_performance_under_50ms_for_one_second_clip():

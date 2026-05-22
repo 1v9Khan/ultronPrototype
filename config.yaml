@@ -830,6 +830,8 @@ tts:
     # the weight level).
     apply_spectral_smooth: false
     spectral_smooth_window: 5      # ~107 ms STFT median window at hop=512, sr=24 kHz (post-A/B sweet spot 2026-05-22)
+    apply_trim_fade: true          # trim boundary noise + fade-in/out; ON for partial fine-tune; disable post full training
+    trim_fade_threshold_db: -40.0  # RMS frames below this are treated as silence/noise at boundaries
 
   # ACTIVE WHEN tts.engine == "xtts_v3"  (swap-back).
   # XTTS v2 streaming + v3 Ultron pedalboard filter. Engine spawns

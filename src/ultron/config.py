@@ -1680,6 +1680,15 @@ class KokoroConfig(_Strict):
     # starts softening fricatives. Pass 1 to no-op without removing
     # the call site.
     spectral_smooth_window: int = Field(default=5, ge=1, le=15)
+    # 2026-05-22 boundary artifact trimmer. The partial fine-tune
+    # (Stage 1 + Stage 2 epoch 0 only; SLM joint never ran) generates
+    # brief noise bursts before and after speech. This trims those
+    # boundary regions via RMS energy detection and applies short
+    # fade-in/fade-out to prevent abrupt clicks. Default ON for the
+    # partial fine-tune; disable once the model is fully trained and
+    # produces clean boundaries natively.
+    apply_trim_fade: bool = True
+    trim_fade_threshold_db: float = Field(default=-40.0, ge=-80.0, le=-10.0)
 
 
 class TTSConfig(_Strict):

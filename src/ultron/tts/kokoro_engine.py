@@ -231,6 +231,8 @@ class KokoroSpeech:
         filter_preset: str = "v3_heavy",
         apply_spectral_smooth: bool = True,
         spectral_smooth_window: int = 5,
+        apply_trim_fade: bool = True,
+        trim_fade_threshold_db: float = -40.0,
         flush_chars: str = ".!?\n",
         sample_rate: int = _KOKORO_DEFAULT_SAMPLE_RATE,
     ) -> None:
@@ -261,6 +263,8 @@ class KokoroSpeech:
         self.filter_preset = filter_preset
         self.apply_spectral_smooth = bool(apply_spectral_smooth)
         self.spectral_smooth_window = int(spectral_smooth_window)
+        self.apply_trim_fade = bool(apply_trim_fade)
+        self.trim_fade_threshold_db = float(trim_fade_threshold_db)
         self.flush_chars = set(flush_chars)
         self._sample_rate = int(sample_rate)
         self._model = None
@@ -729,6 +733,23 @@ class KokoroSpeech:
                 logger.warning(
                     "Kokoro spectral smoothing failed (passing through): %s",
                     e,
+                )
+
+        # Boundary noise trimmer + fade-in/fade-out for the partial
+        # fine-tune. Strips the brief noise bursts the undertrained
+        # model generates before and after speech, then applies short
+        # linear fades to prevent clicks. Fail-open: errors pass
+        # through without dropping the clip.
+        if self.apply_trim_fade:
+            try:
+                from ultron.tts.spectral_smooth import trim_and_fade
+                pcm_f32 = trim_and_fade(
+                    pcm_f32, sr=self._sample_rate,
+                    threshold_db=self.trim_fade_threshold_db,
+                )
+            except Exception as e:                            # noqa: BLE001
+                logger.warning(
+                    "Kokoro trim/fade failed (passing through): %s", e,
                 )
 
         # Optional pre-fine-tune runtime filter pass.

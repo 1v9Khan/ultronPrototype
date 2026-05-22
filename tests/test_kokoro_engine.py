@@ -244,7 +244,10 @@ def test_spectral_smooth_fail_open_on_scipy_missing(monkeypatch):
     """If scipy is missing in the runtime venv, the smoothing call
     raises ImportError; the engine must log + pass through raw
     output rather than crash."""
-    engine = KokoroSpeech(model_path=Path("/stub"))
+    engine = KokoroSpeech(
+        model_path=Path("/stub"),
+        apply_trim_fade=False,  # isolate spectral_smooth fail-open; trim runs separately
+    )
     engine._model = _FakeKPipeline(audio_samples=3000)
     engine._loaded = True
 
