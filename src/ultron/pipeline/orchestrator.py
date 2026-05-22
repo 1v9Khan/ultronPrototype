@@ -1088,6 +1088,8 @@ class Orchestrator:
                     "speed": kokoro_cfg.speed,
                     "apply_runtime_filter": kokoro_cfg.apply_runtime_filter,
                     "filter_preset": kokoro_cfg.filter_preset,
+                    "apply_spectral_smooth": kokoro_cfg.apply_spectral_smooth,
+                    "spectral_smooth_window": kokoro_cfg.spectral_smooth_window,
                 }
             logger.info(
                 "TTS engine: kokoro (StyleTTS2 + ISTFTNet, voice=%s, device=%s)",

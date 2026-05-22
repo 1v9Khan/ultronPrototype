@@ -10,6 +10,18 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
+**2026-05-22 partial-fine-tune ship: Kokoro spectral magnitude smoothing -- COMPLETE.** User direction after listening to the 16-sentence Ultron test corpus generated from the partial fine-tune (Stage 1 complete + Stage 2 epoch 0 only; SLM joint adversarial training at epoch 3+ never ran): "some of the shakiness is present that we applied smoothing to in the past to remove ... lets ship immediately and add the smoothing, lets not do any other filters, just the smoothing". Then after A/B'ing windows 3/5/7/9: "lets go with 5".
+
+* **NEW [`src/ultron/tts/spectral_smooth.py`](../src/ultron/tts/spectral_smooth.py)** -- runtime port of the corpus-evaluation script's `_spectral_smooth`. STFT -> median-filter magnitudes across time -> ISTFT with original phase. Production window is 5 frames at hop=512, sr=24 kHz = ~107 ms smoothing -- post-A/B sweet spot on the partial-fine-tune corpus. 3 (~64 ms) leaves audible wobble; 7+ (~150 ms+) starts softening fricatives.
+* **Wired into [`KokoroSpeech._synthesize`](../src/ultron/tts/kokoro_engine.py)** between concatenate + int16 conversion, gated by `apply_spectral_smooth` (default True). Fail-open: scipy import / runtime errors degrade silently to raw output. Cache-hit fast path skips smoothing (cached clips pre-smoothed at prewarm time).
+* **Config knobs in [KokoroConfig](../src/ultron/config.py):** `apply_spectral_smooth: bool = True` + `spectral_smooth_window: int = 5` (range 1-15). Surfaced in [config.yaml](../config.yaml) under `tts.kokoro`. Orchestrator factory in [`pipeline/orchestrator.py`](../src/ultron/pipeline/orchestrator.py) plumbs both into the engine kwargs.
+* **Measured cost** (live, not estimated): ~10 ms per second of audio. 1.7 s ack = 16 ms, 3.5 s = 16-32 ms, 5-6 s = 31-46 ms, 10.4 s = 63 ms. Hidden by round-8c producer-consumer overlap on clips 2+ and pre-applied at ack-cache build time. **Net perceived-latency impact: 0 ms on cache hits, +15-30 ms TTFT on first clip of cache-miss turns.**
+* **Why ship now:** the partial fine-tune produces audible pitch wobble; the proper fix is more training (Stage 2 epochs 3-9 add WavLM joint smoothing pressure at the weight level), but the user wants to ship the current checkpoint immediately. Once SLM joint training has completed, flip `tts.kokoro.apply_spectral_smooth: false` -- the smoothing becomes wasted CPU at that point. Documented inline in both KokoroConfig + config.yaml.
+* **Also patched** [`ultronVoiceAudio/kokoro_finetune/scripts/test_ultron_voice.py`](../ultronVoiceAudio/kokoro_finetune/scripts/test_ultron_voice.py) with the same algorithm + `--no-smoothing` CLI flag. Generated 5 A/B test sets on E:\ at `test_output_v1{,_smoothed,_smooth5,_smooth7,_smooth9}/`; user picked window=5.
+* **Tests:** +17 (10 in [tests/test_spectral_smooth.py](../tests/test_spectral_smooth.py) covering edge cases / length tolerance / magnitude variance reduction / phase preservation / window-size clamping / performance regression gate at <50 ms/sec; +7 in [tests/test_kokoro_engine.py](../tests/test_kokoro_engine.py) covering default-enabled call, disabled-skip, fail-open on scipy missing, cache-hit skip, config defaults at 5, validation range 1-15). One pre-existing test updated to disable smoothing since it was testing synth shape not smoothing. **3543 -> 3560 passing / 15 skipped / 0 failed in ~70 s.** Voice baseline contract preserved -- no SOUL.md / RVC / Piper / vocal WAV / LLM-model-file touch. Commits `bf775c5` (worktree branch) + `7a78855` + `19fcc9b` (main).
+
+---
+
 **2026-05-21 cross-encoder broadened across all retrieval surfaces + BraveResult -> SearchResult rename -- COMPLETE.** Follow-up to the cross-encoder ranker work. User direction: "can that ranker be applied in a positive manner more broadly across our data retrieval? ... in your tests you were using brave instead of our local implementation, why? I want the local to be our default". Four changes:
 
 1. **`memory.reranking.enabled` default flipped True** -- the cross-encoder is loaded once per process (shared via `_CROSS_ENCODER_CACHE`), so memory retrieval pays no additional model-load cost. Per-call: ~150-300 ms added to `ConversationMemory.retrieve()` in exchange for measurably better RAG context per the MTEB-Rerank benchmarks. Set to False to revert.
@@ -1086,10 +1098,11 @@ For the current decisions and Foundation phase status see
 │       │   └── search.py           ← WebSearchExecutor (orchestrates Brave + Jina + ranking)
 │       │
 │       ├── tts/                    ← Piper + RVC + XTTS + Kokoro engines + ack cache
-│       │   ├── kokoro_engine.py    ← KokoroSpeech engine (StyleTTS2 + ISTFTNet on CPU; CURRENT DEFAULT 2026-05-20 round 8 via tts.engine="kokoro"; voice am_michael; zero VRAM)
+│       │   ├── kokoro_engine.py    ← KokoroSpeech engine (StyleTTS2 + ISTFTNet on CPU; CURRENT DEFAULT 2026-05-20 round 8 via tts.engine="kokoro"; voice am_michael; zero VRAM; spectral smoothing wired 2026-05-22 for partial-fine-tune ship)
 │       │   ├── precomputed_ack.py  ← PrecomputedAckClipCache (NEW 2026-05-15; ~350 ms saved per cache hit)
 │       │   ├── rvc.py              ← RvcConverter (Piper PCM → Ultron timbre)
 │       │   ├── speech.py           ← TextToSpeech (legacy Piper + RVC engine; selected by tts.engine="piper_rvc"; ack cache + prepare_output_stream)
+│       │   ├── spectral_smooth.py  ← NEW 2026-05-22: spectral magnitude smoothing for partial-fine-tune Kokoro (STFT median-filter ISTFT; ~10 ms/sec audio; masks pitch wobble; fail-open import)
 │       │   ├── ultron_filter.py    ← v3 Ultron mechanical filter (NEW 2026-05-10; pedalboard DSP chain; unused on kokoro engine when apply_runtime_filter=false)
 │       │   └── xtts_v3.py          ← XTTSV3Speech engine (NEW 2026-05-10; selected by tts.engine="xtts_v3"; retained for swap-back to XTTS+v3 stack)
 │       │
