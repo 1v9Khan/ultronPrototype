@@ -99,6 +99,8 @@ class CapabilityVoiceController:
         llm_engine=None,
         openclaw_bridge=None,
         gaming_mode_manager=None,
+        supervisor_dispatch=None,
+        project_index=None,
     ) -> None:
         self.runner = runner
         self.registry = registry
@@ -120,6 +122,13 @@ class CapabilityVoiceController:
         # with a clear voice message; otherwise GAMING_MODE intents
         # route to it via the OpenClawDispatcher.
         self.gaming_mode_manager = gaming_mode_manager
+        # 2026-05-22 supervisor stack -- when set, the controller
+        # routes CODE_TASK / MID_SESSION_ADJUSTMENT through the
+        # supervisor BEFORE falling through to the legacy resolver
+        # path. None disables the supervisor entirely (legacy path
+        # is byte-for-byte unchanged).
+        self.supervisor_dispatch = supervisor_dispatch
+        self.project_index = project_index
         self._lock = threading.Lock()
         # State machine for completion-push: when has_active_task() goes
         # from True to False, we capture the completion narration so the
@@ -400,6 +409,17 @@ class CapabilityVoiceController:
                 f"Say cancel to stop it, or wait for it to finish."
             ))
 
+        # 2026-05-22 supervisor route: when the supervisor stack is
+        # wired AND the master flag is on, intercept BEFORE the legacy
+        # resolver path. The supervisor handles edit-vs-new
+        # disambiguation, narration + barge-in, and enriched dispatch
+        # context. On FALLBACK (or any supervisor error), drops
+        # through to the legacy resolver path unchanged.
+        if self.supervisor_dispatch is not None:
+            supervisor_response = self._handle_code_task_via_supervisor(intent)
+            if supervisor_response is not None:
+                return supervisor_response
+
         # Resolve the project.
         resolution: Optional[ProjectResolution] = None
         for ref in intent.candidates_for_resolver or []:
@@ -476,6 +496,246 @@ class CapabilityVoiceController:
             "I couldn't figure out which project you meant. "
             "Say create a new project or name an existing one."
         ))
+
+    # --- 2026-05-22 supervisor route --------------------------------------
+
+    def _handle_code_task_via_supervisor(
+        self, intent: CodingIntent,
+    ) -> Optional[VoiceResponse]:
+        """Route a CODE_TASK through the supervisor when wired.
+
+        Returns:
+            * A :class:`VoiceResponse` to deliver to the user when the
+              supervisor produced an actionable outcome (EDIT_DISPATCH,
+              NEW_DISPATCH, RESUME_FORWARD, CLARIFY, BARGED_IN).
+            * ``None`` when the supervisor returned FALLBACK (or any
+              error). The caller (``_handle_code_task``) drops through
+              to the legacy ProjectResolver path.
+
+        Failure mode = always fail-open. Supervisor crashes never
+        leave the user in a half-state.
+        """
+        from ultron.coding.project_supervisor import (
+            SupervisorAction,
+            SupervisorInputs,
+        )
+        from ultron.coding.supervisor_dispatch import DispatchActionKind
+
+        try:
+            inputs = SupervisorInputs(
+                user_text=intent.task_text or "",
+                coding_intent=intent,
+                has_active_task=self.runner.has_active_task(),
+                active_task_project_name=self._current_project_name(),
+                active_task_session_id=self._current_session_id_or_label(),
+            )
+            outcome = self.supervisor_dispatch.dispatch(inputs)
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning(
+                "Supervisor dispatch raised (%s); falling back to "
+                "legacy code-task path.", e,
+            )
+            return None
+
+        if outcome.kind == DispatchActionKind.FALLBACK:
+            return None
+        if outcome.kind == DispatchActionKind.BARGED_IN:
+            return VoiceResponse(
+                text="Cancelled.", cancelled=True,
+            )
+        if outcome.kind == DispatchActionKind.CLARIFY:
+            return VoiceResponse(
+                text=outcome.clarification_question or
+                outcome.voice_message or
+                "I'm not sure which project you mean. Could you say its name?",
+            )
+        if outcome.kind == DispatchActionKind.RESUME_FORWARD:
+            # The user said "now add error handling" -- forward as a
+            # follow-up to the in-flight Claude session via the
+            # runner's send_followup machinery (same path the legacy
+            # _handle_adjustment uses).
+            try:
+                self.runner.send_followup(
+                    intent.task_text or "",
+                    kind="adjustment",
+                )
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning(
+                    "Supervisor RESUME_FORWARD: send_followup failed (%s); "
+                    "speaking the decision but not forwarding.", e,
+                )
+            return VoiceResponse(
+                text=outcome.voice_message or "Got it. Telling Claude.",
+            )
+        if outcome.kind in (
+            DispatchActionKind.EDIT_DISPATCH,
+            DispatchActionKind.NEW_DISPATCH,
+        ):
+            if outcome.task_request is None:
+                return None
+            return self._dispatch_supervisor_task(intent, outcome)
+        # Defensive: unknown outcome kind -> legacy fallback.
+        return None
+
+    def _dispatch_supervisor_task(
+        self, intent: CodingIntent, outcome,
+    ) -> VoiceResponse:
+        """Dispatch a TaskRequest built by the supervisor.
+
+        Differs from :meth:`_build_code_task_response` in that the
+        TaskRequest is already enriched + narration already played.
+        We just touch the registry (so the project's last_accessed
+        updates) + register a digest listener (Phase A) + start the
+        task.
+        """
+        request = outcome.task_request
+        if request is None:
+            return VoiceResponse(text="No task to dispatch.")
+
+        # Ensure the cwd exists for NEW dispatch.
+        try:
+            request.cwd.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(
+                "Supervisor: could not create cwd %s (%s)", request.cwd, e,
+            )
+            return VoiceResponse(
+                text=f"I couldn't prepare the project folder. {e}",
+            )
+
+        decision = outcome.decision
+        project_name = (
+            decision.target_project_name if decision else None
+        ) or request.cwd.name
+
+        # Touch the registry when the project is registered. Mirrors
+        # the legacy path.
+        try:
+            self.registry.touch(project_name)
+        except Exception:                                           # noqa: BLE001
+            pass
+
+        # Start the task and attach a digest listener for COMPLETE.
+        try:
+            handle = self.runner.start_task(request)
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("Supervisor: runner.start_task failed (%s)", e)
+            return VoiceResponse(
+                text=f"I couldn't start the coding task. {e}",
+            )
+
+        self._attach_supervisor_digest_listener(
+            handle=handle,
+            project_name=project_name,
+            project_path=request.cwd,
+            user_goal_hint=intent.task_text or "",
+        )
+
+        # Voice message: the supervisor already narrated (if narrate_enabled);
+        # outcome.voice_message is "" in that case. Otherwise narrate now.
+        if outcome.already_narrated:
+            return VoiceResponse(text="")
+        text = outcome.voice_message or (
+            f"Working on {project_name}. I'll let you know when it's done."
+        )
+        return VoiceResponse(text=text)
+
+    def _attach_supervisor_digest_listener(
+        self,
+        handle,
+        project_name: str,
+        project_path: Path,
+        user_goal_hint: str,
+    ) -> None:
+        """Register a COMPLETE listener that builds + upserts a digest.
+
+        Fail-open: any exception during listener registration is
+        logged WARN and ignored. The task still runs to completion;
+        we just won't get a digest for it.
+        """
+        try:
+            from ultron.config import get_config
+            sup_cfg = get_config().coding.supervisor
+        except Exception:                                           # noqa: BLE001
+            return
+        if not sup_cfg.digests_enabled:
+            return
+        if self.supervisor_dispatch is None or self.project_index is None:
+            return
+
+        from ultron.coding.bridge import EventKind
+
+        index_ref = self.project_index
+        dispatch_ref = self.supervisor_dispatch
+        llm_engine = self.llm_engine
+
+        prior_digest = ""
+        try:
+            existing = index_ref.get_by_path(project_path)
+            if existing is not None:
+                prior_digest = existing.digest_markdown
+        except Exception:                                           # noqa: BLE001
+            prior_digest = ""
+
+        def _digest_listener(event) -> None:
+            if event.kind != EventKind.COMPLETE:
+                return
+            try:
+                files_created = list(event.files_created or [])
+                files_modified = list(event.files_modified or [])
+                summary = event.summary or ""
+
+                # Build a tiny LLM-callable closure when an llm is wired.
+                llm_call = _build_supervisor_llm_call(
+                    llm_engine, sup_cfg,
+                )
+
+                digest = dispatch_ref.build_digest(
+                    project_name=project_name,
+                    project_path=project_path,
+                    task_summary=summary,
+                    files_created=files_created,
+                    files_modified=files_modified,
+                    files_deleted=[],
+                    llm_call=llm_call,
+                    prior_digest_markdown=prior_digest,
+                    user_goal_hint=user_goal_hint,
+                )
+                index_ref.upsert(
+                    digest,
+                    language=digest.sections.get("Language", "") or "",
+                    last_session_id=getattr(handle, "claude_session_id", None),
+                )
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning(
+                    "supervisor digest listener failed (%s); skipping.", e,
+                )
+
+        try:
+            handle.add_listener(_digest_listener)
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning(
+                "Could not attach supervisor digest listener (%s)", e,
+            )
+
+    def _current_project_name(self) -> Optional[str]:
+        """Best-effort: what project the current Claude session is on."""
+        try:
+            state = self.runner.active_state()
+        except Exception:                                           # noqa: BLE001
+            return None
+        if state is None:
+            return None
+        return getattr(state, "label", None) or None
+
+    def _current_session_id_or_label(self) -> Optional[str]:
+        try:
+            state = self.runner.active_state()
+        except Exception:                                           # noqa: BLE001
+            return None
+        if state is None:
+            return None
+        return getattr(state, "label", None) or None
 
     # --- A4 pre-task confirmation -----------------------------------------
 
@@ -1300,3 +1560,65 @@ class CapabilityVoiceController:
 # ---------------------------------------------------------------------------
 
 CodingVoiceController = CapabilityVoiceController
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-22 supervisor stack helper -- exposed at module scope so tests can
+# stub it without monkey-patching the controller instance.
+# ---------------------------------------------------------------------------
+
+
+def _build_supervisor_llm_call(llm_engine, sup_cfg):
+    """Build the LLM-call closure passed to
+    :func:`ultron.coding.project_digest.generate_digest`.
+
+    The digest generator expects a callable that takes a prompt
+    string and returns the model completion text. We wrap
+    ``llm_engine.generate_text`` (or similar) so the digest call
+    inherits the in-process Qwen voice model + its current preset
+    without spinning up a separate inference process.
+
+    Returns ``None`` when no llm_engine is wired or the wrapper
+    can't be built -- the digest generator's fail-open path then
+    produces a deterministic-template digest.
+    """
+    if llm_engine is None:
+        return None
+    # The in-process LLMEngine exposes ``generate`` (full string) and
+    # ``generate_stream`` (token iterator). Use ``generate`` so the
+    # digest gets the full completion.
+    fn = getattr(llm_engine, "generate", None)
+    if fn is None or not callable(fn):
+        return None
+
+    max_chars = int(getattr(sup_cfg, "digest_max_summary_chars", 4000) or 4000)
+    # The model often outputs ~1 token per ~4 chars; cap roughly so a
+    # runaway model doesn't waste minutes.
+    max_tokens = max(256, min(2048, max_chars // 2))
+
+    def _call(prompt: str) -> str:
+        try:
+            result = fn(
+                prompt,
+                max_tokens=max_tokens,
+                record_history=False,
+            )
+        except TypeError:
+            # generate() signature varies across LLMEngine variants;
+            # the conservative fallback drops the kwargs.
+            try:
+                result = fn(prompt)
+            except Exception:                                       # noqa: BLE001
+                return ""
+        except Exception:                                           # noqa: BLE001
+            return ""
+        if result is None:
+            return ""
+        if isinstance(result, str):
+            return result
+        # Some LLM wrappers return a tuple or dict; pull a text field.
+        if isinstance(result, dict):
+            return str(result.get("text") or result.get("content") or "")
+        return str(result)
+
+    return _call

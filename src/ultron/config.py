@@ -846,6 +846,11 @@ class QdrantCollections(_Strict):
     conversations: str = "conversations"
     facts: str = "facts"
     web_results: str = "web_results"
+    # 2026-05-22 supervisor stack: separate collection for project
+    # digests. Kept distinct from conversations so RAG over chat
+    # history never accidentally surfaces project source via the
+    # cross-encoder reranker.
+    projects: str = "projects"
 
 
 class QdrantConfig(_Strict):
@@ -1449,6 +1454,75 @@ class CodingGoalAnchorsConfig(_Strict):
     resume_prepend_next_anchor: bool = True
 
 
+class CodingSupervisorConfig(_Strict):
+    """2026-05-22 supervisor stack -- opencode-style project digest +
+    semantic-resolution layer that sits between the routing classifier
+    and the Claude Code dispatch.
+
+    Five sub-features, each independently flagged so they ship + flip
+    in order (digests -> index -> decide -> narrate -> enriched).
+    All default OFF until live verification per the binding
+    feature-flag rollout policy.
+
+    Default OFF = the legacy ProjectResolver + CapabilityVoiceController
+    path is byte-for-byte unchanged. Flip ``enabled`` once digests are
+    populated to start letting the supervisor decide; flip the per-
+    phase flags individually if you want to A/B specific sub-features.
+    """
+
+    # Master switch. When False, every other knob is ignored and the
+    # supervisor is never constructed.
+    enabled: bool = False
+
+    # Phase A: generate a digest at session end. Cheap (1 LLM call,
+    # background thread); no dispatch-side effect. Safe to enable
+    # before the decision layer to start building up the index.
+    digests_enabled: bool = False
+
+    # Phase B: upsert digests to Qdrant + expose semantic search.
+    # No effect alone; consumed by the decide layer when on.
+    index_enabled: bool = False
+
+    # Phase C: supervisor intercepts CODE_TASK / MID_SESSION_ADJUSTMENT /
+    # CLARIFICATION_RESPONSE and makes a routing decision. Requires
+    # index_enabled = True to use semantic candidates; falls back to
+    # registry-only candidates otherwise.
+    decide_enabled: bool = False
+
+    # Phase D: speak the supervisor's decision before dispatch with
+    # a barge-in window. Requires decide_enabled = True.
+    narrate_enabled: bool = False
+    # Barge-in window in seconds while the decision is being spoken.
+    # Within this window, a fresh wake-word fires re-classification
+    # instead of proceeding with dispatch.
+    narration_barge_in_window_seconds: float = Field(
+        default=1.5, ge=0.0, le=10.0,
+    )
+
+    # Phase E: enrich the Claude dispatch prompt with digest + file
+    # tree context so Claude doesn't rediscover state.
+    enriched_context_enabled: bool = False
+
+    # Cosine thresholds for the decision algorithm.
+    #   - resolve_threshold: above this -> EDIT without clarification.
+    #   - clarify_threshold: in [clarify, resolve) -> ask user to pick.
+    # Below clarify_threshold -> NEW scaffold.
+    resolve_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    clarify_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+
+    # Digest generation knobs.
+    digest_max_summary_chars: int = Field(default=4000, ge=200)
+    digest_max_files_in_prompt: int = Field(default=40, ge=1)
+
+    # Where the decision audit log lives. Append-only JSONL. Empty
+    # disables logging.
+    decisions_log_path: str = "logs/supervisor_decisions.jsonl"
+
+    # Max candidates retained in a Decision (for CLARIFY presentation
+    # + audit log).
+    max_candidates_in_decision: int = Field(default=5, ge=1, le=20)
+
+
 class CodingConfig(_Strict):
     enabled: bool = True
     bridge: str = "direct"
@@ -1476,6 +1550,12 @@ class CodingConfig(_Strict):
     )
     # A3 wiring -- stored-facts fast-path on clarifications.
     facts: CodingFactsConfig = Field(default_factory=CodingFactsConfig)
+    # 2026-05-22 supervisor stack (opencode-inspired). Default OFF
+    # across the board until digests are populated -- see
+    # CodingSupervisorConfig for per-phase flags.
+    supervisor: CodingSupervisorConfig = Field(
+        default_factory=CodingSupervisorConfig,
+    )
     # A4 pre-task confirmation. Default OFF -- the spoken confirmation
     # adds ~0.5 s of TTS playback before every coding task dispatch,
     # which is a UX cost that has to fire universally to provide its

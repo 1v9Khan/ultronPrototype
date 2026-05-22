@@ -758,6 +758,26 @@ coding:
   task_timeout_seconds: 1800   # 30 min — outer cap on a single Claude Code task
   skip_permissions: true       # --dangerously-skip-permissions (sandbox is project-local)
 
+  # 2026-05-22 supervisor stack (opencode-style project digest +
+  # semantic resolution). All flags OFF for safe rollout -- once
+  # digests are generating on every Claude session for a week, flip
+  # decide_enabled to start letting the supervisor route. Per-phase
+  # docs live in src/ultron/config.py:CodingSupervisorConfig.
+  supervisor:
+    enabled: false
+    digests_enabled: false
+    index_enabled: false
+    decide_enabled: false
+    narrate_enabled: false
+    narration_barge_in_window_seconds: 1.5
+    enriched_context_enabled: false
+    resolve_threshold: 0.75
+    clarify_threshold: 0.55
+    digest_max_summary_chars: 4000
+    digest_max_files_in_prompt: 40
+    decisions_log_path: "logs/supervisor_decisions.jsonl"
+    max_candidates_in_decision: 5
+
 # ---------------------------------------------------------------------------
 # Context projections (Phase C / Phase 1; verified Foundation Phase 2)
 # ---------------------------------------------------------------------------

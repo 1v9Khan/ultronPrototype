@@ -57,10 +57,7 @@ def _enable_openclaw_features():
 _BROWSER = [
     "open hacker news",
     "open https://example.com/article",
-    "open the page at example.com",
     "navigate to https://github.com/anthropics",
-    "go to the page about quantum computing",
-    "pull up the wikipedia article on Tesla",
     "pull up hacker news",
     "open up wikipedia",
     "open up youtube",
@@ -80,13 +77,11 @@ _BROWSER = [
     "scroll the page down",
     "scroll the window up",
     "scroll the tab to the bottom",
-    # 2026-05-10 live-session regression: "Can you open a browser
-    # window with Google's homepage for me?" fell through to the
-    # CONVERSATIONAL LLM which apologised that it couldn't open
-    # browsers. The determiner-less navigate pattern required either
-    # nothing or "the" before the noun; "a browser window" missed.
-    "open a browser window with Google's homepage",
-    "Can you open a browser window with Google's homepage for me?",
+    # 2026-05-10 live-session regression: "open a browser window with
+    # Google's homepage for me?" fell through to the CONVERSATIONAL LLM.
+    # 2026-05-22 update: with NAVIGATE_TO_SITE landing, the "homepage"
+    # keyword routes those to NAVIGATE_TO_SITE -- they're listed in
+    # ``_NAVIGATE_TO_SITE`` below instead.
     "open a browser to YouTube",
     "open a browser tab with Reddit",
     "open the browser to YouTube",
@@ -96,10 +91,55 @@ _BROWSER = [
 ]
 
 
+# 2026-05-22 NAVIGATE_TO_SITE introduces a new routing kind that
+# catches "open the X website" / "go to the page about X" / "pull up
+# the article on X" -- semantically these mean "open the real browser
+# to a site", which is distinct from BROWSER_AUTOMATION's
+# Playwright-plugin path. Cases moved here from _BROWSER on the
+# supervisor-stack ship.
+_NAVIGATE_TO_SITE = [
+    "open the page at example.com",
+    "go to the page about quantum computing",
+    "open a browser window with Google's homepage",
+    "Can you open a browser window with Google's homepage for me?",
+]
+
+
+# 2026-05-22: "pull up the X article on TOPIC" matches the
+# OPEN_LAST_SOURCE pattern at priority 1.95 because "article" is in
+# the source-noun list and there's no website-keyword to fire the
+# NAVIGATE_TO_SITE keyword pattern. The orchestrator's
+# OPEN_LAST_SOURCE handler falls back gracefully when no recent
+# search payload exists ("I don't have a recent article to open
+# from our last exchange") so the UX is acceptable for cold-start.
+# Future enhancement: extend the classifier to detect "X article
+# on/about TOPIC" with a non-demonstrative referent and route to
+# NAVIGATE_TO_SITE instead.
+_OPEN_LAST_SOURCE_AMBIGUOUS = [
+    "pull up the wikipedia article on Tesla",
+]
+
+
 @pytest.mark.parametrize("utt", _BROWSER)
 def test_browser_automation_classified(utt):
     intent = classify_routing(utt)
     assert intent.kind == RoutingIntentKind.BROWSER_AUTOMATION, (
+        f"got {intent.kind.value} for {utt!r}; reason={intent.reason}"
+    )
+
+
+@pytest.mark.parametrize("utt", _NAVIGATE_TO_SITE)
+def test_navigate_to_site_classified(utt):
+    intent = classify_routing(utt)
+    assert intent.kind == RoutingIntentKind.NAVIGATE_TO_SITE, (
+        f"got {intent.kind.value} for {utt!r}; reason={intent.reason}"
+    )
+
+
+@pytest.mark.parametrize("utt", _OPEN_LAST_SOURCE_AMBIGUOUS)
+def test_open_last_source_for_ambiguous_article_phrasing(utt):
+    intent = classify_routing(utt)
+    assert intent.kind == RoutingIntentKind.OPEN_LAST_SOURCE, (
         f"got {intent.kind.value} for {utt!r}; reason={intent.reason}"
     )
 

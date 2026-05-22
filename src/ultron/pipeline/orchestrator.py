@@ -818,6 +818,30 @@ class Orchestrator:
                 except Exception:
                     embedder = None
             resolver = ProjectResolver(registry, embedder=embedder)
+            # 2026-05-22 supervisor stack -- construct lazily when the
+            # master flag is on. Wire ProjectIndex + ProjectSupervisor +
+            # SupervisorDispatchController so the controller can route
+            # CODE_TASK utterances through digest + semantic resolution
+            # before falling back to the legacy ProjectResolver path.
+            project_index = None
+            supervisor = None
+            supervisor_dispatch = None
+            try:
+                from ultron.config import get_config as _get_cfg
+                sup_cfg = _get_cfg().coding.supervisor
+            except Exception:                                       # noqa: BLE001
+                sup_cfg = None
+            if sup_cfg is not None and sup_cfg.enabled:
+                project_index, supervisor, supervisor_dispatch = (
+                    self._build_supervisor_stack(
+                        cfg=sup_cfg,
+                        registry=registry,
+                        resolver=resolver,
+                        embedder=embedder,
+                        runner=runner,
+                    )
+                )
+
             controller = CodingVoiceController(
                 runner=runner,
                 registry=registry,
@@ -838,16 +862,104 @@ class Orchestrator:
                 # or no bridge client). Routes GAMING_MODE intents to
                 # the OpenClawDispatcher's plugin enable/disable path.
                 gaming_mode_manager=self._load_gaming_mode_manager_if_enabled(),
+                # 2026-05-22 supervisor stack -- None when disabled or
+                # when construction failed (controller falls through
+                # to legacy ProjectResolver path).
+                supervisor_dispatch=supervisor_dispatch,
+                project_index=project_index,
             )
             logger.info(
-                "Coding voice ready (bridge=%s, sandbox=%s, coordinator=%s)",
+                "Coding voice ready (bridge=%s, sandbox=%s, coordinator=%s, supervisor=%s)",
                 runner.bridge.name(), settings.CODING_SANDBOX_PATH,
                 "on" if self.coding_coordinator is not None else "off",
+                "on" if supervisor_dispatch is not None else "off",
             )
             return controller
         except Exception as e:
             logger.warning("Coding voice init failed (%s) -- disabled.", e)
             return None
+
+    def _build_supervisor_stack(
+        self,
+        cfg,
+        registry,
+        resolver,
+        embedder,
+        runner,
+    ):
+        """Construct ProjectIndex + ProjectSupervisor + SupervisorDispatchController.
+
+        Returns ``(project_index, supervisor, dispatch_controller)``
+        with any individual element ``None`` when its sub-flag is off
+        or construction failed. Fail-open: any error here logs WARN
+        and returns three Nones so the rest of the coding pipeline
+        keeps the legacy behavior.
+        """
+        from pathlib import Path
+        from ultron.config import get_config
+
+        project_index = None
+        if cfg.index_enabled and embedder is not None:
+            try:
+                from ultron.coding.project_index import ProjectIndex
+                project_index = ProjectIndex(embedder=embedder)
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning(
+                    "Supervisor: ProjectIndex construction failed (%s); "
+                    "supervisor will run registry-only.", e,
+                )
+                project_index = None
+
+        supervisor = None
+        if cfg.decide_enabled:
+            try:
+                from ultron.coding.project_supervisor import ProjectSupervisor
+                supervisor = ProjectSupervisor(
+                    index=project_index,
+                    registry=registry,
+                    resolver=resolver,
+                    resolve_threshold=cfg.resolve_threshold,
+                    clarify_threshold=cfg.clarify_threshold,
+                    decisions_log_path=(
+                        Path(cfg.decisions_log_path)
+                        if cfg.decisions_log_path
+                        else None
+                    ),
+                    max_candidates_in_decision=cfg.max_candidates_in_decision,
+                )
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning(
+                    "Supervisor: ProjectSupervisor construction failed (%s); "
+                    "supervisor disabled.", e,
+                )
+                supervisor = None
+
+        dispatch_controller = None
+        if supervisor is not None:
+            try:
+                from ultron.coding.supervisor_dispatch import SupervisorDispatchController
+                dispatch_controller = SupervisorDispatchController(
+                    supervisor=supervisor,
+                    index=project_index,
+                    barge_in_speak=self._speak_with_barge_in_check,
+                    plain_speak=self._speak,
+                    narrate_enabled=cfg.narrate_enabled,
+                    narration_barge_in_window_seconds=(
+                        cfg.narration_barge_in_window_seconds
+                    ),
+                    enriched_context_enabled=cfg.enriched_context_enabled,
+                    sandbox_root=settings.CODING_SANDBOX_PATH,
+                    default_model=get_config().coding.default_model,
+                )
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning(
+                    "Supervisor: SupervisorDispatchController construction "
+                    "failed (%s); supervisor will only emit decisions, not "
+                    "dispatch.", e,
+                )
+                dispatch_controller = None
+
+        return project_index, supervisor, dispatch_controller
 
     def _load_gaming_mode_manager_if_enabled(self):
         """V1-gap A1: construct the GamingModeManager when configured.
