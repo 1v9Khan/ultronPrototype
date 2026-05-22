@@ -87,8 +87,10 @@ def _stub_engine_for_build_llama() -> object:
 def _stub_cfg(
     *,
     draft_model_path=None,
+    draft_kind="none",
     speculative_max_ngram_size=2,
     speculative_num_pred_tokens=10,
+    model_draft_num_pred_tokens=4,
 ) -> object:
     """Build a minimal cfg-like object for ``_build_llama``."""
     return SimpleNamespace(
@@ -101,8 +103,10 @@ def _stub_cfg(
         n_ubatch=None,
         prefix_cache_ram_bytes=0,
         draft_model_path=draft_model_path,
+        draft_kind=draft_kind,
         speculative_max_ngram_size=speculative_max_ngram_size,
         speculative_num_pred_tokens=speculative_num_pred_tokens,
+        model_draft_num_pred_tokens=model_draft_num_pred_tokens,
     )
 
 
@@ -144,7 +148,10 @@ def test_build_llama_wires_pld_when_path_set(tmp_path, monkeypatch):
     )
 
     eng = _stub_engine_for_build_llama()
-    cfg = _stub_cfg(draft_model_path="models/draft.gguf")
+    cfg = _stub_cfg(
+        draft_model_path="models/draft.gguf",
+        draft_kind="pld",  # 2026-05-22: explicit kind required now
+    )
     eng._build_llama(cfg, gguf, 4096, -1)
 
     # PLD constructed with the configured tuning
@@ -176,6 +183,7 @@ def test_build_llama_pld_uses_configured_tuning(tmp_path, monkeypatch):
     eng = _stub_engine_for_build_llama()
     cfg = _stub_cfg(
         draft_model_path="models/draft.gguf",
+        draft_kind="pld",  # 2026-05-22: explicit kind required now
         speculative_max_ngram_size=5,
         speculative_num_pred_tokens=20,
     )
@@ -205,7 +213,10 @@ def test_build_llama_pld_import_failure_is_fail_open(tmp_path, monkeypatch):
     )
 
     eng = _stub_engine_for_build_llama()
-    cfg = _stub_cfg(draft_model_path="models/draft.gguf")
+    cfg = _stub_cfg(
+        draft_model_path="models/draft.gguf",
+        draft_kind="pld",  # 2026-05-22: explicit kind required now
+    )
     # Must not raise.
     eng._build_llama(cfg, gguf, 4096, -1)
 

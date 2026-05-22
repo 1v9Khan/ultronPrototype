@@ -413,18 +413,23 @@ llm:
   # The next three keys are auto-filled from the preset above. Uncomment
   # to override (e.g. plug a non-preset GGUF in via preset: "custom").
   # model_path: "models/Qwen3.5-4B-Q4_K_M.gguf"
-  # 2026-05-22 PLD disabled (third try). Both attempted fixes:
-  #   - logits_all=True (sized scores buffer correctly)        => fixed broadcast bug
-  #   - kv_cache_type: 8 -> 1 (F16 KV cache)                   => didn't help
-  # ...still hit ``llama_decode returned -1`` on a fresh live turn
-  # (preflight LLM, 3 retries, hung after fallback). llama-cpp-python
-  # 0.3.22's PLD path is unstable on this stack across multiple knobs;
-  # giving up the ~20 ms TTFT win to keep the system responsive.
-  # The orchestrator-level speculative LLM thread (which pre-fires
-  # the LLM during the silence-wait) still operates normally -- only
-  # the llama-cpp draft-model acceleration is gated off here.
-  # Re-enable by deleting this line once an upstream fix lands.
-  draft_model_path: null
+  # draft_model_path: "models/Qwen3.5-0.8B-Q4_K_M.gguf"  (auto from preset)
+  # n_ctx: 16384
+  # 2026-05-22 -- speculative decoding flavour. The qwen3.5-4b preset
+  # ships the 0.8B GGUF on disk for the real-model draft path. Knob:
+  #   "none"  -- no llama-cpp-level speculative decoding (current
+  #              safe default; orchestrator-level speculative LLM
+  #              still fires during the silence-wait window).
+  #   "pld"   -- LlamaPromptLookupDecoding (n-gram match against the
+  #              prompt). Hit ``llama_decode returned -1`` bugs on
+  #              0.3.22; keep off until upstream stabilises.
+  #   "model" -- Load draft_model_path (the 0.8B Qwen GGUF) as a
+  #              second Llama and use it as a real draft. Theoretical
+  #              30-50% gen speedup. Caveat: uses the same llama-cpp
+  #              verification batch as PLD, so MAY hit the same bug.
+  #              Flip with verification.
+  draft_kind: "model"
+  model_draft_num_pred_tokens: 4
   # n_ctx: 16384
   # 4B optimization plan Stage G — where retrieved Qdrant memories
   # land in the LLM context.

@@ -571,19 +571,49 @@ class LLMEngine:
             # Fail-open: if the import fails for any reason, we log
             # WARN and proceed without PLD; voice still works.
             draft_model_path = getattr(cfg, "draft_model_path", None)
-            if draft_model_path:
+            draft_kind = getattr(cfg, "draft_kind", "none")
+            if draft_kind in {"pld", "model"} and draft_model_path:
                 try:
-                    from llama_cpp.llama_speculative import (
-                        LlamaPromptLookupDecoding,
-                    )
-                    llama_kwargs["draft_model"] = LlamaPromptLookupDecoding(
-                        max_ngram_size=int(
-                            getattr(cfg, "speculative_max_ngram_size", 2)
-                        ),
-                        num_pred_tokens=int(
-                            getattr(cfg, "speculative_num_pred_tokens", 10)
-                        ),
-                    )
+                    if draft_kind == "pld":
+                        from llama_cpp.llama_speculative import (
+                            LlamaPromptLookupDecoding,
+                        )
+                        llama_kwargs["draft_model"] = LlamaPromptLookupDecoding(
+                            max_ngram_size=int(
+                                getattr(cfg, "speculative_max_ngram_size", 2)
+                            ),
+                            num_pred_tokens=int(
+                                getattr(cfg, "speculative_num_pred_tokens", 10)
+                            ),
+                        )
+                        logger.info(
+                            "Speculative decoding enabled (PLD, max_ngram=%s, "
+                            "num_pred=%s, toggle path=%s)",
+                            getattr(cfg, "speculative_max_ngram_size", 2),
+                            getattr(cfg, "speculative_num_pred_tokens", 10),
+                            draft_model_path,
+                        )
+                    else:
+                        # draft_kind == "model" -- load the GGUF as an
+                        # actual second Llama instance and wrap it via
+                        # the LlamaDraftModel subclass.
+                        from ultron.llm.draft_model import (
+                            make_qwen08b_draft_model,
+                        )
+                        llama_kwargs["draft_model"] = make_qwen08b_draft_model(
+                            draft_model_path=draft_model_path,
+                            num_pred_tokens=int(
+                                getattr(cfg, "model_draft_num_pred_tokens", 4)
+                            ),
+                            n_ctx=int(n_ctx),
+                            n_gpu_layers=n_gpu_layers,
+                        )
+                        logger.info(
+                            "Speculative decoding enabled (real model "
+                            "draft, num_pred=%s, draft_path=%s)",
+                            getattr(cfg, "model_draft_num_pred_tokens", 4),
+                            draft_model_path,
+                        )
                     # llama-cpp-python bug compat: when ``draft_model`` is
                     # set, ``self._logits_all`` is silently forced to True
                     # (llama.py:344) but ``self.scores`` is still sized via
@@ -594,15 +624,9 @@ class LLMEngine:
                     # (n_tokens * n_vocab,) into shape (0,)`` because the
                     # scores slice falls outside the under-sized buffer.
                     # Pass ``logits_all=True`` explicitly so the buffer is
-                    # sized for ``n_ctx`` rows up front.
+                    # sized for ``n_ctx`` rows up front. Applies to both
+                    # the PLD and real-model draft paths.
                     llama_kwargs["logits_all"] = True
-                    logger.info(
-                        "Speculative decoding enabled (PLD, max_ngram=%s, "
-                        "num_pred=%s, toggle path=%s)",
-                        getattr(cfg, "speculative_max_ngram_size", 2),
-                        getattr(cfg, "speculative_num_pred_tokens", 10),
-                        draft_model_path,
-                    )
                 except Exception as e:                                 # noqa: BLE001
                     logger.warning(
                         "PLD attach failed (%s); proceeding without "

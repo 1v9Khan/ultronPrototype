@@ -678,15 +678,34 @@ class LLMConfig(_Strict):
     # subclass that wraps the actual draft GGUF for genuine model-
     # based drafting.
     draft_model_path: Optional[str] = None
-    # 2026-05-21 -- PLD tunables. Defaults match the HTTP server's
-    # ``settings.draft_model_num_pred_tokens`` (10) and PLD's library
-    # default ``max_ngram_size`` (2). Bumping ``num_pred_tokens``
-    # speculates further at higher cost on mis-predict; bumping
-    # ``max_ngram_size`` makes the matcher more selective (fewer but
-    # higher-confidence drafts). Conservative defaults; tune via the
-    # ``scripts/bench_llm_*`` family if you want to push.
+    # 2026-05-22 -- speculative-decoding flavour selector. The old
+    # ``draft_model_path is not None`` toggle conflated two very
+    # different paths; this knob makes them explicit.
+    #
+    #   "none"  -- no in-process speculative decoding at the llama-cpp
+    #              layer. Orchestrator-level speculative LLM still fires.
+    #              Default until live verification proves "model" is
+    #              stable on this stack.
+    #   "pld"   -- LlamaPromptLookupDecoding (n-gram matching against
+    #              the prompt). Cheap but limited; hit llama_decode -1
+    #              bugs on 0.3.22, currently disabled by default.
+    #   "model" -- Load draft_model_path as a SECOND Llama instance
+    #              and use it as a real model-based draft via
+    #              :mod:`ultron.llm.draft_model`. Theoretical 30-50%
+    #              gen speedup when the draft agrees; same llama_decode
+    #              C path that fails on PLD, so flip with verification.
+    draft_kind: Literal["none", "pld", "model"] = "none"
+    # 2026-05-21 -- PLD tunables. Used only when ``draft_kind == "pld"``.
+    # ``num_pred_tokens`` speculates further at higher cost on mis-
+    # predict; ``max_ngram_size`` makes the matcher more selective.
     speculative_max_ngram_size: int = Field(default=2, ge=1, le=8)
     speculative_num_pred_tokens: int = Field(default=10, ge=1, le=64)
+    # 2026-05-22 -- real-model draft tunables. Used only when
+    # ``draft_kind == "model"``. Conservative: 4 tokens per verification
+    # round (typical accept-rate ~3-5 on conversational prompts;
+    # emitting more wastes draft compute on tokens that will be
+    # rejected).
+    model_draft_num_pred_tokens: int = Field(default=4, ge=1, le=16)
     n_ctx: int = Field(default=8192, ge=1)
     gpu_layers: int = -1
     default_temperature: float = 0.7
