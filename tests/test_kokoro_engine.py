@@ -193,9 +193,9 @@ def test_runtime_filter_does_not_crash_on_unimportable():
 
 
 def test_spectral_smooth_default_enabled_runs_on_synth():
-    """apply_spectral_smooth defaults to True; the engine should call
-    the smoothing function on every cache-miss synth."""
-    engine = KokoroSpeech(model_path=Path("/stub"))
+    """apply_spectral_smooth defaults to False; explicitly enable and verify
+    the smoothing function is called on every cache-miss synth."""
+    engine = KokoroSpeech(model_path=Path("/stub"), apply_spectral_smooth=True)
     assert engine.apply_spectral_smooth is True
     assert engine.spectral_smooth_window == 5
 
@@ -355,10 +355,10 @@ def test_kokoro_config_has_sensible_defaults():
     assert cfg.device == "cpu"
     assert cfg.speed == 1.0
     assert cfg.apply_runtime_filter is False
-    # 2026-05-22 partial-fine-tune ship: spectral smoothing on by
-    # default. Window default 5 frames (~107 ms at hop=512, sr=24kHz)
-    # -- the post-A/B sweet spot on the partial-fine-tune corpus.
-    assert cfg.apply_spectral_smooth is True
+    # Spectral smoothing off by default (2026-05-22 default was True for
+    # the partial fine-tune ship; reverted once stock voice is the norm).
+    # Re-enable via tts.kokoro.apply_spectral_smooth: true in config.yaml.
+    assert cfg.apply_spectral_smooth is False
     assert cfg.spectral_smooth_window == 5
 
 

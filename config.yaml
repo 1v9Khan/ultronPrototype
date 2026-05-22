@@ -673,7 +673,7 @@ tts:
     # pre-applied at ack-cache build time. Flip OFF once the
     # fine-tune is fully trained (epochs 3-9 add WavLM smoothing at
     # the weight level).
-    apply_spectral_smooth: true
+    apply_spectral_smooth: false
     spectral_smooth_window: 5      # ~107 ms STFT median window at hop=512, sr=24 kHz (post-A/B sweet spot 2026-05-22)
 
   # ACTIVE WHEN tts.engine == "xtts_v3"  (swap-back).

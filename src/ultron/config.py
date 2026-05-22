@@ -1601,7 +1601,7 @@ class KokoroConfig(_Strict):
     # while the fine-tune ships partially trained; flip OFF once
     # the model is fully trained (epochs 3-9 add WavLM smoothing
     # pressure at the weight level).
-    apply_spectral_smooth: bool = True
+    apply_spectral_smooth: bool = False
     # STFT magnitude median-filter width in frames. 5 frames at
     # hop=512, sr=24 kHz = ~107 ms window -- the post-A/B sweet spot
     # on the partial-fine-tune corpus (2026-05-22 user pick after
