@@ -2217,6 +2217,60 @@ class WindowControlConfig(_Strict):
     tool_slug_type: str = "windows_type_text"
 
 
+class IntentConfig(_Strict):
+    """Engine-agnostic intent recognizer (2026-05-22).
+
+    Wraps ``moonshine_voice.IntentRecognizer`` to short-circuit common
+    voice commands to local handlers without an LLM roundtrip. Operates
+    on transcript text from ANY STT engine -- runs identically whether
+    the active STT is Parakeet, Moonshine, Whisper, or typed input.
+
+    Default OFF -- the embedding model is ~300 MB CPU RAM (q4) and the
+    recognizer needs configured phrases to be useful. Operator flips
+    ``enabled: true`` after deciding which commands to short-circuit.
+
+    Performance: ~5-15 ms per ``process_utterance`` on CPU. Matches
+    fire before the LLM gating path, so a matched intent saves the
+    full LLM TTFT (~140-400 ms) for that turn.
+    """
+
+    enabled: bool = False
+    # Currently only "embeddinggemma-300m" is supported by
+    # moonshine_voice; field is here for forward-compat.
+    model_name: str = "embeddinggemma-300m"
+    # Quantization variant of the embedding model.
+    #   "q4"    -- ~300 MB, default; smallest with no quality loss
+    #   "q8"    -- ~450 MB; slightly more accurate cosine sims
+    #   "fp16"  -- ~600 MB
+    #   "fp32"  -- ~1.2 GB
+    #   "q4f16" -- ~350 MB; mixed precision
+    model_variant: Literal["q4", "q8", "fp16", "fp32", "q4f16"] = "q4"
+    # Minimum cosine similarity for a match. 0.8 mirrors the
+    # moonshine_voice default; raise to reduce false positives, lower
+    # to catch more variations of the same intent.
+    threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    # Pre-load the embedding model at orchestrator startup. False =
+    # first matching call pays the ~1-3 s init cost. True trades
+    # ~300 MB RAM allocation upfront for snappier first hits.
+    warmup_on_init: bool = True
+    # Canonical phrases registered at startup. Each becomes a
+    # short-circuit path: matching utterances skip the LLM and fire
+    # the registered handler (handlers are wired in the orchestrator
+    # by canonical_phrase value).
+    phrases: List[str] = Field(default_factory=lambda: [
+        # Gaming mode shortcuts -- intent matching is faster than
+        # rule classification + LLM preflight gating.
+        "engage gaming mode",
+        "disengage gaming mode",
+        "gaming mode status",
+        # Time/date local shortcuts (already handled by
+        # local_clock_reply, but having them here means the recognizer
+        # captures any phrasing the regex misses).
+        "what time is it",
+        "what is today's date",
+    ])
+
+
 class SafetyConfig(_Strict):
     """Runtime tool-call validator configuration (Phase 2 -- 2026-05-12).
 
@@ -2301,6 +2355,9 @@ class UltronConfig(_Strict):
     # 2026-05-12 Phase 2 -- runtime tool-call validator (paired with the
     # abliterated Josiefied Qwen3-8B default LLM).
     safety: "SafetyConfig" = Field(default_factory=lambda: SafetyConfig())
+    # 2026-05-22 -- engine-agnostic intent recognizer (Gemma-300M
+    # embeddings via moonshine_voice). Works with any STT engine.
+    intent: "IntentConfig" = Field(default_factory=lambda: IntentConfig())
 
 
 # ---------------------------------------------------------------------------
