@@ -2,7 +2,7 @@
 Qdrant collection.
 
 Cache key: the exact search query string. Values: the list of
-:class:`BraveResult` rows plus any Jina-fetched ``full_text`` per URL.
+:class:`SearchResult` rows plus any Jina-fetched ``full_text`` per URL.
 Freshness is per-record so we can keep volatile categories (sports,
 weather) shorter than stable ones (history, definitions).
 
@@ -19,7 +19,7 @@ from typing import Iterable, List, Optional, Tuple
 
 from ultron.config import get_config
 from ultron.utils.logging import get_logger
-from ultron.web_search.brave import BraveResult
+from ultron.web_search.brave import SearchResult
 
 logger = get_logger("web_search.cache")
 
@@ -76,8 +76,8 @@ class WebResultsCache:
 
     # --- lookup -------------------------------------------------------------
 
-    def lookup(self, query: str) -> Optional[List[Tuple[BraveResult, Optional[str]]]]:
-        """Return cached ``(BraveResult, full_text_or_None)`` rows if a fresh
+    def lookup(self, query: str) -> Optional[List[Tuple[SearchResult, Optional[str]]]]:
+        """Return cached ``(SearchResult, full_text_or_None)`` rows if a fresh
         entry for ``query`` exists; ``None`` otherwise.
         """
         query = (query or "").strip()
@@ -111,7 +111,7 @@ class WebResultsCache:
             return None
 
         now = time.time()
-        rows: List[Tuple[int, BraveResult, Optional[str]]] = []
+        rows: List[Tuple[int, SearchResult, Optional[str]]] = []
         for pt in points:
             pl = pt.payload or {}
             fetched_at = float(pl.get("fetched_at", 0.0))
@@ -119,7 +119,7 @@ class WebResultsCache:
             if (now - fetched_at) > ttl:
                 continue
             rank = int(pl.get("rank", 0))
-            rows.append((rank, BraveResult(
+            rows.append((rank, SearchResult(
                 url=str(pl.get("url", "")),
                 title=str(pl.get("title", "")),
                 snippet=str(pl.get("snippet", "")),
@@ -136,7 +136,7 @@ class WebResultsCache:
     def store(
         self,
         query: str,
-        rows: Iterable[Tuple[BraveResult, Optional[str]]],
+        rows: Iterable[Tuple[SearchResult, Optional[str]]],
     ) -> int:
         """Upsert each (result, full_text_or_None) row into web_results.
 

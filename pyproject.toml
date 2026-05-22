@@ -31,6 +31,12 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    # 2026-05-21: pytest-timeout enforces a per-test wall-clock cap so
+    # one hung test can't block the entire sweep at ~0 % CPU. Combined
+    # with the pre-flight concurrent-run check in tests/conftest.py,
+    # this eliminates the "sweep keeps running into issues" failure
+    # mode that recurred during the frontier-enhancement pass.
+    "pytest-timeout>=2.0",
 ]
 
 [project.scripts]
@@ -46,7 +52,17 @@ where = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
-addopts = "-p no:hydra_pytest"
+# 2026-05-21 testing-process hardening:
+# - ``--timeout=30 --timeout-method=thread``: each test gets at most 30s
+#   of wall clock; any hang surfaces as ``Failed: Timeout >30.0s`` naming
+#   the offending test, instead of silently freezing the sweep.
+# - ``--durations=10``: at the end of every run, the 10 slowest tests
+#   are reported so we can see what's eating time before it becomes a
+#   hang.
+addopts = "-p no:hydra_pytest --timeout=30 --timeout-method=thread --durations=10"
 markers = [
     "slow: loads local models or real hardware",
 ]
+# Tests that genuinely need >30s (e.g., GPU-gated full model loads) should
+# override per-test with ``@pytest.mark.timeout(120)`` rather than
+# relaxing this default.

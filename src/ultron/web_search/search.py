@@ -39,7 +39,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ultron.config import get_config
 from ultron.utils.logging import get_logger
-from ultron.web_search.brave import BraveResult, BraveSearchClient
+from ultron.web_search.brave import SearchResult, BraveSearchClient
 from ultron.web_search.cache import WebResultsCache
 from ultron.web_search.jina import JinaReaderClient
 
@@ -175,10 +175,109 @@ Snippets:
 """
 
 
-def _rank_snippets(llm, query: str, results: List[BraveResult], top_n: int = 3) -> List[BraveResult]:
+# 2026-05-21 frontier: module-level cache for the cross-encoder
+# instance. Shared across all WebSearchExecutor turns so we only pay
+# the ~1-3 s model load once per process. The instance is constructed
+# lazily on first call so the import cost stays out of orchestrator
+# startup.
+_CROSS_ENCODER_CACHE = None
+
+
+_CROSS_ENCODER_LOAD_FAILED = object()  # sentinel marker for cached failure
+
+
+def _get_cross_encoder():
+    """Lazy-construct a shared cross-encoder reranker for snippet
+    ranking. Returns ``None`` on construction failure (caller falls
+    back to provider order). Idempotent + thread-safe via Python's
+    GIL semantics for simple attribute reads."""
+    global _CROSS_ENCODER_CACHE
+    if _CROSS_ENCODER_CACHE is _CROSS_ENCODER_LOAD_FAILED:
+        return None
+    if _CROSS_ENCODER_CACHE is not None:
+        return _CROSS_ENCODER_CACHE
+    try:
+        from ultron.memory.reranker import CrossEncoderReranker
+        _CROSS_ENCODER_CACHE = CrossEncoderReranker()
+        return _CROSS_ENCODER_CACHE
+    except Exception as e:                                             # noqa: BLE001
+        logger.warning(
+            "Cross-encoder reranker construction failed (%s); "
+            "ranking will fall back to provider order.", e,
+        )
+        # Sentinel so we don't keep retrying construction every query.
+        _CROSS_ENCODER_CACHE = _CROSS_ENCODER_LOAD_FAILED
+        return None
+
+
+def _rank_snippets_cross_encoder(
+    query: str,
+    results: List[SearchResult],
+    top_n: int = 3,
+) -> List[SearchResult]:
+    """Rank snippets using bge-reranker-v2-m3 cross-encoder.
+
+    ~20-50 ms for 10-20 candidates on CPU vs the LLM path's 500-1500 ms.
+    The cross-encoder is purpose-built for query-document relevance
+    ranking and matches or beats LLM ranking on standard benchmarks
+    for this task.
+
+    Concatenates title + snippet as the candidate text so the model
+    has more signal than just the snippet alone. Fail-open: returns
+    ``results[:top_n]`` (provider order) on any failure.
+    """
+    if not results:
+        return []
+    if len(results) <= top_n:
+        return results[:top_n]
+
+    reranker = _get_cross_encoder()
+    if reranker is None:
+        return results[:top_n]
+
+    try:
+        # Trigger lazy model load. ``rerank()`` does this internally
+        # but we're bypassing it -- our candidates have ``.snippet``,
+        # not ``.content``, so we drop down to direct model.predict().
+        if not reranker._ensure_model():                               # noqa: SLF001
+            return results[:top_n]
+        # Compose the candidate text. Title is short + high-signal;
+        # snippet is the actual content preview. URL is excluded --
+        # the cross-encoder's training corpus didn't include URLs
+        # as query-document context.
+        pairs = [
+            (query, f"{r.title}. {r.snippet}" if r.title else r.snippet)
+            for r in results
+        ]
+        scores = reranker._model.predict(                              # noqa: SLF001
+            pairs,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        )
+        # Sort indices by descending score, take top_n.
+        ranked_indices = sorted(
+            range(len(results)),
+            key=lambda i: float(scores[i]),
+            reverse=True,
+        )[:top_n]
+        return [results[i] for i in ranked_indices]
+    except Exception as e:                                             # noqa: BLE001
+        logger.warning(
+            "Cross-encoder ranking failed (%s); falling back to "
+            "provider order.", e,
+        )
+        return results[:top_n]
+
+
+def _rank_snippets_llm(llm, query: str, results: List[SearchResult], top_n: int = 3) -> List[SearchResult]:
     """Use the LLM to pick the top ``top_n`` results for ``query``.
 
-    Falls back to Brave's native ranking on any failure.
+    Legacy ranking path -- kept for swap-back via
+    ``web_search.ranker: "llm"`` in config. ~500-1500 ms per call vs
+    the cross-encoder's ~20-50 ms; quality is comparable on average
+    but cross-encoder is more consistent (no JSON-parse failures).
+
+    Falls back to provider's native ranking on any failure.
     """
     if not results:
         return []
@@ -207,6 +306,29 @@ def _rank_snippets(llm, query: str, results: List[BraveResult], top_n: int = 3) 
     except Exception as e:
         logger.warning("snippet ranking failed (%s); using Brave order", e)
         return results[:top_n]
+
+
+def _rank_snippets(llm, query: str, results: List[SearchResult], top_n: int = 3) -> List[SearchResult]:
+    """Dispatch snippet ranking based on ``web_search.ranker`` config.
+
+    - ``"cross_encoder"`` (default): bge-reranker-v2-m3, ~20-50 ms.
+    - ``"llm"``: local Qwen with JSON prompt, ~500-1500 ms.
+    - ``"none"``: take provider order + slice to top_n, ~0 ms.
+    """
+    if not results:
+        return []
+    if len(results) <= top_n:
+        return results[:top_n]
+    try:
+        ranker = get_config().web_search.ranker
+    except Exception:                                                  # noqa: BLE001
+        ranker = "cross_encoder"
+    if ranker == "none":
+        return results[:top_n]
+    if ranker == "llm":
+        return _rank_snippets_llm(llm, query, results, top_n=top_n)
+    # Default: cross_encoder
+    return _rank_snippets_cross_encoder(query, results, top_n=top_n)
 
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -352,7 +474,7 @@ class WebSearchExecutor:
                     )
 
         # Brave fanout. Dedupe by URL; preserve first-seen order.
-        all_results: List[BraveResult] = []
+        all_results: List[SearchResult] = []
         seen_urls: set[str] = set()
         for q in queries:
             try:
@@ -393,8 +515,8 @@ class WebSearchExecutor:
         # snippet-only). Threads continue running in the background and
         # exit naturally on the per-fetch timeout -- ``pool.shutdown(
         # wait=False)`` ensures the executor returns immediately.
-        rows: List[Tuple[BraveResult, Optional[str]]] = []
-        to_fetch: List[Tuple[int, BraveResult]] = [
+        rows: List[Tuple[SearchResult, Optional[str]]] = []
+        to_fetch: List[Tuple[int, SearchResult]] = [
             (i, r) for i, r in enumerate(ranked) if i < self.max_fetch
         ]
         fetched: Dict[int, Optional[str]] = {}

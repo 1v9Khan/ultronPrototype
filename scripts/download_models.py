@@ -364,7 +364,38 @@ def main() -> int:
     print(f"\n[11/12] moondream2 @ {MOONDREAM_REVISION} — vision-language model (~3.5 GB FP16, CPU inference)")
     _prefetch_moondream2()
 
-    print("\n[12/12] RVC support models + voice-conversion model (legacy TTS fallback)")
+    print(
+        "\n[12/13] Dense embedder (jinaai/jina-embeddings-v3) — "
+        "frontier-enhancement Item 3 swap (1024 dim, MTEB ~65.5)"
+    )
+    try:
+        from fastembed import TextEmbedding
+        # First instantiation downloads + caches the ONNX weights into
+        # the FastEmbed cache. ~570 MB.
+        _ = TextEmbedding("jinaai/jina-embeddings-v3", threads=2)
+        print("  ✓ jina-embeddings-v3 cached")
+    except Exception as e:
+        print(f"  ✗ failed: {e}")
+        print("    Falling back to bge-small-en-v1.5 will keep working "
+              "if you revert config.")
+
+    print(
+        "\n[12a/13] Cross-encoder reranker (bge-reranker-v2-m3) — "
+        "RAG quality lift, default-OFF (frontier item 2, 2026-05-21)"
+    )
+    try:
+        from sentence_transformers import CrossEncoder
+        # The constructor downloads + caches the model in the HF cache.
+        # We don't actually need to keep the instance around -- it just
+        # warms the cache so the first runtime call doesn't pay the
+        # ~1-3 s load + ~1.1 GB download.
+        _ = CrossEncoder("BAAI/bge-reranker-v2-m3", device="cpu")
+        print("  ✓ bge-reranker-v2-m3 cached")
+    except Exception as e:
+        print(f"  ✗ failed: {e}")
+        print("    OK to ignore if memory.reranking.enabled stays False")
+
+    print("\n[13/13] RVC support models + voice-conversion model (legacy TTS fallback)")
     _download(RVC_SUPPORT_BASE_URL + "hubert_base.pt", settings.RVC_HUBERT_PATH)
     _download(RVC_SUPPORT_BASE_URL + "rmvpe.pt", settings.RVC_RMVPE_PATH)
     if settings.RVC_MODEL_PATH.is_file() and settings.RVC_INDEX_PATH.is_file():
@@ -377,11 +408,19 @@ def main() -> int:
         print("    Set RVC_ENABLED=False in config/settings.py to disable, "
               "or drop the .pth + .index files into that directory.")
 
-    print("\nNote: the custom Ultron wake-word model is not auto-downloaded.")
-    print("Train your own and place at:")
-    print(f"  {settings.WAKE_WORD_MODEL_PATH}")
-    print("Until then, the prototype falls back to "
-          f"'{settings.WAKE_WORD_FALLBACK}'.\n")
+    # 2026-05-21: actually CHECK whether the wake-word ONNX is present
+    # rather than unconditionally printing the "train your own" message.
+    # Previous behaviour printed the warning even when the file existed,
+    # which was a misleading and annoying log line on every download
+    # script run.
+    if Path(settings.WAKE_WORD_MODEL_PATH).is_file():
+        print(f"\n  ✓ Ultron wake-word found: {settings.WAKE_WORD_MODEL_PATH}\n")
+    else:
+        print("\nNote: the custom Ultron wake-word model is not auto-downloaded.")
+        print("Train your own and place at:")
+        print(f"  {settings.WAKE_WORD_MODEL_PATH}")
+        print("Until then, the prototype falls back to "
+              f"'{settings.WAKE_WORD_FALLBACK}'.\n")
     return 0
 
 

@@ -169,6 +169,18 @@ class ConversationMemory:
                 "continuing without discourse_type metadata.", e,
             )
 
+        # 2026-05-21 frontier-enhancement Item 2 -- cross-encoder
+        # reranker. Lazy-instantiated on first ``_apply_reranker``
+        # call so the model load only happens if retrieval actually
+        # uses the reranker (and the flag is on).
+        self._reranker = None
+
+        # 2026-05-21 frontier-enhancement Item 4 -- contextual
+        # retrieval. Lazy-instantiated on first ``_generate_context``
+        # call (background writer thread); the small LLM only loads
+        # if a turn actually gets embedded with the flag on.
+        self._context_generator = None
+
         # Lazy-imported here so a missing qdrant-client install doesn't crash
         # at module import time -- the orchestrator's _load_memory_if_enabled
         # catches the resulting ValueError and disables memory gracefully.
@@ -212,6 +224,40 @@ class ConversationMemory:
 
         common_dense = {"dense": VectorParams(size=self._embedder.dim, distance=Distance.COSINE)}
         common_sparse = {"bm25": SparseVectorParams()}
+
+        # 2026-05-21 frontier-enhancement Item 3 -- detect dimension
+        # mismatch between the configured embedder and any existing
+        # Qdrant collection. Existing collections at the wrong dim
+        # would crash on first insert; surfacing it here at startup
+        # is a much better failure mode than a cryptic vector-size
+        # error mid-turn. Tell the operator to run the migration.
+        conv_name = get_config().qdrant.collections.conversations
+        if conv_name in names:
+            existing_dim = None
+            try:
+                info = self._client.get_collection(conv_name)
+                existing_vectors = info.config.params.vectors
+                existing_dim = (
+                    existing_vectors["dense"].size
+                    if isinstance(existing_vectors, dict)
+                    else existing_vectors.size
+                )
+            except Exception as e:                                 # noqa: BLE001
+                logger.warning(
+                    "Could not introspect collection %s for dim check (%s); "
+                    "continuing.", conv_name, e,
+                )
+            if existing_dim is not None and existing_dim != self._embedder.dim:
+                raise RuntimeError(
+                    f"Qdrant collection '{conv_name}' was created at "
+                    f"dim={existing_dim} but the configured embedder "
+                    f"({get_config().embeddings.dense_model}) produces "
+                    f"dim={self._embedder.dim}. Run "
+                    f"`python scripts/migrate_embeddings.py` to "
+                    f"re-embed and rebuild the collection, or revert "
+                    f"`embeddings.dense_model` + `embeddings.dense_dim` "
+                    f"in config.yaml to match the old data.",
+                )
 
         if get_config().qdrant.collections.conversations not in names:
             self._client.create_collection(
@@ -370,13 +416,69 @@ class ConversationMemory:
             finally:
                 self._write_queue.task_done()
 
+    def _generate_context_for_turn(self, turn: MemoryTurn) -> str:
+        """Generate the contextual-retrieval prefix for ``turn`` if
+        the feature is enabled. Returns empty string when disabled
+        OR on any generation failure (fail-open).
+
+        Lazy-constructs ``self._context_generator`` on first call.
+        Runs in the background writer thread -- adding ~50-200 ms
+        here adds nothing to the voice hot path.
+
+        Fully defensive against test-mocked configs that don't carry
+        a ``memory.contextual_retrieval`` block: any AttributeError
+        on the config-path access returns empty string. This is the
+        same shape as the cross-encoder reranker config-access pattern
+        (which uses ``getattr(mem_cfg, "reranking", None)``).
+        """
+        try:
+            ctx_cfg = get_config().memory.contextual_retrieval
+        except AttributeError:
+            # Test mock config doesn't carry contextual_retrieval.
+            # Treat as disabled.
+            return ""
+        if not getattr(ctx_cfg, "enabled", False):
+            return ""
+        if self._context_generator is None:
+            try:
+                from ultron.memory.contextualizer import ContextGenerator
+                self._context_generator = ContextGenerator()
+            except Exception as e:                                # noqa: BLE001
+                logger.warning(
+                    "Context generator construction failed (%s); "
+                    "contextual retrieval will be a no-op.", e,
+                )
+                return ""
+        try:
+            return self._context_generator.generate_context(
+                turn.content, role=turn.role,
+            )
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning(
+                "Context generation failed for turn %d (%s); "
+                "embedding without context prefix.", turn.id, e,
+            )
+            return ""
+
     def _upsert_turn(self, turn: MemoryTurn) -> None:
         from qdrant_client.models import PointStruct, SparseVector
+
+        # 2026-05-21 frontier-enhancement Item 4 -- contextual
+        # retrieval. Generate a 5-15 word topic phrase and prepend
+        # it to the DENSE embedding text only. The literal content
+        # stays unmodified in the payload; the phrase is also stored
+        # separately at ``context_summary`` so it's inspectable.
+        # Sparse BM25 input is NOT contextualized (BM25 + LLM
+        # paraphrases would over-weight synthesized tokens).
+        context_summary = self._generate_context_for_turn(turn)
 
         # Embed content as both dense + sparse. The role prefix is identical
         # to the legacy embedder (preserves retrieval behavior) but stripped
         # for BM25 since it'd act as a noisy stop-token.
-        text_dense = f"{turn.role}: {turn.content}"
+        if context_summary:
+            text_dense = f"[{context_summary}] {turn.role}: {turn.content}"
+        else:
+            text_dense = f"{turn.role}: {turn.content}"
         dvec = self._embedder.encode_dense(text_dense)
         svec = self._embedder.encode_sparse(turn.content)[0]
 
@@ -422,6 +524,12 @@ class ConversationMemory:
             payload["topic_id"] = topic_id
         if discourse_type is not None:
             payload["discourse_type"] = discourse_type
+        # 2026-05-21 frontier-enhancement Item 4 -- persist the
+        # context summary so it's inspectable + so the migration
+        # script can re-use it on subsequent re-embeds without
+        # regenerating.
+        if context_summary:
+            payload["context_summary"] = context_summary
         # 2026-05-19 Track 6 voice-loop integration: persist the channel
         # so a future filter / retrieval branch can scope to USER vs
         # TEAMMATE vs SYSTEM. ChannelMetadata.as_payload_dict() returns
@@ -560,6 +668,35 @@ class ConversationMemory:
             pass
         return result
 
+    def _apply_reranker(
+        self,
+        query: str,
+        candidates: List[MemoryTurn],
+        k: int,
+    ) -> List[MemoryTurn]:
+        """Apply the cross-encoder reranker to ``candidates`` and
+        return the top ``k`` reordered turns.
+
+        Lazy-instantiates ``self._reranker`` on first call.
+        Fail-open at every layer: model load failure OR predict
+        failure returns ``candidates[:k]`` (pre-rerank order).
+        Caller is responsible for the ``reranking_enabled`` check
+        before invoking this -- the helper assumes the flag is on.
+        """
+        if not candidates or k <= 0:
+            return list(candidates)[: max(0, k)]
+        if self._reranker is None:
+            try:
+                from ultron.memory.reranker import CrossEncoderReranker
+                self._reranker = CrossEncoderReranker()
+            except Exception as e:                                 # noqa: BLE001
+                logger.warning(
+                    "Reranker construction failed (%s); using pre-rerank "
+                    "order.", e,
+                )
+                return list(candidates)[:k]
+        return self._reranker.rerank(query, candidates, k)
+
     def _retrieve_impl(
         self,
         query: str,
@@ -593,6 +730,19 @@ class ConversationMemory:
         if exclude_recent is None:
             exclude_recent = mem_cfg.rag_exclude_recent
         min_relevance = float(getattr(mem_cfg, "rag_min_relevance", 0.0))
+        # 2026-05-21 frontier-enhancement Item 2 -- cross-encoder
+        # reranker. When enabled, we pull a wider candidate set from
+        # the hybrid layer (``candidate_count``, typically 20) and let
+        # the cross-encoder re-order to the final top-``k``. The
+        # reranker is constructed lazily on first use and cached on
+        # ``self._reranker``; fail-open at every layer.
+        rerank_cfg = getattr(mem_cfg, "reranking", None)
+        reranking_enabled = bool(
+            rerank_cfg is not None and getattr(rerank_cfg, "enabled", False)
+        )
+        effective_pull_k = (
+            int(rerank_cfg.candidate_count) if reranking_enabled else k
+        )
         with self._lock:
             cutoff_id = max(0, self._next_id - exclude_recent)
         if cutoff_id <= 0:
@@ -645,14 +795,27 @@ class ConversationMemory:
                         ),
                         using="bm25",
                         filter=recency_filter,
-                        limit=max(k * 4, 20),
+                        limit=(
+                            max(effective_pull_k, k * 4, 20)
+                            if reranking_enabled
+                            else max(k * 4, 20)
+                        ),
                     ),
                 ],
                 query=FusionQuery(fusion=Fusion.RRF),
                 # Pull more than k so the post-filter has candidates to
-                # work with; the relevance threshold prunes back down
-                # to <= k before we return.
-                limit=max(k * 4, 20) if min_relevance > 0.0 else max(1, k),
+                # work with; the relevance threshold + reranker prune
+                # back down to <= k before we return. When reranking is
+                # enabled, we pull at least ``effective_pull_k``
+                # (the configured ``candidate_count``, typically 20)
+                # so the reranker has a meaningful candidate set.
+                # When reranking is OFF the legacy ``k * 4`` behaviour
+                # is preserved BYTE-IDENTICALLY for backwards compat.
+                limit=(
+                    max(effective_pull_k, k * 4, 20)
+                    if reranking_enabled
+                    else (max(k * 4, 20) if min_relevance > 0.0 else max(1, k))
+                ),
                 with_payload=True,
                 # Pull dense vectors so we can compute cosine similarity
                 # against the query embedding for the relevance filter
@@ -675,9 +838,12 @@ class ConversationMemory:
             )
             return []
 
-        # Legacy fast path -- threshold disabled, return RRF order.
+        # Legacy fast path -- threshold disabled.
         if min_relevance <= 0.0:
-            return [_payload_to_turn(pt.payload or {}) for pt in response.points]
+            rrf_turns = [_payload_to_turn(pt.payload or {}) for pt in response.points]
+            if reranking_enabled and rrf_turns:
+                return self._apply_reranker(query, rrf_turns, k)
+            return rrf_turns[: max(1, k)]
 
         # Score each candidate with the composite (cosine + RRF +
         # recency) and apply the relevance gate.
@@ -727,7 +893,14 @@ class ConversationMemory:
             )
 
         scored.sort(key=lambda row: row[0], reverse=True)
-        return [row[2] for row in scored[: max(1, k)]]
+        composite_turns = [row[2] for row in scored]
+        if reranking_enabled and composite_turns:
+            # Reranker sees survivors of the relevance threshold; it
+            # re-orders them and slices to top-k. The composite ranking
+            # is preserved for fail-open (if reranker errors, the
+            # pre-rerank order is returned).
+            return self._apply_reranker(query, composite_turns, k)
+        return composite_turns[: max(1, k)]
 
     # --- V1-gap A2: multi-pass per-category retrieval ---------------------
 
@@ -920,6 +1093,24 @@ class ConversationMemory:
                 primary_similarity=m.primary_rrf,
                 category_similarity=m.category_rrf,
             ))
+        # 2026-05-21 frontier search pass: optionally rerank a wider
+        # candidate window via the cross-encoder. Same dispatch as
+        # single-pass retrieve_impl. When reranking is enabled we
+        # pull a wider initial set from select_top_k so the cross-
+        # encoder has meaningful candidates to choose from.
+        rerank_cfg = getattr(mem_cfg, "reranking", None)
+        reranking_enabled = bool(
+            rerank_cfg is not None and getattr(rerank_cfg, "enabled", False)
+        )
+        if reranking_enabled:
+            wide_k = int(getattr(rerank_cfg, "candidate_count", 20))
+            picked = select_top_k(
+                candidates, k=max(1, wide_k), weights=weights,
+                primary_dense=primary_dense,
+            )
+            wide_turns = [_payload_to_turn(p.payload) for p in picked]
+            return self._apply_reranker(primary_query, wide_turns, k)
+
         picked = select_top_k(
             candidates, k=max(1, k), weights=weights,
             primary_dense=primary_dense,
@@ -1030,6 +1221,19 @@ class ConversationMemory:
             )
         flt: Optional[Filter] = Filter(must=must) if must else None
 
+        # 2026-05-21 frontier search pass: pull a wider candidate set
+        # when cross-encoder reranking is enabled so the reranker has
+        # something meaningful to choose from. Otherwise stick with
+        # the legacy max(1, k) limit (no behaviour change).
+        mem_cfg = get_config().memory
+        rerank_cfg = getattr(mem_cfg, "reranking", None)
+        reranking_enabled = bool(
+            rerank_cfg is not None and getattr(rerank_cfg, "enabled", False)
+        )
+        pull_limit = (
+            int(getattr(rerank_cfg, "candidate_count", 20))
+            if reranking_enabled else max(1, k)
+        )
         try:
             response = self._client.query_points(
                 collection_name=get_config().qdrant.collections.facts,
@@ -1050,7 +1254,7 @@ class ConversationMemory:
                     ),
                 ],
                 query=FusionQuery(fusion=Fusion.RRF),
-                limit=max(1, k),
+                limit=pull_limit,
                 with_payload=True,
                 with_vectors=False,
             )
@@ -1092,7 +1296,50 @@ class ConversationMemory:
             except (TypeError, ValueError) as e:
                 logger.debug("search_facts: skipping malformed row: %s", e)
                 continue
+        if reranking_enabled and len(rows) > k:
+            rows = self._rerank_facts(query, rows, k)
         return rows
+
+    def _rerank_facts(
+        self,
+        query: str,
+        rows: "List[FactRow]",
+        k: int,
+    ) -> "List[FactRow]":
+        """Apply the cross-encoder reranker to ``rows`` against the
+        ``query`` and return the top ``k`` re-ordered.
+
+        Same lazy-load + fail-open pattern as ``_apply_reranker``
+        for memory turns. The cross-encoder model is shared via
+        ``ultron.web_search.search._get_cross_encoder`` so we don't
+        load the ~1.1 GB model twice (memory + facts + web search
+        all use the same instance).
+        """
+        if not rows or k <= 0:
+            return list(rows)[: max(0, k)]
+        try:
+            # Reuse the shared cross-encoder instance from the
+            # web-search ranker module. Falls back to None when load
+            # fails -- we degrade to RRF order.
+            from ultron.web_search.search import _get_cross_encoder
+            reranker = _get_cross_encoder()
+            if reranker is None or not reranker._ensure_model():       # noqa: SLF001
+                return list(rows)[:k]
+            pairs = [(query, str(r.fact)) for r in rows]
+            scores = reranker._model.predict(                          # noqa: SLF001
+                pairs, show_progress_bar=False, convert_to_numpy=True,
+            )
+            ranked = sorted(
+                range(len(rows)),
+                key=lambda i: float(scores[i]),
+                reverse=True,
+            )[:k]
+            return [rows[i] for i in ranked]
+        except Exception as e:                                         # noqa: BLE001
+            logger.warning(
+                "Facts reranker failed (%s); using RRF order.", e,
+            )
+            return list(rows)[:k]
 
     # --- introspection ------------------------------------------------------
 

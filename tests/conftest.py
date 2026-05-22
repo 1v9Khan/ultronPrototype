@@ -1,12 +1,23 @@
 """Shared pytest fixtures and import shims.
 
-Also installs a session-end safeguard that kills any leftover python
-subprocesses launched during the test run. Without this, a hung test
-or a background-task pytest invocation that is never explicitly waited
-on can leave Python workers consuming hundreds of MB of RAM (and on
-the dev machine, hundreds of MB of VRAM too if the worker had loaded
-torch/CUDA before failing). The cleanup is best-effort and fail-open:
-psutil unavailable / permission denied / already-gone are all swallowed.
+Two safeguards live here:
+
+1. **Pre-flight concurrent-run detection** (2026-05-21): if another
+   pytest invocation against this codebase is already running, the
+   incoming run fails fast with a clear message naming the existing
+   PID. Without this, two concurrent ``pytest tests/`` calls (a real
+   trap when bash background tasks aren't waited on) silently contend
+   for fixture file locks, GPU memory, HF cache, and produce hung
+   workers at ~0 % CPU. The contention manifests as "the sweep takes
+   3-5x longer than usual AND some tests fail" -- exactly the failure
+   mode that motivated the existing session-end cleanup hook below.
+
+2. **Session-end subprocess cleanup**: terminates any leftover python
+   subprocesses launched during the test run. Without this, a hung
+   test or background-task pytest invocation that is never explicitly
+   waited on can leave Python workers consuming hundreds of MB of RAM
+   (and on the dev machine, hundreds of MB of VRAM too if the worker
+   loaded torch/CUDA before failing). Best-effort and fail-open.
 
 We never kill processes outside our own descendant tree, never kill
 non-python processes, and never kill a process that has an open TCP
@@ -63,6 +74,72 @@ def _disable_observation_io_for_tests():
 
 
 _ULTRON_MCP_PORT = 19761
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight: refuse to run if another pytest is in flight on this codebase.
+# Prevents the "two concurrent sweeps both hang at 0 % CPU" failure mode
+# that's a real trap when bash background tasks aren't waited on.
+# ---------------------------------------------------------------------------
+
+
+def pytest_configure(config):  # noqa: ARG001
+    """Pytest hook: refuse to start if another pytest run on this
+    codebase is already in flight."""
+    try:
+        import os
+        import psutil  # type: ignore[import]
+    except Exception:
+        return  # psutil unavailable -> can't enforce, silent fail-open
+
+    me_pid = os.getpid()
+    try:
+        me_proc = psutil.Process(me_pid)
+        my_ancestors = {a.pid for a in me_proc.parents()}
+    except Exception:
+        my_ancestors = set()
+    my_ancestors.add(me_pid)
+
+    # Codebase signature: any process whose cmdline mentions pytest +
+    # a 'tests' or 'tests/' arg is a candidate.
+    candidates = []
+    for p in psutil.process_iter(attrs=["pid", "name", "cmdline", "create_time"]):
+        try:
+            if not p.info["name"] or "python" not in p.info["name"].lower():
+                continue
+            cmdline = p.info["cmdline"] or []
+            joined = " ".join(cmdline).lower()
+            if "pytest" not in joined:
+                continue
+            if "tests" not in joined and "tests/" not in joined:
+                continue
+            if p.info["pid"] in my_ancestors:
+                continue
+            # Worker children of our own pytest run are fine.
+            try:
+                parents = {pa.pid for pa in p.parents()}
+            except Exception:
+                parents = set()
+            if me_pid in parents:
+                continue
+            candidates.append(p.info)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    if not candidates:
+        return
+
+    lines = ["\n  Another pytest run on this codebase is already in flight:"]
+    for c in candidates:
+        lines.append(
+            f"    PID {c['pid']}: {' '.join((c['cmdline'] or [])[:6])}"
+        )
+    lines.append(
+        "  Kill it first (Stop-Process -Id <PID> -Force) and retry. "
+        "Concurrent runs contend for fixture file locks, GPU memory, "
+        "and the HF cache, which causes hangs at ~0 % CPU."
+    )
+    raise pytest.UsageError("\n".join(lines))
 
 
 def _kill_test_descendants() -> None:

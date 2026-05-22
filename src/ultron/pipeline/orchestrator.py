@@ -55,7 +55,7 @@ from ultron.audio.smart_turn import (
 )
 from ultron.audio.vad import SpeechEvent
 from ultron.llm import LLMEngine
-from ultron.transcription import WhisperEngine
+from ultron.transcription import WhisperEngine, make_stt_engine
 from ultron.tts import RvcConverter, TextToSpeech
 from ultron.utils.logging import get_logger
 from ultron.coding import (
@@ -253,7 +253,13 @@ class Orchestrator:
             )
         else:
             self.vad = VoiceActivityDetector()
-        self.stt = WhisperEngine()
+        # 2026-05-21 frontier-enhancement Item 5: STT engine selection
+        # via ``stt.engine`` config (``auto`` / ``whisper`` / ``parakeet``).
+        # ``auto`` picks Parakeet if NeMo is installed, else Whisper.
+        # *** IF VOICE TRANSCRIPTION REGRESSES, SUSPECT THIS FIRST. ***
+        # Roll back with ``stt.engine: whisper`` to confirm whether the
+        # regression is Parakeet-specific before chasing other causes.
+        self.stt = make_stt_engine()
         self.memory = self._load_memory_if_enabled()
         self.llm = LLMEngine(memory=self.memory)
         # 2026-05-10 voice swap: select TTS engine via ``tts.engine`` config.
@@ -630,22 +636,51 @@ class Orchestrator:
         """Construct the web-search gate + executor if enabled.
 
         Returns ``(gate, executor, ack_source)`` triple. Any of them can be
-        ``None`` if web search is disabled or the API key is missing -- the
-        rest of the pipeline still works.
+        ``None`` if web search is disabled -- the rest of the pipeline
+        still works.
+
+        2026-05-21: switched from a Brave-only client to the multi-
+        provider :class:`SearchProviderChain` (SearxNG local -> Brave
+        API -> DuckDuckGo public). The chain handles missing API
+        keys and missing services gracefully (the relevant provider
+        is silently skipped). So the only blocking failure is "no
+        providers can be constructed at all".
         """
         from ultron.config import get_config
+        from ultron.web_search.provider_chain import SearchProviderChain
         ws_cfg = get_config().web_search
         if not ws_cfg.enabled:
             return None, None, None
-        if not os.getenv(ws_cfg.brave_api_key_env, ""):
+        # Brave key is only blocking if Brave is the ONLY configured
+        # provider. Otherwise the chain skips Brave and uses SearxNG
+        # / DDG.
+        configured_providers = list(getattr(ws_cfg, "providers", ["brave"]))
+        brave_in_chain = "brave" in [p.lower() for p in configured_providers]
+        brave_key_set = bool(os.getenv(ws_cfg.brave_api_key_env, ""))
+        if configured_providers == ["brave"] and not brave_key_set:
             logger.warning(
-                "web_search.enabled=true but %s missing in env -- "
-                "web search disabled.", ws_cfg.brave_api_key_env,
+                "web_search.enabled=true with only 'brave' provider but %s "
+                "missing in env -- web search disabled. Add 'searxng' or "
+                "'duckduckgo' to web_search.providers to enable local / "
+                "no-key search.", ws_cfg.brave_api_key_env,
             )
             return None, None, None
+        if brave_in_chain and not brave_key_set:
+            logger.info(
+                "Brave API key (%s) not set -- the chain will skip Brave "
+                "and fall through to the other configured providers.",
+                ws_cfg.brave_api_key_env,
+            )
         try:
-            brave = BraveSearchClient()
-            jina = JinaReaderClient()
+            from ultron.web_search.reader_chain import ReaderChain
+            searcher = SearchProviderChain()
+            # 2026-05-21 frontier: reader chain replaces the direct
+            # JinaReaderClient. Local trafilatura first (~50-150 ms,
+            # zero external dep), Jina fallback for JS-heavy sites
+            # (~1-3 s round-trip). The chain exposes the same
+            # ``fetch(url) -> Optional[str]`` interface as the bare
+            # client, so the WebSearchExecutor is unchanged.
+            jina = ReaderChain()
             gate = WebSearchGate(llm=self.llm)
             cache = None
             if self.memory is not None:
@@ -659,8 +694,12 @@ class Orchestrator:
                         "Web result cache disabled (%s) -- search will work "
                         "but won't reuse prior queries.", e
                     )
+            # WebSearchExecutor's ``brave`` param is duck-typed -- it
+            # only calls ``.search(query, count=...)``, which the
+            # chain implements identically. Keeping the param name
+            # for backwards-compatibility with existing tests.
             executor = WebSearchExecutor(
-                brave=brave, jina=jina, llm=self.llm, cache=cache,
+                brave=searcher, jina=jina, llm=self.llm, cache=cache,
             )
             ack = AcknowledgmentSource()
             return gate, executor, ack

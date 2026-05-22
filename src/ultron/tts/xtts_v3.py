@@ -596,6 +596,9 @@ class XttsV3Speech:
         phantom_tail_silence_threshold: Optional[float] = None,
         phantom_tail_max_event_ms: Optional[float] = None,
         phantom_tail_min_lead_silence_ms: Optional[float] = None,
+        gpt_cond_len: Optional[int] = None,
+        gpt_cond_chunk_len: Optional[int] = None,
+        max_ref_length: Optional[int] = None,
         rvc=None,  # accepted-but-ignored for legacy ctor compat
     ) -> None:
         # Resolve paths via config when not explicitly passed. Defaults
@@ -693,6 +696,23 @@ class XttsV3Speech:
                 float(xtts_cfg.phantom_tail_min_lead_silence_ms) if xtts_cfg is not None else 150.0
             )
         self._phantom_tail_min_lead_silence_ms = float(phantom_tail_min_lead_silence_ms)
+        # 2026-05-20 round 9: extended reference-window conditioning.
+        # These are forwarded to the XTTS server subprocess as CLI
+        # args and consumed once at speaker-embedding computation
+        # time. Coqui library defaults are 6/6/30 -- the round 9
+        # production defaults of 30/6/60 give the speaker embedding
+        # ~5x more prosody context + 2x more speaker-encoder context
+        # from the same 3-min reference, at a one-time ~1-2 s extra
+        # startup cost.
+        if gpt_cond_len is None:
+            gpt_cond_len = int(xtts_cfg.gpt_cond_len) if xtts_cfg is not None else 30
+        self._gpt_cond_len = int(gpt_cond_len)
+        if gpt_cond_chunk_len is None:
+            gpt_cond_chunk_len = int(xtts_cfg.gpt_cond_chunk_len) if xtts_cfg is not None else 6
+        self._gpt_cond_chunk_len = int(gpt_cond_chunk_len)
+        if max_ref_length is None:
+            max_ref_length = int(xtts_cfg.max_ref_length) if xtts_cfg is not None else 60
+        self._max_ref_length = int(max_ref_length)
         # 2026-05-11 chunk-streaming investigation: was prototyped but
         # not shipped. Pedalboard's PitchShift (Rubber Band offline
         # mode) buffers ~25 000 samples internally with ``reset=False``,
@@ -752,11 +772,18 @@ class XttsV3Speech:
             "--host", self.host,
             "--port", str(self.port),
             "--reference", str(self.reference_audio),
+            "--gpt-cond-len", str(self._gpt_cond_len),
+            "--gpt-cond-chunk-len", str(self._gpt_cond_chunk_len),
+            "--max-ref-length", str(self._max_ref_length),
         ]
         logger.info(
-            "Starting XTTS server (port=%d, ref=%s)",
+            "Starting XTTS server (port=%d, ref=%s, "
+            "gpt_cond_len=%d gpt_cond_chunk_len=%d max_ref_length=%d)",
             self.port,
             self.reference_audio.name,
+            self._gpt_cond_len,
+            self._gpt_cond_chunk_len,
+            self._max_ref_length,
         )
         try:
             # Inherit stderr to the parent so we see crashes; pipe

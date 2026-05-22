@@ -75,8 +75,25 @@ logger = logging.getLogger("xtts_server")
 
 
 class XttsHolder:
-    def __init__(self, reference_wav: Path):
+    def __init__(
+        self,
+        reference_wav: Path,
+        *,
+        gpt_cond_len: int = 30,
+        gpt_cond_chunk_len: int = 6,
+        max_ref_length: int = 60,
+    ):
         self.reference_wav = reference_wav
+        # 2026-05-20 round 9: extended reference-window conditioning.
+        # Coqui XTTS-v2 library defaults are ``gpt_cond_len=6`` and
+        # ``max_ref_length=30`` -- so the prior code (which omitted
+        # these args) only let ~6 s of prosody + ~30 s of speaker-
+        # encoder audio reach the model despite us handing it a full
+        # 3-minute reference. Surfaced as constructor args so the
+        # client can override via CLI from config.yaml.
+        self.gpt_cond_len = int(gpt_cond_len)
+        self.gpt_cond_chunk_len = int(gpt_cond_chunk_len)
+        self.max_ref_length = int(max_ref_length)
         self.model = None
         self.config = None
         self.gpt_latent = None
@@ -122,12 +139,21 @@ class XttsHolder:
 
             t0 = time.monotonic()
             self.gpt_latent, self.speaker_embedding = (
-                model.get_conditioning_latents(audio_path=str(self.reference_wav))
+                model.get_conditioning_latents(
+                    audio_path=str(self.reference_wav),
+                    gpt_cond_len=self.gpt_cond_len,
+                    gpt_cond_chunk_len=self.gpt_cond_chunk_len,
+                    max_ref_length=self.max_ref_length,
+                )
             )
             logger.info(
-                "speaker embedding computed in %.2fs from %s",
+                "speaker embedding computed in %.2fs from %s "
+                "(gpt_cond_len=%d gpt_cond_chunk_len=%d max_ref_length=%d)",
                 time.monotonic() - t0,
                 self.reference_wav.name,
+                self.gpt_cond_len,
+                self.gpt_cond_chunk_len,
+                self.max_ref_length,
             )
 
             # Warmup pass: compile any kernels so the first real request
@@ -210,6 +236,12 @@ def build_app(holder: XttsHolder) -> FastAPI:
             "sample_rate": holder.sample_rate,
             "reference_audio": str(holder.reference_wav),
             "model_loaded": holder.model is not None,
+            # 2026-05-20 round 9: surface the conditioning-window
+            # params so the sample-gen driver can A/B verify the
+            # server is actually using the configured values.
+            "gpt_cond_len": holder.gpt_cond_len,
+            "gpt_cond_chunk_len": holder.gpt_cond_chunk_len,
+            "max_ref_length": holder.max_ref_length,
         }
 
     @app.post("/synthesize")
@@ -317,14 +349,54 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=DEFAULT_REFERENCE,
         help="Path to the speaker reference WAV (default: cleaned Ultron mono).",
     )
+    parser.add_argument(
+        "--gpt-cond-len",
+        type=int,
+        default=30,
+        help=(
+            "Seconds of reference audio fed to the XTTS GPT prosody encoder. "
+            "Coqui library default is 6; bumped to 30 (2026-05-20 round 9) "
+            "so the 3-min Ultron reference actually contributes more than "
+            "the first ~6 s."
+        ),
+    )
+    parser.add_argument(
+        "--gpt-cond-chunk-len",
+        type=int,
+        default=6,
+        help=(
+            "Per-chunk size (s) for GPT prosody conditioning. XTTS averages "
+            "over gpt_cond_len/gpt_cond_chunk_len chunks. Keep at 6 unless "
+            "you know why you're changing it."
+        ),
+    )
+    parser.add_argument(
+        "--max-ref-length",
+        type=int,
+        default=60,
+        help=(
+            "Seconds of reference audio fed to the HiFi-GAN speaker encoder. "
+            "Coqui library default is 30; bumped to 60 (2026-05-20 round 9)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.reference.is_file():
         print(f"ERROR: reference audio missing: {args.reference}")
         return 1
 
-    holder = XttsHolder(args.reference)
-    print(f"loading XTTS + reference {args.reference} ...")
+    holder = XttsHolder(
+        args.reference,
+        gpt_cond_len=args.gpt_cond_len,
+        gpt_cond_chunk_len=args.gpt_cond_chunk_len,
+        max_ref_length=args.max_ref_length,
+    )
+    print(
+        f"loading XTTS + reference {args.reference} "
+        f"(gpt_cond_len={args.gpt_cond_len} "
+        f"gpt_cond_chunk_len={args.gpt_cond_chunk_len} "
+        f"max_ref_length={args.max_ref_length}) ..."
+    )
     holder.load()
 
     app = build_app(holder)

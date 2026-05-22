@@ -1,0 +1,29 @@
+# Ultron-local SearxNG settings.
+# `use_default_settings: true` merges the package defaults with our
+# overrides below -- we only need to specify what changes vs default.
+
+use_default_settings: true
+
+server:
+  secret_key: "ultron-local-search-do-not-use-in-public"
+  limiter: false
+  image_proxy: false
+  # Local-only deployment; allow all origins from localhost.
+  default_http_headers:
+    X-Content-Type-Options: nosniff
+    X-Download-Options: noopen
+    X-Robots-Tag: noindex, nofollow
+    Referrer-Policy: no-referrer
+
+search:
+  # The critical bit: enable JSON API so our SearxNGSearchClient works.
+  formats:
+    - html
+    - json
+  safe_search: 1
+  autocomplete: ""
+
+ui:
+  static_use_hash: true
+  default_locale: en
+  query_in_title: true

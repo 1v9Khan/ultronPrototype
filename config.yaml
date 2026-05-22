@@ -688,6 +688,15 @@ tts:
     phantom_tail_silence_threshold: 0.005
     phantom_tail_max_event_ms: 200.0
     phantom_tail_min_lead_silence_ms: 150.0
+    # 2026-05-20 round 9: extended reference-window conditioning.
+    # Coqui XTTS-v2 library defaults are 6 / 6 / 30 -- meaning only
+    # ~6 s of Ultron_vocals_mono_v1.wav reached the prosody encoder
+    # despite the file being 3 minutes long. Bumping these consumes
+    # more of the reference at startup (~1-2 s extra one-time cost)
+    # for a meaningfully richer speaker embedding.
+    gpt_cond_len: 30               # was Coqui default 6; total seconds fed to GPT prosody encoder
+    gpt_cond_chunk_len: 6          # XTTS-standard chunk size; gpt_cond_len/this = N averaged chunks
+    max_ref_length: 60             # was Coqui default 30; total seconds fed to HiFi-GAN speaker encoder
 
   # ACTIVE WHEN tts.engine == "piper_rvc"  (legacy fallback).
   # Original baseline voice character. Voice-quality lock applies

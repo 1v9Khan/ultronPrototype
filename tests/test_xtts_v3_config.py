@@ -1611,3 +1611,163 @@ def test_run_synth_loop_safety_valve_breaks_runaway_buffer():
     for chunk in out:
         # Each chunk must remain under (and tolerably near) max_chars.
         assert len(chunk) <= 800  # max_chars * 2 worst-case bound
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-20 round 9: extended reference-window conditioning.
+# Verifies gpt_cond_len / gpt_cond_chunk_len / max_ref_length config
+# fields exist with the right defaults + bounds + are forwarded into
+# the XTTS server subprocess argv at startup.
+# ---------------------------------------------------------------------------
+
+
+def test_xtts_v3_config_extended_reference_defaults():
+    """The round-9 defaults bump the Coqui library defaults (6/6/30)
+    so the 3-min Ultron reference actually contributes more than the
+    first ~6 s. If these regress, the speaker embedding silently
+    truncates back to the library defaults."""
+    cfg = XttsV3Config()
+    assert cfg.gpt_cond_len == 30
+    assert cfg.gpt_cond_chunk_len == 6
+    assert cfg.max_ref_length == 60
+
+
+def test_xtts_v3_config_extended_reference_bounds_enforced():
+    from pydantic import ValidationError
+    # gpt_cond_len: [3, 120]
+    XttsV3Config(gpt_cond_len=3)
+    XttsV3Config(gpt_cond_len=120)
+    with pytest.raises(ValidationError):
+        XttsV3Config(gpt_cond_len=2)
+    with pytest.raises(ValidationError):
+        XttsV3Config(gpt_cond_len=121)
+    # gpt_cond_chunk_len: [3, 30]
+    XttsV3Config(gpt_cond_chunk_len=3)
+    XttsV3Config(gpt_cond_chunk_len=30)
+    with pytest.raises(ValidationError):
+        XttsV3Config(gpt_cond_chunk_len=2)
+    with pytest.raises(ValidationError):
+        XttsV3Config(gpt_cond_chunk_len=31)
+    # max_ref_length: [10, 180] (180s = 3 min, the full clip)
+    XttsV3Config(max_ref_length=10)
+    XttsV3Config(max_ref_length=180)
+    with pytest.raises(ValidationError):
+        XttsV3Config(max_ref_length=9)
+    with pytest.raises(ValidationError):
+        XttsV3Config(max_ref_length=181)
+
+
+def test_xtts_v3_config_extended_reference_round_trips_through_dict():
+    cfg = XttsV3Config(gpt_cond_len=45, gpt_cond_chunk_len=9, max_ref_length=90)
+    cfg2 = XttsV3Config.model_validate(cfg.model_dump())
+    assert cfg2.gpt_cond_len == 45
+    assert cfg2.gpt_cond_chunk_len == 9
+    assert cfg2.max_ref_length == 90
+
+
+def test_xtts_v3_client_forwards_reference_window_in_argv(monkeypatch, tmp_path):
+    """Pure wiring test: confirms ``_start_server`` includes the
+    --gpt-cond-len / --gpt-cond-chunk-len / --max-ref-length flags in
+    the subprocess argv with the configured values. If the client
+    silently drops these, the server falls back to its own
+    argparse defaults and Coqui's library defaults (6/6/30) take
+    over -- which is exactly what we're trying to avoid."""
+    import subprocess
+    from ultron.tts import xtts_v3
+
+    server_py = tmp_path / "python.exe"
+    server_py.write_text("")
+    server_sc = tmp_path / "xtts_server.py"
+    server_sc.write_text("")
+    ref_wav = tmp_path / "ref.wav"
+    ref_wav.write_text("")
+
+    captured_argv: list[list[str]] = []
+
+    class _AbortPopen(Exception):
+        pass
+
+    def _fake_popen(argv, *a, **kw):
+        captured_argv.append(list(argv))
+        # Abort after argv capture so we don't wait on the health
+        # poll loop or actually spawn anything.
+        raise _AbortPopen()
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+
+    # The ctor calls _start_server which will hit _AbortPopen. Catch
+    # it -- we only care about the captured argv.
+    with pytest.raises(_AbortPopen):
+        xtts_v3.XttsV3Speech(
+            server_python=server_py,
+            server_script=server_sc,
+            reference_audio=ref_wav,
+            port=12347,
+            gpt_cond_len=45,
+            gpt_cond_chunk_len=9,
+            max_ref_length=90,
+        )
+
+    assert captured_argv, "expected exactly one Popen call"
+    argv = captured_argv[0]
+    # The exact positional order isn't important; pairs are.
+    assert "--gpt-cond-len" in argv
+    assert argv[argv.index("--gpt-cond-len") + 1] == "45"
+    assert "--gpt-cond-chunk-len" in argv
+    assert argv[argv.index("--gpt-cond-chunk-len") + 1] == "9"
+    assert "--max-ref-length" in argv
+    assert argv[argv.index("--max-ref-length") + 1] == "90"
+
+
+def test_xtts_v3_client_uses_config_defaults_when_kwargs_omitted(monkeypatch, tmp_path):
+    """When the caller doesn't pass gpt_cond_len / etc., the engine
+    reads them from the global config (which mirrors config.yaml).
+    Pins the production-default flow so a config bump propagates."""
+    import subprocess
+    from ultron.tts import xtts_v3
+
+    server_py = tmp_path / "python.exe"
+    server_py.write_text("")
+    server_sc = tmp_path / "xtts_server.py"
+    server_sc.write_text("")
+    ref_wav = tmp_path / "ref.wav"
+    ref_wav.write_text("")
+
+    captured_argv: list[list[str]] = []
+
+    class _AbortPopen(Exception):
+        pass
+
+    def _fake_popen(argv, *a, **kw):
+        captured_argv.append(list(argv))
+        raise _AbortPopen()
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+
+    with pytest.raises(_AbortPopen):
+        xtts_v3.XttsV3Speech(
+            server_python=server_py,
+            server_script=server_sc,
+            reference_audio=ref_wav,
+            port=12348,
+            # gpt_cond_len, gpt_cond_chunk_len, max_ref_length omitted
+        )
+
+    argv = captured_argv[0]
+    # Should fall through to either the explicit config or the
+    # ctor-level fallback defaults (30/6/60).
+    assert "--gpt-cond-len" in argv
+    assert "--gpt-cond-chunk-len" in argv
+    assert "--max-ref-length" in argv
+    # The values should be valid ints, and within the production
+    # range we just established in the bounds test.
+    gpt_cond_len = int(argv[argv.index("--gpt-cond-len") + 1])
+    gpt_cond_chunk_len = int(argv[argv.index("--gpt-cond-chunk-len") + 1])
+    max_ref_length = int(argv[argv.index("--max-ref-length") + 1])
+    assert 3 <= gpt_cond_len <= 120
+    assert 3 <= gpt_cond_chunk_len <= 30
+    assert 10 <= max_ref_length <= 180
+    # And they should be at least as generous as the Coqui library
+    # defaults -- that's the whole point of this change.
+    assert gpt_cond_len >= 6
+    assert max_ref_length >= 30

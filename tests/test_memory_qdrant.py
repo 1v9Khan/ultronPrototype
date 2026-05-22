@@ -151,12 +151,23 @@ def test_retrieve_respects_exclude_recent(memory):
 
 
 def test_retrieve_meets_read_budget(memory):
-    """Retrieval (embedding + Qdrant query) must complete within 200 ms."""
+    """Retrieval (embedding + Qdrant query [+ optional cross-encoder
+    rerank]) must complete within budget.
+
+    2026-05-21: budget raised from 200 ms -> 500 ms because the
+    cross-encoder reranker (bge-reranker-v2-m3) is now default-ON
+    per the frontier search pass. The reranker adds ~150-300 ms per
+    retrieve call on CPU but produces measurably better RAG context.
+    Set ``memory.reranking.enabled: false`` to revert to <200 ms
+    cosine+RRF behaviour.
+    """
     for i in range(50):
         memory.add("user", f"some content about topic {i}")
     _wait_for_writes(memory, 50)
 
-    # Warmup -- first query loads FastEmbed query encoders if not already.
+    # Warmup -- first query loads FastEmbed query encoders + the
+    # cross-encoder model if reranking is enabled (~1-3 s cold load
+    # the very first time; subsequent process-lifetime calls are warm).
     memory.retrieve("warmup query", k=5, exclude_recent=10)
 
     latencies_ms: List[float] = []
@@ -172,7 +183,7 @@ def test_retrieve_meets_read_budget(memory):
         latencies_ms.append((time.monotonic() - t0) * 1000)
     median = sorted(latencies_ms)[len(latencies_ms) // 2]
     print(f"\n  retrieve(): median={median:.0f} ms  max={max(latencies_ms):.0f} ms")
-    assert median < 200.0, f"retrieve median {median:.0f} ms exceeds 200 ms budget"
+    assert median < 500.0, f"retrieve median {median:.0f} ms exceeds 500 ms budget"
 
 
 # ---------------------------------------------------------------------------

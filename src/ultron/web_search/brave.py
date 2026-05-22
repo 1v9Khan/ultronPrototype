@@ -39,13 +39,27 @@ _BRAVE_BREAKER = CircuitBreaker(
 
 
 @dataclass(frozen=True)
-class BraveResult:
-    """One result row from a Brave search."""
+class SearchResult:
+    """One result row from any of the web-search providers
+    (SearxNG, Brave, DuckDuckGo) -- a provider-neutral type
+    used throughout the pipeline.
+
+    Was named ``BraveResult`` historically when Brave was the
+    only provider; renamed 2026-05-21 to reflect the multi-
+    provider chain. ``BraveResult`` is kept as a deprecated
+    alias for backward compatibility with any external code or
+    pickled cache rows; both names refer to the same class
+    object so ``isinstance(x, BraveResult)`` and
+    ``isinstance(x, SearchResult)`` are equivalent."""
 
     url: str
     title: str
-    snippet: str  # Brave's "description" field
+    snippet: str  # provider's content/description field
     rank: int  # 0-based position in the result list
+
+
+# Backward-compat alias.
+BraveResult = SearchResult
 
 
 class BraveSearchClient:

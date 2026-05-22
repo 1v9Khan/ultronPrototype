@@ -251,6 +251,28 @@ class WakeWordConfig(_Strict):
 
 
 class STTConfig(_Strict):
+    # 2026-05-21 frontier-enhancement Item 5 -- STT engine selector.
+    # ``auto`` (the default): use Parakeet TDT if NVIDIA NeMo is
+    # installed in the venv, fall back to Whisper otherwise. This
+    # gives the operator a one-step opt-in to Parakeet (just
+    # ``pip install nemo_toolkit[asr]``) without breaking the
+    # out-of-box experience on fresh installs.
+    #
+    # ``whisper`` (explicit): force Whisper regardless of what's
+    # installed. The clean swap-back path if Parakeet misbehaves
+    # ("set ``stt.engine: whisper`` and the issue is gone").
+    #
+    # ``parakeet`` (explicit): force Parakeet; raise if NeMo isn't
+    # available. Use this to verify the swap is actually taking
+    # effect in your environment.
+    #
+    # *** SUSPECT THIS FLAG FIRST IF VOICE QUALITY REGRESSES AFTER
+    # 2026-05-21. *** The Parakeet swap is a brand-new path; if
+    # the transcription suddenly mishears proper nouns, accents, or
+    # technical jargon that used to work, try ``stt.engine: whisper``
+    # to confirm it's the engine before chasing other causes.
+    engine: Literal["auto", "whisper", "parakeet"] = "auto"
+    # --- Whisper-side config (used when engine resolves to whisper) ---
     model: str = "small.en"
     device: str = "cuda"
     compute_type: str = "float16"
@@ -263,6 +285,45 @@ class STTConfig(_Strict):
     temperature: float = 0.0
     condition_on_previous_text: bool = False
     vad_filter: bool = False
+    # --- Parakeet-side config (used when engine resolves to parakeet) ---
+    # 2026-05-21 frontier-enhancement Item 5. Parakeet TDT is
+    # NVIDIA's RNN-Transducer ASR model -- streaming-friendly,
+    # ~RTFx 2000+ on consumer GPUs (Whisper base is ~100). The
+    # 0.6B-v3 variant is the production sweet spot in 2026.
+    #
+    # **Isolation pattern (DEFAULT):** NeMo is installed in an
+    # isolated venv at ``ultronVoiceAudio/.venv-parakeet/`` to
+    # avoid breaking the main venv's pinned numpy<2.0,
+    # transformers 4.41.2, librosa 0.9.1, hydra<1.1 (all used by
+    # the rest of the voice stack). The ``ParakeetEngine`` client
+    # in the main venv talks to a long-running FastAPI server
+    # started from .venv-parakeet via HTTP at
+    # ``http://127.0.0.1:8771``. Mirrors the XTTS pattern at
+    # ``.venv-xtts`` + ``ultronVoiceAudio/scripts/xtts_server.py``.
+    #
+    # To set up: run ``python -m venv ultronVoiceAudio/.venv-parakeet``
+    # then in that venv ``pip install nemo_toolkit[asr] fastapi
+    # uvicorn soundfile`` (the parakeet_server.py only needs those
+    # plus NeMo's own transitives).
+    #
+    # **Easy reversibility (the "variable switch"):** flip
+    # ``stt.engine: whisper`` in config.yaml to force Whisper. The
+    # Parakeet server stays installed but is never contacted; the
+    # main venv stays clean.
+    parakeet_model: str = "nvidia/parakeet-tdt-0.6b-v3"
+    parakeet_device: Literal["cuda", "cpu"] = "cuda"
+    # Isolated-venv server location. When ``parakeet_use_isolated_venv``
+    # is True (default), the engine spawns parakeet_server.py from
+    # this venv on first use and talks to it via HTTP.
+    parakeet_use_isolated_venv: bool = True
+    parakeet_server_python: str = "ultronVoiceAudio/.venv-parakeet/Scripts/python.exe"
+    parakeet_server_script: str = "ultronVoiceAudio/scripts/parakeet_server.py"
+    parakeet_server_url: str = "http://127.0.0.1:8771"
+    # How long to wait for the server's /healthz to return on startup.
+    parakeet_server_startup_timeout_seconds: float = 60.0
+    # Per-transcribe HTTP timeout. Parakeet is fast (~5-20 ms for
+    # 5 s audio); 30 s headroom covers cold-start + worst-case.
+    parakeet_request_timeout_seconds: float = 30.0
 
 
 class LLMServerConfig(_Strict):
@@ -561,12 +622,29 @@ class LLMConfig(_Strict):
     # through it.
     runtime: Literal["in_process", "http_server"] = "in_process"
     model_path: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
-    # Optional draft model for speculative decoding. None = no spec
-    # decoding. Wired into ``scripts/start_llamacpp_server.py`` in
-    # Stage C of the 4B plan. The voice in_process path doesn't use it
-    # yet (llama-cpp-python's speculative API is server-only at the
-    # moment we're integrating).
+    # Optional draft model path. When non-None, BOTH the HTTP server
+    # path AND the in-process path enable prompt-lookup-decoding (PLD)
+    # for speculative decoding. As of 2026-05-21 (Phase 1 of the
+    # frontier-enhancement pass), the in-process ``Llama`` instance
+    # constructs ``LlamaPromptLookupDecoding`` and passes it via
+    # ``draft_model=`` -- closing the round-8d-surfaced gap where
+    # spec decoding was HTTP-server-only. NOTE: PLD is N-gram-based
+    # against the prompt; it does NOT actually load the GGUF at this
+    # path. The path's presence acts as the toggle (matching the
+    # server's behaviour at ``llama_cpp/server/model.py:212``). A
+    # future round can swap this for a custom ``LlamaDraftModel``
+    # subclass that wraps the actual draft GGUF for genuine model-
+    # based drafting.
     draft_model_path: Optional[str] = None
+    # 2026-05-21 -- PLD tunables. Defaults match the HTTP server's
+    # ``settings.draft_model_num_pred_tokens`` (10) and PLD's library
+    # default ``max_ngram_size`` (2). Bumping ``num_pred_tokens``
+    # speculates further at higher cost on mis-predict; bumping
+    # ``max_ngram_size`` makes the matcher more selective (fewer but
+    # higher-confidence drafts). Conservative defaults; tune via the
+    # ``scripts/bench_llm_*`` family if you want to push.
+    speculative_max_ngram_size: int = Field(default=2, ge=1, le=8)
+    speculative_num_pred_tokens: int = Field(default=10, ge=1, le=64)
     n_ctx: int = Field(default=8192, ge=1)
     gpu_layers: int = -1
     default_temperature: float = 0.7
@@ -652,6 +730,28 @@ class LLMConfig(_Strict):
 
 
 class EmbeddingsConfig(_Strict):
+    # 2026-05-21 frontier-enhancement Item 3 -- embedder upgrade
+    # PATH AVAILABLE but DEFAULT STAYS bge-small.
+    #
+    # Live bench (2026-05-21): jina-embeddings-v3 produces 568 ms
+    # per encode call on CPU vs bge-small's 3 ms -- a **183x
+    # slowdown** for the +3 MTEB quality lift. On the voice memory
+    # write path that hammers the embedder every turn, this is
+    # a catastrophic trade. The migration script and the dim-
+    # mismatch detection logic stay in place so operators who
+    # specifically want jina-v3 (e.g., for offline batch processing
+    # of a large memory corpus) can still flip to it -- just two
+    # config edits + a migration run:
+    #
+    #     dense_model: "jinaai/jina-embeddings-v3"
+    #     dense_dim: 1024
+    #     # then: python scripts/migrate_embeddings.py
+    #
+    # Note: we evaluated Qwen3-Embedding-0.6B too but it's NOT in
+    # FastEmbed's catalog (would require a parallel sentence-
+    # transformers backend). Jina-v3 was the most attractive
+    # FastEmbed-supported frontier model on paper -- the per-call
+    # latency just makes it the wrong default for this workload.
     dense_model: str = "BAAI/bge-small-en-v1.5"
     sparse_model: str = "Qdrant/bm25"
     dense_dim: int = 384
@@ -851,6 +951,107 @@ class MemoryConfig(_Strict):
     background_summary: BackgroundSummarizerConfig = Field(
         default_factory=BackgroundSummarizerConfig,
     )
+    # 2026-05-21 frontier-enhancement Item 2 -- cross-encoder reranker.
+    reranking: "MemoryRerankingConfig" = Field(
+        default_factory=lambda: MemoryRerankingConfig(),
+    )
+    # 2026-05-21 frontier-enhancement Item 4 -- contextual retrieval.
+    contextual_retrieval: "MemoryContextualRetrievalConfig" = Field(
+        default_factory=lambda: MemoryContextualRetrievalConfig(),
+    )
+
+
+class MemoryContextualRetrievalConfig(_Strict):
+    """Contextual retrieval (Anthropic technique) -- frontier item 4.
+
+    When ``enabled`` is True, every memory turn gets a 5-15 word
+    LLM-generated topic phrase prepended to its content BEFORE
+    embedding. Original content is preserved unchanged in the
+    payload; the phrase is also stored separately at
+    ``context_summary`` for visibility.
+
+    Why: short utterances ("yes", "OK", "later") have almost no
+    embeddable signal. The context phrase restores their topical
+    meaning so retrieval can find them when the conversation
+    circles back. Anthropic reports up to 67% reduction in
+    retrieval failures on chunk-based document corpora; for
+    conversational memory the gain is concentrated on short /
+    acknowledgement turns.
+
+    Default OFF because it requires loading a second small LLM
+    (typically the spec-decoding draft GGUF, ~0.6 GB on CPU) and
+    adds ~50-200 ms per memory write -- background-only, so no
+    voice-path impact, but real RAM cost on small machines.
+
+    Pairs naturally with the reranker (item 2): the reranker
+    benefits most when the candidate set has informative content,
+    and the contextualizer makes short utterances informative.
+    """
+
+    enabled: bool = False
+    # When None, falls back to ``llm.draft_model_path`` (typically
+    # the spec-decoding draft GGUF -- already on disk for users on
+    # the qwen3.5-4b preset).
+    generator_model_path: Optional[str] = None
+    # ``cpu`` is correct for the typical write rate (~5-10 turns/min).
+    # Switch to ``cuda`` only if you observe write-queue backlog AND
+    # have ~0.6 GB free in the voice-path VRAM budget for the
+    # 0.8B Q4_K_M draft.
+    generator_device: Literal["cpu", "cuda"] = "cpu"
+    # Max tokens to generate per context phrase. 40 = 5-15 words
+    # with plenty of headroom for the LLM to be slightly verbose
+    # before our post-process trims.
+    max_context_tokens: int = Field(default=40, ge=10, le=200)
+    # Low temperature so context for the same turn is stable
+    # across regenerations / migrations.
+    generator_temperature: float = Field(default=0.2, ge=0.0, le=1.0)
+
+
+class MemoryRerankingConfig(_Strict):
+    """Cross-encoder reranker config (frontier item 2, 2026-05-21).
+
+    When ``enabled`` is True, retrieval pulls a wider candidate set
+    (top ``candidate_count``, typically 20) from Qdrant's hybrid
+    dense+sparse fused output, then a cross-encoder model scores each
+    ``(query, candidate.content)`` pair directly and re-orders the
+    final top-``rag_top_k``. Industry-standard 2026 RAG pattern --
+    quality lift 15-30% on RAGAS-style metrics at the cost of
+    ~20-50 ms per retrieval turn on CPU.
+
+    2026-05-21 (frontier search pass): default flipped from False to
+    True now that the cross-encoder is also wired for web-search
+    snippet ranking. The model loads ONCE per process (shared via
+    ``_CROSS_ENCODER_CACHE`` in ``web_search.search``), so memory
+    reranking pays no additional load cost. Per-turn latency adds
+    ~265 ms on memory.retrieve() calls -- accepted in exchange for
+    measurably better RAG context per industry benchmarks.
+
+    Set to False to revert: cosine + RRF + recency composite only.
+    Fail-open: model load or predict failures still fall back to
+    the pre-rerank order. The voice path never crashes.
+    """
+
+    enabled: bool = True
+    # Default model: ``BAAI/bge-reranker-v2-m3`` -- the 2026
+    # production-standard cross-encoder reranker. 568M params,
+    # ~1.1 GB on disk, multilingual, strong on conversational
+    # text. Alternatives: ``BAAI/bge-reranker-base`` (~560 MB,
+    # smaller, English-only), ``jinaai/jina-reranker-v1-turbo-en``
+    # (~140 MB, smaller still). Set to "custom-id/repo" to swap.
+    model: str = "BAAI/bge-reranker-v2-m3"
+    # ``cpu`` is correct for typical candidate counts (~20). Move
+    # to ``cuda`` only if measurement shows CPU is the bottleneck
+    # AND voice-path VRAM headroom permits (~600 MB for v2-m3 on
+    # CUDA).
+    device: Literal["cpu", "cuda"] = "cpu"
+    # Cross-encoder context truncation. Conversational memory chunks
+    # are typically <300 tokens, so 512 is generous.
+    max_length: int = Field(default=512, ge=64, le=2048)
+    # How many candidates to retrieve from the hybrid layer BEFORE
+    # reranking. Reranker then narrows to ``rag_top_k``. Higher =
+    # better recall at higher CPU cost. 20 is the production
+    # sweet spot per the 2026 RAG literature.
+    candidate_count: int = Field(default=20, ge=1, le=100)
 
 
 class BraveConfig(_Strict):
@@ -904,6 +1105,66 @@ class CitationConfig(_Strict):
     inline_marker_format: str = "superscript"  # "bracket" | "superscript"
 
 
+class TrafilaturaConfig(_Strict):
+    """Local-extraction reader config (frontier 2026-05-21).
+
+    ``trafilatura`` is a pure-Python boilerplate-stripping library --
+    we use it to convert raw HTML into clean markdown locally, instead
+    of round-tripping to Jina Reader. ~50-150 ms per page locally vs
+    Jina's ~1-3 s round-trip. Trade-off: trafilatura sees only the
+    raw HTML response, so JS-heavy SPAs return empty (the reader
+    chain falls through to Jina in that case).
+    """
+    timeout_seconds: float = Field(default=6.0, gt=0.0)
+    # Trailing-edge truncation cap to keep big pages out of the LLM
+    # prompt. Inherits from web_search.jina.max_bytes if None at
+    # construction time, so the cap stays consistent across readers.
+    max_bytes: int = Field(default=200_000, ge=0)
+
+
+class SearxNGConfig(_Strict):
+    """SearxNG self-hosted meta-search config (frontier 2026-05-21).
+
+    SearxNG is an OSS aggregator that runs as a local service and
+    relays queries to Google / Bing / DDG / Brave / Wikipedia in
+    parallel. Running it locally gives unlimited queries with no API
+    keys and is typically faster than any single public API.
+
+    Setup (operator-side):
+      docker run -d --name searxng -p 8888:8080 searxng/searxng
+    OR:
+      pip install searxng && searxng-run
+
+    Then add ``searxng`` to ``web_search.providers`` -- it's already
+    in the default list, so installing the service is the only step.
+    """
+    base_url: str = "http://localhost:8888"
+    timeout_seconds: float = Field(default=3.0, gt=0.0)
+    count: int = Field(default=5, ge=1, le=20)
+    # Comma-separated category filter ("general", "news"). Empty
+    # uses SearxNG's default.
+    categories: str = ""
+    # Comma-separated engine constraint ("google,duckduckgo,wikipedia").
+    # Empty uses SearxNG's full engine set.
+    engines: str = ""
+
+
+class DuckDuckGoConfig(_Strict):
+    """DuckDuckGo public-search fallback config (frontier 2026-05-21).
+
+    No API key required. Uses the community ``duckduckgo-search``
+    library to scrape DDG's HTML / Lite endpoints. Typical latency
+    ~500-1500 ms (slower than Brave API; faster than running a full
+    browser). Intended as the LAST fallback after SearxNG + Brave.
+    """
+    timeout_seconds: float = Field(default=5.0, gt=0.0)
+    count: int = Field(default=5, ge=1, le=20)
+    # DDG region code. ``"wt-wt"`` = worldwide; ``"us-en"`` = US English.
+    region: str = "us-en"
+    # ``"moderate"``, ``"strict"``, or ``"off"``.
+    safesearch: Literal["moderate", "strict", "off"] = "moderate"
+
+
 class WebSearchConfig(_Strict):
     enabled: bool = True
     brave_api_key_env: str = "ULTRON_BRAVE_API_KEY"
@@ -912,6 +1173,39 @@ class WebSearchConfig(_Strict):
     cache: WebCacheConfig = Field(default_factory=WebCacheConfig)
     # V1-gap B3.
     citation: CitationConfig = Field(default_factory=CitationConfig)
+    # 2026-05-21 frontier: multi-provider search chain with local-
+    # first fallback ladder. Try SearxNG (local, unlimited) -> Brave
+    # (API, 2000/mo free) -> DuckDuckGo (HTML scrape, no key, slow).
+    # First non-empty result wins. SearxNG missing service silently
+    # falls through to Brave; Brave rate-limit / circuit-open falls
+    # through to DDG. Set to a single-element list to disable
+    # fallback (e.g., ``["brave"]`` to keep legacy single-provider
+    # behaviour).
+    providers: List[str] = Field(
+        default_factory=lambda: ["searxng", "brave", "duckduckgo"]
+    )
+    searxng: SearxNGConfig = Field(default_factory=SearxNGConfig)
+    duckduckgo: DuckDuckGoConfig = Field(default_factory=DuckDuckGoConfig)
+    # 2026-05-21 frontier: multi-reader chain for full-page extraction.
+    # Try trafilatura (local, fast, ~50-150 ms) -> Jina Reader (external,
+    # ~1-3 s round-trip, handles JS-heavy sites). First non-empty
+    # extraction wins. Set to ``["jina"]`` to disable the local
+    # reader entirely (legacy behaviour).
+    readers: List[str] = Field(
+        default_factory=lambda: ["trafilatura", "jina"]
+    )
+    trafilatura: TrafilaturaConfig = Field(default_factory=TrafilaturaConfig)
+    # 2026-05-21 frontier: snippet ranking dispatch.
+    # - ``"cross_encoder"`` (DEFAULT): use bge-reranker-v2-m3 cross-
+    #   encoder. ~20-50 ms for 10-20 candidate snippets on CPU. Same
+    #   model as ``memory.reranking`` so it loads once + caches.
+    #   Specialised for query-document relevance ranking.
+    # - ``"llm"`` (legacy): use the local Qwen with a JSON-emit prompt.
+    #   ~500-1500 ms. The original path; kept for swap-back.
+    # - ``"none"``: skip ranking; take the provider's native order +
+    #   slice to top_n. ~0 ms. Reasonable when SearxNG / Brave already
+    #   rank well and you want the absolute fastest path.
+    ranker: Literal["cross_encoder", "llm", "none"] = "cross_encoder"
 
 
 class AddressingConfig(_Strict):
@@ -1249,6 +1543,23 @@ class XttsV3Config(_Strict):
     # already pulls the worst offenders). Sentences longer than 600
     # chars still get sub-split, just much less often.
     max_chars_per_synth_call: int = Field(default=600, ge=80, le=2000)
+    # 2026-05-20 round 9: extended reference-window conditioning. XTTS
+    # v2's ``get_conditioning_latents()`` has Coqui library defaults
+    # of ``gpt_cond_len=6`` and ``max_ref_length=30`` -- so even though
+    # we hand it a 3-minute Ultron_vocals_mono_v1.wav, only ~6 s
+    # reach the GPT for prosody conditioning and ~30 s reach the
+    # HiFi-GAN speaker encoder. Bumping both gives the speaker
+    # embedding more prosodic variety from the same clip without
+    # touching the locked v3 filter chain or requiring a fine-tune.
+    # ``gpt_cond_len`` is the total seconds fed to the GPT
+    # conditioning encoder; ``gpt_cond_chunk_len`` is the per-chunk
+    # size (XTTS averages over N=gpt_cond_len/gpt_cond_chunk_len
+    # chunks); ``max_ref_length`` is the total seconds fed to the
+    # HiFi-GAN speaker encoder. Per-startup cost is ~1-2 s extra of
+    # conditioning latent computation but it only happens once.
+    gpt_cond_len: int = Field(default=30, ge=3, le=120)
+    gpt_cond_chunk_len: int = Field(default=6, ge=3, le=30)
+    max_ref_length: int = Field(default=60, ge=10, le=180)
 
 
 class KokoroConfig(_Strict):

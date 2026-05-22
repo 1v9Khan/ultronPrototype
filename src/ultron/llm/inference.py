@@ -558,6 +558,44 @@ class LLMEngine:
                 llama_kwargs["n_batch"] = int(n_batch)
             if n_ubatch is not None:
                 llama_kwargs["n_ubatch"] = int(n_ubatch)
+            # 2026-05-21 (Phase 1 frontier-enhancement pass) -- wire
+            # prompt-lookup-decoding (PLD) into the in-process path,
+            # closing the round-8d-surfaced gap where spec decoding
+            # was HTTP-server-only. The HTTP server itself uses PLD
+            # (not model-based drafting) per
+            # ``llama_cpp/server/model.py:211-215``; matching that
+            # behaviour in-process means both runtimes share the same
+            # algorithm. ``draft_model_path is not None`` is the
+            # toggle (the GGUF at that path is NOT loaded for PLD --
+            # PLD is purely N-gram-based against the prompt buffer).
+            # Fail-open: if the import fails for any reason, we log
+            # WARN and proceed without PLD; voice still works.
+            draft_model_path = getattr(cfg, "draft_model_path", None)
+            if draft_model_path:
+                try:
+                    from llama_cpp.llama_speculative import (
+                        LlamaPromptLookupDecoding,
+                    )
+                    llama_kwargs["draft_model"] = LlamaPromptLookupDecoding(
+                        max_ngram_size=int(
+                            getattr(cfg, "speculative_max_ngram_size", 2)
+                        ),
+                        num_pred_tokens=int(
+                            getattr(cfg, "speculative_num_pred_tokens", 10)
+                        ),
+                    )
+                    logger.info(
+                        "Speculative decoding enabled (PLD, max_ngram=%s, "
+                        "num_pred=%s, toggle path=%s)",
+                        getattr(cfg, "speculative_max_ngram_size", 2),
+                        getattr(cfg, "speculative_num_pred_tokens", 10),
+                        draft_model_path,
+                    )
+                except Exception as e:                                 # noqa: BLE001
+                    logger.warning(
+                        "PLD attach failed (%s); proceeding without "
+                        "speculative decoding.", e,
+                    )
             llama = Llama(**llama_kwargs)
         except Exception as e:
             logger.error("LLM load failed: %s", e)

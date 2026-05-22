@@ -13,7 +13,11 @@ API call entirely.
 """
 
 from ultron.web_search.acknowledgments import AcknowledgmentSource
-from ultron.web_search.brave import BraveResult, BraveSearchClient
+from ultron.web_search.brave import (
+    BraveResult,  # deprecated alias for backward-compat
+    BraveSearchClient,
+    SearchResult,
+)
 from ultron.web_search.cache import WebResultsCache
 from ultron.web_search.gating import GateDecision, GateVerdict, WebSearchGate
 from ultron.web_search.jina import JinaReaderClient
@@ -27,8 +31,9 @@ from ultron.web_search.search import (
 
 __all__ = [
     "AcknowledgmentSource",
-    "BraveResult",
+    "BraveResult",  # deprecated alias
     "BraveSearchClient",
+    "SearchResult",
     "GateDecision",
     "GateVerdict",
     "JinaReaderClient",

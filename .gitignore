@@ -118,3 +118,48 @@ ultronVoiceAudio/*.mp3
 # native ffmpeg / segfault issues on Windows; venv removed).
 ultronVoiceAudio/scripts/generate_f5_samples.py
 ultronVoiceAudio/scripts/process_f5_samples.py
+
+# ---------------------------------------------------------------------------
+# Kokoro fine-tune project (2026-05-21/-22) -- live fine-tune training arc
+# ---------------------------------------------------------------------------
+# ``ultronVoiceAudio/kokoro_finetune/`` is a fork of the upstream
+# ``kokoro-deutsch`` repo (adapted to English single-speaker Ultron
+# fine-tune). It has its own ``.git/`` -- this outer repo doesn't
+# track any of its files. Our customizations (configs/config_ultron_ft.yml,
+# scripts/{prepare_ultron_training,launch_or_resume_training,
+# install_training_autoresume,extract_voicepack,test_ultron_voice}.py)
+# are committed to that inner repo. To recreate:
+#   1. ``git clone https://github.com/<kokoro-deutsch-fork>``
+#   2. Apply our config + scripts from the memory file's documented list
+# See project_ultron_2026_05_22_partial_finetune_ship_*.md for the full
+# project layout + resume-training procedure.
+ultronVoiceAudio/kokoro_finetune/
+
+# Bulk synthetic training corpora (per-pass; ~300 MB each of 24 kHz
+# mono PCM_16 WAVs + manifests). Regenerable from
+# ``ultronVoiceAudio/scripts/bulk_evaluate_finetune.py``.
+ultronVoiceAudio/kokoro_training_corpus_*/
+
+# Bulk evaluation outputs (filtered XTTS clips for A/B comparison;
+# WAVs + tracking JSONL). Regenerable.
+ultronVoiceAudio/bulk_eval/
+
+# XTTS fine-tune detour (deferred; checkpoints + dataset). The
+# ``xtts_finetune_runs/`` dir grows to 20+ GB on a long run.
+ultronVoiceAudio/xtts_finetune_dataset/
+ultronVoiceAudio/xtts_finetune_runs/
+
+# Whisper large-v3 transcripts produced during corpus prep.
+ultronVoiceAudio/transcript_large_v3/
+
+# ---------------------------------------------------------------------------
+# Misc runtime data NOT to be committed (regenerated on each run)
+# ---------------------------------------------------------------------------
+# Coding-session state and sandboxes
+data/projects.json
+# Qdrant per-collection sqlite caches (rebuilt from the live data;
+# committing these would push tens of MB of binary that drifts every
+# run). The collection schemas are pinned in code, not in the
+# storage.sqlite files.
+data/qdrant/collection/conversations/storage.sqlite
+data/qdrant/collection/web_results/storage.sqlite

@@ -10,6 +10,213 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 
+**2026-05-21 cross-encoder broadened across all retrieval surfaces + BraveResult -> SearchResult rename -- COMPLETE.** Follow-up to the cross-encoder ranker work. User direction: "can that ranker be applied in a positive manner more broadly across our data retrieval? ... in your tests you were using brave instead of our local implementation, why? I want the local to be our default". Four changes:
+
+1. **`memory.reranking.enabled` default flipped True** -- the cross-encoder is loaded once per process (shared via `_CROSS_ENCODER_CACHE`), so memory retrieval pays no additional model-load cost. Per-call: ~150-300 ms added to `ConversationMemory.retrieve()` in exchange for measurably better RAG context per the MTEB-Rerank benchmarks. Set to False to revert.
+2. **Reranker applied to multi-pass retrieval** (V1-gap A2 `retrieve_multi`): when reranking enabled, `select_top_k` pulls a wider candidate window (`candidate_count`, default 20) and the cross-encoder picks the final `k`. Closes the gap where category fan-out queries got merged by composite score only.
+3. **Reranker applied to facts retrieval** (`search_facts`): new `_rerank_facts(query, rows, k)` helper. Pulls a wider initial set from Qdrant + reranks against the fact text. Shares the same cross-encoder instance as memory + web search.
+4. **`BraveResult` renamed to `SearchResult`** with `BraveResult = SearchResult` backward-compat alias. The legacy name implied Brave-first when the chain is actually SearxNG-first (local). 7 source files + 4 test files updated to import + reference the new name; old code keeps working via the alias.
+
+Test budget bumped for `test_retrieve_meets_read_budget`: 200 ms -> 500 ms to accommodate the new default-ON reranker.
+
+Tests: 249/249 pass in 35.60 s across all retrieval-related test files (memory + memory/* + web_search/*).
+
+---
+
+**2026-05-21 cross-encoder snippet ranker (replaces LLM-pass ranking) -- COMPLETE.** Third frontier search-pipeline upgrade. User direction: "the ranking via local qwen, is there a reliable option that does not require an llm pass to speed it up?". Result: 2-5x speedup on ranking step + better qualitative ranking.
+
+* **What changed:** [`src/ultron/web_search/search.py`](../src/ultron/web_search/search.py) `_rank_snippets()` now dispatches on `web_search.ranker`:
+  - ``cross_encoder`` (DEFAULT): bge-reranker-v2-m3 cross-encoder, ~265 ms warm for 6-20 candidates on CPU.
+  - ``llm`` (legacy, swap-back): the original Qwen-with-JSON-prompt path, ~500-1500 ms.
+  - ``none``: take provider order as-is, ~0 ms.
+* **Why:** the LLM-pass ranking was the slowest non-LLM step in the search pipeline. A purpose-built cross-encoder is faster AND often produces better rankings (specialised models beat general LLMs on this task per the MTEB-Rerank leaderboard). Live test on a Python-typing query: provider's native order put "How to center a div" first; the cross-encoder correctly placed all 3 typing-related results in top 3.
+* **Reuses Item-2 infrastructure:** the same `bge-reranker-v2-m3` model already wired for memory retrieval. Module-level cache (`_CROSS_ENCODER_CACHE`) so search + memory share one model load (~1.1 GB, ~1-3 s one-time cold load via HuggingFace cache; ~265 ms per ranking call once warm).
+* **Fail-open at every layer:** missing reranker module / model-load failure / `predict()` crash all return `results[:top_n]` (provider order). The voice path never crashes on ranking issues.
+* **Config schema** [`WebSearchConfig.ranker: Literal["cross_encoder", "llm", "none"]`](../src/ultron/config.py) -- the chooser. Default switched from implicit-LLM to explicit cross_encoder.
+* **New test file** [`tests/test_web_search_ranker_dispatch.py`](../tests/test_web_search_ranker_dispatch.py) -- 14 tests covering config defaults / validation + dispatch (`none` short-circuit / `cross_encoder` route / `llm` route / config-failure fallback / short-list short-circuit / empty-results short-circuit) + cross-encoder behaviour (no-reranker fallback / score-based reorder / predict-failure fallback / instance caching / failure caching).
+* **Pipeline now (post all three frontier search-passes):**
+  ```
+  User query -> Gate (local LLM) -> Cache (Qdrant, local)
+            -> SearchProviderChain: SearxNG (local Docker) -> Brave -> DDG
+            -> Cross-encoder ranks snippets (LOCAL, ~265 ms)
+            -> ReaderChain: trafilatura (local Python) -> Jina (external)
+            -> Local LLM synthesizes response from sources
+  ```
+  Removed: the local-Qwen ranking step (was 500-1500 ms). Net latency drop on the search-and-answer path: ~250-1250 ms per query.
+* **Tests: 55/55 pass in 5.31 s** across the three frontier-pass test files (provider chain 22 + reader chain 19 + ranker dispatch 14).
+
+---
+
+**2026-05-21 multi-reader chain for local page extraction -- COMPLETE.** Local-first cascade for full-text extraction: `trafilatura` (local Python) → `Jina Reader` (external fallback). User direction: "lets go with the local replacement". Reduces external dependency + cuts per-page extraction latency ~10x.
+
+* **What changed:** new module [`src/ultron/web_search/trafilatura_reader.py`](../src/ultron/web_search/trafilatura_reader.py) wraps the `trafilatura` Python library (~50-150 ms per page, pure-Python boilerplate stripping). New [`src/ultron/web_search/reader_chain.py`](../src/ultron/web_search/reader_chain.py) cascades trafilatura → Jina with same `fetch(url) -> Optional[str]` interface as either client individually.
+* **Why this matters:** Jina Reader (`https://r.jina.ai/`) was the last external dependency in the search → answer pipeline. Trafilatura handles ~80%+ of typical news / blog / docs pages locally; only JS-heavy SPAs and Cloudflare-challenged sites need to fall through to Jina. End-to-end voice search now has ZERO external dependencies on the happy path (SearxNG local → trafilatura local → local Qwen synthesis).
+* **Live test:** typing.python.org "Best Practices" page: trafilatura returned 3529 chars of clean markdown in 328 ms (the chain path). Same content via Jina would have taken ~1500-3000 ms round-trip.
+* **Config additions** under [`WebSearchConfig`](../src/ultron/config.py): new `readers: list[str]` (default `["trafilatura", "jina"]`); new `trafilatura: TrafilaturaConfig` (timeout 6s, max_bytes 200k -- same caps as Jina for consistency). Set `readers: ["jina"]` to disable the local reader (legacy behaviour).
+* **Orchestrator wiring** [`_load_web_search_if_enabled`](../src/ultron/pipeline/orchestrator.py) -- replaced direct `JinaReaderClient()` construction with `ReaderChain()`. WebSearchExecutor's `jina` param is duck-typed; the chain's `fetch()` signature matches.
+* **Per-reader circuit breakers** -- trafilatura has its own 5-failure / 5-min window breaker (more permissive than Jina's, since local failures are usually JS-empty extractions vs systemic errors).
+* **New dev dep** `trafilatura>=2.0` installed in main venv (~30 MB; pure Python; depends on `lxml` which is already there for memory layer).
+* **New test file** [`tests/test_web_search_reader_chain.py`](../tests/test_web_search_reader_chain.py) -- 19 tests covering config defaults + validation + chain construction + first-non-empty-wins + falls-through-on-None + falls-through-on-empty-string + falls-through-on-exception + skips-unconstructable-reader + all-readers-none-returns-None + empty-URL-short-circuit + client direct smoke. No real network; all clients mocked.
+* **Pipeline now (post both 2026-05-21 frontier passes):**
+  ```
+  User query -> Gate (local LLM) -> Cache (Qdrant, local)
+            -> SearchProviderChain: SearxNG (local Docker) -> Brave -> DDG
+            -> Local LLM ranks snippets
+            -> ReaderChain: trafilatura (local Python) -> Jina (external)
+            -> Local LLM synthesizes response from sources
+  ```
+  External touch-points: only the actual outbound HTTP to whatever websites the user is asking about (and Brave/DDG when SearxNG is unavailable). All "intelligence" stages -- ranking, extraction, synthesis -- are local.
+* **Tests: 41/41 pass in 5.28 s** (19 new reader-chain + 22 provider-chain).
+
+---
+
+**2026-05-21 multi-provider web search chain -- COMPLETE.** Local-first fallback ladder replacing the bare Brave-only client. User direction: "lets use the local versions first, then have the apis as fallbacks". Goal: avoid hitting Brave's 2000/mo free-tier ceiling + improve latency by using a local meta-search relay when available.
+
+* **New providers** in [`src/ultron/web_search/`](../src/ultron/web_search/):
+  - [`searxng.py`](../src/ultron/web_search/searxng.py) -- self-hosted SearxNG meta-search at `http://localhost:8888`. Unlimited, no API keys, ~200-500 ms typical latency. Requires the operator to install + run SearxNG locally (Docker `searxng/searxng` or `pip install searxng`); when not running, the chain silently falls through to Brave.
+  - [`duckduckgo.py`](../src/ultron/web_search/duckduckgo.py) -- public DDG search via the `duckduckgo-search` Python lib. No API key, ~500-1500 ms latency. Last-resort fallback for when SearxNG isn't running AND Brave is rate-limited / circuit-broken.
+* **Chain orchestrator** [`provider_chain.py`](../src/ultron/web_search/provider_chain.py) -- `SearchProviderChain` tries providers in the configured order, returning the first non-empty result. Each provider failure (empty list, exception, construction error) falls through transparently. Same `.search(query, count)` signature as `BraveSearchClient` so it's a drop-in replacement at `WebSearchExecutor`.
+* **Config schema additions** under [`WebSearchConfig`](../src/ultron/config.py):
+  - `providers: list[str]` (default `["searxng", "brave", "duckduckgo"]`) -- order is preference.
+  - `searxng: SearxNGConfig` -- base_url, timeout, count, optional engines/categories filters.
+  - `duckduckgo: DuckDuckGoConfig` -- timeout, region, safesearch.
+* **Orchestrator wiring** [`_load_web_search_if_enabled`](../src/ultron/pipeline/orchestrator.py) -- replaced direct `BraveSearchClient()` construction with `SearchProviderChain()`. Brave-key-missing no longer blocks web search outright; only blocks when Brave is the SOLE configured provider. Without Brave key, chain skips Brave and uses SearxNG / DDG.
+* **Per-provider circuit breakers** -- each provider has its own `CircuitBreaker` (3 failures in 5 min -> 5 min cooldown). A flapping provider doesn't keep adding latency to every query.
+* **New dev dep** `duckduckgo-search` installed in main venv (pure Python; no system deps beyond `requests` which is already there).
+* **New test file** [`tests/test_web_search_provider_chain.py`](../tests/test_web_search_provider_chain.py) -- 22 tests covering config defaults + validation + chain construction (default / custom / empty-rejection / unknown-provider-rejection / case-normalisation) + first-non-empty-wins semantics + fall-through-on-empty + fall-through-on-exception + skip-unconstructable + all-empty-returns-empty + empty-query-short-circuit + provider client imports + reachability + empty-query handling. No real network; all HTTP mocked.
+* **Operator action to activate SearxNG (optional):**
+  ```
+  docker run -d --name searxng -p 8888:8080 searxng/searxng
+  ```
+  The chain default already includes SearxNG first, so installing the service is the only step. Until then, chain falls straight to Brave -> DDG.
+* **Latency profile (typical):**
+  - SearxNG hit: ~200-500 ms (parallel meta-search of multiple upstream engines).
+  - SearxNG missing -> Brave: chain adds ~5-15 ms of cascade overhead before Brave fires.
+  - Brave rate-limited -> DDG: adds ~10-30 ms cascade.
+  - All providers exhausted: chain returns `[]` in <50 ms (no network).
+* **Tests: 22/22 pass in 5.88 s** via the unified `scripts/run_tests.py` runner (with `pytest-timeout` enforced + pre-flight kill of competing pytest runs).
+
+---
+
+**2026-05-21 Kokoro fine-tune corpus packaging -- IN PROGRESS.** Pipeline to turn the XTTS+filter bulk-eval output into an LJSpeech-style training dataset for fine-tuning Kokoro on Ultron's voice. User direction: "lets move towards corpus packaging".
+
+* **New script** [`ultronVoiceAudio/scripts/package_kokoro_corpus.py`](../ultronVoiceAudio/scripts/package_kokoro_corpus.py): reads one or more `bulk_eval_<ts>/manifest.json` files, filters by duration window (default 1-12 s), validates WAV invariants (mono PCM_16 @ 24 kHz), copies clips into a unified `wavs/` flat directory, emits `metadata.csv` (LJSpeech pipe-delimited), deterministic 95/5 train/val split, plus `README.md` + `stats.json` for reproducibility.
+* **Multi-pass support:** `--source` is repeatable. Each pass's IDs get prefixed with the source dir name (`bulk_eval_20260521_123515__short_response_0001.wav`) so 2-3 passes at different XTTS temperatures union cleanly without ID collisions.
+* **Source bulk-eval state:** `ultronVoiceAudio/bulk_eval/bulk_eval_20260521_123515/` -- 602/602 succeeded, 52.7 min audio, 24 kHz mono PCM_16, full 4-trim pipeline applied (gapped/soft lead + gapped/soft trail) plus spectral smoothing + custom v2 filter (-0.8 pitch, chorus, 0.16 reverb wet). Pass-1 dry-run accepted 550/602 (52 long_response clips >12 s dropped per StyleTTS2 norms).
+* **Plan (in flight):** synthesize 2 more passes at temps 0.55 + 0.75 for prosody variety, then package the union → ~100 min training corpus targeting ~1650 clips.
+
+---
+
+**2026-05-21 testing-process hardening -- COMPLETE.** Eliminates the "sweep keeps having issues" failure mode that recurred during the frontier-enhancement pass. User direction: "edit the testing scripts to fix all issues". Four concrete fixes layered together.
+
+1. **Pre-flight concurrent-run check** in [`tests/conftest.py`](../tests/conftest.py): the new `pytest_configure` hook scans for other python processes running pytest on this codebase and raises `pytest.UsageError` with the offending PID + a "kill it first" message. Eliminates the "two concurrent sweeps both hang at 0 % CPU" symptom that recurred this session.
+2. **Per-test timeout** added to [`pyproject.toml`](../pyproject.toml) addopts: `--timeout=30 --timeout-method=thread`. Any individual test that hangs surfaces as `Failed: Timeout >30.0s` naming the offending test, instead of silently freezing the sweep. Tests that genuinely need >30s should use `@pytest.mark.timeout(120)` per-test.
+3. **Slowest-10 report** also via addopts: `--durations=10`. Shows the 10 slowest tests at the end of every run so we see what's eating time before it becomes a hang.
+4. **Unified runner script** [`scripts/run_tests.py`](../scripts/run_tests.py) is now THE test entry point. Built-in safeguards: pre-flight kill of competing pytest invocations (with a loud warning naming the PIDs), live-stream stdout (no buffered surprise at end), KeyboardInterrupt-safe shutdown that terminates descendants. Flags: `--fast` (skip `@pytest.mark.slow`), `--no-timeout` (debug aid), `--kill-only` (just clean up + exit), `-y/--yes` (skip kill confirmation).
+
+New dev dep: `pytest-timeout>=2.0` (added to [`pyproject.toml`](../pyproject.toml) optional-dependencies.dev). Install with `pip install -e ".[dev]"` or `pip install pytest-timeout psutil`.
+
+Usage going forward:
+```
+# THE standard way to run the sweep
+python scripts/run_tests.py
+
+# Run a subset
+python scripts/run_tests.py tests/memory/
+
+# Run just matching tests
+python scripts/run_tests.py -k embedder
+
+# Just clean up any stuck pytest workers + exit
+python scripts/run_tests.py --kill-only --yes
+```
+
+The legacy `python -m pytest tests/ -q --no-header --ignore=tests/coding/test_orchestration_real.py` still works (the addopts apply to direct pytest invocations too), but the runner script's pre-flight kill is the additional layer that prevents the concurrent-run trap.
+
+Verified: 41 tests via the new runner pass in 2.14 s; the wrapper's overhead (pre-flight scan + live-streaming) is ~4 s.
+
+---
+
+**2026-05-21 frontier-enhancement pass, Item 5 -- Parakeet TDT STT engine + factory + swap-back -- COMPLETE.** New STT path alongside Whisper with explicit suspect-tagging for future debugging. Item 5 of 5.
+
+* **What changed:** new module [`src/ultron/transcription/parakeet_engine.py`](../src/ultron/transcription/parakeet_engine.py) wraps NVIDIA Parakeet TDT (default model `nvidia/parakeet-tdt-0.6b-v3`). Drop-in interface compatible with `WhisperEngine.transcribe(audio, language) -> str`. New factory in [`src/ultron/transcription/__init__.py`](../src/ultron/transcription/__init__.py) -- `make_stt_engine()` -- selects between engines per `stt.engine` config.
+* **Config schema** in [`STTConfig`](../src/ultron/config.py): new `engine: Literal["auto", "whisper", "parakeet"] = "auto"` selector. `auto` picks Parakeet when NeMo is installed in the venv, Whisper otherwise. Whisper-specific fields preserved (model, device, compute_type, beam_size, etc.); new Parakeet-specific fields `parakeet_model` + `parakeet_device`.
+* **Why auto rather than "Parakeet as forced default":** NVIDIA NeMo (`pip install nemo_toolkit[asr]`, ~2 GB) is the canonical Python path for Parakeet inference, and shipping a default that requires uninstalled dependencies would be a vaporware change. The `auto` selector makes Parakeet activate AUTOMATICALLY the moment the user runs the install command -- no second config flip needed. Whisper continues to work out of the box.
+* **Orchestrator integration:** [`Orchestrator.__init__`](../src/ultron/pipeline/orchestrator.py) was `self.stt = WhisperEngine()`; now `self.stt = make_stt_engine()`. The factory logs the resolved engine choice at INFO so it's visible at every startup.
+* **!!! SUSPECT-FIRST TAGGING !!!** Per user direction: this change is explicitly flagged as a top suspect if voice transcription quality regresses after 2026-05-21. Multiple anchors in the codebase carry that warning:
+  - The orchestrator construction comment: `*** IF VOICE TRANSCRIPTION REGRESSES, SUSPECT THIS FIRST. ***`
+  - The `STTConfig.engine` field docstring carries the same flag.
+  - The `ParakeetEngine` module docstring carries the same flag.
+  - The Parakeet engine's transcribe-failure error log message says: `"if this is recurring, swap to ``stt.engine: whisper``"`.
+  - The Parakeet engine's startup log says: `"if voice transcription is wrong, set ``stt.engine: whisper`` to rule out this engine"`.
+  Grep `frontier item 5` or `SUSPECT THIS FIRST` to find every anchor.
+* **Easy swap-back:** flipping `stt.engine: whisper` in `config.yaml` forces the legacy path regardless of NeMo presence. Single-line change, no migration needed. To verify the swap is actually taking effect, look for `STT engine: whisper` in startup logs.
+* **New test file** [`tests/test_stt_engine_swap.py`](../tests/test_stt_engine_swap.py) -- 14 tests covering schema defaults + Literal validation + factory `auto` resolution (NeMo present / absent / load-fail-fallback) + explicit `parakeet` raises when NeMo missing + explicit `whisper` always returns Whisper + Parakeet config threading + `is_nemo_available` returns bool + `ParakeetEngine` direct construction raises clearly without NeMo.
+* **What's NOT yet validated:** real Parakeet inference on this user's machine. The user must run `pip install nemo_toolkit[asr]` to get the dependency, then start Ultron and check the startup log line. No GGUF / no model file pre-fetch in `scripts/download_models.py` because the NeMo install isn't gated by the script.
+
+---
+
+**2026-05-21 frontier-enhancement pass, Item 4 -- contextual retrieval (Anthropic technique) -- COMPLETE.** Per-turn LLM-generated topic phrases prepended to embedded text. Item 4 of 5.
+
+* **What it does:** every memory turn gets a 5-15 word "topic phrase" from a small LLM (default: the spec-decoding draft GGUF, e.g., `Qwen3.5-0.8B-Q4_K_M.gguf`). The phrase is prepended to the DENSE embedding text only (`[<topic>] <role>: <content>`); sparse BM25 stays on plain content; original content is preserved unmodified in the payload. The synthesized topic is also stored at `payload["context_summary"]` for visibility + idempotent re-migration.
+* **Why it matters for conversational memory:** short utterances ("yes", "OK", "later") have almost no embeddable signal on their own. The contextualizer restores their topical meaning so retrieval can find them when the conversation circles back. Anthropic measured up to 67% reduction in retrieval failures on chunk-based document corpora; for conversational memory the lift is concentrated on short acknowledgement turns.
+* **New module** [`src/ultron/memory/contextualizer.py`](../src/ultron/memory/contextualizer.py) wraps `llama_cpp.Llama`. Default CPU device so it doesn't compete with the main 4B voice-path LLM for VRAM. Lazy load (first `generate_context` call triggers the GGUF load); fail-open at every layer (missing file, load failure, inference error -> empty string).
+* **New config schema** [`MemoryContextualRetrievalConfig`](../src/ultron/config.py) under `memory.contextual_retrieval`: `enabled` (default `False`), `generator_model_path` (None -> falls back to `llm.draft_model_path`), `generator_device` (`cpu`/`cuda`, default `cpu`), `max_context_tokens` (default 40), `generator_temperature` (default 0.2 -- low for consistency).
+* **Integration in [`ConversationMemory._upsert_turn`](../src/ultron/memory/qdrant_store.py):** new helper `_generate_context_for_turn(turn)` is called BEFORE embedding; the returned phrase is prepended to the dense embed text only. Runs in the background writer thread -- the ~50-200 ms LLM call adds nothing to the voice hot path.
+* **Migration script updated** -- [`scripts/migrate_embeddings.py`](../scripts/migrate_embeddings.py) `_embed_and_insert` now detects `memory.contextual_retrieval.enabled` and generates context per-turn during re-embed. If the legacy payload already has `context_summary` (from a previous run), it's reused -- the migration is idempotent for contextualization too.
+* **New test file** [`tests/test_memory_contextual_retrieval.py`](../tests/test_memory_contextual_retrieval.py) -- 18 tests covering schema defaults + range validation + lazy load + eager load + empty input / missing model / inference failure / load failure all fail-open + quote stripping / "Topic:" prefix stripping + integration via `ConversationMemory._generate_context_for_turn` (flag-disabled / flag-enabled / construct-fail / runtime-fail). All paths mock `llama_cpp.Llama` -- no real GGUF load happens in tests.
+* **Voice path impact:** zero. The contextualizer lives in the background writer thread; the writer queue is drained on its own thread. Voice latency (capture -> STT -> LLM -> TTS) is byte-identical when this flag is OFF and effectively-identical when it's ON (since the LLM call happens after the assistant has finished speaking).
+* **Defensive config-access fix (2026-05-21 follow-up):** `_generate_context_for_turn` originally did a direct `get_config().memory.contextual_retrieval` access, which broke 14 tests in the full sweep that mock `get_config` with a `SimpleNamespace` missing the `memory.contextual_retrieval` block. Wrapped in `try / except AttributeError -> return ""` to treat such configs as feature-disabled. Pattern matches the existing reranker config-access (`getattr(mem_cfg, "reranking", None)`).
+
+---
+
+**2026-05-21 frontier-enhancement pass, Item 3 -- embedder swap infrastructure (default stays on bge-small) -- COMPLETE.** Item 3 of 5. **Important deviation from the originally-staged plan:** we built the swap infrastructure for jina-embeddings-v3 BUT live-bench measured a **183x per-encode slowdown** on CPU (568 ms/call vs bge-small's 3 ms/call), which would catastrophically regress the voice memory write path. The default stays on `BAAI/bge-small-en-v1.5`; jina-v3 remains opt-in via explicit config + the migration script for operators with offline-batch workloads where 568 ms/call is acceptable.
+
+* **Originally planned:** flip default to `jinaai/jina-embeddings-v3` (1024-dim, MTEB ~65.5, +3 points over bge-small).
+* **What actually shipped:**
+  - Migration script [`scripts/migrate_embeddings.py`](../scripts/migrate_embeddings.py) -- reads existing Qdrant store, re-embeds with the new model, atomically swaps in the new store, backs up the old. Dry-run mode (`--dry-run`). Custom paths via `--source/--target/--backup`.
+  - Dim-mismatch detection in [`ConversationMemory._ensure_collections`](../src/ultron/memory/qdrant_store.py): startup raises a clear, actionable RuntimeError pointing at the migration script when the existing on-disk collection's dim doesn't match the configured embedder dim. Failure mode upgrade: cryptic mid-turn vector-size error -> upfront migration prompt.
+  - download_models.py step pre-fetches `jinaai/jina-embeddings-v3` so the opt-in path doesn't pay the ~570 MB download at runtime.
+  - [`tests/test_embeddings_swap.py`](../tests/test_embeddings_swap.py) -- 8 tests covering default still reflects bge-small + 384 dim (after revert); jina-v3 opt-in via explicit config still works; dim-mismatch raises with actionable message; dim-match silent; introspect-failure fail-open.
+* **How to opt in to jina-v3** (operators with large offline corpora):
+  ```yaml
+  embeddings:
+    dense_model: jinaai/jina-embeddings-v3
+    dense_dim: 1024
+  ```
+  Then: `python scripts/migrate_embeddings.py` to rebuild Qdrant.
+* **Why FastEmbed-supported but slow:** jina-v3 is a 572M-param transformer; bge-small is 33M. Even with ONNX INT8, the per-call inference gap is fundamental. On the voice memory write path (every turn -> embed), 568 ms/call would push memory writes from background-invisible to user-perceptible.
+
+---
+
+**2026-05-21 frontier-enhancement pass, Item 2 -- cross-encoder reranker in RAG pipeline -- COMPLETE.** New retrieval-quality lever sitting between the existing hybrid dense+sparse layer and the final top-k slice. Item 2 of 5.
+
+* **What changed:** new module [`src/ultron/memory/reranker.py`](../src/ultron/memory/reranker.py) wraps `sentence_transformers.CrossEncoder`. Default model `BAAI/bge-reranker-v2-m3` (568M params, ~1.1 GB, multilingual, 2026 production standard). Integrated as `ConversationMemory._apply_reranker(query, candidates, k)`, called from `_retrieve_impl` AFTER the composite (cosine + RRF + recency) scoring and BEFORE the final top-k slice -- so the reranker sees candidates that already cleared the relevance threshold.
+* **New config schema** [`MemoryRerankingConfig`](../src/ultron/config.py) under `memory.reranking`: `enabled` (default `False` -- opt-in because the model is a ~1.1 GB download), `model`, `device` (cpu/cuda, default cpu), `max_length` (default 512), `candidate_count` (default 20 -- how many candidates to pull from hybrid before reranking).
+* **Wider candidate pull when enabled:** `_retrieve_impl` increases the hybrid-layer `limit` from `max(k*4, 20)` to `max(candidate_count*2, 20)` when reranking is active, so the cross-encoder has a meaningful set to choose from.
+* **Lazy + fail-open at every layer:**
+  - `CrossEncoderReranker` only loads the model on first `rerank` call (or `eager=True`).
+  - `_apply_reranker` lazy-constructs the reranker on `self._reranker` (cached after first use).
+  - Model load failure -> log WARN, return pre-rerank order, never raise. Predict failure -> same. Empty query / empty candidates / `top_k<=0` -> pre-rerank order.
+  - Voice path never crashes on reranker issues; degrades to the composite (cosine + RRF + recency) baseline.
+* **download_models.py step 12a/13** pre-fetches `BAAI/bge-reranker-v2-m3` into the HF cache so the first runtime call doesn't pay the download. Step renumber 12 -> 13 (RVC moved to 13/13).
+* **New test file** [`tests/test_memory_reranker.py`](../tests/test_memory_reranker.py) -- 18 tests covering schema defaults + range validation + lazy load + eager load + score-desc ordering + top_k truncation + rerank_with_scores carrying pre_rerank_index + empty-query / empty-candidates / top_k<=0 short-circuits + model-load-failure fail-open + predict-failure fail-open + `_apply_reranker` empty-candidates / top_k_zero / construction-failure / caching contract.
+* **Expected gain (per industry benchmarks):** +15-30% retrieval quality on RAGAS metrics. Live on this stack: untested -- listening test required. Cost: ~20-50 ms per retrieval turn on CPU (NOT all turns -- only when RAG fires).
+* **Tests: 3587 -> 3605 passing (+18 net; all 18 reranker tests) / 15 skipped / 0 failed in 63.51 s.** No regressions. Voice-quality lock preserved.
+
+---
+
+**2026-05-21 frontier-enhancement pass, Item 1 -- in-process speculative decoding wired -- COMPLETE.** Closes the round-8d-surfaced gap where spec decoding was HTTP-server-only on the voice path. User direction: "lets do the first 5" (referring to a five-item frontier-improvements list spanning LLM / retrieval / embedder / STT). Item 1 of 5.
+
+* **What changed:** [`LLMEngine._build_llama`](../src/ultron/llm/inference.py) now constructs `LlamaPromptLookupDecoding` (PLD) and passes it via `draft_model=` to `Llama(...)` whenever `cfg.draft_model_path` is non-None. The toggle matches the HTTP server's behaviour at `llama_cpp/server/model.py:211-215` -- the GGUF at `draft_model_path` is NOT loaded by PLD (it's N-gram-based against the prompt buffer); the path's presence is the on/off flag. The round-8d note implied "model-based" drafting; in reality both runtimes use PLD. Phase 2 (custom `LlamaDraftModel` subclass wrapping a real draft Llama) is documented as a future round.
+* **New config knobs** in [`LLMConfig`](../src/ultron/config.py): `speculative_max_ngram_size` (default 2, range [1,8]) + `speculative_num_pred_tokens` (default 10, range [1,64]). Defaults match the HTTP server's `settings.draft_model_num_pred_tokens` and PLD's library default. Bump to push for higher-confidence drafts on prompt-heavy turns.
+* **Fail-open:** if `LlamaPromptLookupDecoding` import fails for any reason (hypothetical pinned wheel without the symbol), the voice path still boots; `Llama` is constructed without `draft_model` and a WARN is logged. Tested explicitly via `test_build_llama_pld_import_failure_is_fail_open`.
+* **New test file** [`tests/test_llm_spec_decoding.py`](../tests/test_llm_spec_decoding.py) -- 9 tests covering schema defaults + range validation + wiring presence (when path set) + wiring absence (when path None) + custom tuning passthrough + fail-open path + UltronConfig round-trip.
+* **Expected gain:** ~5-15 ms TTFT on prompt-heavy turns where the system prompt + recent history have repeated N-grams the next-token prediction matches. Conservative; not the 30-60 ms the round-8d note implied (that figure assumed model-based drafting). The win is real but small relative to the existing optimisation stack.
+* **Tests: 3543 -> 3587 passing (+44 net; +9 spec decoding tests + 35 worktree-related test discovery uplift) / 15 skipped / 0 failed in 66.83 s.** No regressions. Voice-quality lock preserved (no LLM model file / SOUL.md / RVC / Piper touch).
+
+---
+
 **2026-05-20 round 8 -- config cleanup pass (TUNING SUMMARY + dead-field removal + reorganization) -- COMPLETE.** User direction: "clean up and organize the config for easy tuning". Pure organizational cleanup -- no live-behavior changes.
 
 * Added a TUNING SUMMARY box at the top of [config.yaml](../config.yaml) listing the ~12 fields actually tuned live (STT model, LLM preset, TTS engine + speed + pause, Smart Turn V3 latency knobs, mic device + gain, memory thresholds) with current values + swap-back commands. Operators no longer have to scan 1000+ lines to find the active knobs.
@@ -35,7 +242,7 @@ Both are config-only changes; tests 3543 passing unchanged. Commits `7dbb5f5` (p
 * **`KokoroSpeech.set_ack_cache` + `_synthesize` cache lookup.** [Orchestrator._kick_off_ack_clip_prewarm](../src/ultron/pipeline/orchestrator.py) silently skipped prewarm because Kokoro lacked `set_ack_cache`. After wiring, cached "Mm." / "Right." / "Considering." / "Querying external sources." / etc. return in ~5 ms instead of ~200-400 ms of CPU synth -- biggest single perceived-latency improvement on conversational + web-search turns. Cache stores already-rendered audio so the cached path is bit-identical to live.
 * **`tts.kokoro.speed`: 1.0 -> 1.15.** Matches XTTS production value.
 * **`tts.pause_ms`: 180 -> 100.** Snappier inter-sentence cadence on the round-8c producer-consumer pipeline.
-* **Speculative-decoding gap surfaced during analysis** (NOT shipped this round): the in-process [`LLMEngine`](../src/ultron/llm/inference.py) never actually plumbs `draft_model_path` into `llama_cpp.Llama()`, so spec decoding has been HTTP-server-only this whole time. The voice path runs 4B alone. Wiring it in needs a custom `LlamaDraftModel` subclass (llama-cpp-python provides the abstract base + a prompt-lookup variant but not a "wrap another Llama as draft" implementation out of the box). Documented as a future round.
+* **Speculative-decoding gap surfaced during analysis** (NOT shipped this round): the in-process [`LLMEngine`](../src/ultron/llm/inference.py) never actually plumbs `draft_model_path` into `llama_cpp.Llama()`, so spec decoding has been HTTP-server-only this whole time. The voice path runs 4B alone. Wiring it in needs a custom `LlamaDraftModel` subclass (llama-cpp-python provides the abstract base + a prompt-lookup variant but not a "wrap another Llama as draft" implementation out of the box). Documented as a future round. **CLOSED 2026-05-21** by the frontier-enhancement Item 1 pass entry at the top of this doc -- PLD is now wired in-process matching the HTTP server. The "wrap another Llama as draft" Phase 2 path remains a future round.
 
 +7 tests in [tests/test_kokoro_engine.py](../tests/test_kokoro_engine.py) covering ack-cache attach/detach/log, cache-hit skips KPipeline, cache-miss falls through, no-cache-attached default, cache-hit skips apply_runtime_filter, stripped-key contract. Commit `5672f2b`. Tests 3536 -> 3543 passing.
 
