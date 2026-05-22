@@ -22,10 +22,10 @@
 # ║      The knobs you'll touch most often live, with current values         ║
 # ╠══════════════════════════════════════════════════════════════════════════╣
 # ║                                                                          ║
-# ║   STT     stt.engine                    "moonshine"  (default; streams) ║
-# ║           stt.moonshine_model           "medium-streaming-en"            ║
-# ║           stt.moonshine_update_interval_s   0.2                         ║
-# ║           stt.moonshine_streaming_capture   true                        ║
+# ║   STT     stt.engine                    "parakeet"  (CUDA, streams)     ║
+# ║           stt.gaming_engine             "moonshine" (CPU swap on game)  ║
+# ║           stt.parakeet_model            "nvidia/parakeet-tdt-0.6b-v3"   ║
+# ║           stt.parakeet_stream_feed_interval_s  0.20                     ║
 # ║           (Whisper swap-back: stt.engine "whisper" +                    ║
 # ║            stt.model "Systran/faster-distil-whisper-small.en")          ║
 # ║                                                                          ║
@@ -273,7 +273,13 @@ stt:
   # *** SUSPECT THIS FLAG FIRST IF VOICE QUALITY REGRESSES. *** Flip to
   # "whisper" to confirm the engine is the cause before chasing other
   # leads.
-  engine: "moonshine"
+  engine: "parakeet"
+  # 2026-05-22 -- dual-STT for gaming mode. With ``parakeet`` primary +
+  # ``moonshine`` gaming, both engines load at startup; gaming engage
+  # swaps to Moonshine (CPU, 0 VRAM) and kills the Parakeet server.
+  # Set to "" to disable the swap (gaming mode keeps the primary engine
+  # and only flips Kokoro/LLM/VLM).
+  gaming_engine: "moonshine"
 
   # -------------------------------------------------------------------------
   # WHISPER KNOBS  (ACTIVE WHEN engine == "whisper" OR auto-fallback)
@@ -1065,6 +1071,25 @@ browser:
     - "Looking at it."
     - "Loading the site."
     - "Give me a moment to navigate."
+
+# ---------------------------------------------------------------------------
+# Intent recognizer (2026-05-22) -- engine-agnostic semantic matching
+# of voice utterances against registered canonical phrases via Gemma-300M
+# embeddings. Matched intents short-circuit the LLM gating path and fire
+# local handlers in ~5-15 ms. Works with any STT engine (Parakeet /
+# Moonshine / Whisper / typed input). Adds ~300 MB CPU RAM in q4.
+# ---------------------------------------------------------------------------
+intent:
+  enabled: true                  # opt-in; flip to true to wire matching
+  model_variant: "q4"            # q4|q8|fp16|fp32|q4f16 (~300 MB at q4)
+  threshold: 0.8                 # cosine similarity floor for a match
+  warmup_on_init: true           # pre-load on startup so first match is fast
+  phrases:
+    - "engage gaming mode"
+    - "disengage gaming mode"
+    - "gaming mode status"
+    - "what time is it"
+    - "what is today's date"
 
 # ---------------------------------------------------------------------------
 # Gaming mode (V1-spec gap A1) — anticheat-safe shutdown of OpenClaw
