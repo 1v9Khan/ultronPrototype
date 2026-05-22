@@ -272,6 +272,19 @@ class STTConfig(_Strict):
     # technical jargon that used to work, try ``stt.engine: whisper``
     # to confirm it's the engine before chasing other causes.
     engine: Literal["auto", "whisper", "parakeet", "moonshine"] = "auto"
+    # 2026-05-22 -- dual-STT swap for gaming mode. When set to any
+    # value other than "" or the primary ``engine``, the orchestrator
+    # loads BOTH engines at startup and the gaming-mode engage callback
+    # swaps ``self.stt`` to this engine while the game is running.
+    # Disengage restores the primary engine.
+    #
+    # Default ``moonshine``: when paired with ``engine: parakeet``
+    # (Parakeet on CUDA for standby, ~700 MB VRAM), gaming mode flips
+    # to Moonshine on CPU (~700 MB RAM, 0 VRAM) -- freeing the VRAM
+    # for the game. Set to "" to disable the dual-engine setup
+    # entirely (gaming mode then only flips Kokoro + VLM + LLM, not
+    # the STT engine).
+    gaming_engine: Literal["", "whisper", "parakeet", "moonshine"] = "moonshine"
     # --- Whisper-side config (used when engine resolves to whisper) ---
     model: str = "small.en"
     device: str = "cuda"

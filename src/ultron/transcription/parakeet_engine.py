@@ -643,4 +643,93 @@ class ParakeetEngine:
         return str(r.json().get("text", "")).strip()
 
 
-__all__ = ["ParakeetEngine", "is_nemo_available", "PARAKEET_INSTALL_HINT"]
+# ---------------------------------------------------------------------------
+# Public server lifecycle (used by gaming mode to free VRAM mid-session)
+# ---------------------------------------------------------------------------
+
+
+def stop_parakeet_server(timeout_seconds: float = 5.0) -> bool:
+    """Gracefully stop the Parakeet server, freeing its ~700 MB VRAM.
+
+    Called by the orchestrator's gaming-engage callback after swapping
+    ``self.stt`` to Moonshine. Returns True if the server was running
+    and successfully terminated, False if it wasn't running.
+
+    Safe to call when no server is up (no-op).
+    """
+    global _SERVER_PROCESS, _SERVER_URL_CACHED
+    url = _SERVER_URL_CACHED or "http://127.0.0.1:8771"
+    if _SERVER_PROCESS is None:
+        logger.debug("stop_parakeet_server: no tracked subprocess")
+        return False
+    if _SERVER_PROCESS.poll() is not None:
+        logger.debug("stop_parakeet_server: subprocess already exited")
+        _SERVER_PROCESS = None
+        return False
+    try:
+        import requests
+        try:
+            requests.post(f"{url}/shutdown", timeout=2.0)
+        except Exception as e:                                # noqa: BLE001
+            logger.debug("stop: /shutdown POST failed (%s); will terminate", e)
+        try:
+            _SERVER_PROCESS.terminate()
+            _SERVER_PROCESS.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "stop_parakeet_server: terminate timed out; killing",
+            )
+            _SERVER_PROCESS.kill()
+        finally:
+            _SERVER_PROCESS = None
+            _SERVER_URL_CACHED = None
+        logger.info("Parakeet server stopped (VRAM should be freed)")
+        return True
+    except Exception as e:                                    # noqa: BLE001
+        logger.warning("stop_parakeet_server failed: %s", e)
+        return False
+
+
+def start_parakeet_server(stt_cfg=None, *, wait_for_ready: bool = True) -> str:
+    """Spawn (or re-spawn) the Parakeet server. Returns its URL.
+
+    Pairs with :func:`stop_parakeet_server` for gaming-mode disengage
+    after a previous stop. When ``wait_for_ready`` is True (default),
+    blocks until ``/healthz`` reports model_loaded, matching the
+    behaviour of construction-time spawn. Pass ``False`` to return
+    immediately and let the caller poll readiness on their own thread.
+    """
+    if stt_cfg is None:
+        from ultron.config import get_config
+        stt_cfg = get_config().stt
+    if wait_for_ready:
+        return _spawn_server_if_needed(stt_cfg)
+    # Fire-and-forget: rely on the spawn helper but suppress the wait
+    # by spawning a thread.
+    result_holder: list[Optional[str]] = [None]
+
+    def _bg():
+        try:
+            result_holder[0] = _spawn_server_if_needed(stt_cfg)
+        except Exception as e:                                # noqa: BLE001
+            logger.warning("start_parakeet_server (bg) failed: %s", e)
+
+    threading.Thread(
+        target=_bg, daemon=True, name="parakeet-start",
+    ).start()
+    return _SERVER_URL_CACHED or "http://127.0.0.1:8771"
+
+
+def is_parakeet_server_running() -> bool:
+    """True iff the tracked subprocess is alive."""
+    return _SERVER_PROCESS is not None and _SERVER_PROCESS.poll() is None
+
+
+__all__ = [
+    "ParakeetEngine",
+    "is_nemo_available",
+    "PARAKEET_INSTALL_HINT",
+    "stop_parakeet_server",
+    "start_parakeet_server",
+    "is_parakeet_server_running",
+]

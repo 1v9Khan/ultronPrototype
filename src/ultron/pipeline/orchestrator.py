@@ -55,7 +55,12 @@ from ultron.audio.smart_turn import (
 )
 from ultron.audio.vad import SpeechEvent
 from ultron.llm import LLMEngine
-from ultron.transcription import WhisperEngine, make_stt_engine
+from ultron.transcription import (
+    DualSTTRegistry,
+    WhisperEngine,
+    make_dual_stt_engines,
+    make_stt_engine,
+)
 from ultron.tts import RvcConverter, TextToSpeech
 from ultron.utils.logging import get_logger
 from ultron.coding import (
@@ -259,7 +264,14 @@ class Orchestrator:
         # *** IF VOICE TRANSCRIPTION REGRESSES, SUSPECT THIS FIRST. ***
         # Roll back with ``stt.engine: whisper`` to confirm whether the
         # regression is Parakeet-specific before chasing other causes.
-        self.stt = make_stt_engine()
+        # 2026-05-22 dual-STT for gaming mode. The registry holds the
+        # primary (standby) engine + optional gaming engine. ``self.stt``
+        # is the active pointer; gaming mode flips it via
+        # :meth:`swap_stt_engine`. When ``stt.gaming_engine`` is empty
+        # or matches the primary, the registry has only the primary and
+        # the swap method is a no-op.
+        self._stt_registry: DualSTTRegistry = make_dual_stt_engines()
+        self.stt = self._stt_registry.active
         # 2026-05-22 streaming STT: warm the engine's session before the
         # first real turn so the cold-start cost (ONNX session JIT +
         # tokenizer load) doesn't land in the user's first interaction.
@@ -395,6 +407,12 @@ class Orchestrator:
         # screen_context module can call into it via the registered
         # describe-bridge.
         self._load_desktop_vlm_if_enabled()
+        # 2026-05-22 -- engine-agnostic intent recognizer. When
+        # ``intent.enabled`` is True, matched utterances short-circuit
+        # the LLM gating path; the dispatcher fires registered handlers
+        # (e.g., gaming mode engage/disengage) directly. Default OFF so
+        # operators opt in after deciding which phrases to register.
+        self._intent_recognizer = self._init_intent_recognizer_if_enabled()
         self._last_response_finished_monotonic: float = 0.0
         self._last_search_payload = None
 
@@ -520,6 +538,136 @@ class Orchestrator:
                 "VLM construction skipped (%s) -- screen-context queries "
                 "will fall back to text-only window/UIA context.", e,
             )
+
+    def _init_intent_recognizer_if_enabled(self):
+        """2026-05-22 -- construct the intent recognizer when enabled.
+
+        Registers phrases from config + wires gaming-mode handlers.
+        Lazy-loads the Gemma-300M embedding model on first use unless
+        ``intent.warmup_on_init`` is True. Fail-open: any construction
+        error logs WARN and returns None so the run loop skips the
+        intent check.
+        """
+        try:
+            from ultron.config import get_config
+            cfg = get_config().intent
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning("intent: config read failed (%s)", e)
+            return None
+        if not getattr(cfg, "enabled", False):
+            return None
+        try:
+            from ultron.intent import (
+                UltronIntentRecognizer, set_intent_recognizer,
+            )
+            recognizer = UltronIntentRecognizer(
+                model_name=cfg.model_name,
+                variant=cfg.model_variant,
+                threshold=cfg.threshold,
+            )
+            for phrase in cfg.phrases:
+                if phrase and phrase.strip():
+                    recognizer.register(phrase)
+            if cfg.warmup_on_init:
+                recognizer.ensure_loaded()
+            set_intent_recognizer(recognizer)
+            logger.info(
+                "intent recognizer ready (phrases=%d, threshold=%.2f)",
+                len(cfg.phrases), cfg.threshold,
+            )
+            return recognizer
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning(
+                "intent recognizer init failed (%s) -- pipeline "
+                "fall-through enabled", e,
+            )
+            return None
+
+    def _maybe_dispatch_intent(self, user_text: str) -> bool:
+        """Run user_text through the intent recognizer.
+
+        Returns True if a registered intent matched + was dispatched;
+        the caller should skip the rest of the routing path. Returns
+        False on no match / recognizer unavailable / dispatch failure.
+        """
+        recognizer = getattr(self, "_intent_recognizer", None)
+        if recognizer is None:
+            return False
+        try:
+            match = recognizer.process_utterance(user_text)
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning("intent: process_utterance failed (%s)", e)
+            return False
+        if match is None:
+            return False
+        try:
+            return self._dispatch_intent_match(match)
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning(
+                "intent: dispatcher for %r raised (%s); falling through",
+                match.canonical_phrase, e,
+            )
+            return False
+
+    def _dispatch_intent_match(self, match) -> bool:
+        """Route an intent match to the right local handler.
+
+        Returns True if the dispatch fully handled the turn (no LLM
+        needed); False if we should fall through to the existing
+        routing path.
+        """
+        phrase = match.canonical_phrase
+        if phrase == "engage gaming mode":
+            manager = getattr(self, "gaming_mode_manager", None)
+            if manager is None and getattr(self, "coding_voice", None) is not None:
+                manager = getattr(self.coding_voice, "gaming_mode_manager", None)
+            if manager is None:
+                logger.debug("intent: 'engage gaming mode' fired but no manager")
+                return False
+            import asyncio
+            try:
+                asyncio.run(manager.engage())
+            except Exception as e:                                # noqa: BLE001
+                logger.warning("intent: engage failed (%s)", e)
+                return False
+            try:
+                self.tts.speak("Shutting down desktop control. Have fun.")
+            except Exception:
+                pass
+            return True
+        if phrase == "disengage gaming mode":
+            manager = getattr(self, "gaming_mode_manager", None)
+            if manager is None and getattr(self, "coding_voice", None) is not None:
+                manager = getattr(self.coding_voice, "gaming_mode_manager", None)
+            if manager is None:
+                return False
+            import asyncio
+            try:
+                asyncio.run(manager.disengage())
+            except Exception as e:                                # noqa: BLE001
+                logger.warning("intent: disengage failed (%s)", e)
+                return False
+            try:
+                self.tts.speak("Full control restored.")
+            except Exception:
+                pass
+            return True
+        if phrase == "gaming mode status":
+            manager = getattr(self, "gaming_mode_manager", None)
+            if manager is None and getattr(self, "coding_voice", None) is not None:
+                manager = getattr(self.coding_voice, "gaming_mode_manager", None)
+            if manager is None:
+                return False
+            try:
+                status = manager.status()
+                self.tts.speak(f"Gaming mode is {status.value}.")
+            except Exception:
+                pass
+            return True
+        # Unrecognised phrase: fall through to routing so the LLM gets
+        # a chance. Operator-registered phrases with no orchestrator-
+        # side dispatcher land here.
+        return False
 
     def _load_openclaw_bridge_if_enabled(self):
         """Phase 3.5: build the OpenClaw bridge holder (or return None
@@ -649,6 +797,12 @@ class Orchestrator:
             # - LLM hot-swaps to ``gaming_mode.llm_preset`` (default
             #   llama-3.2-3b-abliterated; ~2.0 GB) on engage; restores
             #   the prior preset on disengage. Saves ~1.5 GB VRAM.
+            # - STT swaps from the primary engine (typically Parakeet
+            #   on GPU, ~700 MB VRAM) to the gaming engine (typically
+            #   Moonshine on CPU, 0 VRAM). Engage also kills the
+            #   Parakeet HTTP server to actually free its VRAM; disengage
+            #   restarts the server on a background thread and swaps
+            #   back when /healthz reports ready.
             # - Kokoro engine flips to CPU (saves ~330 MB VRAM when
             #   configured on CUDA; disengage restores to configured
             #   device).
@@ -663,6 +817,9 @@ class Orchestrator:
             gaming_llm_preset = (cfg.llm_preset or "").strip()
             # Cell to share the pre-engage preset between callbacks.
             llm_preset_before_engage: dict = {"value": None}
+
+            # Stash the pre-engage STT engine so disengage knows what to restore to.
+            stt_name_before_engage: dict = {"value": None}
 
             def _engage_extra():
                 if gaming_llm_preset:
@@ -688,6 +845,33 @@ class Orchestrator:
                             logger.warning(
                                 "gaming engage: LLM swap skipped (%s)", e,
                             )
+                # STT swap (Parakeet -> Moonshine on the typical setup).
+                registry = getattr(self, "_stt_registry", None)
+                if registry is not None and registry.has_gaming():
+                    try:
+                        prior_stt = registry.active_name
+                        if self.swap_stt_engine(registry.gaming_name):
+                            stt_name_before_engage["value"] = prior_stt
+                            # Kill the Parakeet HTTP server to free its VRAM.
+                            # Safe to call when Parakeet isn't running -- no-op.
+                            try:
+                                from ultron.transcription.parakeet_engine import (
+                                    stop_parakeet_server,
+                                )
+                                if stop_parakeet_server():
+                                    logger.info(
+                                        "gaming engage: Parakeet server stopped "
+                                        "(~700 MB VRAM freed)",
+                                    )
+                            except Exception as e:                # noqa: BLE001
+                                logger.warning(
+                                    "gaming engage: Parakeet server stop "
+                                    "failed (%s); STT swap still in effect", e,
+                                )
+                    except Exception as e:                        # noqa: BLE001
+                        logger.warning(
+                            "gaming engage: STT swap skipped (%s)", e,
+                        )
                 tts = getattr(self, "tts", None)
                 if tts is not None and hasattr(tts, "move_to_device"):
                     tts.move_to_device("cpu")
@@ -703,6 +887,48 @@ class Orchestrator:
                 tts = getattr(self, "tts", None)
                 if tts is not None and hasattr(tts, "move_to_device"):
                     tts.move_to_device(tts_kokoro_default_device)
+                # STT restore: stay on gaming engine while Parakeet
+                # respawns in the background; swap back when ready.
+                prior_stt = stt_name_before_engage["value"]
+                registry = getattr(self, "_stt_registry", None)
+                if prior_stt is not None and registry is not None:
+                    if prior_stt == "parakeet":
+                        # Spawn Parakeet server in background; swap pointer
+                        # only when /healthz reports ready so transcribes
+                        # in the interim still hit the gaming engine.
+                        try:
+                            from ultron.transcription.parakeet_engine import (
+                                start_parakeet_server,
+                            )
+
+                            def _restore_when_ready():
+                                try:
+                                    start_parakeet_server(wait_for_ready=True)
+                                    self.swap_stt_engine(prior_stt)
+                                    logger.info(
+                                        "gaming disengage: Parakeet ready; "
+                                        "STT swapped back to %s", prior_stt,
+                                    )
+                                except Exception as e:            # noqa: BLE001
+                                    logger.warning(
+                                        "gaming disengage: Parakeet restore "
+                                        "failed (%s); staying on gaming engine", e,
+                                    )
+
+                            threading.Thread(
+                                target=_restore_when_ready,
+                                daemon=True,
+                                name="parakeet-restore",
+                            ).start()
+                        except Exception as e:                    # noqa: BLE001
+                            logger.warning(
+                                "gaming disengage: failed to spawn restore "
+                                "thread (%s)", e,
+                            )
+                    else:
+                        # Non-Parakeet primary: swap pointer immediately.
+                        self.swap_stt_engine(prior_stt)
+                    stt_name_before_engage["value"] = None
                 prior_preset = llm_preset_before_engage["value"]
                 if prior_preset is not None:
                     llm = getattr(self, "llm", None)
@@ -1575,6 +1801,31 @@ class Orchestrator:
                         logger, "addressing:wake_word_path_no_classify",
                         text=user_text[:160],
                     )
+
+                # 2026-05-22 -- intent recognizer short-circuit. Runs
+                # AFTER addressing but BEFORE routing/LLM. Matched
+                # registered phrases (gaming mode commands, etc.) get
+                # dispatched directly + skip the LLM path. No-op when
+                # intent.enabled=False (default).
+                trace.set_phase("intent")
+                if self._maybe_dispatch_intent(user_text):
+                    trace.tlog(
+                        logger, "intent:dispatched",
+                        text=user_text[:160],
+                    )
+                    self._last_response_finished_monotonic = time.monotonic()
+                    if _addr_cfg.follow_up_enabled:
+                        follow_up_until = (
+                            self._last_response_finished_monotonic
+                            + _addr_cfg.warm_mode_duration_seconds
+                        )
+                    else:
+                        follow_up_until = None
+                    trace.tlog(
+                        logger, "loop:iteration_end",
+                        via="intent", follow_up=bool(follow_up_until),
+                    )
+                    continue
 
                 # Capability routing (Phase 5): classify the utterance into
                 # one of the routing kinds and let CapabilityVoiceController
@@ -3068,6 +3319,46 @@ class Orchestrator:
                     "Speculative LLM kickoff failed: %s -- main loop "
                     "will run fresh.", e,
                 )
+
+    def swap_stt_engine(self, name: str) -> bool:
+        """Runtime swap between the primary and gaming STT engines.
+
+        Returns True if the swap took effect, False if the requested
+        engine isn't loaded (e.g., dual-STT not configured or the
+        gaming engine failed to load at startup). Invalidates any in-
+        flight speculative STT so a swap mid-utterance doesn't leak
+        stale results.
+
+        Args:
+            name: Either the primary engine name (e.g., "parakeet") or
+                the gaming engine name (e.g., "moonshine"). Unknown
+                names log WARN and leave ``self.stt`` unchanged.
+        """
+        registry = getattr(self, "_stt_registry", None)
+        if registry is None:
+            logger.warning("swap_stt_engine: registry not initialised")
+            return False
+        if name == registry.active_name:
+            return True
+        # Invalidate before swapping so a transcript landing late from
+        # the old engine doesn't get attributed to the new one.
+        try:
+            self._invalidate_speculative_stt()
+        except Exception as e:                                # noqa: BLE001
+            logger.debug("swap_stt_engine: invalidate skipped (%s)", e)
+        prior_name = registry.active_name
+        new_engine = registry.swap_to(name)
+        if registry.active_name == name:
+            self.stt = new_engine
+            logger.info(
+                "STT engine swapped %s -> %s", prior_name, name,
+            )
+            return True
+        logger.warning(
+            "swap_stt_engine(%r): swap declined; staying on %s",
+            name, registry.active_name,
+        )
+        return False
 
     def _invalidate_speculative_stt(self) -> None:
         """Mark any in-flight speculative STT result as invalid.
