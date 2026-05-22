@@ -505,14 +505,19 @@ _BROWSER_LIVE_QUERY = re.compile(
 
 _MEDIA_PATTERNS = re.compile(
     r"\b(?:"
-    # "make me an image of" / "make me a song about" — open up the noun
-    # set so the audio family of media matches consistently.
-    r"make\s+me\s+an?\s+(?:image|picture|illustration|painting|drawing|render|"
+    # "make me an image of" / "make an image of" / "make a song about".
+    # 2026-05-22 autonomous run found that requiring "me" missed the
+    # common phrasing -- the recipient is implicit when speaking to a
+    # voice assistant. Both forms now match.
+    r"make\s+(?:me\s+)?an?\s+(?:image|picture|illustration|painting|drawing|render|"
     r"song|track|tune|video|clip)\s+(?:of|about|that)|"
     # Generate (a/an) (short/long/...) (image/video/...) — optional adjective
     r"generate\s+an?\s+(?:[\w\-]+\s+){0,2}"
     r"(?:image|picture|illustration|painting|drawing|render|artwork|video|clip|song|audio|music|tune|track)\b|"
+    # Create -- audio + visual media; 2026-05-22 added "create a
+    # picture/image/video of X" to cover the common phrasing.
     r"create\s+(?:an?\s+)?artwork|"
+    r"create\s+(?:an?\s+)?(?:image|picture|illustration|painting|drawing|render|video|clip)\s+(?:of|about|that)|"
     r"create\s+(?:an?\s+)?(?:song|track|tune)\s+(?:about|that)|"
     r"compose\s+(?:a\s+)?(?:song|track|tune|piece|melody|beat|music)|"
     r"draw\s+me\s+|"

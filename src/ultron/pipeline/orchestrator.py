@@ -272,6 +272,26 @@ class Orchestrator:
         except Exception as e:                                          # noqa: BLE001
             logger.debug("STT warmup skipped (%s)", e)
         self.memory = self._load_memory_if_enabled()
+        # 2026-05-22 perf: warm the cross-encoder reranker shared
+        # singleton at startup. Without this, the first turn that
+        # exercises memory retrieval OR web-search snippet ranking
+        # pays a ~2 s cold model load on the user's first interaction.
+        # Loading at construct time amortises that cost into the
+        # already-slow startup window. Fail-open: any error falls
+        # back to the lazy-load path inside the reranker itself.
+        try:
+            from ultron.memory.reranker import get_shared_reranker
+            t0 = time.monotonic()
+            shared = get_shared_reranker()
+            # Touch the model so the underlying sentence-transformers
+            # ``CrossEncoder`` is loaded into memory + ONNX-compiled.
+            shared._ensure_model()
+            logger.info(
+                "Cross-encoder reranker warmed in %.2fs",
+                time.monotonic() - t0,
+            )
+        except Exception as e:                                          # noqa: BLE001
+            logger.debug("Reranker warmup skipped (%s)", e)
         self.llm = LLMEngine(memory=self.memory)
         # 2026-05-10 voice swap: select TTS engine via ``tts.engine`` config.
         # ``"piper_rvc"`` (default) keeps the legacy Piper + RVC stack;
@@ -3538,6 +3558,12 @@ class Orchestrator:
                 # prefix bloats the query and slows cross-encoder
                 # reranking.
                 rag_query=user_text,
+                # 2026-05-22 latency fix: voice path doesn't have the
+                # budget for Qwen3.5's <think> reasoning block (5-10 s
+                # of TTFT on math / factual questions). The
+                # ``/no_think`` user-message marker keeps the model
+                # producing visible output directly.
+                enable_thinking=False,
             )
             return
 
@@ -3579,7 +3605,8 @@ class Orchestrator:
                     apply_brevity_hint(user_text),
                     precomputed_rag_snippets=snippets,
                     history_user_message=user_text,
-                    rag_query=user_text,  # 2026-05-22 perf
+                    rag_query=user_text,           # 2026-05-22 perf
+                    enable_thinking=False,         # 2026-05-22 latency
                 )
                 return
 
@@ -3683,6 +3710,10 @@ class Orchestrator:
                 # 200+ chars). Drops cross-encoder reranking from
                 # ~5-30 s to ~1-3 s on CPU.
                 rag_query=user_text,
+                # 2026-05-22 latency: skip Qwen3.5's <think> block on
+                # the voice path so factual/math questions don't pay
+                # 5-10 s of internal-reasoning TTFT.
+                enable_thinking=False,
             )
             return
 
@@ -3794,6 +3825,7 @@ class Orchestrator:
                     # CPU was taking 30+ seconds per turn evaluating
                     # 9k+ char augmented queries.
                     rag_query=bare_user_text,
+                    enable_thinking=False,
                 )
                 return
 
@@ -3836,6 +3868,10 @@ class Orchestrator:
                 # per turn evaluating the long augmented query against
                 # 20 candidates; the bare query drops that to ~2-3 s.
                 rag_query=bare_user_text,
+                # 2026-05-22 latency: skip Qwen3.5's <think> block.
+                # The web sources are self-contained; the model just
+                # needs to phrase the answer, not reason about it.
+                enable_thinking=False,
             )
         finally:
             pool.shutdown(wait=False)

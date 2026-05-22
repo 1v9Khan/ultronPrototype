@@ -542,6 +542,15 @@ class MoonshineEngine:
                 except Exception:                                       # noqa: BLE001
                     pass
                 text = self.stop_stream()
+                # 2026-05-22 cache-leak fix: stop_stream stashes
+                # ``_last_streaming_text`` for the orchestrator's
+                # pre-ran-streaming + post-capture-transcribe pattern.
+                # In case 3 (synchronous fresh transcribe) THIS call is
+                # already consuming the result, so leaving a stash
+                # would cause the NEXT transcribe call to return THIS
+                # call's text as if it were its own. Clear the stash
+                # explicitly so the next call's case 1 falls through.
+                self._last_streaming_text = None
             else:
                 # Non-streaming arch: use the single-shot API.
                 transcript = self._transcriber.transcribe_without_streaming(
