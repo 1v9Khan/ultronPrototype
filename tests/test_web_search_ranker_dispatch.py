@@ -236,11 +236,18 @@ def test_cross_encoder_predict_failure_falls_back(monkeypatch):
 
 def test_get_cross_encoder_caches_instance(monkeypatch):
     """Multiple calls to ``_get_cross_encoder`` return the same
-    instance (cached) so we don't pay model-load cost repeatedly."""
-    from ultron.web_search import search as search_module
+    instance (cached) so we don't pay model-load cost repeatedly.
 
-    # Reset the cache
+    2026-05-22: ``_get_cross_encoder`` now routes through the memory
+    module's process-wide ``get_shared_reranker`` factory so the
+    memory + web-search sides share one model instance. Patch that.
+    """
+    from ultron.web_search import search as search_module
+    from ultron.memory import reranker as reranker_module
+
+    # Reset both caches
     search_module._CROSS_ENCODER_CACHE = None
+    reranker_module.reset_shared_reranker()
 
     construct_count = {"n": 0}
 
@@ -248,14 +255,19 @@ def test_get_cross_encoder_caches_instance(monkeypatch):
         def __init__(self):
             construct_count["n"] += 1
 
+    # The factory wraps construction; patch it so we control how many
+    # construction calls happen across the singleton + module cache.
+    fake_instance = FakeReranker()
     monkeypatch.setattr(
-        "ultron.memory.reranker.CrossEncoderReranker", FakeReranker,
+        reranker_module, "get_shared_reranker", lambda: fake_instance,
     )
 
     r1 = search_module._get_cross_encoder()
     r2 = search_module._get_cross_encoder()
     r3 = search_module._get_cross_encoder()
     assert r1 is r2 is r3
+    # FakeReranker.__init__ ran exactly once (for the fixture); the
+    # factory is patched so it doesn't construct again.
     assert construct_count["n"] == 1
 
 
@@ -263,8 +275,10 @@ def test_get_cross_encoder_caches_failure(monkeypatch):
     """If construction fails once, the cache stores a sentinel so
     we don't retry on every search query."""
     from ultron.web_search import search as search_module
+    from ultron.memory import reranker as reranker_module
 
     search_module._CROSS_ENCODER_CACHE = None
+    reranker_module.reset_shared_reranker()
     construct_count = {"n": 0}
 
     def boom():
@@ -272,7 +286,7 @@ def test_get_cross_encoder_caches_failure(monkeypatch):
         raise RuntimeError("simulated load failure")
 
     monkeypatch.setattr(
-        "ultron.memory.reranker.CrossEncoderReranker", boom,
+        reranker_module, "get_shared_reranker", boom,
     )
 
     assert search_module._get_cross_encoder() is None

@@ -777,6 +777,7 @@ class LLMEngine:
         self, user_message: str, *, gate_verdict=None,
         suppress_memory_context: bool = False,
         precomputed_rag_snippets: Optional[List] = None,
+        rag_query: Optional[str] = None,
     ) -> List[dict]:
         """Assemble the chat-completion message list for one turn.
 
@@ -861,9 +862,19 @@ class LLMEngine:
             # in parallel with the web-gate call. Use them as-is.
             rag_block = self._format_rag_block(precomputed_rag_snippets)
         else:
+            # 2026-05-22 perf fix: when ``rag_query`` is explicitly
+            # provided (typically the bare user_text on the search-
+            # augmented path), use it instead of ``user_message`` for
+            # retrieval. The augmented prompt body can be 9k+ chars
+            # (containing web sources + LLM instructions), which makes
+            # cross-encoder reranking on CPU take 30+ seconds per turn.
+            # The bare user_text is the semantically meaningful query
+            # anyway -- it's what we actually want to match against
+            # past conversations.
+            retrieve_query = rag_query if rag_query is not None else user_message
             rag_block = self._format_rag_block(
                 self._retrieve_rag_snippets(
-                    user_message, gate_verdict=gate_verdict,
+                    retrieve_query, gate_verdict=gate_verdict,
                 ),
             )
         rag_position = get_config().llm.rag.position
@@ -1359,6 +1370,7 @@ class LLMEngine:
         precomputed_rag_snippets: Optional[List] = None,
         record_history: bool = True,
         history_user_message: Optional[str] = None,
+        rag_query: Optional[str] = None,
     ) -> Iterator[str]:
         """Yield response tokens as they arrive.
 
@@ -1399,6 +1411,7 @@ class LLMEngine:
             gate_verdict=gate_verdict,
             suppress_memory_context=suppress_memory_context,
             precomputed_rag_snippets=precomputed_rag_snippets,
+            rag_query=rag_query,
         )
         # 2026-05-14: same /no_think handling as the blocking path.
         messages = self._apply_no_think_marker(messages, enable_thinking)

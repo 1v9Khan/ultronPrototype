@@ -428,7 +428,7 @@ llm:
   #              30-50% gen speedup. Caveat: uses the same llama-cpp
   #              verification batch as PLD, so MAY hit the same bug.
   #              Flip with verification.
-  draft_kind: "model"
+  draft_kind: "none"
   model_draft_num_pred_tokens: 4
   # n_ctx: 16384
   # 4B optimization plan Stage G — where retrieved Qdrant memories
@@ -811,7 +811,12 @@ tts:
   # fine-tune path is the documented way to restore Ultron's voice.
   kokoro:
     model_path: "models/kokoro"
-    voice: "am_michael"            # stock American English male voice
+    # 2026-05-22: switched from "am_michael" (stock) to the fine-tuned
+    # Ultron voicepack. KokoroSpeech.__init__ auto-resolves "ultron" to
+    # models/kokoro/voices/ultron.pt when the file exists (it does --
+    # copied from E:/ultron data/kokoro_finetune/voices/ on 2026-05-22).
+    # Swap back to "am_michael" if the fine-tune voice misbehaves.
+    voice: "ultron"
     device: "cpu"                  # "cuda" for ~3x synth at +330 MB VRAM
     speed: 1.3                     # 1.0 native; safe range ~0.8-1.3
     apply_runtime_filter: false    # set true to run v3 pedalboard over Kokoro output (CPU 10-30 ms/sentence)

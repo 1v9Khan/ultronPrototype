@@ -690,8 +690,11 @@ class ConversationMemory:
         # would otherwise raise AttributeError on first access.
         if getattr(self, "_reranker", None) is None:
             try:
-                from ultron.memory.reranker import CrossEncoderReranker
-                self._reranker = CrossEncoderReranker()
+                # 2026-05-22: use the process-wide singleton so we
+                # share the model with the web-search snippet ranker
+                # and avoid the ~2 s duplicate cold load.
+                from ultron.memory.reranker import get_shared_reranker
+                self._reranker = get_shared_reranker()
             except Exception as e:                                 # noqa: BLE001
                 logger.warning(
                     "Reranker construction failed (%s); using pre-rerank "

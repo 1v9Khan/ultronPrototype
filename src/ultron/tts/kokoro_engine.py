@@ -160,7 +160,26 @@ class KokoroSpeech:
         sample_rate: int = _KOKORO_DEFAULT_SAMPLE_RATE,
     ) -> None:
         self.model_path = Path(model_path) if model_path else Path("models/kokoro")
-        self.voice = voice
+        # 2026-05-22: when the configured voice name resolves to a local
+        # ``.pt`` voicepack on disk (e.g. the fine-tuned ``ultron`` voice
+        # at ``models/kokoro/voices/ultron.pt``), pass the FULL path to
+        # KPipeline so it loads from disk via the
+        # ``voice.endswith('.pt')`` branch in
+        # ``kokoro.pipeline.KPipeline.load_single_voice`` instead of
+        # trying to download from HF. Stock voice names (``am_michael``,
+        # ``af_alloy``, etc.) pass through unchanged so the HF download
+        # path still works.
+        local_voicepack = self.model_path / "voices" / f"{voice}.pt"
+        if local_voicepack.is_file():
+            self.voice = str(local_voicepack)
+            self._voice_display = voice
+            logger.info(
+                "Kokoro: using local voicepack %s for voice %r",
+                local_voicepack, voice,
+            )
+        else:
+            self.voice = voice
+            self._voice_display = voice
         self.device = device
         self.speed = float(speed)
         self.apply_runtime_filter = bool(apply_runtime_filter)
@@ -273,7 +292,7 @@ class KokoroSpeech:
         )
         logger.info(
             "Kokoro ready (voice=%s, device=%s, sample_rate=%d)",
-            self.voice, self.device, self._sample_rate,
+            self._voice_display, self.device, self._sample_rate,
         )
 
     def warmup(self, text: str = "Online.") -> None:

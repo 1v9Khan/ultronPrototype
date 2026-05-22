@@ -229,4 +229,47 @@ class CrossEncoderReranker:
             ]
 
 
-__all__ = ["CrossEncoderReranker", "RerankResult"]
+# ---------------------------------------------------------------------------
+# Process-wide singleton (2026-05-22)
+# ---------------------------------------------------------------------------
+# Both ``ConversationMemory._apply_reranker`` and the web-search snippet
+# ranker construct their own ``CrossEncoderReranker`` -- meaning the
+# ~1.1 GB ``BAAI/bge-reranker-v2-m3`` model loads TWICE on a turn that
+# does both a memory retrieve and a web search (each cold load takes
+# ~2 s on CPU, so ~4 s of duplicate startup overhead). This factory
+# provides a process-wide singleton both call sites should use.
+
+_SHARED_RERANKER: Optional[CrossEncoderReranker] = None
+_SHARED_LOCK = threading.Lock()
+
+
+def get_shared_reranker() -> CrossEncoderReranker:
+    """Return the process-wide :class:`CrossEncoderReranker` singleton.
+
+    Thread-safe. Constructs lazily on first call; subsequent calls
+    return the cached instance. The instance itself lazy-loads the
+    underlying cross-encoder model on first :meth:`rerank` call.
+    """
+    global _SHARED_RERANKER
+    if _SHARED_RERANKER is not None:
+        return _SHARED_RERANKER
+    with _SHARED_LOCK:
+        if _SHARED_RERANKER is None:
+            _SHARED_RERANKER = CrossEncoderReranker()
+        return _SHARED_RERANKER
+
+
+def reset_shared_reranker() -> None:
+    """Test-only: drop the cached singleton so the next
+    :func:`get_shared_reranker` call constructs fresh."""
+    global _SHARED_RERANKER
+    with _SHARED_LOCK:
+        _SHARED_RERANKER = None
+
+
+__all__ = [
+    "CrossEncoderReranker",
+    "RerankResult",
+    "get_shared_reranker",
+    "reset_shared_reranker",
+]

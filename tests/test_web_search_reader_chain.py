@@ -34,7 +34,11 @@ from ultron.config import (
 def test_trafilatura_config_defaults():
     cfg = TrafilaturaConfig()
     assert cfg.timeout_seconds == 6.0
-    assert cfg.max_bytes == 200_000
+    # 2026-05-22: tightened from 200_000 to 32_000 (one source per LLM
+    # context budget); added max_html_bytes pre-extract cap to avoid
+    # CPU pain on huge pages.
+    assert cfg.max_bytes == 32_000
+    assert cfg.max_html_bytes == 1_048_576
 
 
 def test_trafilatura_config_validates_timeout():
@@ -212,7 +216,9 @@ def test_trafilatura_client_imports():
     from ultron.web_search.trafilatura_reader import TrafilaturaReaderClient
     client = TrafilaturaReaderClient()
     assert client.timeout_s == 6.0
-    assert client.max_bytes == 200_000
+    # 2026-05-22: tightened defaults; see test_trafilatura_config_defaults.
+    assert client.max_bytes == 32_000
+    assert client.max_html_bytes == 1_048_576
 
 
 def test_trafilatura_empty_url_returns_none():

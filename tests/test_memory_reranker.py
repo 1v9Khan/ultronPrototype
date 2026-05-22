@@ -302,17 +302,20 @@ def test_apply_reranker_top_k_zero_returns_empty():
 
 
 def test_apply_reranker_construction_failure_is_fail_open(monkeypatch):
-    """If CrossEncoderReranker construction raises, we return the
-    pre-rerank order, not crash."""
+    """If the shared reranker factory raises, we return the pre-rerank
+    order, not crash."""
     from ultron.memory.qdrant_store import ConversationMemory
     from ultron.memory import reranker as reranker_module
 
-    def boom(*a, **kw):
+    # 2026-05-22: _apply_reranker now routes through the module-level
+    # ``get_shared_reranker`` singleton; patch THAT.
+    def boom():
         raise RuntimeError("simulated construction failure")
 
     monkeypatch.setattr(
-        reranker_module, "CrossEncoderReranker", boom, raising=True,
+        reranker_module, "get_shared_reranker", boom, raising=True,
     )
+    reranker_module.reset_shared_reranker()
 
     cm = object.__new__(ConversationMemory)
     cm._reranker = None
@@ -322,8 +325,8 @@ def test_apply_reranker_construction_failure_is_fail_open(monkeypatch):
 
 
 def test_apply_reranker_caches_instance(monkeypatch):
-    """``_apply_reranker`` constructs the reranker once and caches it
-    on ``self._reranker``."""
+    """``_apply_reranker`` fetches the shared reranker once and caches
+    it on ``self._reranker``."""
     from ultron.memory.qdrant_store import ConversationMemory
     from ultron.memory import reranker as reranker_module
 
@@ -336,9 +339,13 @@ def test_apply_reranker_caches_instance(monkeypatch):
         def rerank(self, q, c, k):
             return list(c)[:k]
 
+    # 2026-05-22: patch the shared-factory function so the per-instance
+    # cache test still validates "construct once, reuse forever".
+    fake = FakeReranker()  # one fake instance shared across calls
     monkeypatch.setattr(
-        reranker_module, "CrossEncoderReranker", FakeReranker, raising=True,
+        reranker_module, "get_shared_reranker", lambda: fake, raising=True,
     )
+    reranker_module.reset_shared_reranker()
 
     cm = object.__new__(ConversationMemory)
     cm._reranker = None

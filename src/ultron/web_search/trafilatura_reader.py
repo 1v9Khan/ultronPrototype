@@ -93,6 +93,7 @@ class TrafilaturaReaderClient:
         self,
         timeout_s: Optional[float] = None,
         max_bytes: Optional[int] = None,
+        max_html_bytes: Optional[int] = None,
     ) -> None:
         # Trafilatura-side config lives at web_search.trafilatura.*
         # but it inherits defaults from the Jina block when fields are
@@ -114,6 +115,16 @@ class TrafilaturaReaderClient:
             else int(
                 getattr(traf_cfg, "max_bytes", None) or jina_cfg.max_bytes
             )
+        )
+        # 2026-05-22: cap the raw HTML BEFORE running trafilatura.extract.
+        # Live session hit a 200k-output page that took 5.75 s of CPU
+        # extraction -- the LLM context can never use that much per
+        # source, so paying the parse cost is pure waste. Truncating
+        # the HTML at ~1 MB caps worst-case extraction time at ~1-2 s.
+        self.max_html_bytes = (
+            max_html_bytes
+            if max_html_bytes is not None
+            else int(getattr(traf_cfg, "max_html_bytes", 1_048_576))
         )
 
     def fetch(self, url: str) -> Optional[str]:
@@ -168,6 +179,16 @@ class TrafilaturaReaderClient:
             )
             resp.raise_for_status()
             html = resp.text
+            # 2026-05-22 perf: cap input HTML so giant pages don't pin
+            # CPU. Trafilatura.extract on multi-MB HTML can take 5-10 s
+            # on CPU; truncating to ~1 MB still gives us the article
+            # content (which is always near the top of the document).
+            if self.max_html_bytes and len(html) > self.max_html_bytes:
+                logger.debug(
+                    "Trafilatura: truncating %d-char HTML to %d for %s",
+                    len(html), self.max_html_bytes, url[:80],
+                )
+                html = html[: self.max_html_bytes]
         except requests.exceptions.Timeout as e:
             raise TrafilaturaReaderError(
                 f"trafilatura GET timed out after {self.timeout_s:.1f}s",

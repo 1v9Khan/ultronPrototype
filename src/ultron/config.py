@@ -1177,10 +1177,19 @@ class TrafilaturaConfig(_Strict):
     chain falls through to Jina in that case).
     """
     timeout_seconds: float = Field(default=6.0, gt=0.0)
-    # Trailing-edge truncation cap to keep big pages out of the LLM
-    # prompt. Inherits from web_search.jina.max_bytes if None at
-    # construction time, so the cap stays consistent across readers.
-    max_bytes: int = Field(default=200_000, ge=0)
+    # 2026-05-22: tightened from 200_000 to 32_000. The LLM's 8 k context
+    # can never use 200 k of source text; clipping at ~32 k chars (~8 k
+    # tokens) keeps one whole source within budget while leaving room
+    # for the system prompt, RAG block, and other sources. Trailing-edge
+    # truncation.
+    max_bytes: int = Field(default=32_000, ge=0)
+    # 2026-05-22: cap raw HTML before trafilatura.extract runs. Live
+    # session hit a page that produced 200 k chars in 5.75 s of CPU --
+    # the parse cost scales with input size. 1 MB of HTML is enough
+    # for the article body of any real news / docs / blog page; SPAs
+    # exceeding this likely have no useful raw HTML anyway and the
+    # reader chain falls through to Jina.
+    max_html_bytes: int = Field(default=1_048_576, ge=0)
 
 
 class SearxNGConfig(_Strict):

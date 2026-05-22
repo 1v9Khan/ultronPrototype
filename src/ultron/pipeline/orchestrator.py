@@ -3700,6 +3700,12 @@ class Orchestrator:
                 yield from self.llm.generate_stream(
                     fallback_query,
                     history_user_message=bare_user_text,
+                    # 2026-05-22 perf fix: retrieve against the BARE
+                    # user_text (typically 20-50 chars) instead of the
+                    # augmented body. The cross-encoder reranker on
+                    # CPU was taking 30+ seconds per turn evaluating
+                    # 9k+ char augmented queries.
+                    rag_query=bare_user_text,
                 )
                 return
 
@@ -3734,6 +3740,14 @@ class Orchestrator:
             yield from self.llm.generate_stream(
                 augmented,
                 history_user_message=bare_user_text,
+                # 2026-05-22 perf fix: retrieve against the BARE
+                # user_text (~26 chars on a typical question) instead
+                # of the augmented body (~9000+ chars containing the
+                # full search-result block + instruction footer). The
+                # cross-encoder reranker on CPU was taking 30+ seconds
+                # per turn evaluating the long augmented query against
+                # 20 candidates; the bare query drops that to ~2-3 s.
+                rag_query=bare_user_text,
             )
         finally:
             pool.shutdown(wait=False)

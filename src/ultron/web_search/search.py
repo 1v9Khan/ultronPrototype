@@ -197,8 +197,13 @@ def _get_cross_encoder():
     if _CROSS_ENCODER_CACHE is not None:
         return _CROSS_ENCODER_CACHE
     try:
-        from ultron.memory.reranker import CrossEncoderReranker
-        _CROSS_ENCODER_CACHE = CrossEncoderReranker()
+        # 2026-05-22: route through the memory module's process-wide
+        # singleton so memory + web search share one model instance.
+        # Previously each constructed its own ``CrossEncoderReranker``,
+        # causing two ~2 s cold loads (~4 s of duplicate startup) on
+        # any turn that did both a memory retrieve AND a web search.
+        from ultron.memory.reranker import get_shared_reranker
+        _CROSS_ENCODER_CACHE = get_shared_reranker()
         return _CROSS_ENCODER_CACHE
     except Exception as e:                                             # noqa: BLE001
         logger.warning(
