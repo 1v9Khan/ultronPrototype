@@ -182,14 +182,18 @@ def _spawn_server_if_needed(stt_cfg) -> str:
         "--model", model,
         "--device", device,
     ]
+    # 2026-05-22 -- include CREATE_NO_WINDOW. python.exe is a console
+    # application; without this flag a conhost window flashes briefly
+    # on Windows every time the Parakeet server spawns (startup AND
+    # every gaming-mode disengage). CREATE_NEW_PROCESS_GROUP is still
+    # needed for Ctrl-C isolation; OR them together.
+    _CNW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    _CNPG = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=(
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            if sys.platform == "win32" else 0
-        ),
+        creationflags=(_CNW | _CNPG) if sys.platform == "win32" else 0,
     )
     _SERVER_PROCESS = proc
 
