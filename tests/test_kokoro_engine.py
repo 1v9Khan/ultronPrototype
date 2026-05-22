@@ -109,6 +109,7 @@ def test_synthesize_with_stubbed_pipeline_returns_int16():
     engine = KokoroSpeech(
         model_path=Path("/stub"), voice="af_alloy",
         apply_spectral_smooth=False,   # this test verifies synth shape, not smoothing
+        apply_trim_fade=False,         # not testing trim/fade either
     )
     # Bypass the load path with the stub.
     engine._model = _FakeKPipeline(audio_samples=2400)
@@ -389,8 +390,18 @@ def test_kokoro_config_spectral_smooth_window_validated():
 def _make_engine_with_fake_pipeline(audio_samples: int = 1200):
     """Construct a KokoroSpeech wired to a stub _model that returns
     deterministic per-call audio. Bypasses the real Kokoro load.
+
+    Trim/fade and spectral smooth are disabled so size-sensitive tests
+    can compare against the raw stub output without compensating for
+    post-processing length changes (hard silence pad, fade ramps).
+    Tests that specifically exercise post-processing construct their
+    own engine instances with those flags re-enabled.
     """
-    engine = KokoroSpeech(model_path=Path("/stub"), voice="am_michael")
+    engine = KokoroSpeech(
+        model_path=Path("/stub"), voice="am_michael",
+        apply_spectral_smooth=False,
+        apply_trim_fade=False,
+    )
     engine._model = _FakeKPipeline(audio_samples=audio_samples)
     engine._loaded = True
     engine._load_error = None

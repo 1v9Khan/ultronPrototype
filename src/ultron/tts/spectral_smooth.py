@@ -142,45 +142,59 @@ def trim_and_fade(
     *,
     threshold_db: float = -40.0,
     frame_ms: float = 10.0,
-    fade_in_ms: float = 8.0,
-    fade_out_ms: float = 12.0,
-    pad_ms: float = 10.0,
+    fade_in_ms: float = 25.0,
+    fade_out_ms: float = 30.0,
+    pad_ms: float = 5.0,
+    hard_silence_pad_ms: float = 4.0,
 ) -> np.ndarray:
-    """Trim leading/trailing noise then apply short fades.
+    """Trim boundary noise, apply fades, prepend/append hard silence.
 
     Designed for the partial Kokoro fine-tune: the undertrained model
-    (Stage 1 + Stage 2 epoch 0 only; no SLM joint) generates brief
-    noise bursts before speech starts and after speech ends. This
-    function finds the active speech region (frames above an RMS
-    energy threshold), pads slightly to preserve natural consonant
-    onset/offset, then applies short fade-in/fade-out to remove
-    abrupt clicks at the audio boundary.
+    (Stage 1 + Stage 2 epoch 0 only; no SLM joint) generates noise
+    bursts before speech starts and after speech ends -- ranging from
+    short clicks (<5 ms) to medium bursts (up to ~40 ms). This applies
+    three layers of defense:
+
+    1. **RMS trim** removes low-level boundary noise (below threshold).
+    2. **Cosine fades** attenuate medium-level artifacts within the
+       fade-in / fade-out region (raised-cosine curve quieter early
+       than a linear ramp).
+    3. **Hard silence pad** guarantees the first/last few samples are
+       byte-exact zeros, eliminating any DC-step or sub-frame artifact
+       that survives the trim+fade.
 
     Args:
         audio: 1-D float numpy array, expected normalized to [-1, 1].
             Other dtypes are upcast to float32.
         sr: Sample rate in Hz. Default 24000 (Kokoro native).
         threshold_db: RMS frames below this level (dB relative to
-            full scale) are considered silence/noise and may be
+            full scale) are treated as silence/noise and may be
             trimmed from the boundaries. Default -40 dB (1% of full
-            scale). Too aggressive = clips onset consonants; too
-            conservative = leaves artifacts.
+            scale).
         frame_ms: Frame size in ms for RMS energy analysis. Default
             10 ms = 240 samples at 24 kHz.
-        fade_in_ms: Duration of the linear fade-in applied after
-            leading-noise trim. Default 8 ms. Prevents the hard click
-            from an abrupt start without audible ramp.
-        fade_out_ms: Duration of the linear fade-out applied after
-            trailing-noise trim. Default 12 ms. Slightly longer than
-            fade-in because natural speech offset is gentler.
+        fade_in_ms: Duration of the raised-cosine fade-in applied
+            after leading-noise trim. Default 25 ms. Long enough to
+            attenuate burst artifacts up to ~20 ms in length.
+        fade_out_ms: Duration of the raised-cosine fade-out applied
+            after trailing-noise trim. Default 30 ms. Slightly longer
+            than fade-in because natural speech offset is gentler and
+            the partial fine-tune tends to leave slightly longer tail
+            artifacts than leading ones.
         pad_ms: Silence buffer to keep around the detected speech
-            region before trimming. Default 10 ms. Prevents onset
-            consonants (like voiceless fricatives) from being clipped.
+            region before trimming. Default 5 ms. Smaller than before
+            since the longer fades absorb consonant onsets natively.
+        hard_silence_pad_ms: Pure-silence buffer prepended and
+            appended to the trimmed+faded audio. Default 4 ms = 96
+            samples at 24 kHz. Guarantees the very first and very
+            last samples played are byte-exact zeros so stream
+            transitions are clean regardless of any residual artifact
+            inside the audio body. Pass 0 to disable padding.
 
     Returns:
-        Trimmed and faded float32 array. If no speech region is found
-        (all silence/noise) or the clip is too short for analysis,
-        returns the input unchanged as float32.
+        Trimmed, faded, padded float32 array. If no speech region is
+        found (all silence/noise) or the clip is too short for
+        analysis, returns the input unchanged as float32.
     """
     audio_f32 = np.asarray(audio, dtype=np.float32)
     frame_samples = max(1, int(sr * frame_ms / 1000))
@@ -209,12 +223,22 @@ def trim_and_fade(
     if len(trimmed) == 0:
         return audio_f32
 
+    # Raised-cosine fade is quieter in the first ~30% of the ramp
+    # than a linear fade -- better at hiding burst artifacts that
+    # sit close to the boundary.
     fi = min(int(sr * fade_in_ms / 1000), len(trimmed) // 4)
     if fi > 1:
-        trimmed[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
+        ramp = 0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, fi, dtype=np.float32))
+        trimmed[:fi] *= ramp
 
     fo = min(int(sr * fade_out_ms / 1000), len(trimmed) // 4)
     if fo > 1:
-        trimmed[-fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
+        ramp = 0.5 - 0.5 * np.cos(np.linspace(np.pi, 0.0, fo, dtype=np.float32))
+        trimmed[-fo:] *= ramp
+
+    if hard_silence_pad_ms > 0:
+        pad_samples = max(1, int(sr * hard_silence_pad_ms / 1000))
+        silence = np.zeros(pad_samples, dtype=np.float32)
+        trimmed = np.concatenate([silence, trimmed, silence])
 
     return trimmed
