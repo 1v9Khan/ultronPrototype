@@ -17,7 +17,7 @@ Mapping to the user's 2026-05-12 restriction list:
 * K6 -- this restriction-list / policy file itself
 * K7 -- dependency manifests (requirements.txt, pyproject.toml,
   lockfiles)
-* K8 -- AI-pipeline-ingested files (CLAUDE.md, MEMORY.md, docs/,
+* K8 -- AI-pipeline-ingested files (MEMORY.md, docs/,
   codebase_structure.md, system-prompt files)
 * K9 -- shell rc / $PROFILE -- per-rule because the paths live in
   the user's home, not the project, and need OS-specific resolution
@@ -112,7 +112,7 @@ class K1ConfigYamlProtection(PathSetRule):
 class K2VoiceCharacterProtection(PathSetRule):
     """K2: SOUL.md / RVC / Piper / XTTS reference audio.
 
-    Voice-character lock from CLAUDE.md. Even the model cannot
+    Voice-character lock from the project standards doc. Even the model cannot
     retune the voice character via the orchestrator. The user can
     edit these files manually and the loaders pick up changes on
     next startup.
@@ -309,7 +309,7 @@ class K7DependencyManifestProtection(PathSetRule):
 class K8PromptIngestionProtection(PathSetRule):
     """K8: files known to be ingested by Ultron's AI pipeline.
 
-    CLAUDE.md, MEMORY.md, docs/codebase_structure.md, and the rest
+    MEMORY.md, docs/codebase_structure.md, and the rest
     are read on every session start. If the model can write
     instruction-like text into them, it controls every future
     session's behaviour (prompt injection via memory).
@@ -330,7 +330,6 @@ class K8PromptIngestionProtection(PathSetRule):
 
     def protected_paths(self, policy: "Policy") -> list[Path]:
         keep = [
-            "CLAUDE.md",
             "docs/codebase_structure.md",
             "docs/architecture.md",
             "docs/configuration.md",

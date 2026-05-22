@@ -324,7 +324,7 @@ added latency on the standard voice baseline (110 ms ON vs 109 ms
 OFF — within noise). Each Item fires only in its own trigger
 scenario, so the standard 10-query voice baseline doesn't activate
 any of them. Per the V1-gap default-flag policy
-([feedback_v1_gap_default_flag_policy.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_v1_gap_default_flag_policy.md)),
+([feedback_v1_gap_default_flag_policy.md](<ai-memory-dir>\feedback_v1_gap_default_flag_policy.md)),
 the rule is "default ON when the flag is a no-op outside its trigger
 scenario AND a real benefit when triggered."
 

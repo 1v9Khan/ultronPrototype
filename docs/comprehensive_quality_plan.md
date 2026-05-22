@@ -16,7 +16,7 @@ damage, rigorous documentation).
 
 ---
 
-## Binding constraints (carried forward from CLAUDE.md + prior pass)
+## Binding constraints (carried forward from the project-root standards doc + prior pass)
 
 1. **Voice baseline preserved.** TTFT median ≤ 79 ms, VRAM peak ≤ 7913
    MB on the 4B preset. Any change touching the hot path must

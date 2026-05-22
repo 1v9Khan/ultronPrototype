@@ -40,8 +40,8 @@ intentional — they reflect facts on the ground, recorded in memory:
 
 | Item | Foundation example | Actual / config.yaml | Reason |
 |---|---|---|---|
-| `addressing.warm_mode_duration_seconds` | 10 | **30** | User override per [feedback_ultron_extension.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_ultron_extension.md) |
-| `llm.provider` | `"ollama"` | **`"llama_cpp"`** | Compat-test outcome [feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md) |
+| `addressing.warm_mode_duration_seconds` | 10 | **30** | User override per [feedback_ultron_extension.md](<ai-memory-dir>\feedback_ultron_extension.md) |
+| `llm.provider` | `"ollama"` | **`"llama_cpp"`** | Compat-test outcome [feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md) |
 | `qdrant.data_dir` | `"./qdrant_data/"` | **`"data/qdrant"`** | Existing data location |
 
 ## 1. Audio (settings.py:107-130)
@@ -98,7 +98,7 @@ intentional — they reflect facts on the ground, recorded in memory:
 | `LLM_HISTORY_TURNS` | 6 | n/a | `llm.history_turns` |
 | `LLM_FLASH_ATTN` | True | `ULTRON_LLM_FLASH_ATTN` | `llm.flash_attn` |
 | `LLM_KV_CACHE_TYPE` | 8 (q8_0) | `ULTRON_LLM_KV_CACHE_TYPE` | `llm.kv_cache_type` |
-| (NEW for Phase 3) | "llama_cpp" | n/a | `llm.provider` — non-Ollama; pinned per [feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md) |
+| (NEW for Phase 3) | "llama_cpp" | n/a | `llm.provider` — non-Ollama; pinned per [feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md) |
 
 ## 5. Memory / RAG / Qdrant (settings.py:197-229)
 

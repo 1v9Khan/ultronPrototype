@@ -150,7 +150,7 @@ Foundation snapshots are kept for historical reference; `codebase_structure.md` 
 
 ## Project status
 
-This is a **research prototype**, not a production product. It evolves intensively across many developer-AI pair sessions. Behavior-changing features land behind feature flags (default OFF) until live-validated. The voice-quality baseline is treated as a strict latency / VRAM contract — any hot-path change re-runs `scripts/measure_baseline.py` and documents the delta. See `CLAUDE.md` (project root) for the binding constraints.
+This is a **research prototype**, not a production product. It evolves intensively across many developer-AI pair sessions. Behavior-changing features land behind feature flags (default OFF) until live-validated. The voice-quality baseline is treated as a strict latency / VRAM contract — any hot-path change re-runs `scripts/measure_baseline.py` and documents the delta. See the project-root standards doc (project root) for the binding constraints.
 
 If you're reading the source, the highest-leverage entry point is [`src/ultron/pipeline/orchestrator.py`](src/ultron/pipeline/orchestrator.py) — that's the main event loop everything else hangs off.
 

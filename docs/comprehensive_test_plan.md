@@ -7,7 +7,7 @@ creativity, adaptability, coding ability, web search ability) and
 fixes any bugs discovered without compromising the voice baseline
 contract.
 
-## Binding constraints (carried forward from CLAUDE.md)
+## Binding constraints (carried forward from the project-root standards doc)
 
 1. **Voice baseline preserved:** TTFT median ≤ 79 ms, VRAM peak ≤
    7913 MB on the 4B preset. Any change that touches the hot path

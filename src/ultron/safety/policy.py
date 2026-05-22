@@ -121,7 +121,6 @@ _DEFAULT_PROTECTED_FILES_RELATIVE = [
     "poetry.lock",
     "Pipfile.lock",
     # K8: AI-pipeline-ingested files (prompt-injection-via-memory).
-    "CLAUDE.md",
     "docs/codebase_structure.md",
     "docs/architecture.md",
     "docs/configuration.md",

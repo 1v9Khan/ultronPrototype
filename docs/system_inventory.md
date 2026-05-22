@@ -39,7 +39,7 @@ discussion before any modification.
 
 **NOTE on Ollama:** The user has Ollama installed and `qwen3:8b` registered, but
 the voice pipeline does NOT use it. Loader is llama-cpp-python directly. See
-[memory/feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md)
+[memory/feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md)
 for the runtime decision.
 
 ---
@@ -94,7 +94,7 @@ Foundation phase removes this reservation cleanly.**
 |---|---|---|---|
 | Wake word "Ultron" via openWakeWord | [src/ultron/audio/wake_word.py](src/ultron/audio/wake_word.py) | `WakeWordDetector` | **PRESENT** |
 | COLD/WARM mode state machine | [src/ultron/pipeline/orchestrator.py](src/ultron/pipeline/orchestrator.py) follow-up listening logic | n/a (in orchestrator) | **PRESENT** |
-| Follow-up window | [config/settings.py:383](config/settings.py:383) `FOLLOW_UP_TIMEOUT_SECONDS=30.0` | **PRESENT — DEVIATES from spec's 10s, intentional per [memory/feedback_ultron_extension.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_ultron_extension.md)** |
+| Follow-up window | [config/settings.py:383](config/settings.py:383) `FOLLOW_UP_TIMEOUT_SECONDS=30.0` | **PRESENT — DEVIATES from spec's 10s, intentional per [memory/feedback_ultron_extension.md](<ai-memory-dir>\feedback_ultron_extension.md)** |
 | Hybrid rule-based + zero-shot addressing classifier | [src/ultron/addressing/](src/ultron/addressing/) — [classifier.py:48](src/ultron/addressing/classifier.py:48), [rules.py:156](src/ultron/addressing/rules.py:156), [zero_shot.py](src/ultron/addressing/zero_shot.py) | `AddressingClassifier`, `AddressingDecision`, `classify` | **PRESENT** (CPU-only; flan-t5-small for ambiguous cases) |
 | Addressing audit log | `logs/addressing.jsonl` (created at runtime by orchestrator) | n/a | **PRESENT** |
 | Review script | [scripts/review_addressing.py](scripts/review_addressing.py) | n/a | **PRESENT** |
@@ -109,7 +109,7 @@ Foundation phase removes this reservation cleanly.**
 | Async write path | inside `ConversationMemory` (background writer thread) | n/a | **PRESENT** |
 | Maintenance script | [scripts/maintenance.py](scripts/maintenance.py) | n/a | **PRESENT** |
 | Maintenance state | `data/maintenance.sqlite` | n/a | **PRESENT** |
-| JSONL migration source | `data/memory.jsonl` | n/a | **PRESENT** (Phase 3 ingest source per [memory/feedback_ultron_extension.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_ultron_extension.md)) |
+| JSONL migration source | `data/memory.jsonl` | n/a | **PRESENT** (Phase 3 ingest source per [memory/feedback_ultron_extension.md](<ai-memory-dir>\feedback_ultron_extension.md)) |
 | Migration script | [scripts/migrate_memory_to_qdrant.py](scripts/migrate_memory_to_qdrant.py) | n/a | **PRESENT** |
 
 ### Phase 4 — Web search
@@ -241,7 +241,7 @@ data dir, but the data is large and stable — the docs change is cheaper).
 Foundation prompt's example config has
 `addressing.warm_mode_duration_seconds: 10`. Current
 `FOLLOW_UP_TIMEOUT_SECONDS=30.0`. **Intentional 30 s deviation per
-[memory/feedback_ultron_extension.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_ultron_extension.md)**;
+[memory/feedback_ultron_extension.md](<ai-memory-dir>\feedback_ultron_extension.md)**;
 do NOT re-tighten without asking. Phase 3 unified-config should record 30 s
 as the canonical value, not 10.
 
@@ -249,7 +249,7 @@ as the canonical value, not 10.
 
 Foundation prompt's example config uses `provider: "ollama"`. **Current
 code (and the runtime decision recorded in
-[memory/feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md))
+[memory/feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md))
 keeps llama-cpp-python in-process.** Phase 3 should use
 `llm.provider: "llama_cpp"`, not `ollama`.
 
@@ -306,7 +306,7 @@ For completeness — these were generated during the LLM-runtime decision:
 | [data/ollama_compat_test/Modelfile](data/ollama_compat_test/Modelfile) | Modelfile that mirrored every llama-cpp param from settings.py |
 | `~/.ollama/models/blobs/...` (~5.7 GB on disk) | `ultron-cpp-mirror:latest` registered model, can be removed via `ollama rm ultron-cpp-mirror` if not wanted |
 | Test results | `phase_foundation_start.scope.ollama_compat_test` block in [baselines.json](baselines.json) |
-| Decision recorded | [memory/feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md) |
+| Decision recorded | [memory/feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md) |
 
 ---
 

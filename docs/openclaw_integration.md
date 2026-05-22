@@ -9,7 +9,7 @@ The integration prompt assumes Ollama is the shared LLM endpoint. We
 **substitute llama-cpp-python's OpenAI-compatible HTTP server**
 (`python -m llama_cpp.server`) at every "Ollama" reference in the
 prompt. Reasoning is recorded in
-[memory/feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md):
+[memory/feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md):
 
 - The Ultron voice pipeline already loads
   `models/Qwen3.5-9B-Q4_K_M.gguf` via llama-cpp-python in-process

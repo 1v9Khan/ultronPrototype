@@ -52,6 +52,15 @@ logs/sessions/
 # Top-level install / training log files (regenerated; system-path leakage)
 install.log
 training/*.log
+
+# 2026-05-22 session G: dev-tool artifacts -- never push to public repo
+# AI-assistant orientation file (project-specific instructions for dev sessions).
+# This file may be regenerated locally by the dev tool but must not be tracked.
+CLAUDE.md
+# AI-assistant worktree + settings directory (project-specific).
+.claude/
+# Alternative AI-dev tool (no longer in use; never restore).
+windsurf/
 # Per-run harness JSON outputs (regeneratable; bloat the repo)
 logs/quality_harness_*.json
 logs/quality_q3_*.json

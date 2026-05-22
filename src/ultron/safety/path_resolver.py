@@ -44,7 +44,7 @@ What this module does NOT do:
 * It does NOT canonicalize URLs or non-filesystem identifiers.
 
 Linux/macOS support: present but minimal. The project is Windows-
-only per CLAUDE.md, so the Windows-specific Win32 calls are the hot
+only per the project standards, so the Windows-specific Win32 calls are the hot
 path; the POSIX branch is best-effort for cross-platform tests.
 """
 

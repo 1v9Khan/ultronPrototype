@@ -35,7 +35,7 @@ These are the deviations the user explicitly approved or that
 emerged during implementation. Future work should preserve them
 unless reopening the underlying decision.
 
-1. **`llama-cpp-server` instead of Ollama** ([feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md)).
+1. **`llama-cpp-server` instead of Ollama** ([feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md)).
 2. **`litellm` provider plugin** in OpenClaw (not `openai-provider`
    or `lmstudio-provider`).
 3. **Three-agent split** (`ultron-test` default, `ultron-main`

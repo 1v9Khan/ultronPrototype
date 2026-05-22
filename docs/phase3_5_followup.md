@@ -249,6 +249,6 @@ print('qdrant.data_dir:', c.qdrant.data_dir)
 # Start with subsystem 1 (uncertainty.py — smallest), follow recipe.
 ```
 
-Read [project_ultron_foundation.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\project_ultron_foundation.md) and
-[feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md)
+Read [project_ultron_foundation.md](<ai-memory-dir>\project_ultron_foundation.md) and
+[feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md)
 in memory before touching anything LLM-related.

@@ -135,7 +135,7 @@ new home. Below is the section-level overview with tuning notes.
 
 | Key | Default | Tuning notes |
 |---|---|---|
-| `provider` | "llama_cpp" | Pinned. See [feedback_llm_runtime_decision.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_llm_runtime_decision.md). |
+| `provider` | "llama_cpp" | Pinned. See [feedback_llm_runtime_decision.md](<ai-memory-dir>\feedback_llm_runtime_decision.md). |
 | `preset` | "qwen3.5-9b" | One of `"qwen3.5-9b" \| "qwen3.5-4b" \| "custom"`. The preset auto-fills `model_path`, `n_ctx`, and `draft_model_path` *only when those keys are absent from the YAML* — explicit user values always win. **Override at runtime via `ULTRON_LLM_PRESET=...`** (clears YAML overrides too unless `ULTRON_LLM_PRESET_KEEP_OVERRIDES=1`). Use `"custom"` to disable auto-resolution. See [src/ultron/config.py:LLM_PRESETS](../src/ultron/config.py), [scripts/swap_llm_preset.py](../scripts/swap_llm_preset.py), and [docs/4b_optimization_plan.md](4b_optimization_plan.md). |
 | `model_path` | "models/Qwen3.5-9B-Q4_K_M.gguf" | Env override: `ULTRON_LLM_MODEL_PATH`. With non-`"custom"` preset, omitting this key inherits from the preset. |
 | `draft_model_path` | null | Optional speculative-decoding draft GGUF. Set by the `qwen3.5-4b` preset to `"models/Qwen3.5-0.8B-Q4_K_M.gguf"`. Wired into `scripts/start_llamacpp_server.py` in Stage C of the 4B plan. |
@@ -202,7 +202,7 @@ new home. Below is the section-level overview with tuning notes.
 | Key | Default | Notes |
 |---|---|---|
 | `follow_up_enabled` | true | After Ultron speaks, listen for follow-up without requiring wake word. |
-| `warm_mode_duration_seconds` | **30.0** | **Differs from the Foundation prompt's 10s example** — user override per [feedback_ultron_extension.md]($env:USERPROFILE\.claude\projects\C--STC-ultronPrototype\memory\feedback_ultron_extension.md). Don't re-tighten without asking. |
+| `warm_mode_duration_seconds` | **30.0** | **Differs from the Foundation prompt's 10s example** — user override per [feedback_ultron_extension.md](<ai-memory-dir>\feedback_ultron_extension.md). Don't re-tighten without asking. |
 | `default_uncertain_to_not_addressed` | true | Default-silent when classifier is uncertain. |
 | `rule_confidence_threshold` | 0.8 | Rule verdicts above this short-circuit zero-shot. |
 | `zero_shot_model` | "google/flan-t5-small" | CPU-only; ~300 MB. |
