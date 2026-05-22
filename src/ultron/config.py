@@ -2226,6 +2226,11 @@ class DesktopConfig(_Strict):
     tool_slug_screenshot: str = "desktop_screenshot"
     tool_slug_list_windows: str = "desktop_list_windows"
     tool_slug_find_window: str = "desktop_find_window"
+    # 2026-05-22 user preference: when a launch / navigation utterance
+    # gives no explicit monitor cue, place on this 1-based monitor
+    # index. None falls back to the legacy "main" behaviour.
+    # Set to 2 for "right monitor" on a typical dual-monitor desktop.
+    default_monitor_index: Optional[int] = Field(default=2, ge=1, le=8)
 
 
 class WindowControlConfig(_Strict):

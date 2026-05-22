@@ -1961,6 +1961,25 @@ class Orchestrator:
                             follow_up=bool(follow_up_until),
                         )
                         continue
+                    # 2026-05-22 NAVIGATE_TO_SITE: same intercept
+                    # pattern -- handler hits SearxNG + scores domains
+                    # + opens via webbrowser / AppLauncher.
+                    if routing_intent.kind == RoutingIntentKind.NAVIGATE_TO_SITE:
+                        self._handle_navigate_to_site(routing_intent)
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="navigate_to_site",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
                     capability_response = self.coding_voice.handle_capability_intent(routing_intent)
                     if capability_response is not None:
                         trace.tlog(
@@ -3148,6 +3167,177 @@ class Orchestrator:
             webbrowser.open(url, new=2)
             self._handle_capability_response(
                 _voice_text(f"Opening {title}."),
+                routing_intent,
+            )
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("webbrowser.open failed for %s: %s", url, e)
+            self._handle_capability_response(
+                _voice_text("I couldn't open the browser."),
+                routing_intent,
+            )
+
+    def _handle_navigate_to_site(self, routing_intent) -> None:
+        """Query SearxNG for the user's brand-named site, pick the
+        best matching URL by domain heuristics, and open it.
+
+        Strategy:
+          1. Query SearxNG with ``{site_query} official website``
+             (general category, top ~10 results).
+          2. Score each result by: hostname-contains-brand-keyword
+             (+30), exact-brand-domain-match like ``netflix.com``
+             (+40), no subdomain like ``www.netflix.com`` (+10),
+             rank inverse (+0..9). Penalize generic listing sites
+             (wikipedia, reddit, ...).
+          3. Open the best candidate via ``webbrowser.open`` (or
+             the AppLauncher with Chrome when a monitor target was
+             explicitly requested).
+
+        Fail-open: empty search results, no acceptable candidates,
+        or open-failure all degrade to a spoken voice message.
+        """
+        from urllib.parse import urlparse
+        import re as _re
+
+        intent = getattr(routing_intent, "navigate_to_site_intent", None)
+        site_query = (
+            getattr(intent, "site_query", "") if intent else ""
+        ).strip()
+        if not site_query:
+            self._handle_capability_response(
+                _voice_text("I didn't catch which site you wanted opened."),
+                routing_intent,
+            )
+            return
+
+        mon_idx = getattr(intent, "monitor_index", None) if intent else None
+        mon_q = getattr(intent, "monitor_query", "") if intent else ""
+
+        # Build a normalized brand keyword for hostname matching.
+        # "HBO Max" -> "hbomax"; "Disney Plus" -> "disneyplus".
+        brand_key = _re.sub(r"[^a-z0-9]", "", site_query.lower())
+
+        # Query SearxNG (general category) for the official site.
+        try:
+            from ultron.web_search.searxng import SearxNGSearchClient
+            client = SearxNGSearchClient()
+            search_q = f"{site_query} official website"
+            results = client.search(search_q, count=10)
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("NAVIGATE_TO_SITE search failed: %s", e)
+            results = []
+
+        if not results:
+            # Fall back to a Google "I'm feeling lucky" style URL --
+            # better than nothing when SearxNG returns nothing.
+            url = (
+                "https://www.google.com/search?btnI=1&q="
+                + _re.sub(r"\s+", "+", site_query)
+                + "+official+site"
+            )
+            title = site_query
+            chosen_score = -1
+        else:
+            # Score each result.
+            _PENALTY_HOSTS = {
+                "wikipedia.org", "en.wikipedia.org", "reddit.com",
+                "facebook.com", "twitter.com", "x.com",
+                "linkedin.com", "youtube.com", "instagram.com",
+                "tiktok.com", "amazon.com",
+            }
+
+            def _score(result, rank: int) -> int:
+                url = getattr(result, "url", "") or ""
+                try:
+                    host = (urlparse(url).hostname or "").lower()
+                except Exception:                                   # noqa: BLE001
+                    return -1
+                if not host:
+                    return -1
+                stripped = host.replace("www.", "")
+                # Normalize host for keyword match: drop dots / dashes.
+                host_norm = _re.sub(r"[^a-z0-9]", "", stripped)
+                score = 0
+                # Strongest signal: hostname's root matches the brand.
+                root = stripped.split(".")[0]
+                root_norm = _re.sub(r"[^a-z0-9]", "", root)
+                if brand_key and root_norm == brand_key:
+                    score += 40
+                elif brand_key and brand_key in host_norm:
+                    score += 30
+                # Clean domain bonus (no leading subdomain).
+                if stripped.count(".") == 1:
+                    score += 10
+                # Standard TLD bonus.
+                tld = stripped.split(".")[-1]
+                if tld in {"com", "net", "org", "io"}:
+                    score += 3
+                # Rank inverse: rank 0 -> +9, rank 9 -> +0.
+                score += max(0, 9 - rank)
+                # Penalize known aggregator / non-official sites
+                # unless the user EXPLICITLY asked for them.
+                if any(stripped.endswith(p) for p in _PENALTY_HOSTS):
+                    if brand_key not in {"wikipedia", "reddit",
+                                          "facebook", "twitter", "x",
+                                          "linkedin", "youtube",
+                                          "instagram", "tiktok",
+                                          "amazon"}:
+                        score -= 20
+                return score
+
+            scored = [
+                (_score(r, i), i, r) for i, r in enumerate(results)
+            ]
+            scored.sort(key=lambda t: (-t[0], t[1]))
+            chosen_score, _idx, chosen = scored[0]
+            url = getattr(chosen, "url", "") or ""
+            title = getattr(chosen, "title", "") or url
+
+        logger.info(
+            "navigate_to_site: query=%r -> %s (score=%s)",
+            site_query, url, chosen_score,
+        )
+
+        if not url:
+            self._handle_capability_response(
+                _voice_text(
+                    f"I couldn't find an official site for {site_query}."
+                ),
+                routing_intent,
+            )
+            return
+
+        # Open on requested monitor (Chrome) OR default browser.
+        if mon_idx is not None or mon_q:
+            try:
+                from ultron.openclaw_routing.intents import AppLaunchIntent
+                from ultron.desktop.voice import handle_app_launch
+
+                al = AppLaunchIntent(
+                    app_name="chrome",
+                    url=url,
+                    monitor_index=mon_idx,
+                    monitor_query=mon_q,
+                    fullscreen=False,
+                    maximize=False,
+                    raw_text=getattr(routing_intent, "raw_text", ""),
+                )
+                result = handle_app_launch(al)
+                msg = result.voice_message or f"Opening {site_query}."
+                self._handle_capability_response(
+                    _voice_text(msg), routing_intent,
+                )
+                return
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning(
+                    "Monitor-targeted navigate-to-site open failed: %s; "
+                    "falling back to default browser.", e,
+                )
+
+        try:
+            import webbrowser
+            webbrowser.open(url, new=2)
+            self._handle_capability_response(
+                _voice_text(f"Opening {site_query}."),
                 routing_intent,
             )
         except Exception as e:                                      # noqa: BLE001
@@ -4553,12 +4743,26 @@ class Orchestrator:
         # on a worker thread; both are concurrent from the user's POV.
         yield ack
 
+        # 2026-05-22 news-category routing: when the user asked a
+        # news-style question, route the SearxNG query to news engines
+        # (Bing News / Yahoo News / Reuters) instead of generic web
+        # search. Without this, "what's the latest news" matched
+        # Whatnot.com + Collins Dictionary because Bing-general ranks
+        # on the word "what" first. Brave / DDG ignore the kwarg.
+        try:
+            from ultron.web_search.gating import _NEWS_QUERIES
+            search_categories = "news" if _NEWS_QUERIES.search(user_text) else None
+        except Exception:                                            # noqa: BLE001
+            search_categories = None
+
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="web-search")
         try:
             search_future = pool.submit(
                 self.web_executor.run,
                 user_text,
                 verdict.search_queries or [user_text],
+                3,                            # top_n
+                search_categories,            # categories
             )
 
             try:

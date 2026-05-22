@@ -99,6 +99,14 @@ class RoutingIntentKind(str, Enum):
     # last_response_text) since the classifier is stateless.
     OPEN_LAST_SOURCE = "open_last_source"
 
+    # Navigate to a brand-named site (2026-05-22) -- "take me to HBO
+    # Max", "go to YouTube", "open the Disney Plus website". Queries
+    # SearxNG for the top results, scores by domain match + cleanliness,
+    # and opens the best candidate. Distinct from OPEN_LAST_SOURCE
+    # (which opens a cited URL) and APP_LAUNCH (which opens a registered
+    # native app or known URL pattern).
+    NAVIGATE_TO_SITE = "navigate_to_site"
+
 
 # ---------------------------------------------------------------------------
 # Per-category structured intents (for openclaw-bound ones)
@@ -353,6 +361,36 @@ class OpenLastSourceIntent:
 
 
 @dataclass
+class NavigateToSiteIntent:
+    """Navigate the user's browser to a brand-named site.
+
+    Resolution flow (handled in the orchestrator dispatcher):
+
+    1. Query SearxNG for ``{site_query} official website`` in the
+       general category (top ~10 results).
+    2. Score each result by domain match (hostname contains the
+       brand name), domain cleanliness (no subdomain, plain .com /
+       .net / .org TLD), and source rank.
+    3. Open the best candidate via :func:`webbrowser.open` (default
+       browser) OR through :func:`ultron.desktop.voice.handle_app_launch`
+       with Chrome when a monitor target is set.
+
+    Attributes:
+        site_query: the brand / site name parsed from the utterance
+            ("HBO Max", "YouTube", "the Disney Plus shop").
+        monitor_index: explicit monitor index when the user said
+            "take me to HBO Max on monitor 2".
+        monitor_query: directional / named monitor target.
+        raw_text: original utterance for logging.
+    """
+
+    site_query: str
+    monitor_index: Optional[int] = None
+    monitor_query: str = ""
+    raw_text: str = ""
+
+
+@dataclass
 class SystemStatusIntent:
     """A voice query about Ultron's overall state.
 
@@ -415,6 +453,7 @@ class RoutingIntent:
     window_move_intent: Optional[WindowMoveIntent] = None     # WINDOW_MOVE only (2026-05-14)
     window_close_intent: Optional[WindowCloseIntent] = None   # WINDOW_CLOSE only (2026-05-14)
     open_last_source_intent: Optional[OpenLastSourceIntent] = None  # OPEN_LAST_SOURCE only (2026-05-22)
+    navigate_to_site_intent: Optional[NavigateToSiteIntent] = None  # NAVIGATE_TO_SITE only (2026-05-22)
 
     # Disambiguation: when the rule-based + LLM disambiguator can't decide,
     # the orchestrator asks the user a clarifying question.

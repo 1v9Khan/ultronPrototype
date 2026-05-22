@@ -125,6 +125,7 @@ class SearxNGSearchClient:
         self,
         query: str,
         count: Optional[int] = None,
+        categories: Optional[str] = None,
     ) -> List[SearchResult]:
         """Run a search via the local SearxNG instance.
 
@@ -133,6 +134,16 @@ class SearxNGSearchClient:
         circuit open) returns ``[]`` and records the failure to
         ``logs/errors.jsonl``. Caller (the provider chain) then
         falls back to the next provider.
+
+        Args:
+            query: the search text.
+            count: max results to return.
+            categories: per-call SearxNG category override
+                ("news", "general", "images", "videos", ...). When
+                ``None``, uses the configured default (``self.categories``).
+                The orchestrator passes ``"news"`` when the user asked
+                a news-style question so SearxNG routes to news engines
+                (Bing News, Yahoo News, Reuters) instead of generic web.
         """
         query = query.strip()
         if not query:
@@ -141,7 +152,9 @@ class SearxNGSearchClient:
             count = get_config().web_search.searxng.count
 
         try:
-            return _SEARXNG_BREAKER.call(self._do_search, query, count)
+            return _SEARXNG_BREAKER.call(
+                self._do_search, query, count, categories,
+            )
         except CircuitOpenError as e:
             logger.warning(
                 "SearxNG circuit OPEN for %r — short-circuiting; %s",
@@ -166,7 +179,12 @@ class SearxNGSearchClient:
             )
             return []
 
-    def _do_search(self, query: str, count: int) -> List[SearchResult]:
+    def _do_search(
+        self,
+        query: str,
+        count: int,
+        categories_override: Optional[str] = None,
+    ) -> List[SearchResult]:
         """Inner implementation. Raises :class:`SearxNGError` on any
         failure; the breaker counts toward the threshold."""
         import requests
@@ -176,8 +194,15 @@ class SearxNGSearchClient:
             "format": "json",
             "safesearch": "1",
         }
-        if self.categories:
-            params["categories"] = self.categories
+        # Per-call categories override (e.g. "news") beats the
+        # client's configured default.
+        effective_categories = (
+            categories_override
+            if categories_override is not None
+            else self.categories
+        )
+        if effective_categories:
+            params["categories"] = effective_categories
         if self.engines:
             params["engines"] = self.engines
 

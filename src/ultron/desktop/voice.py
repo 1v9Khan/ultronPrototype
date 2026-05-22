@@ -140,6 +140,30 @@ def _resolve_monitor(monitor_index: Optional[int], monitor_query: str):
     if monitor_query:
         return find_monitor(monitor_query)
 
+    # 2026-05-22 user-preference default: read default_monitor_index
+    # (1-based) from config; fall back to "main" if unset / out of
+    # range. Lets the user say "show me a picture of a chicken" and
+    # have it land on their preferred screen without saying "on
+    # monitor 2" every time.
+    try:
+        from ultron.config import get_config
+        default_idx = getattr(
+            get_config().desktop, "default_monitor_index", None,
+        )
+    except Exception:                                                # noqa: BLE001
+        default_idx = None
+
+    if default_idx is not None:
+        mons = enumerate_monitors()
+        # 1-based -> 0-based; clamp to valid range.
+        zero_based = int(default_idx) - 1
+        if 0 <= zero_based < len(mons):
+            return mons[zero_based]
+        logger.debug(
+            "default_monitor_index=%s out of range (have %d monitors); "
+            "falling back to 'main'.", default_idx, len(mons),
+        )
+
     # 2026-05-14 default-to-main: when the utterance gives no monitor
     # cue, place on the user's main (physical center) monitor instead
     # of letting the launched app pick wherever it was last positioned.

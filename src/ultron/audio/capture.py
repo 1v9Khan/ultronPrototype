@@ -41,7 +41,7 @@ class AudioCapture:
         channels: int = settings.CHANNELS,
         blocksize: int = settings.BLOCKSIZE,
         device: Optional[str | int] = settings.AUDIO_DEVICE,
-        max_queue_size: int = 256,
+        max_queue_size: int = 1024,
         input_gain_db: Optional[float] = None,
     ) -> None:
         self.sample_rate = sample_rate

@@ -55,6 +55,7 @@ from ultron.openclaw_routing.intents import (
     MediaGenIntent,
     MessagingIntent,
     ModelSwitchIntent,
+    NavigateToSiteIntent,
     OpenLastSourceIntent,
     RoutingIntent,
     RoutingIntentKind,
@@ -879,6 +880,23 @@ def _classify_routing_impl(
                 window_close_intent=wc,
             )
 
+    # 1.93) NAVIGATE_TO_SITE keyword path (2026-05-22) -- "open the
+    #       Netflix website", "show me the BBC site". Must fire
+    #       BEFORE OPEN_LAST_SOURCE because both patterns can match
+    #       "open the X website" -- but the explicit website keyword
+    #       is a stronger signal of navigation than reference.
+    if not has_pending_clarification:
+        nts = _classify_navigate_to_site(text)
+        if nts is not None:
+            return RoutingIntent(
+                kind=RoutingIntentKind.NAVIGATE_TO_SITE,
+                raw_text=text,
+                confidence=0.85,
+                source="rule",
+                reason="navigate-to-site pattern matched",
+                navigate_to_site_intent=nts,
+            )
+
     # 1.95) OPEN_LAST_SOURCE (2026-05-22) -- "show me that article",
     #       "open that link", "pull up the source". Must fire BEFORE
     #       APP_LAUNCH because "show me that article" would otherwise
@@ -914,6 +932,7 @@ def _classify_routing_impl(
                 reason="app-launch pattern matched",
                 app_launch_intent=al,
             )
+
 
     # 2) HYBRID signals next — these often contain coding-trigger keywords
     #    ("write a script", "build a tool") so we have to win the race
@@ -1163,10 +1182,14 @@ _SCREEN_CONTEXT_PATTERNS = re.compile(
 # response. Must match BEFORE app_launch's bare "show me <X>" rule,
 # which would otherwise treat "article" as an image-search subject.
 
-# Verbs accepted as "open this source for me" actions.
+# Verbs accepted as "open this source for me" actions. NOTE: navigation
+# verbs (take me to / go to / navigate to / find me) deliberately
+# excluded -- those route to NAVIGATE_TO_SITE which queries SearxNG
+# for a NEW site, not the cited source from the previous response.
+# 2026-05-22 fix: "Take me to the HBO Max website" was matching here
+# because the verb list included navigation phrases.
 _OPEN_LAST_SOURCE_VERB = (
-    r"(?:show\s+me|open(?:\s+up)?|pull\s+up|bring\s+up|load|go\s+to|"
-    r"take\s+me\s+to|navigate\s+to)"
+    r"(?:show\s+me|open(?:\s+up)?|pull\s+up|bring\s+up|load)"
 )
 
 # Source nouns -- what the user is asking to open. Includes "one" as a
@@ -1735,6 +1758,109 @@ def _classify_open_last_source(text: str) -> Optional[OpenLastSourceIntent]:
         monitor_query=mon_q,
         ordinal=ordinal,
         referent=referent,
+        raw_text=text,
+    )
+
+
+# NAVIGATE_TO_SITE (2026-05-22) -- "take me to HBO Max", "go to YouTube",
+# "navigate to Disney Plus", "open the HBO Max website", "find me the
+# Netflix site". Distinct from APP_LAUNCH (which handles registered
+# apps + URL-quick-open like "open google.com") and OPEN_LAST_SOURCE
+# (which reopens a cited URL). NAVIGATE_TO_SITE queries SearxNG and
+# picks the best matching domain.
+#
+# Two phrasings:
+#   A) Navigation verb + (the?) + site name
+#      "take me to HBO Max", "go to Disney Plus", "navigate to Reuters"
+#   B) Any verb + (the?) + site name + (website|site|page|.com)
+#      "open the HBO Max website", "show me the Netflix site"
+
+_NAV_TO_SITE_VERB = (
+    r"(?:take\s+me\s+to|go\s+to|navigate\s+to|head\s+to|"
+    r"find\s+me|bring\s+me\s+to)"
+)
+_NAV_TO_SITE_KEYWORD = (
+    r"(?:website|site|page|homepage|\.com|dot\s+com|\.org|\.net|\.io)"
+)
+
+# Pattern A: explicit navigation verb. The site name is everything
+# between the determiner and an optional monitor target / sentence end.
+_NAVIGATE_TO_SITE_VERB_RE = re.compile(
+    rf"""
+    \b{_NAV_TO_SITE_VERB}\s+
+    (?:the\s+)?
+    (?P<site>[A-Za-z0-9 .,'\-]+?)
+    (?:\s+{_NAV_TO_SITE_KEYWORD})?
+    \s*(?:\.|,|\?|$|\s+on\s+(?:my\s+)?(?:monitor|main|primary|left|right|second|third)\b)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Pattern B: any open-style verb + explicit website keyword.
+# Catches "open the HBO Max website" without requiring "take me to".
+_NAVIGATE_TO_SITE_KEYWORD_RE = re.compile(
+    rf"""
+    \b(?:open(?:\s+up)?|pull\s+up|show\s+me|bring\s+up|load)\s+
+    (?:the\s+)?
+    (?P<site>[A-Za-z0-9 .,'\-]+?)\s+
+    {_NAV_TO_SITE_KEYWORD}\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Stopwords that shouldn't be treated as a site name -- catches false
+# positives like "go to bed" / "take me to the gym" / "find me a chair".
+# Entries are lowercase; the dispatcher strips a leading "the " before
+# the lookup, so both "bed" and "the gym" stop "take me to bed" and
+# "take me to the gym".
+_NAVIGATE_TO_SITE_SITENAME_DENY = {
+    # Mundane places
+    "bed", "sleep", "gym", "store", "doctor", "lunch", "dinner",
+    "breakfast", "work", "school", "church", "home", "office",
+    "bathroom", "kitchen", "room", "park", "beach", "mall", "chair",
+    "snack", "couch", "car", "garage", "yard", "garden", "shower",
+    "bar", "club", "concert", "movies", "hospital", "airport",
+    "the gym", "the store", "the doctor", "the office",
+    "the bathroom", "the kitchen", "my room", "the park",
+    "the beach", "the mall", "the bar", "the hospital",
+    # Generic referent words that aren't site names
+    "him", "her", "them", "us", "you", "me", "it",
+}
+
+
+def _classify_navigate_to_site(text: str) -> Optional[NavigateToSiteIntent]:
+    """Match NAVIGATE_TO_SITE phrasing and extract the site query.
+
+    Returns the intent or None when no pattern matches. The
+    orchestrator dispatcher resolves the actual URL via SearxNG +
+    domain scoring.
+    """
+    if not text:
+        return None
+
+    site: Optional[str] = None
+    for pat in (_NAVIGATE_TO_SITE_VERB_RE, _NAVIGATE_TO_SITE_KEYWORD_RE):
+        m = pat.search(text)
+        if m:
+            site = (m.group("site") or "").strip().strip(".,?!")
+            if site:
+                break
+
+    if not site:
+        return None
+
+    # Guard against everyday "go to bed" / "take me to the gym" etc.
+    if site.lower() in _NAVIGATE_TO_SITE_SITENAME_DENY:
+        return None
+    # Single short common verb / pronoun in the site slot -- noise.
+    if len(site) < 2:
+        return None
+
+    mon_idx, mon_q = _extract_monitor_target(text)
+    return NavigateToSiteIntent(
+        site_query=site,
+        monitor_index=mon_idx,
+        monitor_query=mon_q,
         raw_text=text,
     )
 

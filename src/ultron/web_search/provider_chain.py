@@ -115,8 +115,17 @@ class SearchProviderChain:
         self,
         query: str,
         count: Optional[int] = None,
+        categories: Optional[str] = None,
     ) -> List[SearchResult]:
-        """Run the chain. Returns the first non-empty result list."""
+        """Run the chain. Returns the first non-empty result list.
+
+        Args:
+            query: the search text.
+            count: max results per provider.
+            categories: optional category hint (e.g. ``"news"``).
+                Forwarded to providers that accept it (currently
+                SearxNG); silently ignored by others.
+        """
         query = query.strip()
         if not query:
             return []
@@ -127,7 +136,14 @@ class SearchProviderChain:
                 continue
             t0 = time.monotonic()
             try:
-                results = client.search(query, count=count)
+                # Forward `categories` only to providers that accept
+                # it; Brave + DuckDuckGo don't have the kwarg.
+                if categories is not None and pid == "searxng":
+                    results = client.search(
+                        query, count=count, categories=categories,
+                    )
+                else:
+                    results = client.search(query, count=count)
             except Exception as e:                                     # noqa: BLE001
                 # The individual clients SHOULD return [] rather than
                 # raise -- but defend against bugs / new providers.

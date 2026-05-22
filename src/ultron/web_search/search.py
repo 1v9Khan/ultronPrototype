@@ -429,6 +429,7 @@ class WebSearchExecutor:
         user_query: str,
         search_queries: Optional[List[str]] = None,
         top_n: int = 3,
+        categories: Optional[str] = None,
     ) -> SearchPayload:
         """Run the full search workflow and return a :class:`SearchPayload`.
 
@@ -437,6 +438,13 @@ class WebSearchExecutor:
             search_queries: queries to issue against Brave. Falls back to
                 ``[user_query]`` when not given.
             top_n: how many ranked snippets to keep.
+            categories: optional SearxNG-style category hint
+                (``"news"``, ``"images"``, etc.). When provided, the
+                provider chain forwards it to providers that accept
+                it -- currently SearxNG. The orchestrator passes
+                ``"news"`` when the user's question matches the news
+                regex so we route to Bing News / Yahoo News / Reuters
+                instead of generic web results.
         """
         t0 = time.monotonic()
         notes: List[str] = []
@@ -479,11 +487,21 @@ class WebSearchExecutor:
                     )
 
         # Brave fanout. Dedupe by URL; preserve first-seen order.
+        # ``self.brave`` is the SearchProviderChain (legacy field name)
+        # which forwards `categories` to providers that accept it.
         all_results: List[SearchResult] = []
         seen_urls: set[str] = set()
         for q in queries:
             try:
-                rs = self.brave.search(q)
+                if categories is not None:
+                    try:
+                        rs = self.brave.search(q, categories=categories)
+                    except TypeError:
+                        # Fallback for legacy provider impls without
+                        # the categories kwarg.
+                        rs = self.brave.search(q)
+                else:
+                    rs = self.brave.search(q)
             except Exception as e:
                 logger.warning("Brave call failed for %r: %s", q, e)
                 notes.append(f"brave_error:{q!r}")

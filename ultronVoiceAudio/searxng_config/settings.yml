@@ -5,6 +5,11 @@ use_default_settings:
       - mojeek
       - wikipedia
       - wikidata
+      # News-category engines (queried only when the client passes
+      # categories=news, which happens for news-style user questions).
+      - bing news
+      - yahoo news
+      - reuters
 
 general:
   debug: false
@@ -67,3 +72,19 @@ engines:
     disabled: false
     timeout: 5.0
     weight: 1
+
+  # --- News-category engines (queried when categories=news) ---
+  - name: bing news
+    disabled: false
+    timeout: 3.0
+    weight: 2
+
+  - name: yahoo news
+    disabled: false
+    timeout: 3.0
+    weight: 1
+
+  - name: reuters
+    disabled: false
+    timeout: 4.0
+    weight: 2
