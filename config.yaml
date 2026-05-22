@@ -22,11 +22,11 @@
 # ║      The knobs you'll touch most often live, with current values         ║
 # ╠══════════════════════════════════════════════════════════════════════════╣
 # ║                                                                          ║
-# ║   STT     stt.engine                    "parakeet"  (CUDA, streams)     ║
-# ║           stt.gaming_engine             "moonshine" (CPU swap on game)  ║
-# ║           stt.parakeet_model            "nvidia/parakeet-tdt-0.6b-v3"   ║
-# ║           stt.parakeet_stream_feed_interval_s  0.20                     ║
-# ║           (Whisper swap-back: stt.engine "whisper" +                    ║
+# ║   STT     stt.engine                    "moonshine"  (CPU, streams)     ║
+# ║           stt.gaming_engine             "moonshine"                     ║
+# ║           stt.moonshine_model           "medium-streaming-en"           ║
+# ║           (Parakeet swap: stt.engine "parakeet"  -- CUDA, ~700 MB)      ║
+# ║           (Whisper swap:  stt.engine "whisper" +                        ║
 # ║            stt.model "Systran/faster-distil-whisper-small.en")          ║
 # ║                                                                          ║
 # ║   LLM     llm.preset                    "qwen3.5-4b"                     ║
@@ -273,12 +273,20 @@ stt:
   # *** SUSPECT THIS FLAG FIRST IF VOICE QUALITY REGRESSES. *** Flip to
   # "whisper" to confirm the engine is the cause before chasing other
   # leads.
-  engine: "parakeet"
-  # 2026-05-22 -- dual-STT for gaming mode. With ``parakeet`` primary +
-  # ``moonshine`` gaming, both engines load at startup; gaming engage
-  # swaps to Moonshine (CPU, 0 VRAM) and kills the Parakeet server.
-  # Set to "" to disable the swap (gaming mode keeps the primary engine
-  # and only flips Kokoro/LLM/VLM).
+  # 2026-05-22 -- THE PRIMARY-STT SWITCH. Quick toggle between engines:
+  #   "moonshine"  -- CPU, 0 VRAM, streaming-native, ~58 MB model
+  #   "parakeet"   -- CUDA, ~700 MB VRAM, RNN-T streaming, ~RTFx 2000+
+  #   "whisper"    -- CUDA, distil-whisper, one-shot
+  # Flip this single line + restart to swap. Both engines stay set up;
+  # the dual-engine factory just picks the active one.
+  engine: "moonshine"
+  # 2026-05-22 -- dual-STT for gaming mode. When ``gaming_engine`` is
+  # set AND differs from ``engine``, both load at startup; gaming-mode
+  # engage swaps to ``gaming_engine`` and kills the Parakeet server if
+  # it was the primary. When ``gaming_engine`` equals the primary or
+  # is empty, the registry collapses to one engine (no STT swap on
+  # gaming mode; Kokoro/LLM/VLM swaps still fire). Set to "moonshine"
+  # while moonshine is primary to keep behaviour consistent.
   gaming_engine: "moonshine"
 
   # -------------------------------------------------------------------------
