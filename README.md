@@ -45,7 +45,7 @@ mic → wake "ultron" OR addressing classifier (WARM)
       ├─ coding kinds → AI coding agent subprocess (optional supervisor stack)
       ├─ OPEN_LAST_SOURCE → opens cited URL from prior search
       ├─ NAVIGATE_TO_SITE → SearxNG top-10 → domain-score → opens best
-      ├─ APP_LAUNCH        → native Chrome/Cursor/Discord launcher
+      ├─ APP_LAUNCH        → native Chrome/Discord/Spotify launcher
       ├─ GAMING_MODE       → VRAM reclaim chain (~2.3 GB freed)
       ├─ conversational    → LLM (Qwen 3.5 4B) with optional:
       │                       · web-search gate (rules + preflight LLM)
@@ -150,7 +150,7 @@ Foundation snapshots are kept for historical reference; `codebase_structure.md` 
 
 ## Project status
 
-This is a **research prototype**, not a production product. It evolves intensively across many developer-AI pair sessions. Behavior-changing features land behind feature flags (default OFF) until live-validated. The voice-quality baseline is treated as a strict latency / VRAM contract — any hot-path change re-runs `scripts/measure_baseline.py` and documents the delta. See the project-root standards doc (project root) for the binding constraints.
+This is a **research prototype**, not a production product. It evolves through many tight iteration cycles. Behavior-changing features land behind feature flags (default OFF) until live-validated. The voice-quality baseline is treated as a strict latency / VRAM contract — any hot-path change re-runs `scripts/measure_baseline.py` and documents the delta. See the project-root standards doc for the binding constraints.
 
 If you're reading the source, the highest-leverage entry point is [`src/ultron/pipeline/orchestrator.py`](src/ultron/pipeline/orchestrator.py) — that's the main event loop everything else hangs off.
 
