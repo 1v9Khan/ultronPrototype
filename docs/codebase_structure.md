@@ -11,10 +11,10 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4460 passing / 16 skipped /
-> 0 failed in ~76 s** via direct pytest invocation (baseline 4240 +
+> top of feature commit `8bbc345`). Tests **4490 passing / 16 skipped /
+> 0 failed in ~75 s** via `scripts/run_tests.py` (baseline 4240 +
 > 82 batch 1 + 29 batch 2 + 22 batch 3 + 21 batch 4 + 36 batch 5 +
-> 22 batch 6 + 8 batch 7).
+> 22 batch 6 + 8 batch 7 + 30 batch 8).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -30,6 +30,29 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 8: HTTP-LLM prompt-cache infra (T22 chunked messages + T9 cache warmer) -- COMPLETE.** Forward-looking infrastructure for the eventual HTTP LLM client (Anthropic via litellm, DeepSeek, etc.). Ultron's current LLM paths are in-process llama-cpp (no Anthropic cache_control marker, but the chunked format still helps llama-cpp's KV cache by keeping prompt prefixes stable) + the CLI bridge (Claude Code manages caching internally). When a future ACP bridge or direct HTTP client lands, these primitives are ready. Tests **4490 passing / 16 skipped / 0 failed in ~75 s** (+30 net; baseline 4460 from batch 7).
+
+* **NEW [`src/ultron/llm/cache_aware_chunks.py`](../src/ultron/llm/cache_aware_chunks.py).**
+  * `class CacheableChunk(role, content, label, cacheable=None)` — frozen one-block record.
+  * `class ChunkedPrompt` — named slots matching the catalog's stability ordering: `system`, `examples`, `repo_map`, `readonly_files`, `chat_files`, `history`, `current`. Convenience helpers `add_system / add_repo_map / add_history_turn / add_current`.
+  * `to_anthropic_messages(prompt, *, slot_order, stability, cache_control_type)` — flattens to Anthropic's `messages` shape with `cache_control: {"type": "ephemeral"}` on the LAST block of the longest contiguous cacheable prefix. Only ONE marker is emitted; further markers are no-ops per Anthropic's API.
+  * `to_plain_messages(prompt, *, slot_order)` — flattens without markers for OpenAI / litellm / local llama-cpp.
+  * `count_cacheable_chars(prompt)` — visibility helper (~4 chars/token English heuristic).
+  * `DEFAULT_CHUNK_STABILITY` mapping + `DEFAULT_CHUNK_ORDER` sequence — both overridable per call.
+
+* **NEW [`src/ultron/llm/cache_warmer.py`](../src/ultron/llm/cache_warmer.py).**
+  * `class CacheWarmer(send_fn, *, last_activity_provider, interval_seconds=295, idle_giveup_seconds=1800, prefix_present_check)` — daemon-thread keepalive sender. Catalog T9 magic: `5*60 - 5 = 295` is under Anthropic's 5-min TTL with 5 s safety margin.
+  * `.start()` / `.stop(timeout)` lifecycle; `.running` / `.telemetry` properties; idempotent start; daemon=True for clean process shutdown.
+  * Cost guards: skip when `last_activity_provider` reports user idle past `idle_giveup_seconds` (default 30 min); skip when `prefix_present_check` returns False (no cache to warm).
+  * Fail-open: `send_fn` exceptions are logged + counted, thread keeps running. Returning False from `send_fn` is treated as a transient failure (back off one cycle).
+  * `WarmerTelemetry(pings_sent, pings_succeeded, pings_failed, pings_skipped_idle, pings_skipped_empty)` for offline tuning.
+
+* **Tests.** 30 new total:
+  * `tests/llm/test_cache_aware_chunks.py` (14): default-stability mapping correctness, convenience helpers, slot lookup error, plain serialisation round-trip, cache_control on last cacheable block only (the "one marker" invariant), no marker when no cacheable, per-block override, cacheable-char count (with + without cacheable), custom slot order, custom stability disables caching, frozen dataclass.
+  * `tests/llm/test_cache_warmer.py` (16): default interval is 295 s per catalog, default idle giveup 30 min, constructor rejects non-positive interval, initial telemetry zero, running flag false before start + true while active, ping fires after interval, send-returning-False counts as failed, send-raising-exception counts as failed, idle guard skips ping, idle guard disabled by 0, prefix-present-check skips when empty + allows when true, start idempotent, stop-when-never-started no-op.
+
+---
 
 **2026-05-22 catalog batch 7: architect + repo-map wiring into dispatch prompt body (T5 Phase 3) -- COMPLETE.** Closes the dead-weight loop opened by batch 6: previously `decision.architect_plan_text` was generated and stored but nothing prepended it to the Claude prompt. Now `supervisor_dispatch.py`'s prompt builders (for both EDIT and NEW dispatches) prepend `Architect plan:` and `Repo map:` sections when those decision fields are populated. The orchestrator's `_construct_supervisor_stack` now also actually constructs an `ArchitectSupervisor` when `coding.architect.enabled=true`, wiring the in-process LLM via `generate_isolated(temperature=0.3)`. Tests **4460 passing / 16 skipped / 0 failed in ~76 s** (+8 net; baseline 4452 from batch 6).
 
