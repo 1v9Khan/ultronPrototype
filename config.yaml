@@ -864,6 +864,21 @@ coding:
     decisions_log_path: "logs/supervisor_decisions.jsonl"
     max_candidates_in_decision: 5
 
+  # 2026-05-22 catalog batch 2: PageRank-weighted repo map for the
+  # supervisor's dispatch prompt. When `enabled: true` AND
+  # `supervisor.decide_enabled: true`, the orchestrator constructs a
+  # `RepoMapProviderCache` and wires it as the supervisor's
+  # `repo_map_provider`. After EDIT/RESUME decisions the rendered
+  # repo map gets attached to the decision and prepended to the
+  # Claude dispatch prompt. Mines the user's utterance for
+  # identifiers (snake_case/camelCase/etc.) to bias the personalization
+  # vector. Default OFF -- adds 50-300 ms pre-dispatch latency.
+  repo_map:
+    enabled: false
+    max_map_tokens: 1024
+    max_map_tokens_no_chat: 8192
+    cache_dir: "data/.ultron_repomap_cache"
+
 # ---------------------------------------------------------------------------
 # Context projections (Phase C / Phase 1; verified Foundation Phase 2)
 # ---------------------------------------------------------------------------

@@ -44,7 +44,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ultron.bus import SupervisorDecidedEvent, publish as bus_publish
 from ultron.coding.intent import CodingIntent, CodingIntentKind, _ADJUSTMENT_PATTERNS
@@ -106,9 +106,23 @@ class SupervisorDecision:
     file_hints: List[str] = field(default_factory=list)
     # Original utterance for log + audit.
     user_text: str = ""
+    # PageRank-weighted repo map (2026-05-22 catalog batch 2). Set by
+    # :meth:`ProjectSupervisor._attach_repo_map` when a
+    # ``repo_map_provider`` was supplied at construction and the
+    # decision resolves to a known project path. Downstream callers
+    # (supervisor_dispatch) prepend this to the Claude prompt body so
+    # the coding agent starts the session with structural awareness
+    # of the project. Excluded from ``to_log_dict`` so the audit log
+    # stays lean.
+    repo_map_text: Optional[str] = None
 
     def to_log_dict(self) -> Dict[str, Any]:
-        """JSON-serializable form for the audit log."""
+        """JSON-serializable form for the audit log.
+
+        The ``repo_map_text`` field is intentionally NOT included
+        here — it can be multiple kilobytes per turn and would bloat
+        the JSONL log without aiding offline tuning.
+        """
         return {
             "action": self.action.value,
             "target_project_id": self.target_project_id,
@@ -122,6 +136,7 @@ class SupervisorDecision:
             "file_hints": self.file_hints,
             "user_text": self.user_text,
             "decided_at_unix": time.time(),
+            "repo_map_attached": self.repo_map_text is not None,
         }
 
 
@@ -178,6 +193,9 @@ class ProjectSupervisor:
         clarify_threshold: float = 0.55,
         decisions_log_path: Optional[Path] = None,
         max_candidates_in_decision: int = 5,
+        repo_map_provider: Optional[
+            "Callable[[str, str], Optional[str]]"  # type: ignore[name-defined]
+        ] = None,
     ) -> None:
         if not 0.0 <= clarify_threshold <= resolve_threshold <= 1.0:
             raise ValueError(
@@ -194,6 +212,12 @@ class ProjectSupervisor:
             Path(decisions_log_path) if decisions_log_path else None
         )
         self.max_candidates_in_decision = max_candidates_in_decision
+        # 2026-05-22 catalog batch 2: optional repo-map provider called
+        # after a decision resolves to a known project path. The
+        # callable takes (project_path, user_text) and returns either
+        # a rendered map string or None. Always invoked fail-open —
+        # provider errors are logged and swallowed.
+        self.repo_map_provider = repo_map_provider
         self._log_lock = threading.RLock()
 
         if self.decisions_log_path is not None:
@@ -235,7 +259,44 @@ class ProjectSupervisor:
         # returned decision.
         self._record_decision(decision, inputs)
         self._publish_bus_event(decision, inputs)
+        # 2026-05-22 catalog batch 2: attach the repo map AFTER the
+        # audit log entry has been written so the (potentially large)
+        # rendered map doesn't bloat the JSONL.
+        self._attach_repo_map(decision)
         return decision
+
+    def _attach_repo_map(self, decision: SupervisorDecision) -> None:
+        """Populate ``decision.repo_map_text`` via ``repo_map_provider``.
+
+        Skipped when:
+          * no provider was supplied at construction time, or
+          * the decision has no ``target_project_path`` (NEW with no
+            scaffold, CLARIFY pending, decide() error path), or
+          * the action is CLARIFY (we don't need the map until the
+            user has resolved ambiguity).
+
+        Provider exceptions are logged + swallowed — the supervisor
+        decision is the contract; the repo map is a bonus.
+        """
+        if self.repo_map_provider is None:
+            return
+        if decision.action == SupervisorAction.CLARIFY:
+            return
+        if not decision.target_project_path:
+            return
+        try:
+            rendered = self.repo_map_provider(
+                decision.target_project_path,
+                decision.user_text,
+            )
+        except Exception as exc:                                    # noqa: BLE001
+            logger.warning(
+                "repo_map_provider raised for project_path=%s: %s",
+                decision.target_project_path, exc,
+            )
+            return
+        if rendered:
+            decision.repo_map_text = rendered
 
     # --- decision pipeline --------------------------------------------------
 

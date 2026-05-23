@@ -965,6 +965,45 @@ class Orchestrator:
         if cfg.decide_enabled:
             try:
                 from ultron.coding.project_supervisor import ProjectSupervisor
+
+                # 2026-05-22 catalog batch 2: construct the repo-map
+                # provider when its flag is on. Fail-open: if the
+                # provider can't be built (missing deps, etc.), the
+                # supervisor falls back to no-map decisions.
+                repo_map_provider = None
+                repo_map_cfg = get_config().coding.repo_map
+                if repo_map_cfg.enabled:
+                    try:
+                        from ultron.coding.repo_map import RepoMapProviderCache
+                        from ultron.utils.mtime_cache import MtimeCache
+                        cache_dir = Path(repo_map_cfg.cache_dir)
+                        if not cache_dir.is_absolute():
+                            cache_dir = (
+                                Path(settings.CODING_SANDBOX_PATH).parent.parent
+                                / cache_dir
+                            )
+                        mtime_cache = MtimeCache(cache_dir)
+                        repo_map_provider = RepoMapProviderCache(
+                            max_map_tokens=repo_map_cfg.max_map_tokens,
+                            max_map_tokens_no_chat=(
+                                repo_map_cfg.max_map_tokens_no_chat
+                            ),
+                            mtime_cache=mtime_cache,
+                        )
+                        logger.info(
+                            "Supervisor: repo_map provider enabled "
+                            "(max_map_tokens=%d, cache_dir=%s)",
+                            repo_map_cfg.max_map_tokens,
+                            cache_dir,
+                        )
+                    except Exception as e2:                          # noqa: BLE001
+                        logger.warning(
+                            "Supervisor: repo_map provider construction "
+                            "failed (%s); supervisor will run without "
+                            "repo maps.", e2,
+                        )
+                        repo_map_provider = None
+
                 supervisor = ProjectSupervisor(
                     index=project_index,
                     registry=registry,
@@ -977,6 +1016,7 @@ class Orchestrator:
                         else None
                     ),
                     max_candidates_in_decision=cfg.max_candidates_in_decision,
+                    repo_map_provider=repo_map_provider,
                 )
             except Exception as e:                                  # noqa: BLE001
                 logger.warning(

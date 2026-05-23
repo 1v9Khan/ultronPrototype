@@ -1472,6 +1472,45 @@ class CodingGoalAnchorsConfig(_Strict):
     resume_prepend_next_anchor: bool = True
 
 
+class CodingRepoMapConfig(_Strict):
+    """2026-05-22 catalog batch 2: PageRank-weighted repo map.
+
+    When enabled and a :class:`ProjectSupervisor` is constructed, the
+    orchestrator instantiates a
+    :class:`ultron.coding.repo_map.RepoMapProviderCache` and wires it
+    as the supervisor's ``repo_map_provider``. After each EDIT/RESUME
+    decision the supervisor attaches the rendered map to the decision
+    as ``repo_map_text``; downstream callers (supervisor_dispatch)
+    prepend this to the Claude prompt body so the coding agent starts
+    the session with structural awareness of the project.
+
+    The map mines the user's utterance for identifiers
+    (snake_case/camelCase/etc.) and uses them to bias the PageRank
+    personalization vector — so a turn like "fix the parakeet
+    streaming bug" automatically surfaces ``parakeet_engine.py`` near
+    the top of the map.
+
+    Default OFF per the net-benefit feature-flag policy: enabling
+    adds ~50-300 ms of pre-dispatch compute per turn (mostly tree-
+    sitter parse) for projects with cached tags, more on first scan.
+    """
+
+    enabled: bool = False
+    # Token budget when at least one file is in the chat set (i.e.,
+    # the LLM already has visibility into some of the project). A
+    # tighter budget here keeps the map from displacing the user's
+    # actual question in the prompt.
+    max_map_tokens: int = Field(default=1024, ge=128, le=16384)
+    # Token budget when no chat files are set (the supervisor's first-
+    # turn dispatch, typically). Wider so the LLM gets a broader
+    # initial view of the project.
+    max_map_tokens_no_chat: int = Field(default=8192, ge=128, le=32768)
+    # On-disk cache directory for parsed tags. Relative paths are
+    # resolved against the project root (the main worktree, not the
+    # specific source project being mapped — the cache is global).
+    cache_dir: str = "data/.ultron_repomap_cache"
+
+
 SUPERVISOR_TIERS: dict[str, dict[str, bool]] = {
     # "off"  -- legacy path; supervisor never constructed. Equivalent
     # to enabled=False with everything else False; included for
@@ -1656,6 +1695,12 @@ class CodingConfig(_Strict):
     # CodingSupervisorConfig for per-phase flags.
     supervisor: CodingSupervisorConfig = Field(
         default_factory=CodingSupervisorConfig,
+    )
+    # 2026-05-22 catalog batch 2: PageRank repo map for supervisor
+    # dispatch. Default OFF -- adds 50-300 ms pre-dispatch latency.
+    # See CodingRepoMapConfig for tuning knobs.
+    repo_map: CodingRepoMapConfig = Field(
+        default_factory=CodingRepoMapConfig,
     )
     # A4 pre-task confirmation. Default OFF -- the spoken confirmation
     # adds ~0.5 s of TTS playback before every coding task dispatch,

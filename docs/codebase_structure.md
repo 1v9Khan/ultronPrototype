@@ -11,9 +11,9 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4322 passing / 17 skipped /
-> 0 failed in ~80 s** via direct pytest invocation (baseline 4240 +
-> 82 net from the 2026-05-22 catalog batch-1 foundations pass).
+> top of feature commit `8bbc345`). Tests **4351 passing / 17 skipped /
+> 0 failed in ~74 s** via direct pytest invocation (baseline 4240 +
+> 82 catalog batch 1 + 29 catalog batch 2).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -29,6 +29,42 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 2: PageRank-weighted repo map -- COMPLETE.** Second batch of the external-codebase catalog pass — wires a clean-room PageRank repo map into the supervisor's dispatch path. The map encodes the project's def/ref graph (via the batch-1 tree-sitter tags), runs PageRank with a personalization vector that boosts chat-files / user-mentioned-files / important-files, distributes per-node rank across out-edges to score each (file, ident) pair, then binary-searches the largest prefix that fits the token budget when rendered through `grep_ast.TreeContext`. Voice-utterance identifier mining (creative extension #1 from the catalog) is wired through `RepoMapProviderCache`. Default OFF behind `coding.repo_map.enabled`. Tests **4351 passing / 17 skipped / 0 failed in ~74 s** (+29 net; baseline 4322 from batch 1).
+
+* **NEW [`src/ultron/coding/repo_map.py`](../src/ultron/coding/repo_map.py).** Full PageRank repo map per the catalog spec.
+  * `class RepoMap(root, *, max_map_tokens, max_map_tokens_no_chat, mtime_cache, token_counter)` — primary class.
+    * `.get_map(*, chat_files, other_files, mentioned_fnames, mentioned_idents, force_refresh) -> str`.
+  * Graph construction (`_get_ranked_tags`): MultiDiGraph with edges from referencing-file → defining-file, weight = `mul * sqrt(num_refs)`. `mul` modifiers: `*10` for `mentioned_idents`, `*10` for 8+ char snake/kebab/camel, `*0.1` for `_`-prefixed, `*0.1` for 5+ definers; per-edge `*50` when referencer is in chat. Self-edges (weight 0.1) for defs without refs work around tree-sitter quirks.
+  * Personalization vector: `personalize` for chat / mentioned-fnames / path-component-mentioned files, plus a half-weight bonus for `is_important()` matches (creative extension — README floats up without inbound edges).
+  * PageRank via `networkx.pagerank(G, weight="weight", personalization=..., dangling=...)`, falls back to non-personalized PageRank on `ZeroDivisionError`, returns empty on second failure.
+  * Binary search to budget via `_binary_search_to_budget`: 15 % tolerance, 30 iterations max, starts at `max_tokens // 25`.
+  * Render via `grep_ast.TreeContext` (patched at module import via `_ensure_grep_ast_patched` — tree-sitter-language-pack's bundled `Parser` ships an incompatible `builtins.Node` type, so we substitute a `tree_sitter.Parser(language)` constructed from the language-pack's `Language`).
+  * Per-file `TreeContext` cache + per-rendering `(rel_fname, sorted(lois), mtime)` cache for fast re-renders.
+  * Lines >100 chars are clipped (minified JS, etc.).
+* `class RepoMapProviderCache` (same module) — per-project RepoMap factory + `__call__(project_path, user_text) -> Optional[str]` contract. Holds a shared `MtimeCache` and a thread-safe `project_path -> RepoMap` dict. Mines `user_text` for identifiers via `extract_idents_from_text` and threads them through as `mentioned_idents`.
+* `extract_idents_from_text(text) -> Set[str]` — mines snake_case / kebab-case / camelCase / PascalCase / dotted identifiers from free-form text. Returns empty for plain English. Used by the voice path to bias the map toward what the user just said.
+* `find_source_files(directory) -> List[Path]` — walks a project tree for source files. Skips `SKIP_DIRECTORIES` (covers `node_modules`, `.git`, `.venv`, build/dist/coverage caches, ultron's `models/` + `logs/`). Filter via `grep_ast.filename_to_lang` so only languages with tree-sitter support are returned.
+
+* **Integration: [`src/ultron/coding/project_supervisor.py`](../src/ultron/coding/project_supervisor.py).**
+  * `SupervisorDecision` gains `repo_map_text: Optional[str]` (excluded from `to_log_dict` so the audit log stays lean; a `repo_map_attached` boolean is included instead).
+  * `ProjectSupervisor.__init__` accepts an optional `repo_map_provider: Callable[[str, str], Optional[str]]`.
+  * New `_attach_repo_map(decision)` method invoked at the end of `decide()` (after the audit log write + bus publish). Skips when no provider, no `target_project_path`, or action is `CLARIFY`. Provider exceptions are logged + swallowed; decision quality is the contract, repo map is a bonus.
+
+* **Integration: [`src/ultron/pipeline/orchestrator.py`](../src/ultron/pipeline/orchestrator.py) `_construct_supervisor_stack`.** When `coding.repo_map.enabled: true` (and the supervisor is being constructed because `coding.supervisor.decide_enabled: true`), the orchestrator builds a `RepoMapProviderCache` with the configured token budgets + an `MtimeCache` at `data/.ultron_repomap_cache.v1/`, then passes it as `repo_map_provider`. Fail-open: a construction error logs WARN and the supervisor runs without repo maps.
+
+* **NEW `CodingRepoMapConfig` in [`src/ultron/config.py`](../src/ultron/config.py).** Four knobs: `enabled` (default `false`), `max_map_tokens` (default 1024), `max_map_tokens_no_chat` (default 8192), `cache_dir` (default `data/.ultron_repomap_cache`). Wired into `CodingConfig.repo_map`.
+
+* **Config: [`config.yaml`](../config.yaml).** New `coding.repo_map` section with the four knobs at their default values + a 5-line explanatory header. Default OFF.
+
+* **Tests.** 29 new in [`tests/coding/test_repo_map.py`](../tests/coding/test_repo_map.py):
+  * `extract_idents_from_text`: snake / kebab / camel / Pascal / dotted / plain-text rejection / empty.
+  * `find_source_files`: language detection, `node_modules` skip, empty dir, single-file passthrough, SKIP_DIRECTORIES sanity-check.
+  * `RepoMap.get_map`: non-empty render, empty project, mentioned-ident bias surfaces obscure functions under tight budget, chat-files excluded from output, token budget honored, mtime_cache integration, important-files hoisted ahead of PageRank ordering, force_refresh runs clean.
+  * `ProjectSupervisor` repo-map wiring: provider invoked on EDIT, skipped on CLARIFY / no path, provider errors swallowed, `repo_map_text` excluded from `to_log_dict`.
+  * `RepoMapProviderCache`: instance reuse across calls, missing path → None, render via `__call__`, mines idents from user text and surfaces them.
+
+---
 
 **2026-05-22 catalog batch 1: foundations + tree-sitter base -- COMPLETE.** Lands the first batch of an external-codebase catalog pass (`F:\reference_repos\catalog\01_aider.md`) — five reusable utility primitives + a tree-sitter symbol extractor + an important-file allowlist, wired into `project_introspect.py` so the snapshot now surfaces README / pyproject.toml / CLAUDE.md / docs/codebase_structure.md / etc. near the top of the rendered tree. Pattern lineage attributed to aider (Apache 2.0) in the new [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). Tests **4322 passing / 17 skipped / 0 failed in ~80 s** (+82 net; baseline 4240). One commit on top of `9965c0f`.
 
@@ -2883,6 +2919,25 @@ implementation).
 - `extract_tags_for_files(paths, root, *, cache=None) -> List[Tag]` — bulk wrapper; single-file failures are logged and skipped
 - `supported_languages() -> List[str]` — sorted list of languages with vendored query files (currently 10)
 
+#### `coding/repo_map.py` (NEW 2026-05-22 catalog batch 2)
+- `class RepoMap(root, *, max_map_tokens=1024, max_map_tokens_no_chat=8192, mtime_cache=None, token_counter=None)` — PageRank-weighted repo map
+  - `.get_map(*, chat_files=(), other_files=None, mentioned_fnames=(), mentioned_idents=(), force_refresh=False) -> str`
+  - Builds file→file MultiDiGraph from tree-sitter tags
+  - Edge weight: `mul * sqrt(num_refs)`; mul modifiers `*10`/`*0.1` per catalog
+  - Personalization vector: chat / mentioned / path-component / important-files bonus
+  - `nx.pagerank` with fallback to non-personalized on ZeroDivisionError
+  - Per-(file, ident) rank distributed across out-edges
+  - Binary-search budget via `_binary_search_to_budget` (tolerance 0.15, max_iters 30)
+  - Render via patched `grep_ast.TreeContext` (`_ensure_grep_ast_patched` substitutes a `tree_sitter.Parser` constructed from `tslp.get_language` because tree-sitter-language-pack's own `Parser` ships an incompatible `builtins.Node` API)
+  - Per-file TreeContext cache + per-render `(rel_fname, sorted(lois), mtime)` cache
+- `class RepoMapProviderCache(*, max_map_tokens, max_map_tokens_no_chat, mtime_cache=None, token_counter=None)` — per-project RepoMap factory
+  - `.get_or_create(project_path) -> Optional[RepoMap]` (thread-safe; reuses instances)
+  - `.__call__(project_path, user_text) -> Optional[str]` — matches `ProjectSupervisor.repo_map_provider` contract; mines `user_text` for idents and passes them as `mentioned_idents`
+- `extract_idents_from_text(text) -> Set[str]` — mines snake_case / kebab-case / camelCase / PascalCase / dotted identifiers from free-form text (e.g., the voice transcript)
+- `find_source_files(directory) -> List[Path]` — recursive walk of source files, skips `SKIP_DIRECTORIES`, filters via `grep_ast.filename_to_lang`
+- `SKIP_DIRECTORIES: FrozenSet[str]` — mirrors `project_introspect.SKIP_DIRECTORIES` plus `models/`, `logs/`
+- Constants: `DEFAULT_MAX_MAP_TOKENS=1024`, `DEFAULT_MAX_MAP_TOKENS_NO_CHAT_FILES=8192`, `DEFAULT_TOLERANCE=0.15`, `DEFAULT_MAX_ITERATIONS=30`, `LINE_TRUNCATE_LENGTH=100`
+
 #### `coding/queries/` (NEW 2026-05-22 catalog batch 1)
 - 10 vendored `<lang>-tags.scm` files with attribution headers: python, javascript, bash, go, rust, c, cpp, java, ruby, csharp
 - Adapted from `aider/queries/tree-sitter-language-pack/<lang>-tags.scm` (Apache 2.0; see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md))
@@ -3041,14 +3096,25 @@ implementation).
   score, source ("semantic" | "registry_exact" | "registry_substring" | ...)
 - `@dataclass class SupervisorDecision` — action, target_project_id/name/path,
   resume_session_id, candidates, confidence, reasoning, clarification_question,
-  file_hints, user_text; `.to_log_dict()` for the JSONL audit
+  file_hints, user_text, **repo_map_text: Optional[str]** (NEW 2026-05-22 catalog
+  batch 2 — rendered PageRank repo map, populated by `_attach_repo_map` when a
+  `repo_map_provider` is set on the supervisor and the decision resolves to a
+  known project path); `.to_log_dict()` for the JSONL audit (excludes
+  `repo_map_text` to keep the log lean; emits `repo_map_attached: bool` instead)
 - `@dataclass class SupervisorInputs` — user_text, coding_intent,
   has_active_task, active_task_project_name, active_task_session_id, turn_id
 - `class ProjectSupervisor(index, registry, resolver, *, resolve_threshold=0.75,
-  clarify_threshold=0.55, decisions_log_path=None, max_candidates_in_decision=5)`
+  clarify_threshold=0.55, decisions_log_path=None, max_candidates_in_decision=5,
+  repo_map_provider=None)`
   - `.decide(inputs) -> SupervisorDecision` — runs the priority pipeline
     (active-adjustment / strong-semantic / registry-exact / clarify-band / new);
-    always returns + never raises; audit-logs + publishes `SupervisorDecidedEvent`
+    always returns + never raises; audit-logs + publishes `SupervisorDecidedEvent`;
+    calls `_attach_repo_map(decision)` last (after audit + bus publish) so the
+    rendered map doesn't bloat the JSONL
+  - `._attach_repo_map(decision)` — invokes `repo_map_provider(project_path,
+    user_text)` and stores the result on the decision; skipped for CLARIFY and
+    for decisions without a `target_project_path`; provider exceptions are
+    logged + swallowed (decision quality is the contract, repo map is a bonus)
 - Helpers: `_merge_candidates(semantic, registry, *, cap)` — dedup-by-path,
   higher-score-wins, source labels concatenated; `_registry_to_candidate`;
   `_project_id_for_registry(project)` — maps registry path to same UUID5 as index
@@ -3593,6 +3659,11 @@ Sections:
   - `digest_max_summary_chars=4000` / `digest_max_files_in_prompt=40`
   - `decisions_log_path="logs/supervisor_decisions.jsonl"`
   - `max_candidates_in_decision=5`
+- `coding.repo_map` (2026-05-22 catalog batch 2 PageRank repo map) — four knobs:
+  - `enabled` (default FALSE; opt-in because the map adds 50-300 ms pre-dispatch latency)
+  - `max_map_tokens=1024` (budget when at least one chat file is set)
+  - `max_map_tokens_no_chat=8192` (budget when starting cold)
+  - `cache_dir="data/.ultron_repomap_cache"`
 
 ### `config/settings.py` (Phase 3 SHIM)
 
