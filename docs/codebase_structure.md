@@ -11,10 +11,11 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** to be bumped on the SWE-Agent porting commit.
-> Tests **5167 passing / 16 skipped / 0 failed in ~91 s** via
+> Tests **5215 passing / 16 skipped / 0 failed in ~93 s** via
 > `scripts/run_tests.py` (prior baseline 4750 + 98 batch 1 + 39
-> batch 2 + 114 batch 3 + 58 batch 4 + 22 batch 5 + 86 batch 6
-> (T7 SubmitReviewLoop + T8 ForfeitController + T14 RequeryLoop)).
+> batch 2 + 114 batch 3 + 58 batch 4 + 22 batch 5 + 86 batch 6 +
+> 48 batch 7 (T16 click preview + T18 image markdown) -- SWE-Agent
+> catalog T1-T20 all landed).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -30,6 +31,26 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-23 SWE-Agent porting -- batch 7 (T16 click preview + T18 image markdown) -- COMPLETE.** Two new modules: VLM-confirmed desktop click preview with confidence-gated auto-pass, and image-as-base64-markdown encoding + multimodal-segment parser. Closes the SWE-Agent catalog T1-T20. Tests **5215 passing / 16 skipped / 0 failed in ~93 s** (+48 batch 7 tests from 5167).
+
+* **NEW [`src/ultron/desktop/click_preview.py`](../src/ultron/desktop/click_preview.py) (T16).** `preview_click(x, y, capture_screen, vlm_describe, history, ...)` -> :class:`PreviewResult` (decision in ALLOW / BLOCK / AUTO_PASS / DEGRADED). Confidence-gated tiers per user direction: first click of a session ALWAYS confirms via VLM round-trip; subsequent clicks within `AUTO_PASS_RADIUS_PX` (100 px default) of a recently-confirmed click auto-pass. `draw_crosshair_on_image(bytes, x, y, size, thickness, color)` is the pure-Pillow renderer (port of SWE-Agent's `CROSSHAIR_JS` geometry: two perpendicular bars centred on the target). `ConfirmationHistory` is the bounded recent-confirmations store (default 20 entries, oldest dropped). DEGRADED outcome when capture / draw / vlm_describe is missing or raises -- desktop layer chooses whether DEGRADED counts as ALLOW or BLOCK.
+
+* **NEW [`src/ultron/llm/image_markdown.py`](../src/ultron/llm/image_markdown.py) (T18).** `encode_image_as_markdown(image_bytes, alt_text, mime_type, max_dim)` -> :class:`EncodedImage` with markdown string `![<alt>](data:<mime>;base64,<b64>)` matching SWE-Agent's `view_image` output verbatim. Allowed MIME types `{"image/png", "image/jpeg", "image/webp"}` (verbatim). Optional Pillow integration auto-thumbnails when `max_dim` is set + longer side exceeds it (default 1024px so a typical 1920x1080 screenshot encodes to ~250 KB). `parse_image_markdown(content)` splits a content string into `[{type:text}, {type:image_url}, {type:text}, ...]` multimodal segments at base64-markdown boundaries (regex verbatim from SWE-Agent's `ImageParsingHistoryProcessor._pattern`); `image/jpg` MIME normalised to `image/jpeg`; disallowed MIME passes through as text. `history_to_multimodal(history)` rewrites entries in a message list so image-bearing items become multimodal-segment lists (mirrors SWE-Agent's `ImageParsingHistoryProcessor`).
+
+* **Catalog T1-T20 fully landed.** Of 20 cataloged techniques:
+  - Batch 1: T10, T15, T17, T19 (foundation primitives)
+  - Batch 2: T2, T9 (history compression)
+  - Batch 3: T1, T4, T5, T12, T20 (lint + edit primitives)
+  - Batch 4: T3, T11 (search + interactive blocklist)
+  - Batch 5: T6, T13 (diff snapshot + crash recovery)
+  - Batch 6: T7, T8, T14 (review, forfeit, requery)
+  - Batch 7: T16, T18 (desktop crosshair + image markdown)
+  - Total: 20 techniques, 7 commits, ~ +465 tests on top of the 4750 baseline (now 5215).
+
+* **2 new test files (48 tests):** [`tests/desktop/test_click_preview.py`](../tests/desktop/test_click_preview.py) (22 -- constants, draw_crosshair (empty raise, valid PNG, centre pixel red, far pixels untouched, custom size + colour), ConfirmationHistory (invalid max raises, record + near hit / miss, most-recent wins, capped at max_entries, clear, negative radius, frozen entry), preview_click (auto-pass within radius, outside triggers VLM, VLM yes ALLOWS + records, VLM no BLOCKS + no record, missing VLM DEGRADED, VLM exception DEGRADED, capture exception DEGRADED, empty capture DEGRADED, custom confirmation keyword)); [`tests/llm/test_image_markdown.py`](../tests/llm/test_image_markdown.py) (26 -- MIME whitelist, encode (empty raise, disallowed MIME raise, markdown shape, base64 valid + decodes to PNG, resize at max_dim, no resize when None, JPEG mode conversion), parse (empty returns text, no-images single text, single image splits, multiple images, disallowed MIME passes through, image/jpg normalised, alt-text preserved, consecutive text collapses), has_image_markdown, history_to_multimodal (text passthrough, rewrites image items, no input mutation, non-dict items, non-string content)).
+
+---
 
 **2026-05-23 SWE-Agent porting -- batch 6 (T7 submit review + T8 forfeit + T14 format-error requery) -- COMPLETE.** Three new modules covering the supervisor / agent-loop quality surfaces. Tests **5167 passing / 16 skipped / 0 failed in ~91 s** (+86 batch 6 tests from 5081).
 
@@ -1753,6 +1774,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── input_control.py      ← pyautogui mouse+keyboard, rate-limited, validator-gated, blocks input on UAC/security windows
 │       │   ├── screen_context.py     ← orchestrator: assemble foreground + windows + UIA text + optional VLM description for LLM injection
 │       │   ├── vlm.py                ← Moondream2 VLM wrapper (transformers + trust_remote_code), CPU-only on-demand, lazy-loaded, fail-open; 2026-05-22 Moondream2VLM.unload() for gaming-mode engage callback
+│       │   ├── click_preview.py      ← 2026-05-23 SWE-Agent batch 7 (T16): preview_click VLM-confirmed click target with confidence-gated auto-pass; ConfirmationHistory bounded recent-click store; draw_crosshair_on_image pure-Pillow renderer; first click always confirms then subsequent clicks within AUTO_PASS_RADIUS_PX (100px) auto-pass
 │       │   ├── voice.py              ← Phase 8 voice handlers (handle_app_launch / handle_screen_context_query) + 2026-05-14 third-pass handlers (handle_window_move / handle_window_close) bridging RoutingIntent -> native primitives
 │       │   └── preferences.py        ← Phase 10 preference learning (JSONL log + optional OpenClaw workspace mirror; find_preference_for_phrase for recency-weighted lookup)
 │       │
@@ -1819,6 +1841,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── context_scoring.py  ← 2026-05-18 Phase 1: adaptive context-window heuristic (default-OFF; ContextRecommendation)
 │       │   ├── draft_model.py      ← 2026-05-22: make_qwen08b_draft_model factory + prefix-cached state machine; llm.draft_kind: "none"|"pld"|"model" selector (default "none")
 │       │   ├── history_processors.py ← 2026-05-23 SWE-Agent batch 2 (T2 + T9): ClosedWindowHistoryProcessor (collapse repeated file-view snapshots) + LastNObservations (elide all but last N with polling for cache stability) + TagToolCallObservations (tag observations by source tool) + apply_history_processors composer + build_default_processors factory; wired into LLMEngine._build_messages history block (default ON, fail-open)
+│       │   ├── image_markdown.py     ← 2026-05-23 SWE-Agent batch 7 (T18): encode_image_as_markdown (![<alt>](data:<mime>;base64,<b64>) verbatim SWE-Agent format with optional Pillow auto-thumbnail) + parse_image_markdown (regex split into multimodal segments; image/jpg -> image/jpeg normalisation) + history_to_multimodal rewrite helper; allowed MIME types image/png / image/jpeg / image/webp
 │       │   ├── requery.py            ← 2026-05-23 SWE-Agent batch 6 (T14): RequeryLoop temp-history-without-pollution requery cycle; build_requery_history (real + broken-assistant + error-user shape verbatim from SWE-Agent get_model_requery_history); pre-built validators validate_non_empty + validate_json; max_retries default 3 matching SWE-Agent
 │       │   └── self_consistency.py ← 4B plan Item 6: N-sample majority-vote driver + aggregators (text/JSON/label) (default OFF)
 │       │
