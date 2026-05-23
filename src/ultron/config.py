@@ -1005,6 +1005,33 @@ class BackgroundSummarizerConfig(_Strict):
     output_path: str = "data/background_summaries.jsonl"
 
 
+class MemoryHistoryCompressionConfig(_Strict):
+    """2026-05-22 catalog batch 3: tail-preserve history compression.
+
+    When enabled, the orchestrator can call
+    :meth:`ultron.memory.background_summarizer.BackgroundSummarizer.compress_history_for_llm`
+    to fold the older half of an over-budget message list into a
+    single summary message via an LLM call, preserving the most recent
+    half verbatim. Race-protected via :class:`SnapshotGuard` so
+    foreground turn appends during the LLM call invalidate the
+    compression silently rather than clobbering newer state.
+
+    Default OFF: enabling changes how history is fed to the LLM and
+    needs a measure_baseline.py pass to confirm voice TTFT impact.
+    The :class:`BackgroundSummarizer` method itself is always
+    constructable when ``compress_summarize_fn`` is supplied; this
+    flag just gates the orchestrator integration that calls it.
+    """
+
+    enabled: bool = False
+    # Token budget the compressed history should fit in. Defaults to
+    # match aider's 1024 sweet-spot.
+    max_tokens: int = Field(default=1024, ge=128, le=32768)
+    # Maximum recursion depth before falling back to summarising
+    # everything in one pass. Aider uses 3.
+    max_depth: int = Field(default=3, ge=1, le=10)
+
+
 class MemoryConfig(_Strict):
     enabled: bool = True
     jsonl_legacy_path: str = "data/memory.jsonl"
@@ -1052,6 +1079,11 @@ class MemoryConfig(_Strict):
     # + structured fact extraction (idle-gated, default OFF).
     background_summary: BackgroundSummarizerConfig = Field(
         default_factory=BackgroundSummarizerConfig,
+    )
+    # 2026-05-22 catalog batch 3: tail-preserve history compression
+    # with race protection. Default OFF.
+    history_compression: MemoryHistoryCompressionConfig = Field(
+        default_factory=MemoryHistoryCompressionConfig,
     )
     # 2026-05-21 frontier-enhancement Item 2 -- cross-encoder reranker.
     reranking: "MemoryRerankingConfig" = Field(

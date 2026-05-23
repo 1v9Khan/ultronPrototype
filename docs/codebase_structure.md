@@ -11,9 +11,9 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4351 passing / 17 skipped /
+> top of feature commit `8bbc345`). Tests **4373 passing / 17 skipped /
 > 0 failed in ~74 s** via direct pytest invocation (baseline 4240 +
-> 82 catalog batch 1 + 29 catalog batch 2).
+> 82 catalog batch 1 + 29 catalog batch 2 + 22 catalog batch 3).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -29,6 +29,34 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 3: tail-preserve history compression + snapshot-guard race protection -- COMPLETE.** Third batch of the external-codebase catalog pass — implements aider's `ChatSummary` pattern (T6) for compressing over-budget LLM history while preserving the most recent turns verbatim, wired through `SnapshotGuard` (T21 wire) so background-thread compression that races against foreground mutations gets discarded silently. Default OFF behind `memory.history_compression.enabled`. Tests **4373 passing / 17 skipped / 0 failed in ~74 s** (+22 net; baseline 4351 from batch 2).
+
+* **NEW [`src/ultron/memory/history_compression.py`](../src/ultron/memory/history_compression.py).**
+  * `find_split_point(messages, max_tokens, token_counter, *, prefer_assistant_boundary=True) -> int` — walks the message list in reverse, accumulating tokens until the tail would exceed `max_tokens / 2`, returns the split index. When `prefer_assistant_boundary` is True (default), backs the split off (decrementing toward an earlier message) until `messages[split-1].role == "assistant"`, matching aider's "back off split_index" behaviour. Returns 0 when no clean assistant boundary exists or the whole thing already fits.
+  * `compress_history(messages, summarize_fn, *, max_tokens, token_counter, summary_preamble=DEFAULT_SUMMARY_PREAMBLE, prefer_assistant_boundary=True) -> CompressionResult` — single-pass compression. Renders the head as a `# ROLE\\n<content>` block stream, calls `summarize_fn(head_text)`, builds `[summary_msg, *tail]`. Returns a `CompressionResult` with `compressed=None` on LLM error or empty summary.
+  * `compress_history_recursive(...) -> CompressionResult` — iterates until the result fits or `max_depth` is exhausted. On the final allowed iteration, summarises EVERYTHING (including the tail) to guarantee a result that fits, matching aider's deep-recursion fallback.
+  * `compress_history_with_guard(messages_live_ref, summarize_fn, *, max_tokens, token_counter, guard=None, key="history", max_depth=3) -> CompressionResult` — race-protected wrapper. Snapshots `messages_live_ref` at entry, runs the compression on the snapshot, re-checks the snapshot at exit. Mismatch -> `compressed=None`, `race_detected=True`. Accepts a caller-owned `SnapshotGuard` so concurrent jobs can share one guard, or takes a one-shot snapshot internally when none supplied.
+  * `messages_to_text(messages) -> str` and `messages_to_dicts(messages)` — helpers for caller-side message coercion.
+  * `@dataclass(frozen=True) class CompressionResult` — `compressed: Optional[List[Message]]`, `original_tokens`, `final_tokens`, `head_summarised`, `tail_preserved`, `depth`, `race_detected`, `error`.
+  * Constants: `DEFAULT_SUMMARY_PREAMBLE`, `DEFAULT_MAX_DEPTH=3`.
+
+* **Integration: [`src/ultron/memory/background_summarizer.py`](../src/ultron/memory/background_summarizer.py).**
+  * `BackgroundSummarizer.__init__` gains an optional `compress_summarize_fn: Callable[[str], str]` kwarg — free-form summarisation callable for the new compression path. Kept distinct from `generate_fn` (which expects JSON-structured output for fact extraction) so the two LLM call shapes don't bleed. Falls back to `generate_fn` when only one was wired (the compression caller is fault-tolerant — a JSON-looking response is rejected by `compress_history`'s empty-summary guard).
+  * Internal `SnapshotGuard` instance reused across compression jobs (via the `snapshot_key` kwarg).
+  * NEW `BackgroundSummarizer.compress_history_for_llm(messages, *, max_tokens, token_counter=None, max_depth=3, snapshot_key="history_compression") -> CompressionResult` — race-protected wrapper around `compress_history_with_guard`. Coerces input via `messages_to_dicts` so the caller can pass dicts, dataclasses, or `TurnSnapshot` instances interchangeably. Defaults `token_counter` to `char_count_tokens` from batch 1.
+
+* **NEW `MemoryHistoryCompressionConfig` in [`src/ultron/config.py`](../src/ultron/config.py).** Three knobs: `enabled` (default `false`), `max_tokens` (default 1024 matching aider), `max_depth` (default 3). Wired into `MemoryConfig.history_compression`. No YAML entry needed in `config.yaml` — the schema defaults handle absence (enable by adding the section, not by deleting it).
+
+* **Tests.** 22 new in [`tests/memory/test_history_compression.py`](../tests/memory/test_history_compression.py):
+  * `find_split_point`: empty input, single message, all-fits skip, assistant-boundary backoff (the failure case my first implementation got wrong — looks BACKWARD not forward), no-boundary-preference variant.
+  * `compress_history`: empty input, fits-as-is short-circuit, head summarisation, LLM failure (returns None), empty-summary rejection.
+  * `compress_history_recursive`: fits-as-is, overflow iteration, deep-fallback summarises everything.
+  * `compress_history_with_guard`: no mutation succeeds, mutation detected, internal-snapshot fallback when no guard supplied, threaded mutation detected mid-LLM-call.
+  * Helpers: `messages_to_text` format, `messages_to_dicts` normalisation of dataclass-like inputs, `CompressionResult` frozenness.
+  * `BackgroundSummarizer.compress_history_for_llm`: uses `compress_summarize_fn` when wired, falls back to `generate_fn` otherwise.
+
+---
 
 **2026-05-22 catalog batch 2: PageRank-weighted repo map -- COMPLETE.** Second batch of the external-codebase catalog pass — wires a clean-room PageRank repo map into the supervisor's dispatch path. The map encodes the project's def/ref graph (via the batch-1 tree-sitter tags), runs PageRank with a personalization vector that boosts chat-files / user-mentioned-files / important-files, distributes per-node rank across out-edges to score each (file, ident) pair, then binary-searches the largest prefix that fits the token budget when rendered through `grep_ast.TreeContext`. Voice-utterance identifier mining (creative extension #1 from the catalog) is wired through `RepoMapProviderCache`. Default OFF behind `coding.repo_map.enabled`. Tests **4351 passing / 17 skipped / 0 failed in ~74 s** (+29 net; baseline 4322 from batch 1).
 
@@ -3664,6 +3692,10 @@ Sections:
   - `max_map_tokens=1024` (budget when at least one chat file is set)
   - `max_map_tokens_no_chat=8192` (budget when starting cold)
   - `cache_dir="data/.ultron_repomap_cache"`
+- `memory.history_compression` (2026-05-22 catalog batch 3 tail-preserve compression) — three knobs:
+  - `enabled` (default FALSE; opt-in because compression changes how history is fed to the LLM)
+  - `max_tokens=1024` (target budget for the compressed history)
+  - `max_depth=3` (recursion cap before falling back to summarising everything)
 
 ### `config/settings.py` (Phase 3 SHIM)
 

@@ -421,6 +421,7 @@ class BackgroundSummarizer:
         min_turns: int = 3,
         idle_threshold_seconds: float = 30.0,
         now_provider: Callable[[], float] = time.monotonic,
+        compress_summarize_fn: Optional[Callable[[str], str]] = None,
     ) -> None:
         self._generate_fn = generate_fn
         self._store_fn = store_fn
@@ -433,6 +434,19 @@ class BackgroundSummarizer:
         self._last_summarized_turn_id: int = -1
         self._cancel_event = threading.Event()
         self._in_flight = False
+        # 2026-05-22 catalog batch 3: separate free-form summarisation
+        # callable for the tail-preserve history compression path. Kept
+        # distinct from ``generate_fn`` (which expects JSON-structured
+        # output for fact extraction) so the two LLM call shapes don't
+        # bleed into each other. Falls back to ``generate_fn`` when
+        # only one was wired, which is safe because the compression
+        # caller is fault-tolerant -- a mangled JSON-looking summary
+        # is rejected by ``compress_history``'s empty-summary guard.
+        self._compress_summarize_fn = compress_summarize_fn or generate_fn
+        # SnapshotGuard reused across compression jobs so callers can
+        # opt-in to cross-job race tracking.
+        from ultron.utils.snapshot_guard import SnapshotGuard
+        self._compression_guard = SnapshotGuard()
 
     # ------------------------------------------------------------------
 
@@ -603,6 +617,71 @@ class BackgroundSummarizer:
                 self._last_summarized_turn_id, turn_id_end,
             )
         return result
+
+    # ------------------------------------------------------------------
+    # 2026-05-22 catalog batch 3: tail-preserve history compression
+    # ------------------------------------------------------------------
+
+    def compress_history_for_llm(
+        self,
+        messages: Sequence[Any],
+        *,
+        max_tokens: int,
+        token_counter: Optional[Callable[[str], int]] = None,
+        max_depth: int = 3,
+        snapshot_key: str = "history_compression",
+    ) -> Any:
+        """Run a tail-preserve compression pass on ``messages``.
+
+        Returns a
+        :class:`ultron.memory.history_compression.CompressionResult`.
+        The compressed list (if any) is the new history the caller
+        should feed into the next LLM prompt. When
+        ``result.compressed is None``, leave the live history as-is.
+
+        Race-protected via the internal :class:`SnapshotGuard`: if
+        ``messages`` mutates structurally during the summarisation
+        LLM call (foreground appended a turn, etc.), the result is
+        discarded and ``result.race_detected`` is True.
+
+        Args:
+            messages: Live list of message dicts. Pass the same list
+                the caller will mutate; snapshot is taken internally.
+            max_tokens: Target token budget for the compressed
+                history.
+            token_counter: Callable mapping text -> token count. When
+                omitted, uses
+                :func:`ultron.utils.token_budget.char_count_tokens`
+                (length / 4 heuristic).
+            max_depth: Forwarded to ``compress_history_recursive``.
+            snapshot_key: Used by the internal ``SnapshotGuard`` so
+                concurrent compression jobs don't trample each other.
+
+        Failure modes (all return a CompressionResult with
+        ``compressed=None``):
+          * LLM call raises -> ``error="<exception>"``.
+          * LLM returns empty -> ``error="empty summary"``.
+          * Race detected -> ``race_detected=True``.
+        """
+        from ultron.memory.history_compression import (
+            compress_history_with_guard,
+            messages_to_dicts,
+        )
+
+        if token_counter is None:
+            from ultron.utils.token_budget import char_count_tokens
+            token_counter = char_count_tokens
+
+        normalised = messages_to_dicts(messages)
+        return compress_history_with_guard(
+            normalised,
+            self._compress_summarize_fn,
+            max_tokens=max_tokens,
+            token_counter=token_counter,
+            guard=self._compression_guard,
+            key=snapshot_key,
+            max_depth=max_depth,
+        )
 
 
 __all__ = [
