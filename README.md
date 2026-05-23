@@ -1,41 +1,117 @@
+<div align="center">
+
 # Ultron
 
-**A local, voice-first AI assistant.** No cloud round-trips. No telemetry. Sub-second response latency on a single consumer GPU.
+### A local, voice-first AI assistant — no cloud, no telemetry, sub-second latency.
 
-> Say "ultron" → the assistant captures your request, transcribes it locally, routes it through a tiered intent classifier, fetches web context when needed, generates a reply with a local LLM, and speaks it back in a custom voice. The whole loop runs in-process on your machine.
+*Say "ultron." Talk. Get answers in a custom voice. Everything runs on your GPU.*
+
+[![tests](https://img.shields.io/badge/tests-4104%20passing-brightgreen?style=flat-square)](https://github.com/1v9Khan/ultronPrototype)
+[![latency](https://img.shields.io/badge/TTFT-~250ms-blueviolet?style=flat-square)](#-at-a-glance)
+[![VRAM](https://img.shields.io/badge/VRAM-4.4GB%20standby-orange?style=flat-square)](#-at-a-glance)
+[![python](https://img.shields.io/badge/python-3.11+-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![cuda](https://img.shields.io/badge/CUDA-12.4+-76B900?style=flat-square&logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-downloads)
+[![platform](https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white)](https://github.com/1v9Khan/ultronPrototype)
+[![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+
+</div>
 
 ---
 
-## At a glance
+## ⚡ Why Ultron?
+
+> **What would a voice assistant feel like if it lived entirely on your GPU instead of in someone else's data center?**
+
+- 🔒 **Fully local.** Your voice, your queries, your context — none of it leaves the machine.
+- ⚡ **Fast.** ~210–300 ms from "stop talking" to "Ultron starts speaking" on a cache-hit turn.
+- 🧠 **Smart.** 23-kind intent router · three-layer memory · hot-swappable models · gaming-mode VRAM reclaim.
+- 🎙️ **Yours.** Custom wake word · fine-tuned voicepack · your apps in the launcher · your safety rules.
+
+---
+
+## 🎬 What you say → What it does
+
+| You say | Ultron does |
+|---|---|
+| 🌦️ &nbsp;`"ultron, what's the weather in Paris?"` | Detects fresh-data intent → SearxNG → reads result → speaks the forecast |
+| 💻 &nbsp;`"ultron, write me a script that converts PDFs to Docx"` | Spawns isolated AI coding agent → scaffolds project → runs tests → narrates progress |
+| 🎮 &nbsp;`"ultron, engage gaming mode"` | Swaps LLM → kills GPU services → frees **~2.3 GB VRAM** for your game |
+| 🌐 &nbsp;`"ultron, take me to HBO Max"` | Recognizes navigate intent → opens Chrome to the best-matching domain |
+| 🕐 &nbsp;`"ultron, what time is it in Tokyo?"` | Hits local zoneinfo cache → speaks the answer in ~5 ms (no LLM, no search) |
+| 🧭 &nbsp;`"ultron, switch to the 8B"` | Hot-swaps the local LLM preset mid-conversation |
+
+---
+
+## 📊 At a glance
 
 |  |  |
 |---|---|
-| **Tests** | 4104 passing / 16 skipped / 0 failed (~85 s sweep) |
-| **TTFT** | ~210–300 ms cache-hit conversational turn (mic-stop → first audible token) |
-| **VRAM** | ~4.4 GB standby on RTX 4070 Ti; gaming-mode reclaim drops to ~2.1 GB |
-| **Active stack** | Moonshine STT (CPU) · Qwen 3.5 4B Q4_K_M (CUDA) · Kokoro StyleTTS2 (CUDA, fine-tuned voice) |
-| **License** | MIT |
+| 🧪 &nbsp;**Tests** | 4104 passing · 16 skipped · 0 failed (~85 s sweep) |
+| ⚡ &nbsp;**Latency (TTFT)** | ~210–300 ms cache-hit conversational turn |
+| 🧠 &nbsp;**VRAM** | ~4.4 GB standby on RTX 4070 Ti → ~2.1 GB in gaming mode |
+| 🛠️ &nbsp;**Active stack** | Moonshine STT (CPU) · Qwen 3.5 4B Q4_K_M (CUDA) · Kokoro StyleTTS2 (CUDA, fine-tuned) |
+| 📜 &nbsp;**License** | MIT |
 
 ---
 
-## What it does
+## ✨ Features
 
-- **Always-listening wake-word capture** with a custom-trained `ultron` OpenWakeWord model + Silero VAD + Smart Turn V3 (an 8 MB CPU ONNX that confirms end-of-turn in ~12 ms).
-- **Hot-swappable STT** via a dual-engine registry — Moonshine for streaming (CPU), Parakeet TDT for accuracy (CUDA via isolated HTTP server), Whisper for fallback. Swap by flipping one config field.
-- **Local LLM in-process** through `llama-cpp-python` (Qwen 3.5 4B Q4_K_M default, n_ctx=8192, speculative decoding wired). Per-utterance preset hot-swap via voice: "switch to the 8B".
-- **Custom TTS voice** — Kokoro StyleTTS2 + ISTFTNet on CUDA with a fine-tuned voicepack. Producer-consumer pipeline so synth of clip N+1 overlaps playback of clip N. Boundary-artifact mute via cosine fades + tail aggressive zero.
-- **23-kind intent router** — coding tasks (delegated to AI coding agent subprocess), app launching, browser navigation, gaming-mode VRAM reclaim, model switching, "show me that article" / "take me to HBO Max" / "what's the latest news?" — each a typed routing intent with a dedicated handler.
-- **Web search with intelligent ranking** — local SearxNG (Docker, news-category aware) → Brave API → DuckDuckGo cascade; Trafilatura → Jina reader cascade. Cross-encoder reranking optional.
-- **Three-layer memory** — recent conversation cache, Qdrant-backed semantic RAG (bge-small dense + BM25 sparse hybrid RRF), separate project digest collection (opencode-inspired session-end summaries).
-- **141-rule safety validator** with tamper-evident SHA-256 hash-chain audit log. Gates every desktop / file / shell tool call before execution.
-- **Gaming mode** — voice-triggered VRAM reclaim chain (LLM hot-swap to 3B, STT → Moonshine CPU, Kokoro CUDA → CPU, VLM unload, Parakeet server stop). Frees ~2.3 GB on demand.
-- **Typed event bus** — opencode-inspired pub/sub backbone (`turn.started` / `gate.verdict` / `supervisor.decided` / 14 more) so future tracing, observability, and analytics hooks are declarative subscriptions instead of scattered callbacks.
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🎤 Voice pipeline
+- Custom-trained `ultron` wake word (OpenWakeWord)
+- Silero VAD + **Smart Turn V3** — semantic end-of-turn in ~12 ms
+- Dual-engine STT registry (Moonshine · Parakeet TDT · Whisper)
+- **Custom fine-tuned voicepack** — Kokoro StyleTTS2 on CUDA
+- Producer-consumer audio pipeline; clip N+1 synth overlaps clip N playback
+- Boundary-artifact mute via cosine fades + tail aggressive zero
+
+</td>
+<td width="50%" valign="top">
+
+### 🧠 Reasoning
+- Local LLM in-process via `llama-cpp-python`
+- Speculative decoding wired (prompt-lookup + draft model)
+- Hot-swap presets by voice: `"switch to the 8B"`
+- Three-layer memory: recent cache · RAG (bge-small + BM25 RRF) · project digest
+- Adaptive context window scoring; ambiguity gating
+- Tiered web-search freshness gate (regex → semantic intent → preflight LLM)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🌐 Web + tools
+- Local-first **SearxNG** (Docker) → Brave → DuckDuckGo cascade
+- Trafilatura → Jina reader cascade
+- 23-kind routing intent classifier
+- Native desktop automation (12-entry launcher: Chrome, Discord, Spotify, +9)
+- News-category routing for current-events queries
+- Optional **OpenClaw** peer gateway for proactive comms
+
+</td>
+<td valign="top">
+
+### 🛡️ Safety + ops
+- **141-rule** tool-call validator across 19 categories
+- Tamper-evident SHA-256 hash-chain audit log
+- **Gaming-mode** VRAM reclaim chain (~2.3 GB freed on demand)
+- Typed event bus — `turn.started` · `gate.verdict` · `supervisor.decided` · 14 more
+- opencode-inspired project digest + supervisor stack
+- Pre-push hygiene hook on the repo itself
+
+</td>
+</tr>
+</table>
 
 ---
 
-## Pipeline at a glance
+## 🏗️ Pipeline
 
-```
+```text
 mic → wake "ultron" OR addressing classifier (WARM)
   → Silero VAD + Smart Turn V3 (CPU, ~12 ms)
   → STT: DualSTTRegistry (moonshine | parakeet | whisper)
@@ -57,52 +133,82 @@ mic → wake "ultron" OR addressing classifier (WARM)
   → enter WARM follow-up window (30 s)
 ```
 
-For the full per-module breakdown, see [`docs/codebase_structure.md`](docs/codebase_structure.md) (the binding single-source reference).
+> 📖 **Full per-module reference:** [`docs/codebase_structure.md`](docs/codebase_structure.md) — the binding single-source map of the system.
 
 ---
 
-## Quick start
+## 🚀 Quick start
 
-This is a personal-research prototype tuned to one operator's hardware + use case. Treat the setup as a recipe, not a turn-key install. Roughly:
+```bash
+# 1. Clone
+git clone https://github.com/1v9Khan/ultronPrototype.git
+cd ultronPrototype
 
-1. **Hardware.** RTX 4070 Ti or comparable (12 GB VRAM). A USB mic + decent speakers / headphones. Tested on Windows 11; Linux/macOS untested.
-2. **Python 3.11**, then `pip install -e .` (creates a `.venv/`, install `~7 GB` of deps including PyTorch CUDA, llama-cpp-python with CUDA flash-attn, faster-whisper, FastEmbed, Qdrant client, Kokoro, etc.).
-3. **Models** — run `python scripts/download_models.py` to fetch the OpenWakeWord, Smart Turn V3, Moonshine, Kokoro, and Qwen GGUFs (~5 GB total).
-4. **Config** — copy `.env.example` to `.env` and set any API keys (Brave search is optional; the SearxNG path doesn't need any). Tune `config.yaml` for your mic / monitors / preferences.
-5. **Launch** — `python -m ultron` and say `ultron`.
+# 2. Python 3.11 + deps (~7 GB; PyTorch CUDA, llama-cpp, faster-whisper, Kokoro, ...)
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux/macOS (untested)
+pip install -e .
 
-> ⚠️ **This is not a packaged product.** The repo represents one developer's voice-assistant prototype that's been iterated on intensively over many sessions. Some integrations (OpenClaw Gateway, Telegram channel, ComfyUI media generation, mobile node) require additional credential-dependent setup — see the per-component docs below.
+# 3. Models (~5 GB; wake word, Smart Turn, Moonshine, Kokoro, Qwen GGUFs)
+python scripts/download_models.py
+
+# 4. Configure
+copy .env.example .env          # optional: add Brave API key for web search
+# tune config.yaml for your mic / monitors / preferences
+
+# 5. Launch
+python -m ultron
+```
+
+Then say: **"ultron"** — and start talking.
+
+> ⚠️ **This is a research prototype**, not a turn-key product. It targets one developer's specific hardware (RTX 4070 Ti, AMD CPU, Windows 11) and use case. Treat the setup as a recipe to adapt, not a one-click install. Some optional integrations (OpenClaw, Telegram, ComfyUI media gen, mobile node) require additional credential-dependent setup — see the docs below.
 
 ---
 
-## System requirements
+## 💻 System requirements
 
-| | Recommended | Minimum |
+|  | Recommended | Minimum |
 |---|---|---|
-| GPU | RTX 4070 Ti (12 GB) | RTX 3060 (12 GB) — untested, expect higher latency |
-| CPU | AMD Ryzen 7 5800X+ (8c/16t) | 4 cores / 8 threads |
-| RAM | 32 GB | 16 GB (constrained) |
-| Disk | 30 GB free | 20 GB free |
-| OS | Windows 11 | Windows 10 / Linux (untested) |
-| Python | 3.11 | 3.10+ |
-| CUDA | 12.4+ | 11.8 |
+| **GPU** | RTX 4070 Ti (12 GB) | RTX 3060 (12 GB) — untested, expect higher latency |
+| **CPU** | AMD Ryzen 7 5800X+ (8c/16t) | 4 cores / 8 threads |
+| **RAM** | 32 GB | 16 GB (constrained) |
+| **Disk** | 30 GB free | 20 GB free |
+| **OS** | Windows 11 | Windows 10 / Linux (untested) |
+| **Python** | 3.11 | 3.10+ |
+| **CUDA** | 12.4+ | 11.8 |
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
-Everything tunable lives in `config.yaml` at the project root — schema-validated by pydantic in `src/ultron/config.py`. Key sections: `audio` (mic + I/O), `vad`, `stt` (engine selector), `llm` (preset + n_ctx), `tts` (engine selector), `memory` (Qdrant + RAG knobs), `web_search` (provider chain + readers), `safety` (rule toggles), `coding.supervisor` (opencode-inspired project digest stack, default OFF), `gaming_mode`, plus more.
+All tunables live in `config.yaml` at the project root — schema-validated by Pydantic in `src/ultron/config.py`. The top of that file lists the ~12 actively-tuned knobs.
 
-Override via environment variables prefixed `ULTRON_*` (see `.env.example`). Restart `python -m ultron` after any config change.
+Key sections:
+
+| Section | What it controls |
+|---|---|
+| `audio` | Mic input device + output device + ring buffer |
+| `vad` · `stt` | VAD silence thresholds + STT engine selector + gaming fallback |
+| `llm` | Preset + n_ctx + speculative decoding + KV cache |
+| `tts` | Engine + voicepack + boundary smoothing + cadence |
+| `memory` | Qdrant store + RAG top-k + min-relevance + contextual retrieval |
+| `web_search` | Provider chain + reader chain + ranker dispatch |
+| `safety` | 141 rule toggles + sandbox roots + audit log path |
+| `coding.supervisor` | opencode-inspired project digest stack (default OFF) |
+| `gaming_mode` | VRAM reclaim chain triggers + targets |
+
+Override via `ULTRON_*` env vars; see `.env.example`. Restart after any change.
 
 ---
 
-## Documentation
+## 📚 Documentation
 
-> **Start here:** [`docs/codebase_structure.md`](docs/codebase_structure.md) — the binding single-source map of every module, script, test, runtime artifact, and cross-cutting flow. Kept current via a maintenance contract enforced on every commit.
+> 👉 **Start here:** [`docs/codebase_structure.md`](docs/codebase_structure.md) — the binding single-source map of every module, script, test, and runtime artifact. Maintenance contract enforced per commit.
 
 <details>
-<summary>Architecture + operations references (foundation-era snapshots)</summary>
+<summary><b>🏛️ Architecture + operations</b></summary>
 
 | Doc | Topic |
 |---|---|
@@ -111,19 +217,17 @@ Override via environment variables prefixed `ULTRON_*` (see `.env.example`). Res
 | [`docs/operations.md`](docs/operations.md) | Day-to-day running + recovery |
 | [`docs/development.md`](docs/development.md) | Test layout + debugging recipes |
 | [`docs/routing.md`](docs/routing.md) | Capability routing |
-| [`docs/error_handling.md`](docs/error_handling.md) | Phase 4 error catalog |
+| [`docs/error_handling.md`](docs/error_handling.md) | Error catalog |
 | [`docs/4b_optimization_plan.md`](docs/4b_optimization_plan.md) | 4B LLM migration (complete) |
-
-Foundation snapshots are kept for historical reference; `codebase_structure.md` is the live ground truth.
 
 </details>
 
 <details>
-<summary>OpenClaw integration (peer Gateway for proactive comms + tools)</summary>
+<summary><b>🔌 OpenClaw integration</b> — peer gateway for proactive comms + tools</summary>
 
 | Doc | Topic |
 |---|---|
-| [`docs/openclaw_integration_final_summary.md`](docs/openclaw_integration_final_summary.md) | Cross-phase summary + setup-readiness checklist |
+| [`docs/openclaw_integration_final_summary.md`](docs/openclaw_integration_final_summary.md) | Cross-phase summary + setup checklist |
 | [`docs/openclaw_telegram_setup.md`](docs/openclaw_telegram_setup.md) | Telegram channel (bot token) |
 | [`docs/openclaw_heartbeat_setup.md`](docs/openclaw_heartbeat_setup.md) | Heartbeat agents block |
 | [`docs/openclaw_browser_setup.md`](docs/openclaw_browser_setup.md) | Browser tool (Playwright + Chromium) |
@@ -136,32 +240,50 @@ Foundation snapshots are kept for historical reference; `codebase_structure.md` 
 </details>
 
 <details>
-<summary>Test pass reports</summary>
+<summary><b>🧪 Test pass reports</b></summary>
 
 | Doc | Topic |
 |---|---|
-| [`docs/comprehensive_test_plan.md`](docs/comprehensive_test_plan.md) / [`comprehensive_test_report.md`](docs/comprehensive_test_report.md) | Functional / correctness pass (16 phases, 38 dimensions) |
-| [`docs/comprehensive_quality_plan.md`](docs/comprehensive_quality_plan.md) / [`comprehensive_quality_report.md`](docs/comprehensive_quality_report.md) | Quality pass (Q0–Q13, 38 dimensions) — includes prompt-injection defense audit |
+| [`docs/comprehensive_test_plan.md`](docs/comprehensive_test_plan.md) / [`comprehensive_test_report.md`](docs/comprehensive_test_report.md) | Functional pass (16 phases, 38 dimensions) |
+| [`docs/comprehensive_quality_plan.md`](docs/comprehensive_quality_plan.md) / [`comprehensive_quality_report.md`](docs/comprehensive_quality_report.md) | Quality pass (Q0–Q13, 38 dimensions, prompt-injection defense audit) |
 | [`docs/smoke_test.md`](docs/smoke_test.md) | 16-step interactive smoke procedure |
 
 </details>
 
 ---
 
-## Project status
+## 🧭 Project status
 
-This is a **research prototype**, not a production product. It evolves through many tight iteration cycles. Behavior-changing features land behind feature flags (default OFF) until live-validated. The voice-quality baseline is treated as a strict latency / VRAM contract — any hot-path change re-runs `scripts/measure_baseline.py` and documents the delta. See the project-root standards doc for the binding constraints.
+This is a **research prototype**, not a production product. It evolves through many tight iteration cycles. Behavior-changing features land behind feature flags (default OFF) until live-validated. The voice-quality baseline is treated as a strict latency / VRAM contract — any hot-path change re-runs `scripts/measure_baseline.py` and documents the delta.
 
-If you're reading the source, the highest-leverage entry point is [`src/ultron/pipeline/orchestrator.py`](src/ultron/pipeline/orchestrator.py) — that's the main event loop everything else hangs off.
+If you're reading the source, the highest-leverage entry point is [`src/ultron/pipeline/orchestrator.py`](src/ultron/pipeline/orchestrator.py) — the main event loop everything else hangs off.
 
 ---
 
-## License
+## ⭐ Star history
+
+If you find Ultron interesting, a star helps it surface to other folks who want a local voice assistant.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=1v9Khan/ultronPrototype&type=Date)](https://star-history.com/#1v9Khan/ultronPrototype&Date)
+
+---
+
+## 📜 License
 
 MIT — see [`LICENSE`](LICENSE).
 
 ---
 
-## Acknowledgments
+## 🙏 Acknowledgments
 
-Built on top of (in alphabetical order): [bge-small](https://huggingface.co/BAAI/bge-small-en-v1.5), [DuckDuckGo](https://duckduckgo.com/), [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [flan-t5-small](https://huggingface.co/google/flan-t5-small), [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), [llama.cpp](https://github.com/ggerganov/llama.cpp), [moondream2](https://huggingface.co/vikhyatk/moondream2), [Moonshine](https://github.com/usefulsensors/moonshine), [opencode](https://github.com/sst/opencode) (event bus + project digest pattern inspiration), [openWakeWord](https://github.com/dscripka/openWakeWord), [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), [Piper](https://github.com/rhasspy/piper) (legacy TTS), [pywinauto](https://github.com/pywinauto/pywinauto), [Qdrant](https://qdrant.tech/), [Qwen 3.5](https://huggingface.co/Qwen), [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) (legacy voice conversion), [SearxNG](https://github.com/searxng/searxng), [Silero VAD](https://github.com/snakers4/silero-vad), [Smart Turn V3](https://huggingface.co/pipecat-ai/smart-turn-v3) (end-of-turn detection), [Trafilatura](https://github.com/adbar/trafilatura), [XTTS v2](https://huggingface.co/coqui/XTTS-v2) (alternative TTS).
+Built on the shoulders of these open-source projects:
+
+[bge-small](https://huggingface.co/BAAI/bge-small-en-v1.5) · [DuckDuckGo](https://duckduckgo.com/) · [faster-whisper](https://github.com/SYSTRAN/faster-whisper) · [flan-t5-small](https://huggingface.co/google/flan-t5-small) · [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) · [llama.cpp](https://github.com/ggerganov/llama.cpp) · [moondream2](https://huggingface.co/vikhyatk/moondream2) · [Moonshine](https://github.com/usefulsensors/moonshine) · [opencode](https://github.com/sst/opencode) · [openWakeWord](https://github.com/dscripka/openWakeWord) · [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) · [Piper](https://github.com/rhasspy/piper) · [pywinauto](https://github.com/pywinauto/pywinauto) · [Qdrant](https://qdrant.tech/) · [Qwen 3.5](https://huggingface.co/Qwen) · [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) · [SearxNG](https://github.com/searxng/searxng) · [Silero VAD](https://github.com/snakers4/silero-vad) · [Smart Turn V3](https://huggingface.co/pipecat-ai/smart-turn-v3) · [Trafilatura](https://github.com/adbar/trafilatura) · [XTTS v2](https://huggingface.co/coqui/XTTS-v2)
+
+<div align="center">
+
+---
+
+<sub>Built for one developer's RTX 4070 Ti, then shared.</sub>
+
+</div>
