@@ -62,7 +62,7 @@ from ultron.transcription import (
     make_dual_stt_engines,
     make_stt_engine,
 )
-from ultron.tts import RvcConverter, TextToSpeech
+from ultron.tts import make_tts_engine  # noqa: F401 — kept import-time wired
 from ultron.utils.logging import get_logger
 from ultron.coding import (
     CodingTaskRunner,
@@ -1075,6 +1075,22 @@ class Orchestrator:
         if supervisor is not None:
             try:
                 from ultron.coding.supervisor_dispatch import SupervisorDispatchController
+
+                # 2026-05-22 catalog batch 14 (T5 Phase 2): build the optional
+                # architect-plan narrator callable. Only when the architect
+                # itself is enabled AND its narrate flag is on do we open
+                # the per-sentence barge-in window during dispatch.
+                architect_narrator_callable = None
+                arch_cfg = get_config().coding.architect
+                if (
+                    architect_provider is not None
+                    and arch_cfg.narrate_enabled
+                    and getattr(self, "tts", None) is not None
+                ):
+                    architect_narrator_callable = (
+                        self._build_architect_narrator(arch_cfg)
+                    )
+
                 dispatch_controller = SupervisorDispatchController(
                     supervisor=supervisor,
                     index=project_index,
@@ -1087,6 +1103,7 @@ class Orchestrator:
                     enriched_context_enabled=cfg.enriched_context_enabled,
                     sandbox_root=settings.CODING_SANDBOX_PATH,
                     default_model=get_config().coding.default_model,
+                    architect_narrator=architect_narrator_callable,
                 )
             except Exception as e:                                  # noqa: BLE001
                 logger.warning(
@@ -1097,6 +1114,57 @@ class Orchestrator:
                 dispatch_controller = None
 
         return project_index, supervisor, dispatch_controller
+
+    def _build_architect_narrator(self, arch_cfg):
+        """Build the (plan_text) -> bool architect-plan narrator callable.
+
+        Catalog batch 14 (T5 Phase 2). Wraps an ``ArchitectNarrator`` around
+        ``self.tts`` so the dispatcher can call a thin function during
+        dispatch. The returned callable invokes the narrator with a
+        ``should_stop`` predicate that watches the wake-word detector --
+        a wake-word fire mid-narration counts as a barge-in.
+        """
+        from ultron.coding.architect_narrator import ArchitectNarrator
+
+        narrator = ArchitectNarrator(
+            self.tts,
+            max_chars=int(arch_cfg.narrate_max_chars),
+            inter_sentence_pause_seconds=(
+                float(arch_cfg.narrate_inter_sentence_pause_ms) / 1000.0
+            ),
+        )
+
+        # Capture the wake-word baseline at the moment the narrator is
+        # called so a stale prior trigger can't be misread as a barge-in.
+        def _narrate(plan_text: str) -> bool:
+            try:
+                wake_before = getattr(self.wake, "_last_trigger_ts", 0.0)
+            except Exception:
+                wake_before = 0.0
+
+            def _should_stop() -> bool:
+                try:
+                    cur = getattr(self.wake, "_last_trigger_ts", 0.0)
+                except Exception:
+                    return False
+                return bool(cur and cur > wake_before)
+
+            result = narrator.narrate(plan_text, should_stop=_should_stop)
+            if result.interrupted:
+                logger.info(
+                    "architect narration interrupted by barge-in after "
+                    "%d sentence(s) (%d chars).",
+                    result.sentences_spoken, result.chars_spoken,
+                )
+            elif result.error:
+                logger.debug(
+                    "architect narration ended with %r (%d/%d chars spoken).",
+                    result.error, result.chars_spoken,
+                    len(plan_text or ""),
+                )
+            return bool(result.interrupted)
+
+        return _narrate
 
     def _load_gaming_mode_manager_if_enabled(self):
         """V1-gap A1: construct the GamingModeManager when configured.
@@ -1714,81 +1782,20 @@ class Orchestrator:
 
         return _store
 
-    @staticmethod
-    def _load_rvc_if_enabled() -> RvcConverter | None:
-        """Try to load RVC; warn and continue with plain Piper on failure."""
-        if not settings.RVC_ENABLED:
-            return None
-        if not settings.RVC_MODEL_PATH.is_file():
-            logger.warning(
-                "RVC enabled but model missing at %s — falling back to plain Piper",
-                settings.RVC_MODEL_PATH,
-            )
-            return None
-        try:
-            return RvcConverter()
-        except Exception as e:
-            logger.warning("RVC load failed (%s) — falling back to plain Piper", e)
-            return None
-
     def _load_tts_engine(self):
         """Construct the configured TTS engine.
 
-        Returns a ``(rvc_or_none, tts_engine)`` pair. The ``rvc``
+        Thin wrapper around :func:`ultron.tts.make_tts_engine` so the
+        orchestrator and measurement scripts share one construction
+        path. Returns ``(rvc_or_none, tts_engine)``; the ``rvc``
         attribute is kept on Orchestrator for diagnostic purposes
         even though only the legacy engine uses it.
 
         Raises any engine-construction error -- TTS is not optional;
         the orchestrator can't run without a voice path.
         """
-        from ultron.config import get_config, resolve_path
-        try:
-            engine_name = get_config().tts.engine
-        except Exception:
-            engine_name = "piper_rvc"
-
-        if engine_name == "xtts_v3":
-            from ultron.tts.xtts_v3 import XttsV3Speech
-            logger.info("TTS engine: xtts_v3 (XTTS v2 streaming + v3 filter)")
-            tts = XttsV3Speech()
-            return None, tts
-        if engine_name == "kokoro":
-            # 2026-05-20 round 8: lightweight StyleTTS2 + ISTFTNet on
-            # CPU. Stock voice (no v3 filter); ~330 MB on disk; zero
-            # VRAM. Config wiring reads tts.kokoro.* so the operator
-            # can swap voice / device / speed without code edits.
-            from ultron.tts.kokoro_engine import KokoroSpeech
-            kokoro_cfg = getattr(get_config().tts, "kokoro", None)
-            kwargs = {}
-            if kokoro_cfg is not None:
-                kwargs = {
-                    "model_path": resolve_path(kokoro_cfg.model_path),
-                    "voice": kokoro_cfg.voice,
-                    "device": kokoro_cfg.device,
-                    "speed": kokoro_cfg.speed,
-                    "apply_runtime_filter": kokoro_cfg.apply_runtime_filter,
-                    "filter_preset": kokoro_cfg.filter_preset,
-                    "apply_spectral_smooth": kokoro_cfg.apply_spectral_smooth,
-                    "spectral_smooth_window": kokoro_cfg.spectral_smooth_window,
-                    "apply_trim_fade": kokoro_cfg.apply_trim_fade,
-                    "trim_fade_threshold_db": kokoro_cfg.trim_fade_threshold_db,
-                }
-            logger.info(
-                "TTS engine: kokoro (StyleTTS2 + ISTFTNet, voice=%s, device=%s)",
-                kwargs.get("voice", "af_alloy"),
-                kwargs.get("device", "cpu"),
-            )
-            tts = KokoroSpeech(**kwargs)
-            return None, tts
-        if engine_name == "piper_rvc":
-            logger.info("TTS engine: piper_rvc (legacy Piper + RVC)")
-            rvc = self._load_rvc_if_enabled()
-            tts = TextToSpeech(rvc=rvc)
-            return rvc, tts
-        raise RuntimeError(
-            f"Unknown tts.engine: {engine_name!r}. "
-            f"Valid: 'piper_rvc' | 'xtts_v3' | 'kokoro'."
-        )
+        from ultron.tts import make_tts_engine
+        return make_tts_engine()
 
     def _kick_off_ack_clip_prewarm(self) -> Optional[threading.Thread]:
         """Build + populate the pre-computed ack clip cache.

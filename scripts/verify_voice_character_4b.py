@@ -1,11 +1,11 @@
-"""4B optimization plan Stage E — voice-character verification helper.
+"""4B optimization plan Stage E -- voice-character verification helper.
 
 Runs the same five representative queries through the live voice stack
 twice (once with the 4B LLM, once with the 9B for direct comparison)
-**and speaks each response through Piper + RVC** so you can A/B the
-actual cadence/timbre/prosody — not just read the text. The first
-2-3 sentences of each response are synthesised; if both models sound
-like Ultron, Stage E passes.
+**and speaks each response through the configured TTS engine** so you
+can A/B the actual cadence/timbre/prosody -- not just read the text.
+The first 2-3 sentences of each response are synthesised; if both
+models sound like Ultron, Stage E passes.
 
 The plan's verification criterion is qualitative ("user confirms
 Ultron sounds unchanged"), so this script just collects + plays the
@@ -19,8 +19,12 @@ Run from the main checkout (where models/ lives):
 ``--no-audio`` runs text-only (the original Stage E v1 mode).
 
 The script does NOT modify config.yaml. It instantiates LLMEngine +
-TextToSpeech (with RVC) twice — once per model — and unloads VRAM
-between runs so peak VRAM is bounded by the larger model + TTS stack.
+the configured TTS engine (via :func:`ultron.tts.make_tts_engine`)
+twice -- once per model -- and unloads VRAM between runs so peak VRAM
+is bounded by the larger model + TTS stack. 2026-05-22: swapped the
+hard-coded RVC + Piper path for the production factory so this
+script tracks whichever TTS engine is configured (Kokoro / XTTS /
+piper_rvc).
 """
 
 from __future__ import annotations
@@ -98,12 +102,16 @@ def _run_one_model(
     tts = None
     rvc = None
     if play_audio:
-        from ultron.tts import RvcConverter, TextToSpeech  # noqa: WPS433
+        from ultron.tts import make_tts_engine  # noqa: WPS433
         t = time.monotonic()
-        rvc = RvcConverter()
-        tts = TextToSpeech(rvc=rvc)
-        tts.warmup()
-        print(f"  TTS+RVC ready in {time.monotonic() - t:.1f}s", flush=True)
+        rvc, tts = make_tts_engine()
+        if hasattr(tts, "warmup"):
+            tts.warmup()
+        print(
+            f"  TTS ready in {time.monotonic() - t:.1f}s "
+            f"({type(tts).__name__})",
+            flush=True,
+        )
 
     # Warm the LLM.
     s = llm.generate_stream("Say 'ready' and nothing else.")

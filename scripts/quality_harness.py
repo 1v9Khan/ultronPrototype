@@ -793,28 +793,40 @@ WHISPER_PHRASES: list[str] = [
 
 
 def run_q5_whisper_wer(stt, tts) -> dict[str, Any]:
-    print("\n[Q5.A] Whisper WER on TTS-synthesized clips")
+    print(f"\n[Q5.A] STT WER on TTS-synthesized clips "
+          f"(stt={type(stt).__name__}, tts={type(tts).__name__})")
     print("-" * 60)
     results = []
     wers = []
     for phrase in WHISPER_PHRASES:
-        # Synthesize via TTS (Piper + RVC), then transcribe.
+        # Synthesize via TTS, then transcribe.
         try:
             pcm, sr = tts._synthesize(phrase)  # internal but stable
-            # Convert to numpy float32 for Whisper
+            # Convert to numpy float32 for the STT engine
             import numpy as np
             if pcm.dtype != np.float32:
                 pcm_f32 = pcm.astype(np.float32) / 32768.0
             else:
                 pcm_f32 = pcm
-            # Whisper expects 16k mono float32; resample if needed
+            # STT engines expect 16k mono float32; resample if needed.
+            # Use scipy's polyphase resampler when the ratio isn't an
+            # integer (e.g. 24 kHz Kokoro -> 16 kHz STT) so Whisper /
+            # Moonshine / Parakeet all see the same input shape.
             if sr != 16000:
-                # Simple decimation (sample-rate=48k → 16k = take every 3rd)
-                if sr == 48000:
-                    pcm_f32 = pcm_f32[::3]
-                elif sr == 22050:
-                    # Approximate down to 16k
-                    pcm_f32 = pcm_f32[::int(round(sr / 16000))]
+                if sr % 16000 == 0:
+                    pcm_f32 = pcm_f32[::sr // 16000]
+                else:
+                    try:
+                        from scipy.signal import resample_poly
+                        # gcd-based upsample/downsample factors
+                        from math import gcd
+                        g = gcd(int(sr), 16000)
+                        up = 16000 // g
+                        down = int(sr) // g
+                        pcm_f32 = resample_poly(pcm_f32, up, down).astype(np.float32)
+                    except ImportError:
+                        # Coarse decimation fallback
+                        pcm_f32 = pcm_f32[::int(round(sr / 16000))]
             transcribed = stt.transcribe(pcm_f32, language="en")
             # Normalise both reference and hypothesis: lowercase, strip
             # punctuation, normalise common number/word equivalences,
@@ -1373,9 +1385,12 @@ def main() -> int:
     configure_logging(level="WARNING")
 
     t = time.monotonic()
-    from ultron.transcription import WhisperEngine
-    stt = WhisperEngine()
-    print(f"  Whisper loaded in {time.monotonic() - t:.1f}s")
+    from ultron.transcription import make_stt_engine
+    stt = make_stt_engine()
+    print(
+        f"  STT loaded in {time.monotonic() - t:.1f}s "
+        f"({type(stt).__name__})"
+    )
 
     t = time.monotonic()
     from ultron.llm import LLMEngine
@@ -1383,11 +1398,14 @@ def main() -> int:
     print(f"  LLM loaded in {time.monotonic() - t:.1f}s")
 
     t = time.monotonic()
-    from ultron.tts import RvcConverter, TextToSpeech
-    rvc = RvcConverter()
-    tts = TextToSpeech(rvc=rvc)
-    tts.warmup()
-    print(f"  RVC + TTS loaded + warmed in {time.monotonic() - t:.1f}s")
+    from ultron.tts import make_tts_engine
+    _rvc, tts = make_tts_engine()
+    if hasattr(tts, "warmup"):
+        tts.warmup()
+    print(
+        f"  TTS loaded + warmed in {time.monotonic() - t:.1f}s "
+        f"({type(tts).__name__})"
+    )
 
     t = time.monotonic()
     from ultron.memory.embedder import HybridEmbedder

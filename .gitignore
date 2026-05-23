@@ -97,6 +97,14 @@ htmlcov/
 .pyre/
 baselines.json.*-bak
 baselines.json.*_bak
+# Per-session reference baselines (snapshots of baselines.json taken at
+# notable inflection points — pre-batch, post-batch, pre-session, etc.).
+# Local-only references; the canonical figures live in baselines.json
+# and in the docs/codebase_structure.md change log.
+baselines_before_*.json
+baselines_after_*.json
+baselines_pre_*.json
+baselines_post_*.json
 
 # ---------------------------------------------------------------------------
 # Voice TTS swap project (2026-05-10) — local audio prep + working artifacts

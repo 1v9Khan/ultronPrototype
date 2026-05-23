@@ -148,6 +148,14 @@ class SupervisorDispatchController:
         enriched_context_enabled: bool = False,
         sandbox_root: Optional[Path] = None,
         default_model: str = "haiku",
+        # 2026-05-22 catalog batch 14 (T5 Phase 2). Optional callable that
+        # narrates the architect's plan via TTS with sentence-boundary
+        # barge-in. Signature: ``(plan_text) -> bool`` where True means
+        # the user interrupted -- dispatch returns BARGED_IN. Wired by
+        # the orchestrator when ``coding.architect.narrate_enabled`` is on.
+        # Fail-open: any exception is treated as "no interrupt", so the
+        # dispatch proceeds.
+        architect_narrator: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self.supervisor = supervisor
         self.index = index
@@ -162,6 +170,7 @@ class SupervisorDispatchController:
             Path(sandbox_root) if sandbox_root is not None else None
         )
         self.default_model = default_model
+        self._architect_narrator = architect_narrator
 
     # --- public API ---------------------------------------------------------
 
@@ -197,6 +206,32 @@ class SupervisorDispatchController:
                 bargedin = False
             already_narrated = True
             if bargedin:
+                return DispatchOutcome(
+                    kind=DispatchActionKind.BARGED_IN,
+                    voice_message="",
+                    decision=decision,
+                    already_narrated=True,
+                )
+
+        # 2026-05-22 catalog batch 14 (T5 Phase 2): narrate the architect's
+        # plan with sentence-boundary barge-in BEFORE dispatching the editor
+        # LLM. The plan still flows into the editor's prompt regardless of
+        # whether narration completed -- we never trim ``architect_plan_text``.
+        if (
+            self._architect_narrator is not None
+            and decision.architect_plan_text
+        ):
+            try:
+                plan_interrupted = bool(self._architect_narrator(
+                    decision.architect_plan_text.strip(),
+                ))
+            except Exception as e:                                  # noqa: BLE001
+                logger.warning(
+                    "supervisor_dispatch: architect narrator raised (%s); "
+                    "proceeding without architect narration.", e,
+                )
+                plan_interrupted = False
+            if plan_interrupted:
                 return DispatchOutcome(
                     kind=DispatchActionKind.BARGED_IN,
                     voice_message="",

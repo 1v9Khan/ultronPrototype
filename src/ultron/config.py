@@ -1600,6 +1600,22 @@ class CodingArchitectConfig(_Strict):
     # Architectures bigger than this fall through to the cascade's
     # next entry (a future remote-LLM tier) or fail-open to no plan.
     max_prompt_chars: int = Field(default=32000, ge=1024, le=200000)
+    # 2026-05-22 catalog batch 14 (T5 Phase 2): narrate the plan via
+    # TTS before dispatching. Opens a barge-in window between sentences
+    # so the user can interrupt with a follow-up before the editor
+    # LLM kicks off. Default OFF; flip on after measure_baseline.py
+    # confirms the per-turn overhead is acceptable in your environment.
+    narrate_enabled: bool = False
+    # Cap on the number of characters of plan text that get spoken
+    # before the narrator gives up and just dispatches. Long plans are
+    # noisy; the editor LLM still gets the full plan text via
+    # supervisor_dispatch. Tunable per operator preference.
+    narrate_max_chars: int = Field(default=400, ge=0, le=8000)
+    # Grace pause in milliseconds between sentences during narration
+    # so a wake-word interrupt has time to register before the next
+    # sentence starts playing. Voice-baseline binding rule: keep this
+    # under 250 ms so the architect cost stays bounded.
+    narrate_inter_sentence_pause_ms: int = Field(default=120, ge=0, le=2000)
 
 
 class CodingRepoMapConfig(_Strict):

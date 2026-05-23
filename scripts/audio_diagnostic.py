@@ -207,11 +207,15 @@ def build_vad(threshold: Optional[float]):
     return VoiceActivityDetector(threshold=threshold)
 
 
-def build_whisper(beam_size: Optional[int]):
-    """Build a Whisper engine. Beam override is per-call, not per-engine,
-    so we keep the engine and override at transcribe time."""
-    from ultron.transcription import WhisperEngine
-    return WhisperEngine()
+def build_stt(beam_size: Optional[int]):
+    """Build the STT engine selected by ``stt.engine`` in config.
+
+    ``beam_size`` is accepted for backwards compatibility with the
+    Whisper-specific tuning hook -- it's silently ignored for engines
+    that don't expose a per-call beam knob (Moonshine, Parakeet).
+    """
+    from ultron.transcription import make_stt_engine
+    return make_stt_engine()
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +362,7 @@ def mode_phrase(args, audit_path: Path):
 
     cap = build_audio_capture(args.device, args.gain_db)
     vad = build_vad(args.vad_threshold)
-    stt = build_whisper(args.whisper_beam)
+    stt = build_stt(args.whisper_beam)
 
     print(f"\n[phrase] Will capture until VAD reports end-of-speech (or {args.seconds} s timeout).")
     if args.label:
@@ -421,7 +425,10 @@ def mode_phrase(args, audit_path: Path):
     print(f"         Max VAD prob: {max_vad_prob:.3f}    threshold: {vad.threshold:.2f}")
     if speech_start_t is not None and speech_end_t is not None:
         print(f"         Speech window: t+{speech_start_t:.2f} -> t+{speech_end_t:.2f} ({speech_end_t-speech_start_t:.2f} s)")
-    print(f"         Whisper ({stt_ms:.0f} ms): \"{transcription}\"")
+    print(
+        f"         {type(stt).__name__} ({stt_ms:.0f} ms): "
+        f"\"{transcription}\""
+    )
     if args.expected_text:
         print(f"         Expected     : \"{args.expected_text}\"")
         # Simple WER-ish indicator.
@@ -558,7 +565,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--seconds", type=int, default=8,
                    help="Capture window length (default 8 s).")
     p.add_argument("--whisper-beam", type=int, default=None,
-                   help="Whisper beam size override.")
+                   help="Whisper beam size override. Silently ignored "
+                        "for non-Whisper engines (Moonshine, Parakeet).")
     p.add_argument("--save-wav", default=None,
                    help="Save raw captured audio to this path.")
     p.add_argument("--label", default="",
@@ -593,7 +601,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.vad_threshold is not None:
         print(f"  VAD thr    : {args.vad_threshold:.2f} (override)")
     if args.whisper_beam is not None:
-        print(f"  Whisper    : beam {args.whisper_beam} (override)")
+        print(f"  Whisper    : beam {args.whisper_beam} (override; only "
+              "honoured when stt.engine='whisper')")
     print(f"  Audit log  : {audit_path}")
     print()
 

@@ -1,12 +1,14 @@
 """STT engine latency benchmark.
 
-Loads the configured Whisper engine and measures transcription latency
-on synthetic 16 kHz audio of varying lengths (1s, 3s, 5s, 8s). Reports
-median / p95 / RTF for each length.
+Loads the STT engine selected by ``config.yaml`` (via
+:func:`ultron.transcription.make_stt_engine`) and measures
+transcription latency on synthetic 16 kHz audio of varying lengths
+(1s, 3s, 5s, 8s). Reports median / p95 / RTF for each length.
 
-Used to right-size the Phase 4 STT swap decision: if current Whisper
-is fast enough at typical voice-query lengths, the swap is a smaller
-win than the research suggested.
+Used to track regressions in any engine swap. The 2026-05-22 rewrite
+swapped a hard-coded WhisperEngine for the production factory so the
+script tracks whichever engine is live (Moonshine / Parakeet /
+Whisper) without script edits.
 
 Run from main checkout (or set ULTRON_LLM_MODEL_PATH=...) so models
 resolve.
@@ -38,7 +40,7 @@ import ultron  # noqa: F401
 def _make_speech_like(seconds: float, *, sr: int = 16000) -> np.ndarray:
     """Synthesise audio with speech-like spectral envelope.
 
-    Not real speech (Whisper will hallucinate or emit empty text on
+    Not real speech (the engine may hallucinate or emit empty text on
     pure synth) but realistic enough to exercise the inference path
     end-to-end. Latency is dominated by model FLOPs + audio shape,
     so content doesn't materially affect the number we care about.
@@ -76,17 +78,26 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     lengths_s = [float(x) for x in args.lengths.split(",") if x.strip()]
 
-    from ultron.transcription import WhisperEngine
+    from ultron.transcription import make_stt_engine
 
-    print("  loading WhisperEngine...", flush=True)
+    print("  loading STT engine...", flush=True)
     t_load = time.monotonic()
-    engine = WhisperEngine()
-    print(f"  loaded in {time.monotonic() - t_load:.2f}s", flush=True)
+    engine = make_stt_engine()
     print(
-        f"  model={engine.model_name} device={engine.device} "
-        f"compute_type={engine.compute_type} beam={engine.beam_size}",
+        f"  loaded {type(engine).__name__} in "
+        f"{time.monotonic() - t_load:.2f}s",
         flush=True,
     )
+    # Best-effort engine info dump (attributes differ across implementations).
+    info_attrs = [
+        a for a in ("model_name", "device", "compute_type", "beam_size")
+        if hasattr(engine, a)
+    ]
+    if info_attrs:
+        print(
+            "  " + " ".join(f"{a}={getattr(engine, a)}" for a in info_attrs),
+            flush=True,
+        )
 
     # Warmup at each length so first-shot cost (CUDA kernel JIT) is
     # paid before measurement.

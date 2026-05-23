@@ -62,24 +62,24 @@ def main() -> int:
     audio = _load_wav(audio_path) if audio_path else _synthetic_tone()
     print(f"\nBenchmarking with {len(audio) / settings.SAMPLE_RATE:.2f}s of audio\n")
 
-    print("Loading components…")
+    print("Loading components...")
     from ultron.llm import LLMEngine
-    from ultron.transcription import WhisperEngine
-    from ultron.tts import TextToSpeech
+    from ultron.transcription import make_stt_engine
+    from ultron.tts import make_tts_engine
 
     t0 = time.monotonic()
-    stt = WhisperEngine()
-    print(f"  Whisper loaded in {time.monotonic() - t0:.1f}s")
+    stt = make_stt_engine()
+    print(f"  STT loaded in {time.monotonic() - t0:.1f}s ({type(stt).__name__})")
 
     t0 = time.monotonic()
     llm = LLMEngine()
     print(f"  LLM loaded in {time.monotonic() - t0:.1f}s")
 
     t0 = time.monotonic()
-    tts = TextToSpeech()
-    print(f"  TTS loaded in {time.monotonic() - t0:.1f}s")
+    _rvc, tts = make_tts_engine()
+    print(f"  TTS loaded in {time.monotonic() - t0:.1f}s ({type(tts).__name__})")
 
-    print("\nWarming up…")
+    print("\nWarming up...")
     stt.transcribe(audio)
     llm.generate("Say 'ready' and nothing else.")
 
@@ -107,7 +107,7 @@ def main() -> int:
         tts._synthesize("This is a benchmark sentence for synthesis timing.")  # noqa: SLF001
         tts_synth.append((time.monotonic() - t) * 1000)
 
-    _stat("Whisper transcribe", stt_times)
+    _stat(f"{type(stt).__name__} transcribe", stt_times)
     _stat("LLM time-to-first-token", llm_ttft)
     _stat("TTS sentence synth", tts_synth)
 

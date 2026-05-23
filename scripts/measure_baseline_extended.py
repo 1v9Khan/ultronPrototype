@@ -168,42 +168,47 @@ def compute_first_token_from_end_of_speech(existing: Dict[str, Any]) -> Dict[str
     """Composite estimate from already-captured baseline pieces.
 
     Real measurement requires the live VAD/mic path, which isn't available
-    headlessly. The composite is: Whisper p50 (transcribe-then-flush) + LLM TTFT
+    headlessly. The composite is: STT p50 (transcribe-then-flush) + LLM TTFT
     (post-prompt-submission to first-emitted-token).
+
+    Reads the modern ``stt_2_5s_sample`` key first; falls back to the
+    legacy ``whisper_2_5s_sample`` for older baseline files.
     """
-    voice = existing.get("phase_foundation_start", {})
+    voice = existing.get("phase_foundation_start", existing)
     lat = voice.get("latency_ms", {})
-    whisper = lat.get("whisper_2_5s_sample", {})
+    stt_block = lat.get("stt_2_5s_sample") or lat.get("whisper_2_5s_sample") or {}
     agg = lat.get("aggregate", {}).get("ttft_ms", {})
 
-    whisper_med = whisper.get("median")
+    stt_med = stt_block.get("median")
     ttft_med = agg.get("median")
-    whisper_min = whisper.get("min")
+    stt_min = stt_block.get("min")
     ttft_min = agg.get("min")
-    whisper_max = whisper.get("max")
+    stt_max = stt_block.get("max")
     ttft_max = agg.get("max")
+    stt_engine = stt_block.get("engine", "whisper")
 
-    if whisper_med is None or ttft_med is None:
+    if stt_med is None or ttft_med is None:
         return {
             "available": False,
-            "reason": "phase_foundation_start.latency_ms missing required pieces",
+            "reason": "latency_ms missing required pieces (stt or aggregate ttft)",
         }
 
     return {
         "available": True,
-        "computed_as": "whisper_2_5s_sample + LLM TTFT (per-query aggregate)",
-        "median_ms": whisper_med + ttft_med,
-        "min_ms": (whisper_min or 0) + (ttft_min or 0),
-        "max_ms": (whisper_max or 0) + (ttft_max or 0),
+        "computed_as": f"{stt_engine} 2.5s sample + LLM TTFT (per-query aggregate)",
+        "median_ms": stt_med + ttft_med,
+        "min_ms": (stt_min or 0) + (ttft_min or 0),
+        "max_ms": (stt_max or 0) + (ttft_max or 0),
         "components": {
-            "whisper_p50_ms": whisper_med,
+            "stt_engine": stt_engine,
+            "stt_p50_ms": stt_med,
             "llm_ttft_p50_ms": ttft_med,
         },
         "notes": (
             "Composite estimate only. True end-of-speech-to-first-token needs "
-            "VAD + Whisper + pre-flight + LLM streaming through the live "
+            "VAD + STT + pre-flight + LLM streaming through the live "
             "orchestrator with mic input; this script runs headless. Composite "
-            "ignores VAD silence-detection delay (MIN_SILENCE_DURATION_MS=500) "
+            "ignores VAD silence-detection delay (vad.min_silence_duration_ms) "
             "and pre-flight latency (~50-200 ms when search-triggering). "
             "The number is therefore a LOWER BOUND for real-world TTFA."
         ),
@@ -554,8 +559,13 @@ def measure_coding_session_vram() -> Dict[str, Any]:
 
 
 def _load_voice_stack():
-    """Load Whisper + LLM + RVC + Piper. Returns (stt, llm, tts, rvc) and the
-    VRAM checkpoints captured along the way."""
+    """Load the production STT + LLM + TTS stack via the canonical
+    factories. Returns ``(stt, llm, tts, rvc, checkpoints)`` where ``rvc``
+    is None for non-piper_rvc engines. 2026-05-22: swapped the hard-
+    coded Whisper + RVC + Piper trio for the production factories so
+    this measurement always reflects whichever engines config.yaml
+    currently selects.
+    """
     print("\n[full] Loading voice stack...")
     import os as _os
     _os.environ["ULTRON_LOG_LEVEL"] = "WARNING"
@@ -566,11 +576,14 @@ def _load_voice_stack():
     checkpoints["before_load_mb"] = vram_used_mb()
     print(f"  before load: {checkpoints['before_load_mb']} MB")
 
-    from ultron.transcription import WhisperEngine
+    from ultron.transcription import make_stt_engine
     t = time.monotonic()
-    stt = WhisperEngine()
-    print(f"  Whisper loaded in {time.monotonic() - t:.1f}s")
-    checkpoints["after_whisper_mb"] = vram_used_mb()
+    stt = make_stt_engine()
+    print(
+        f"  STT loaded in {time.monotonic() - t:.1f}s "
+        f"({type(stt).__name__})"
+    )
+    checkpoints["after_stt_mb"] = vram_used_mb()
 
     from ultron.llm import LLMEngine
     t = time.monotonic()
@@ -578,20 +591,25 @@ def _load_voice_stack():
     print(f"  LLM loaded in {time.monotonic() - t:.1f}s")
     checkpoints["after_llm_mb"] = vram_used_mb()
 
-    from ultron.tts import RvcConverter, TextToSpeech
+    from ultron.tts import make_tts_engine
     t = time.monotonic()
-    rvc = RvcConverter()
-    print(f"  RVC loaded in {time.monotonic() - t:.1f}s")
-    checkpoints["after_rvc_mb"] = vram_used_mb()
-
-    tts = TextToSpeech(rvc=rvc)
-    tts.warmup()
+    rvc, tts = make_tts_engine()
+    print(
+        f"  TTS loaded in {time.monotonic() - t:.1f}s "
+        f"({type(tts).__name__})"
+    )
+    if hasattr(tts, "warmup"):
+        tts.warmup()
     checkpoints["full_stack_loaded_mb"] = vram_used_mb()
     print(f"  full stack loaded: {checkpoints['full_stack_loaded_mb']} MB")
 
     # Warm the LLM so the first generate doesn't pay cold-cache cost.
+    # Use enable_thinking=False to match the voice path's default.
     print("  warming LLM (first stream cancelled at first token)...")
-    warm_stream = llm.generate_stream("Say 'ready' and nothing else.")
+    warm_stream = llm.generate_stream(
+        "Say 'ready' and nothing else.",
+        enable_thinking=False,
+    )
     for _tok in warm_stream:
         llm.cancel()
         break

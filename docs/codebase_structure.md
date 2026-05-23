@@ -11,13 +11,14 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4665 passing / 16 skipped /
-> 0 failed in ~89 s** via `scripts/run_tests.py` (baseline 4240 +
+> top of feature commit `8bbc345`). Tests **4750 passing / 16 skipped /
+> 0 failed in ~87 s** via `scripts/run_tests.py` (baseline 4240 +
 > 82 batch 1 + 29 batch 2 + 22 batch 3 + 21 batch 4 + 36 batch 5 +
 > 22 batch 6 + 8 batch 7 + 30 batch 8 + 21 batch 9 + 26 batch 10 +
 > 56 batch 11 + 19 batch 12 + 34 batch 13 + 19 sweep-durability
 > rewrite tests + 1 pre-existing test flipped passing after the
-> pollution fix).
+> pollution fix + 25 measurement-infrastructure tests +
+> 60 batch 14 tests).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -33,6 +34,38 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 14: voice-path additions (T5 Phase 2 + T12 + T14) -- COMPLETE.** Pre-batch-14 baseline captured against the current production stack (Moonshine 16ms / Qwen 3.5 4B TTFT 203ms / Kokoro Ultron 109ms / composite TTFA 313ms / VRAM full_loaded 6597MB / peak 7007MB) -- saved as both `baselines.json` and `baselines_before_batch14.json`. All three new modules default OFF so the contract holds without operator opt-in. Tests **4750 passing / 16 skipped / 0 failed in ~87 s** (+60 batch 14 tests from baseline 4690).
+
+* **NEW [`src/ultron/coding/architect_narrator.py`](../src/ultron/coding/architect_narrator.py) (T5 Phase 2).** `ArchitectNarrator` speaks the architect's prose plan sentence-by-sentence via the configured TTS engine. Between sentences it polls a caller-supplied `should_stop` predicate so a wake-word fire mid-narration counts as a barge-in. Returns a frozen `NarrationResult(completed, interrupted, sentences_spoken, chars_spoken, elapsed_seconds, error)`. Sentence splitter is regex-driven with conservative tuning (no split on decimals like `3.14`, no split on single-capital initials like `U.S.`, requires whitespace + `[A-Z0-9(["]` after the terminator). `narrate_plan()` convenience wrapper for one-shot use. Fail-open: every error path returns `completed=False` so the dispatcher proceeds without narration.
+* **Wired into [`src/ultron/coding/supervisor_dispatch.py`](../src/ultron/coding/supervisor_dispatch.py) via an OPTIONAL `architect_narrator` callable on `SupervisorDispatchController.__init__`.** Signature: `(plan_text) -> bool` where True means the user interrupted. The dispatcher calls it AFTER the existing decision-narration barge-in check, BEFORE building the dispatch outcome. When the narrator returns True, dispatch short-circuits with `BARGED_IN`. The plan still flows through the editor prompt regardless of narration outcome -- narration is purely for the human, not the editor LLM.
+* **Wired into [`src/ultron/pipeline/orchestrator.py`](../src/ultron/pipeline/orchestrator.py) via `_build_architect_narrator(arch_cfg)`.** Constructs an `ArchitectNarrator(self.tts, max_chars=arch_cfg.narrate_max_chars, inter_sentence_pause_seconds=arch_cfg.narrate_inter_sentence_pause_ms/1000)` then wraps it in a closure that watches `self.wake._last_trigger_ts` as the barge-in signal. Only built when `coding.architect.narrate_enabled=True` AND `architect_provider is not None` AND `self.tts is not None`.
+* **NEW config knobs on [`CodingArchitectConfig`](../src/ultron/config.py).** `narrate_enabled` (default False), `narrate_max_chars` (default 400, range 0-8000; 0 = no cap), `narrate_inter_sentence_pause_ms` (default 120, range 0-2000). Tunable per operator preference; ship default-OFF so the voice baseline contract holds.
+
+* **NEW [`src/ultron/coding/stt_bias.py`](../src/ultron/coding/stt_bias.py) (T12).** `STTBiasManager` accumulates domain-specific terms (file names, recent identifiers) with bounded freshness (`max_terms=64`, `max_chars=600`, MRU-first eviction). `render_prompt()` produces an STT-engine-ready bias string most-recent-first. `apply_bias_prompt(engine, prompt)` heuristically attaches the prompt to engines exposing `initial_prompt` / `bias_prompt` / `decoding_prompt` attributes (Whisper's `initial_prompt` API in particular); engines without support (Moonshine, Parakeet) silently ignore. Pure helper `extract_identifiers(text)` mines snake_case/camelCase/PascalCase tokens for orchestrator use after each Claude edit.
+* **NEW [`src/ultron/coding/confirm_group.py`](../src/ultron/coding/confirm_group.py) (T14).** `ConfirmGroup` batches related confirmation items into a single yes/no question. Items deduped by string equality; overflow past `max_items` summarised as `"...and N more"`. `render_question()` renders TTS-safe forms for 1, 2, and 3+ item batches with Oxford-comma joining. `resolve(approved: bool)` freezes the group and returns a `ConfirmGroupResolution`. Single-resolution invariant: a second `.resolve()` raises.
+
+* **5 new test files (60 tests):** [`tests/test_architect_narrator.py`](../tests/test_architect_narrator.py) (17 — splitter quirks, narrator loop, barge-in handoff, max-chars cap, fail-open on TTS exception, fail-open on bad `should_stop`); [`tests/coding/test_supervisor_dispatch_architect_narrator.py`](../tests/coding/test_supervisor_dispatch_architect_narrator.py) (6 — narrator called iff plan present, interrupt → BARGED_IN, exception → fail-open, decision-narration barge-in pre-empts architect narration); [`tests/coding/test_stt_bias.py`](../tests/coding/test_stt_bias.py) (21 — identifier extraction with keyword filtering, MRU dedup, LRU eviction, MRU promotion on re-add, char-cap render truncation, `apply_bias_prompt` attribute discovery); [`tests/coding/test_confirm_group.py`](../tests/coding/test_confirm_group.py) (16 — dedup, overflow summary, 1/2/3+ item rendering, double-resolve raises, add-after-resolve raises).
+
+---
+
+**2026-05-22 measurement-infrastructure audit + factory extraction -- COMPLETE.** User concern after `scripts/measure_baseline.py` measured the LEGACY Whisper+RVC+Piper stack instead of the current Kokoro+Moonshine/Parakeet+Qwen3.5 stack: "the vast majority of our testing scripts and infrastructure may be completely out of date." Full audit of `scripts/*.py` (53 files), identified 7 stale scripts hardcoding the legacy voice stack, fixed them all via a new production factory, fixed a watchdog race in the sweep runner that mis-fired on fast partial-suite runs, added 25 tests pinning down the new surface area. Tests **4690 passing / 16 skipped / 0 failed in ~86 s** (+25 measurement-infrastructure tests from baseline 4665).
+
+* **NEW factory [`ultron.tts.make_tts_engine`](../src/ultron/tts/__init__.py).** Selects between `KokoroSpeech` / `XttsV3Speech` / `TextToSpeech` based on `tts.engine` config, mirroring the existing `ultron.transcription.make_stt_engine` pattern. Returns `(rvc_or_none, tts_engine)`; ``rvc`` is non-None only for the legacy `piper_rvc` engine. Carries the orchestrator's fail-open RVC load logic (`settings.RVC_ENABLED` + model-on-disk check, `RuntimeError` from constructor degrades to plain Piper). `_load_rvc_if_enabled` private helper lives next to it. `__all__` exports `KokoroSpeech` + `XttsV3Speech` + `TTSEngine` + factory.
+
+* **[`src/ultron/pipeline/orchestrator.py`](../src/ultron/pipeline/orchestrator.py)** `_load_tts_engine` is now a one-liner delegating to the factory. The redundant `_load_rvc_if_enabled` static method + `RvcConverter` / `TextToSpeech` module-level imports were removed (single source of truth). The orchestrator and `scripts/measure_baseline.py` now exercise the SAME construction code so a config flip moves both in lockstep.
+
+* **Rewritten [`scripts/measure_baseline.py`](../scripts/measure_baseline.py)** to use `make_stt_engine(cfg.stt)` + `make_tts_engine(cfg.tts)` + LLMEngine with `enable_thinking=False` (voice-path default) + optional UltronIntentRecognizer warmup (when `intent.enabled`). Records VRAM at every load checkpoint, STT median across 5 reps, LLM TTFT + first-sentence-complete across 10 queries, TTS first-sentence synth ms, composite TTFA estimate. New CLI flags `--skip-intent`, `--enable-thinking`, `--queries-count`, `--allow-concurrent`. Built-in psutil-based refusal when another Ultron process is detected — runtime backstop for the voice-stack-concurrency rule.
+
+* **Modernised stale scripts.** All swapped hard-coded legacy classes for the factories: [`scripts/measure_baseline_extended.py`](../scripts/measure_baseline_extended.py) (`_load_voice_stack` + `compute_first_token_from_end_of_speech` now reads `stt_2_5s_sample` with `whisper_2_5s_sample` fallback); [`scripts/benchmark.py`](../scripts/benchmark.py); [`scripts/bench_stt_latency.py`](../scripts/bench_stt_latency.py) (engine-agnostic info dump); [`scripts/audio_diagnostic.py`](../scripts/audio_diagnostic.py) (`build_whisper` → `build_stt`, `--whisper-beam` silently ignored for non-Whisper engines); [`scripts/verify_voice_character_4b.py`](../scripts/verify_voice_character_4b.py); [`scripts/quality_harness.py`](../scripts/quality_harness.py) (voice-loading section + `run_q5_whisper_wer` now uses scipy `resample_poly` for the 24 kHz Kokoro → 16 kHz STT rate-mismatch when on a non-integer ratio).
+
+* **Sweep-runner watchdog race fixed.** [`scripts/run_tests.py`](../scripts/run_tests.py) `_Watchdog._loop` was checking heartbeat staleness BEFORE checking whether the pytest subprocess exited. On a fast partial-suite run that finishes before the watchdog's first poll, the heartbeat file on disk is still the old (sometimes 2000+ s old) one from a previous run, and the watchdog mis-fires and reports exit 3 against an already-exited green sweep. Fix: check `proc.poll() is not None` FIRST in the loop, and on startup clear the heartbeat / current-test / progress files so the watchdog never sees stale-from-prior-run mtimes. Both edges of the race are covered.
+
+* **3 new test files (25 tests):** [`tests/test_tts_make_engine.py`](../tests/test_tts_make_engine.py) (10) — factory selectors, RVC fail-open paths, unknown-engine raise, `get_config()` fallback; [`tests/test_rvc.py`](../tests/test_rvc.py) (7) — constructor file checks (explicit-paths to avoid the default-arg gotcha), `close()` idempotency, `convert()` not-loaded guard, empty-audio short-circuit, context-manager release; [`tests/test_parakeet_engine.py`](../tests/test_parakeet_engine.py) (8) — non-streaming surface: spawn-helper handoff, NeMo-missing `ImportError`, streaming-cache hit/miss for `transcribe()`, empty audio, HTTP 5xx degrades to empty string, int16 audio coercion, `supports_streaming`, `_stream_url` guards.
+
+* **Coverage matrix sanity check** (`Glob src/ultron/**/*.py` × `tests/**/*.py`): 169 src modules, 219 test files. 94 modules covered by `test_<name>.py` strict-naming; 28 covered via different naming (e.g. `tests/test_llm_batch_tunables.py` covers `inference.py`); 47 unmatched-by-name but mostly covered indirectly. Only `src/ultron/tts/rvc.py` had zero direct test imports — fixed by the new `tests/test_rvc.py`.
+
+---
 
 **2026-05-22 catalog batch 13: description-based command registry (T18, additive) -- COMPLETE.** Lightweight declarative registry of voice / dispatch commands. Catalog rated T18 a 3-5 day "refactor of the routing surface" with medium risk; this module ships as PURELY ADDITIVE — nothing in the existing intent classifier or orchestrator consults it. Future surfaces (a `/help` voice command, an embedding-based intent classifier with phrase-corpus matching, an alternate dispatch layer) can opt in without first ripping out the existing 22-value `RoutingIntentKind` enum. Tests **4665 passing / 16 skipped / 0 failed in ~89 s** (+34 batch 13 + 19 sweep-durability tests; baseline 4612 from batch 12).
 
@@ -1744,8 +1777,11 @@ For the current decisions and Foundation phase status see
 │       │   ├── direct_bridge.py    ← DirectClaudeCodeBridge (claude --print --stream-json)
 │       │   ├── intent.py           ← Coding-pipeline intent classifier (CODE_TASK etc.) + _ADJUSTMENT_PATTERNS regex used by ProjectSupervisor
 │       │   ├── mcp_server.py       ← UltronMCPServer (in-process tools + SSE worker tools)
-│       │   ├── narration.py        ← StatusNarrator (delta-aware progress narration)
-│       │   ├── project_digest.py   ← 2026-05-22 supervisor Phase A: opencode-style SUMMARY_TEMPLATE port; generate_digest(request, llm_call) -> ProjectDigest; fails open to render_template() (deterministic fallback); parse_digest_sections / extract_files_from_digest helpers
+│       │   ├── architect_narrator.py ← 2026-05-22 batch 14 (T5 Phase 2): ArchitectNarrator speaks plan sentence-by-sentence with should_stop barge-in callback; NarrationResult telemetry; split_into_sentences with decimal + initial guards; narrate_plan() one-shot wrapper
+│       │   ├── confirm_group.py      ← 2026-05-22 batch 14 (T14): ConfirmGroup batches related confirmation items into a single yes/no question; Oxford-comma rendering; overflow summary; single-resolution invariant
+│       │   ├── narration.py          ← StatusNarrator (delta-aware progress narration)
+│       │   ├── project_digest.py     ← 2026-05-22 supervisor Phase A: opencode-style SUMMARY_TEMPLATE port; generate_digest(request, llm_call) -> ProjectDigest; fails open to render_template() (deterministic fallback); parse_digest_sections / extract_files_from_digest helpers
+│       │   ├── stt_bias.py           ← 2026-05-22 batch 14 (T12): STTBiasManager bounded MRU term store; render_prompt() produces engine-ready bias string; apply_bias_prompt() heuristic attribute attach (Whisper initial_prompt etc.); extract_identifiers helper
 │       │   ├── project_index.py    ← 2026-05-22 supervisor Phase B (Qdrant): ProjectIndex(embedder) + ProjectIndexEntry + ProjectMatch; upsert/get/search/search_by_name/delete/count + UUID5-derived stable project_id; publishes ProjectIndexedEvent on bus
 │       │   ├── project_introspect.py ← 2026-05-22 supervisor Phase B (non-LLM): snapshot(project_path) -> ProjectSnapshot; depth-limited walk + language detect + entry-point find + per-file AST via ast_metadata; SKIP_DIRECTORIES skip-list (node_modules / .venv / __pycache__ / etc); render_tree_summary for prompt embedding; per-path TTL cache
 │       │   ├── project_supervisor.py ← 2026-05-22 supervisor Phase C: ProjectSupervisor.decide(SupervisorInputs) -> SupervisorDecision; RESUME/EDIT/CLARIFY/NEW algorithm with cosine thresholds (default 0.75 / 0.55); merges semantic (ProjectIndex) + lexical (ProjectResolver) candidates; logs every decision to logs/supervisor_decisions.jsonl; publishes SupervisorDecidedEvent
@@ -3040,10 +3076,24 @@ right after `self.tts.warmup()`. The prewarm thread runs in
 parallel with the rest of orchestrator startup; first turn may miss
 while populating, subsequent turns hit.
 
+#### `tts/__init__.py` (factory, refactored 2026-05-22)
+- `TTSEngine` — `Union[KokoroSpeech, XttsV3Speech, TextToSpeech]` type alias.
+- `make_tts_engine(cfg=None) -> (rvc_or_none, TTSEngine)` — selects the engine
+  based on `tts.engine` (`kokoro` | `xtts_v3` | `piper_rvc`). Defaults to
+  `get_config().tts` when `cfg=None`. Returns ``(None, engine)`` for Kokoro
+  and XTTS; returns ``(RvcConverter | None, TextToSpeech)`` for piper_rvc.
+- `_load_rvc_if_enabled() -> Optional[RvcConverter]` — fail-open RVC loader:
+  returns None when `settings.RVC_ENABLED` is false, when the model file is
+  missing, or when `RvcConverter()` raises. The orchestrator's
+  `_load_tts_engine` is now a one-liner delegating to this factory so
+  measurement scripts and the production code share one construction path.
+- Re-exports `TextToSpeech`, `RvcConverter`, `KokoroSpeech`, `XttsV3Speech`.
+
 #### `tts/rvc.py`
 - `class RvcConverter` — infer-rvc-python wrapper, cuda:0
   - `convert(pcm: np.ndarray, sample_rate: int) -> (pcm, sr)` — raises RVCConversionError on failure
   - `close()` — releases GPU memory
+  - **Tests:** [`tests/test_rvc.py`](../tests/test_rvc.py) (7 tests; explicit-path kwargs to avoid the default-arg gotcha; close idempotency; convert empty-audio / not-loaded guards; context-manager release).
 
 #### `tts/speech.py`
 - `Clip` — type alias for `Tuple[np.ndarray, int]` (legacy synth function return).
