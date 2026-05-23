@@ -11,10 +11,9 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4394 passing / 17 skipped /
-> 0 failed in ~74 s** via direct pytest invocation (baseline 4240 +
-> 82 catalog batch 1 + 29 catalog batch 2 + 22 catalog batch 3 +
-> 21 catalog batch 4).
+> top of feature commit `8bbc345`). Tests **4430 passing / 17 skipped /
+> 0 failed in ~77 s** via direct pytest invocation (baseline 4240 +
+> 82 batch 1 + 29 batch 2 + 22 batch 3 + 21 batch 4 + 36 batch 5).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -30,6 +29,33 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 5: LLM commit messages + file-mention auto-add -- COMPLETE.** Fifth batch of the external-codebase catalog pass — two independent capabilities. `commit_message.py` orchestrates an LLM-callable cascade to turn a diff + user context into a short imperative commit message, with per-LLM input-budget gating and outer-quote stripping. `file_mention_resolver.py` mines a user utterance for implicit file references via the basename-disambiguation heuristic (special-chars-required + uniqueness + blocklist of plain-English-word basenames). The mention resolver is wired into `RepoMapProviderCache.__call__` so the repo map's personalization vector now includes file mentions from the voice transcript automatically. Tests **4430 passing / 17 skipped / 0 failed in ~77 s** (+36 net; baseline 4394 from batch 4).
+
+* **NEW [`src/ultron/coding/commit_message.py`](../src/ultron/coding/commit_message.py).**
+  * `class CommitMessageRequest(diff_text, user_context, system_prompt, max_prompt_chars_per_llm)` — frozen input bundle.
+  * `class CommitMessageResult(message, cascade_index, chars_in_prompt, error, last_exception)` — frozen output.
+  * `generate_commit_message(request, llm_cascade, *, strip_quotes=True) -> CommitMessageResult` — primary entry. Walks the cascade; first LLM whose prompt fits within its budget AND returns a non-empty string wins. On total failure, ``message=None`` with an error string.
+  * `strip_outer_quotes(text)` — removes wrapping double / single / smart quotes / triple-backtick blocks (with optional language tag). Defensive against the LLM-wraps-message-in-quotes failure mode.
+  * `DEFAULT_COMMIT_SYSTEM_PROMPT` — light ultron customisation of aider's prompt: explicit "no AI assistant mentions, no Co-Authored-By trailers" rule so output stays compatible with the public-repo hygiene pre-push hook.
+
+* **NEW [`src/ultron/coding/file_mention_resolver.py`](../src/ultron/coding/file_mention_resolver.py).**
+  * `class FileMention(path, kind, confidence)` — frozen output row. ``kind ∈ {"exact", "basename"}``; ``confidence`` is heuristic (1.0 exact, 0.7 unique basename).
+  * `resolve_mentions(utterance, candidates, *, already_in_chat, ignore, never_auto_add_basenames) -> List[FileMention]`. Algorithm: tokenise + strip edge punctuation; for each candidate, check exact relative-path match THEN unique-basename-with-special-chars match. Excludes already-in-chat, ignored, and basenames whose stem is in the plain-word blocklist (``run``, ``make``, ``test``, ``main``, ``build``, ``utils``, etc.). Deterministic order.
+  * `DEFAULT_NEVER_AUTO_ADD_BASENAMES: frozenset` — the catalog's plain-word exclusion list, extended for ultron's source tree.
+
+* **Integration: [`src/ultron/coding/repo_map.py`](../src/ultron/coding/repo_map.py).**
+  * `RepoMapProviderCache.__call__` now mines both flavours of utterance:
+    * `extract_idents_from_text(user_text)` (existing) → `mentioned_idents`
+    * NEW `_resolve_file_mentions(project_path, user_text)` → `mentioned_fnames`
+  * The helper walks the project's source files (via `find_source_files`), runs `resolve_mentions` against the relative-path candidate list, and returns the matched POSIX paths.
+  * Both flow into `RepoMap.get_map` so the PageRank personalization vector lights up the right files automatically when the user says "fix `parakeet_engine.py` streaming". No new flag — the wiring is opt-in by virtue of `coding.repo_map.enabled` already being default-off.
+
+* **Tests.** 36 new total:
+  * [`tests/coding/test_commit_message.py`](../tests/coding/test_commit_message.py) (19): quote stripping (7 — double, single, smart, triple-backtick with lang tag, preserve inner, empty), cascade orchestration (8 — empty diff, empty cascade, first-wins, fallback-on-exception, fallback-on-empty, all-fail, strip-on, strip-off), budget gating (2 — small skips to big, all-exceed), prompt threading (2 — uses system prompt, no brand attribution in default), dataclass frozenness (1).
+  * [`tests/coding/test_file_mention_resolver.py`](../tests/coding/test_file_mention_resolver.py) (17): exact path match, basename with special chars, plain-word rejection, blocklist hit, ambiguity rejection, unique basename passes blocklist, already-in-chat exclusion, ignore set, custom never-set override, Windows path normalisation, edge-punctuation stripping, empty-input handling, blocklist coverage, frozenness, deterministic order, end-to-end `RepoMapProviderCache` wiring (mentions surface in the rendered map).
+
+---
 
 **2026-05-22 catalog batch 4: pre-write lint cascade (tree-sitter + compile + flake8 FATAL-only) -- COMPLETE.** Fourth batch of the external-codebase catalog pass — adds a three-layer lint cascade to the runner's `FILE_CHANGE` listener so the "Done." narration can fact-check itself before reporting success. Layer 1: tree-sitter ERROR/missing walk across all 10 vendored languages. Layer 2: Python `compile()` with formatted traceback. Layer 3: flake8 with a FATAL-only rule subset (E9, F821, F823, F831, F406, F407, F701, F702, F704, F706 — explicitly no style, no line-length, only "guaranteed-breaks-at-runtime"). Default OFF behind `coding.pre_write_lint.enabled`. Tests **4394 passing / 17 skipped / 0 failed in ~74 s** (+21 net; baseline 4373 from batch 3).
 

@@ -910,13 +910,33 @@ class RepoMapProviderCache:
         project_path: str,
         user_text: str,
     ) -> Optional[str]:
-        """Provider entry point — matches ProjectSupervisor's contract."""
+        """Provider entry point — matches ProjectSupervisor's contract.
+
+        Performs both flavours of utterance mining:
+
+          * :func:`extract_idents_from_text` for identifier mentions
+            (snake_case / camelCase / etc.) — passed as
+            ``mentioned_idents`` to bias the PageRank graph weights.
+          * :func:`ultron.coding.file_mention_resolver.resolve_mentions`
+            for implicit file references — passed as
+            ``mentioned_fnames`` to bias the personalization vector
+            (catalog T16 wiring).
+
+        Both extractions are fail-open: any exception in mining is
+        logged at debug and the corresponding hint is omitted.
+        """
         try:
             rm = self.get_or_create(project_path)
             if rm is None:
                 return None
             idents = extract_idents_from_text(user_text)
-            rendered = rm.get_map(mentioned_idents=idents)
+            mentioned_fnames = self._resolve_file_mentions(
+                project_path, user_text,
+            )
+            rendered = rm.get_map(
+                mentioned_idents=idents,
+                mentioned_fnames=mentioned_fnames,
+            )
         except Exception as exc:                                    # noqa: BLE001
             logger.warning(
                 "repo_map provider failed for project_path=%s: %s",
@@ -924,6 +944,43 @@ class RepoMapProviderCache:
             )
             return None
         return rendered or None
+
+    def _resolve_file_mentions(
+        self,
+        project_path: str,
+        user_text: str,
+    ) -> set:
+        """Mine ``user_text`` for implicit file references.
+
+        Walks the project's source files, runs
+        :func:`resolve_mentions` against the candidate list, and
+        returns the POSIX-form relative paths the user implicitly
+        referenced. Empty set when the resolver isn't available or
+        finds no matches.
+        """
+        try:
+            from ultron.coding.file_mention_resolver import resolve_mentions
+        except ImportError:
+            return set()
+        try:
+            root = Path(project_path).resolve()
+            candidates: List[str] = []
+            for path in find_source_files(root):
+                try:
+                    rel = path.resolve().relative_to(root)
+                except (ValueError, OSError):
+                    continue
+                candidates.append(str(rel).replace("\\", "/"))
+            if not candidates:
+                return set()
+            mentions = resolve_mentions(user_text, candidates)
+        except Exception as exc:                                    # noqa: BLE001
+            logger.debug(
+                "repo_map: file_mention resolver failed for %s: %s",
+                project_path, exc,
+            )
+            return set()
+        return {m.path for m in mentions}
 
 
 __all__ = [
