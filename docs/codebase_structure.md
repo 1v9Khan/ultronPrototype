@@ -11,12 +11,13 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4612 passing / 16 skipped /
-> 0 failed in ~86 s** via `scripts/run_tests.py` (baseline 4240 +
+> top of feature commit `8bbc345`). Tests **4665 passing / 16 skipped /
+> 0 failed in ~89 s** via `scripts/run_tests.py` (baseline 4240 +
 > 82 batch 1 + 29 batch 2 + 22 batch 3 + 21 batch 4 + 36 batch 5 +
 > 22 batch 6 + 8 batch 7 + 30 batch 8 + 21 batch 9 + 26 batch 10 +
-> 56 batch 11 + 19 batch 12; +2 from the sweep-durability test-pollution
-> fix to two pre-existing tests).
+> 56 batch 11 + 19 batch 12 + 34 batch 13 + 19 sweep-durability
+> rewrite tests + 1 pre-existing test flipped passing after the
+> pollution fix).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -32,6 +33,38 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 13: description-based command registry (T18, additive) -- COMPLETE.** Lightweight declarative registry of voice / dispatch commands. Catalog rated T18 a 3-5 day "refactor of the routing surface" with medium risk; this module ships as PURELY ADDITIVE — nothing in the existing intent classifier or orchestrator consults it. Future surfaces (a `/help` voice command, an embedding-based intent classifier with phrase-corpus matching, an alternate dispatch layer) can opt in without first ripping out the existing 22-value `RoutingIntentKind` enum. Tests **4665 passing / 16 skipped / 0 failed in ~89 s** (+34 batch 13 + 19 sweep-durability tests; baseline 4612 from batch 12).
+
+* **NEW [`src/ultron/intent/command_registry.py`](../src/ultron/intent/command_registry.py).**
+  * `@dataclass(frozen=True) class Command(name, description, phrases, handler, examples, tags)` — one command record.
+  * `class CommandRegistry` with thread-safe `register / register_from_dict / register_from_json_file / unregister / clear / get / has / list_all / list_by_tag / match / format_help / __len__ / __contains__` — full CRUD + lookup surface. Internal lock keeps registration safe under concurrent registration attempts.
+  * `match(utterance)` — case-insensitive substring lookup against phrases. Best-effort; embedding-based matching is future work.
+  * `format_help(*, tag_filter, include_examples)` — renders Markdown-style help suitable for narration via TTS (future `/help`-by-voice surface).
+  * Decorator `@command(name, *, description, phrases, examples, tags, registry, overwrite)` — ergonomic registration that attaches metadata to a function. Falls back to the function's docstring's first line when `description` is empty. Module-level `DEFAULT_REGISTRY` is the default target.
+  * Footgun fixed at write-time: `target = DEFAULT_REGISTRY if registry is None else registry` (NOT `target = registry or DEFAULT_REGISTRY` — an empty `CommandRegistry` is falsy via `__len__`).
+
+* **Tests.** 34 new in [`tests/intent/test_command_registry.py`](../tests/intent/test_command_registry.py): frozen dataclass, defaults + noop handler invocation, register + duplicate rejection + overwrite, register_from_dict (success + missing name + empty name + non-string filtering + JSON file load + missing/malformed/non-array fallback), unregister + clear, has/__contains__ behaviour, sorted listing, tag filtering, len, match (substring + case-insensitive + no-match + empty-input + phraseless skip), help rendering (empty + with content + tag filter + examples), decorator (registers + docstring fallback + DEFAULT_REGISTRY targeting + duplicate-silent), and a thread-safety smoke test (4 threads × 20 commands each, no errors).
+
+---
+
+**2026-05-22 sweep durability hardening (FULL REWRITE of scripts/run_tests.py + binding rules) -- COMPLETE.** Second pass after the user's "fix it permanently, do not just paper over problems" mandate. Three additions on top of the first durability fix:
+
+* **Full rewrite of [`scripts/run_tests.py`](../scripts/run_tests.py)** with FIVE independent defensive layers, each catching a specific failure mode observed during the catalog-pass session:
+  1. **Pre-flight environment check** (NEW). Verifies psutil is importable, the venv python is reachable, `data/` is writable. Hard refuses to spawn pytest (exit code 6) when any precondition fails — no silent degradation.
+  2. **Cross-instance process mutex + orphan kill** (kept from first fix, hardened). `data/.run_tests.lock` is the file; stale-lock recovery handles crashes. Pytests >5 min old killed unconditionally.
+  3. **Heartbeat watchdog thread** (NEW). Separate thread polls `data/.run_tests_heartbeat` every 2 s; stale >`STALE_HEARTBEAT_SECONDS` (default 90 s) ⇒ kill pytest + report which test was running (exit code 3). Catches C-extension hangs that pytest-timeout's thread-method can't interrupt.
+  4. **Wall-clock hard deadline** (NEW). `--max-runtime` (default 600 s) ⇒ kill pytest when exceeded (exit code 5). Final safety net regardless of any other timeout.
+  5. **Post-run validation + aggressive cleanup** (hardened). Checks `data/.run_tests_progress.jsonl` for a `session_end` event; if missing despite a 0 exit code, reports exit 7 ("sweep was killed mid-stream, exit code is suspect" — directly addresses the harness's false-positive completion notifications). Post-run walk for ALL pytest-on-this-codebase processes + every Python descendant.
+  * New flags: `--dry-run` (pre-flight + exit), `--max-runtime=N`, `--stale-heartbeat=N`.
+  * New exit codes: 3 (heartbeat), 5 (wall-clock), 6 (pre-flight), 7 (killed mid-stream).
+  * 19 new tests in [`tests/test_run_tests_durability.py`](../tests/test_run_tests_durability.py).
+
+* **NEW [`docs/test_sweep_binding_rules.md`](test_sweep_binding_rules.md)**. Twelve binding rules for FUTURE test additions, each grounded in a real bug observed during the catalog-pass session. R1 — no raw class-level mutation (`monkeypatch.setattr`); R2/R3 — thread + subprocess cleanup; R4/R5 — no real network / port binding; R6 — per-test ≤30 s with explicit override for slower; R7 — order-independent; R8 — per-module test file; R9 — `data/` writes to `tmp_path`; R10 — sweep stays <90 s, +100 ms/test budget; R11 — no voice-stack loading; R12 — no bare `time.sleep > 0.5 s`. **The rules are binding — PRs that violate them are reverted.**
+
+* **Memory updates** (in `C:\Users\alecf\.claude\projects\C--STC-ultronPrototype\memory\`). `MEMORY.md`'s "Documentation + testing standards (BINDING)" section now points at the rules doc + restates the "scripts/run_tests.py is the single entry point" mandate. `feedback_test_sweep_workflow.md` lists all twelve rules + the runner's exit-code semantics so future sessions inherit the discipline.
+
+---
 
 **2026-05-22 sweep durability fix -- COMPLETE.** Operator-facing fix for the recurring "the test sweep keeps getting killed in the background" frustration. Root causes identified + fixed:
 
