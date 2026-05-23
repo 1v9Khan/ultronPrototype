@@ -34,21 +34,35 @@ logger = logging.getLogger(__name__)
 
 
 class BusEventSink:
-    """Glue subscriber: bus events -> EventStore writes.
+    """Glue subscriber: bus events -> EventStore writes (-> callback dispatch).
 
     Holds the unsubscribe callable so :func:`uninstall_bus_event_sink`
     can take it back down cleanly. Thread-safe; the underlying bus
     dispatches under its own lock.
+
+    When the module-level callback registry is set
+    (:func:`set_callback_registry`), each persisted event is also fed
+    to :meth:`CallbackRegistry.execute_for_event` AFTER the store
+    write returns -- a callback exception never loses the underlying
+    event (the catalog's load-bearing invariant).
     """
 
-    def __init__(self, store: EventStore, *, default_session_id: str = "default") -> None:
+    def __init__(
+        self,
+        store: EventStore,
+        *,
+        default_session_id: str = "default",
+        dispatch_callbacks: bool = True,
+    ) -> None:
         self._store = store
         self._default_session_id = default_session_id
+        self._dispatch_callbacks = dispatch_callbacks
         self._sequence_counters: dict[str, int] = {}
         self._lock = threading.RLock()
         self._unsubscribe: Callable[[], None] | None = None
         self._dispatched = 0
         self._errors = 0
+        self._callbacks_fired = 0
 
     @property
     def dispatched(self) -> int:
@@ -84,18 +98,43 @@ class BusEventSink:
         except Exception as exc:  # noqa: BLE001
             logger.warning("bus event sink uninstall failed: %r", exc)
 
+    @property
+    def callbacks_fired(self) -> int:
+        with self._lock:
+            return self._callbacks_fired
+
     def _on_event(self, envelope: Any) -> None:  # pragma: no cover - exercised via install_bus_event_sink
         try:
             event = self._envelope_to_stored_event(envelope)
             if event is None:
                 return
-            self._store.save_event(event)
+            stored = self._store.save_event(event)
             with self._lock:
                 self._dispatched += 1
+            if self._dispatch_callbacks:
+                self._fire_callbacks(stored)
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 self._errors += 1
             logger.warning("bus event sink dispatch error: %r", exc)
+
+    def _fire_callbacks(self, event: StoredEvent) -> None:
+        # Import lazily so the bus sink stays usable without the
+        # callbacks module loaded (e.g. minimal test setups).
+        try:
+            from ultron.events.callbacks import get_callback_registry
+        except Exception:                                    # pragma: no cover
+            return
+        registry = get_callback_registry()
+        if registry is None:
+            return
+        try:
+            results = registry.execute_for_event(event)
+        except Exception as exc:                            # noqa: BLE001
+            logger.warning("callback dispatch failed for event %s: %r", event.id, exc)
+            return
+        with self._lock:
+            self._callbacks_fired += len(results)
 
     def _envelope_to_stored_event(self, envelope: Any) -> StoredEvent | None:
         # Bus envelopes carry a ``properties`` dict-shaped payload and an

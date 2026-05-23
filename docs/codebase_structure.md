@@ -10,12 +10,12 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `8e0db9f` on `claude/silly-lamarr-14194e`
-> (batch-3 feature work lands on top -- doc bumped post-batch).
-> Tests **5425 passing / 16 skipped / 0 failed in ~92 s** via
-> `scripts/run_tests.py` (prior baseline 5351 + 16 models + 11 chain
-> + 27 store + 7 export + 13 bus sink -- OpenHands catalog batch 3
-> event store T2 + T13 landed).
+> **Validating HEAD:** `f35a100` on `claude/silly-lamarr-14194e`
+> (batch-4 feature work lands on top -- doc bumped post-batch).
+> Tests **5481 passing / 16 skipped / 0 failed in ~90 s** via
+> `scripts/run_tests.py` (prior baseline 5425 + 33 callbacks
+> + 23 processors -- OpenHands catalog batch 4 event callbacks T3
+> landed).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -31,6 +31,18 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-23 OpenHands porting -- batch 4 (T3 event callbacks) -- COMPLETE.** Polymorphic callback registry + six built-in processors. After every `EventStore.save_event` returns successfully, the bus sink consults the module-level `CallbackRegistry` and fires any active callback whose session/kind filters match the persisted event. Callbacks can self-deactivate (`CallbackResult.deactivate=True`) for one-shot patterns like the OpenHands title-generation processor. Optional JSONL persistence at `data/callbacks.jsonl` preserves registration metadata across restarts (live processor instances are re-attached by the caller; the catalog flags fully-polymorphic auto-resurrection as a T23 follow-up). Tests **5481 passing / 16 skipped / 0 failed in ~90 s** (+56 batch 4 tests from 5425).
+
+* **NEW [`src/ultron/events/callbacks.py`](../src/ultron/events/callbacks.py).** `CallbackRegistry` (thread-safe, slow-callback warn watchdog at 50 ms default, dispatched/errors counters); `CallbackProcessor` ABC with `__call__(event, callback) -> Optional[CallbackResult]`; `RegisteredCallback` frozen dataclass (id + processor + session_id + event_kind filters + status + label + created_at + extra); `CallbackStatus` enum (ACTIVE / DISABLED); `CallbackResult` frozen (status + callback_id + event_id + session_id + detail + deactivate + extra) with `CallbackResultStatus` enum (SUCCESS / ERROR / SKIPPED / DEACTIVATED). `FunctionProcessor` adapter wraps a plain callable. Module-level singleton accessors `get_callback_registry` / `set_callback_registry` / `reset_callback_registry_for_testing`. JSONL persistence on every mutation (best-effort, failure swallowed at WARN).
+
+* **NEW [`src/ultron/events/processors.py`](../src/ultron/events/processors.py).** Six built-in processors: `LoggingCallbackProcessor` (log every matched event at INFO; payload optional), `CountingCallbackProcessor` (per-kind counter for diagnostics), `ThresholdSnapshotProcessor` (per-session counter, fires once `threshold` reached, deactivates by default), `MemoryWriteProcessor` (mirrors event payloads into a caller-supplied memory writer), `ChannelGuardProcessor` (regex scan for secret-looking substrings in payloads, returns ERROR to surface in the audit trail), `SkillActivatorProcessor` (catalog's "conditional skill activation as a callback" extension). `build_default_processors` factory returns the safe-to-default set (Logging + Counting).
+
+* **Bus sink wiring** in [`src/ultron/events/bus_sink.py`](../src/ultron/events/bus_sink.py): after `store.save_event(event)` returns, fire `registry.execute_for_event(stored)` on the module-level callback registry. Errors swallowed at WARN; a callback exception never loses the underlying event (the catalog's load-bearing invariant). `dispatch_callbacks=False` opts out for tests that want the sink without callback execution.
+
+* **Two new test files (56 tests):** [`tests/events/test_callbacks.py`](../tests/events/test_callbacks.py) (33 -- registration with filters, duplicate-id rejection, unregister, set_status, list with filters + include_disabled, execute happy path, session filter blocks, kind filter blocks, disabled callback skipped, processor exception swallowed -> ERROR + errors counter, None return -> SKIPPED, deactivate flag flips status to DISABLED, error result doesn't auto-deactivate, multi-callback creation-order fire, dispatched counter, clear drops state, FunctionProcessor truthy/None/CallbackResult passthrough, persistence writes JSONL + updates on status/unregister + failure swallow, load_metadata round-trip + missing file + malformed line skip, singleton set/get/reset, slow-callback warning, hex UUID id format); [`tests/events/test_processors.py`](../tests/events/test_processors.py) (23 -- LoggingCallbackProcessor success + payload-include opt-in, CountingCallbackProcessor per-kind + count-in-extra, ThresholdSnapshotProcessor fires at threshold + per-session counter + repeat-when-deactivate-disabled + label override, MemoryWriteProcessor writer-call + no-content-skip + role mapping + writer-exception ERROR + custom content_field, ChannelGuardProcessor detects secret pattern + passes clean + password assignment with whitespace, SkillActivatorProcessor calls + swallows exception, build_default_processors returns safe set, registry e2e threshold-then-deactivate).
+
+---
 
 **2026-05-23 OpenHands porting -- batch 3 (T2 event store + T13 hash chain) -- COMPLETE.** Canonical event store with sync ABC mirroring the OpenHands `EventService` shape (`save_event` / `get_event` / `search_events` / `count_events` / `batch_get_events`), plus a per-session SHA-256 hash chain (T13) extending ultron's existing safety-audit pattern, plus a zip exporter, plus a bus sink that subscribes the typed pub/sub bus and persists every event row. Three backends ship: `MemoryEventStore` (tests + scratch), `JsonlEventStore` (production default, one append-only JSONL per session), `QdrantEventStore` (opt-in, mirrors into the Qdrant `events` collection with JSONL fallback so a Qdrant outage doesn't lose data). Default OFF so the bus dispatch latency + voice baseline are byte-identical until operators opt in. Tests **5425 passing / 16 skipped / 0 failed in ~92 s** (+74 batch 3 tests from 5351).
 
@@ -2026,7 +2038,9 @@ For the current decisions and Foundation phase status see
 │       │   ├── chain.py            ← compute_event_chain_hash + verify_chain (T13 SHA-256 chain)
 │       │   ├── store.py            ← EventStore ABC + MemoryEventStore + JsonlEventStore + QdrantEventStore + build_event_store factory + singleton accessors
 │       │   ├── export.py           ← export_session_to_bytes + export_session_to_path zip builder with meta.json + chain verification
-│       │   └── bus_sink.py         ← BusEventSink subscribes to the bus, converts envelopes to StoredEvent, writes to the store
+│       │   ├── bus_sink.py         ← BusEventSink subscribes to the bus, converts envelopes to StoredEvent, writes to the store + fires callbacks
+│       │   ├── callbacks.py        ← 2026-05-23 OpenHands batch 4 (T3): CallbackRegistry + CallbackProcessor ABC + RegisteredCallback + CallbackResult + FunctionProcessor adapter + JSONL persistence + singleton accessors
+│       │   └── processors.py       ← 2026-05-23 OpenHands batch 4 (T3): built-in processors (Logging, Counting, ThresholdSnapshot, MemoryWrite, ChannelGuard, SkillActivator) + build_default_processors factory
 │       │
 │       └── utils/
 │           ├── fairseq_compat.py   ← Workarounds for fairseq dataclass + torch.load issues
@@ -2201,7 +2215,9 @@ For the current decisions and Foundation phase status see
 │   │   ├── test_chain.py           ← 11 tests: hash chain integrity (happy + broken hash + broken prev + strict + empty + missing + determinism)
 │   │   ├── test_store.py           ← 27 tests: Memory + JSONL + Qdrant backends + factory + singleton + session isolation + pagination
 │   │   ├── test_export.py          ← 7 tests: zip layout + redaction + empty session + extra meta + path write + chain-broken recorded
-│   │   └── test_bus_sink.py        ← 13 tests: lifecycle + envelope conversion + dispatch + exception swallow + sequence counter
+│   │   ├── test_bus_sink.py        ← 13 tests: lifecycle + envelope conversion + dispatch + exception swallow + sequence counter
+│   │   ├── test_callbacks.py       ← 33 tests: CRUD + filters + dispatch + deactivate + persistence + singleton + slow-warn
+│   │   └── test_processors.py      ← 23 tests: all six built-in processors + factory + registry e2e
 │   ├── routing/                    ← Phase 5 + 2026-05 extensions: classifier + dispatcher + decomposer + ambiguity + gaming_mode + decision_log + dispatcher_a1_c3
 │   │   ├── conftest.py
 │   │   ├── test_classifier.py      ← Top-level classifier with 23 RoutingIntentKind branches + 2026-05-22 _NAVIGATE_TO_SITE + _OPEN_LAST_SOURCE_AMBIGUOUS lists

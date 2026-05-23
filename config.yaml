@@ -1296,6 +1296,20 @@ events:
   install_bus_sink: true           # auto-mirror bus events into the store
 
 # ---------------------------------------------------------------------------
+# Event callbacks (2026-05-23 OpenHands batch 4 T3) -- polymorphic
+# CallbackRegistry that fires after every EventStore.save_event. The
+# orchestrator does NOT pre-register any production callbacks by default
+# (operators wire what they want via Python or future plugin config);
+# this section reserves the namespace + carries the persistence path
+# for future operator-driven catalog management.
+# ---------------------------------------------------------------------------
+
+callbacks:
+  enabled: false                   # opt-in
+  persistence_path: "data/callbacks.jsonl"   # relative to PROJECT_ROOT
+  slow_callback_warn_ms: 50.0      # WARN above this; tracked in registry stats
+
+# ---------------------------------------------------------------------------
 # Skills (2026-05-23 OpenHands batch 2 T1) — trigger-loaded knowledge bundles.
 #
 # When enabled, the orchestrator walks ``skills/`` (public), ``~/.ultron/skills/``
