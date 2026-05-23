@@ -1540,6 +1540,37 @@ class CodingGoalAnchorsConfig(_Strict):
     resume_prepend_next_anchor: bool = True
 
 
+class CodingArchitectConfig(_Strict):
+    """2026-05-22 catalog batch 6 (Phase 1): pre-dispatch architect.
+
+    When enabled, the orchestrator constructs an
+    :class:`ultron.coding.architect_supervisor.ArchitectSupervisor` and
+    wires it as the supervisor's ``architect_provider``. After each
+    EDIT/RESUME decision the supervisor invokes the architect to
+    produce a prose plan from the user's utterance plus optional
+    repo-map context. The plan is attached to the
+    :class:`SupervisorDecision` as ``architect_plan_text``; downstream
+    callers (``supervisor_dispatch``) can prepend it to the editor
+    LLM's prompt.
+
+    Phase 1 only: produces a plan string. Phase 2 (narrate plan via
+    TTS with barge-in window) and Phase 3 (forward plan as user
+    message to the editor) live in follow-up changes because they
+    touch the voice hot path and need a fresh measure_baseline.py
+    pass per the voice-baseline binding rule.
+
+    Default OFF: enabling adds ~3-5 seconds of LLM call latency per
+    coding dispatch on the local Qwen path. Voice-baseline binding
+    means we ship default-OFF and the user flips on after measuring.
+    """
+
+    enabled: bool = False
+    # Max prompt size in characters for the primary architect LLM.
+    # Architectures bigger than this fall through to the cascade's
+    # next entry (a future remote-LLM tier) or fail-open to no plan.
+    max_prompt_chars: int = Field(default=32000, ge=1024, le=200000)
+
+
 class CodingRepoMapConfig(_Strict):
     """2026-05-22 catalog batch 2: PageRank-weighted repo map.
 
@@ -1773,6 +1804,13 @@ class CodingConfig(_Strict):
     # See CodingRepoMapConfig for tuning knobs.
     repo_map: CodingRepoMapConfig = Field(
         default_factory=CodingRepoMapConfig,
+    )
+    # 2026-05-22 catalog batch 6 Phase 1: pre-dispatch architect.
+    # Default OFF -- voice-baseline binding means we ship off and
+    # let the operator measure before flipping. See
+    # CodingArchitectConfig for tuning knobs.
+    architect: CodingArchitectConfig = Field(
+        default_factory=CodingArchitectConfig,
     )
     # A4 pre-task confirmation. Default OFF -- the spoken confirmation
     # adds ~0.5 s of TTS playback before every coding task dispatch,

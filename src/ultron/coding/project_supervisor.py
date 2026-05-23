@@ -115,6 +115,15 @@ class SupervisorDecision:
     # of the project. Excluded from ``to_log_dict`` so the audit log
     # stays lean.
     repo_map_text: Optional[str] = None
+    # 2026-05-22 catalog batch 6: optional architect plan, generated
+    # by a local LLM via :class:`ArchitectSupervisor` when an
+    # ``architect_provider`` is wired. Parallel to ``repo_map_text``;
+    # downstream callers can prepend this prose plan to the Claude
+    # dispatch prompt body so the editor LLM has explicit prose
+    # direction. Excluded from ``to_log_dict`` so the audit log
+    # stays lean (a boolean ``architect_plan_attached`` is emitted
+    # instead).
+    architect_plan_text: Optional[str] = None
 
     def to_log_dict(self) -> Dict[str, Any]:
         """JSON-serializable form for the audit log.
@@ -137,6 +146,7 @@ class SupervisorDecision:
             "user_text": self.user_text,
             "decided_at_unix": time.time(),
             "repo_map_attached": self.repo_map_text is not None,
+            "architect_plan_attached": self.architect_plan_text is not None,
         }
 
 
@@ -196,6 +206,9 @@ class ProjectSupervisor:
         repo_map_provider: Optional[
             "Callable[[str, str], Optional[str]]"  # type: ignore[name-defined]
         ] = None,
+        architect_provider: Optional[
+            "Callable[..., Optional[str]]"  # type: ignore[name-defined]
+        ] = None,
     ) -> None:
         if not 0.0 <= clarify_threshold <= resolve_threshold <= 1.0:
             raise ValueError(
@@ -218,6 +231,12 @@ class ProjectSupervisor:
         # a rendered map string or None. Always invoked fail-open —
         # provider errors are logged and swallowed.
         self.repo_map_provider = repo_map_provider
+        # 2026-05-22 catalog batch 6: optional architect-plan provider.
+        # Mirrors repo_map_provider but produces a prose plan from a
+        # local LLM via :class:`ArchitectSupervisor`. Invoked AFTER
+        # the repo-map attachment so the architect can be given the
+        # rendered map as additional context.
+        self.architect_provider = architect_provider
         self._log_lock = threading.RLock()
 
         if self.decisions_log_path is not None:
@@ -263,7 +282,57 @@ class ProjectSupervisor:
         # audit log entry has been written so the (potentially large)
         # rendered map doesn't bloat the JSONL.
         self._attach_repo_map(decision)
+        # 2026-05-22 catalog batch 6: invoke architect AFTER repo_map
+        # so the architect can receive the rendered map as additional
+        # context. Same skip rules as repo_map.
+        self._attach_architect_plan(decision)
         return decision
+
+    def _attach_architect_plan(self, decision: SupervisorDecision) -> None:
+        """Populate ``decision.architect_plan_text`` via ``architect_provider``.
+
+        Skipped when:
+          * no provider was supplied at construction time, or
+          * the decision has no ``target_project_path``, or
+          * the action is CLARIFY (no plan needed until the user
+            disambiguates).
+
+        Provider exceptions are logged + swallowed — like the repo
+        map, the plan is a bonus, not a contract.
+
+        The provider receives ``(project_path, user_text)`` positionally
+        plus ``repo_map_text=`` as a keyword arg so providers built on
+        :class:`ArchitectSupervisor` can fold the map into the
+        architect prompt. Providers that don't accept the keyword
+        (e.g. test stubs) get a fallback call without the kwarg.
+        """
+        if self.architect_provider is None:
+            return
+        if decision.action == SupervisorAction.CLARIFY:
+            return
+        if not decision.target_project_path:
+            return
+        try:
+            try:
+                plan = self.architect_provider(
+                    decision.target_project_path,
+                    decision.user_text,
+                    repo_map_text=decision.repo_map_text,
+                )
+            except TypeError:
+                # Provider doesn't accept the keyword — call positionally.
+                plan = self.architect_provider(
+                    decision.target_project_path,
+                    decision.user_text,
+                )
+        except Exception as exc:                                    # noqa: BLE001
+            logger.warning(
+                "architect_provider raised for project_path=%s: %s",
+                decision.target_project_path, exc,
+            )
+            return
+        if plan:
+            decision.architect_plan_text = plan
 
     def _attach_repo_map(self, decision: SupervisorDecision) -> None:
         """Populate ``decision.repo_map_text`` via ``repo_map_provider``.

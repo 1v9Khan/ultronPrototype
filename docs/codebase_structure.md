@@ -11,9 +11,10 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4430 passing / 17 skipped /
-> 0 failed in ~77 s** via direct pytest invocation (baseline 4240 +
-> 82 batch 1 + 29 batch 2 + 22 batch 3 + 21 batch 4 + 36 batch 5).
+> top of feature commit `8bbc345`). Tests **4452 passing / 17 skipped /
+> 0 failed in ~75 s** via direct pytest invocation (baseline 4240 +
+> 82 batch 1 + 29 batch 2 + 22 batch 3 + 21 batch 4 + 36 batch 5 +
+> 22 batch 6).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -29,6 +30,32 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 6: architect/editor split (Phase 1 — plan generation) -- COMPLETE.** Sixth and final batch of the external-codebase catalog pass. Implements aider's architect/editor split (T5) **Phase 1 only**: a local LLM produces a prose plan from the user's utterance + repo-map + project-digest BEFORE the editor LLM (typically Claude) is invoked. Phase 2 (TTS narration of the plan with a barge-in window) and Phase 3 (forward plan as the editor's user message) are intentionally deferred to follow-up work — both touch the voice hot path and require a fresh `scripts/measure_baseline.py` pass per the voice-baseline binding rule. Default OFF behind `coding.architect.enabled`. Tests **4452 passing / 17 skipped / 0 failed in ~75 s** (+22 net; baseline 4430 from batch 5).
+
+* **NEW [`src/ultron/coding/architect_supervisor.py`](../src/ultron/coding/architect_supervisor.py).**
+  * `class ArchitectRequest(user_text, repo_map_text, project_digest, project_path, system_prompt, max_prompt_chars_per_llm)` — frozen input bundle.
+  * `class ArchitectPlan(plan_text, cascade_index, prompt_chars, generation_seconds, error, last_exception)` — frozen output.
+  * `class ArchitectSupervisor(llm_cascade, *, default_system_prompt=..., strip_outer_quotes=False)` — instantiable. `.generate_plan(request) -> ArchitectPlan` walks the cascade; first LLM whose prompt fits its budget AND returns non-empty wins. Per-LLM budgets mirror the commit-message cascade pattern from batch 5. Empty cascade is a constructor error.
+  * `__call__(project_path, user_text, *, repo_map_text=None, project_digest=None) -> Optional[str]` — provider contract matching `ProjectSupervisor.architect_provider`. Defensive: catches all exceptions and returns None.
+  * `DEFAULT_ARCHITECT_SYSTEM_PROMPT` — catalog T5 source-of-pattern with two ultron customisations: tighter "describe in prose; do NOT emit fenced code blocks" phrasing (Qwen 3.5 4B tends to over-emit code blocks otherwise), and explicit "no AI assistant mentions, no Co-Authored-By trailers" rule for hygiene parity.
+
+* **Integration: [`src/ultron/coding/project_supervisor.py`](../src/ultron/coding/project_supervisor.py).**
+  * `SupervisorDecision` gains `architect_plan_text: Optional[str]`, parallel to `repo_map_text`. Excluded from `to_log_dict()`; a `architect_plan_attached: bool` is emitted instead.
+  * `ProjectSupervisor.__init__` accepts optional `architect_provider: Callable[..., Optional[str]]`.
+  * NEW `_attach_architect_plan(decision)` invoked at the end of `decide()` AFTER `_attach_repo_map` so the architect can receive the rendered map. Provider call passes `(project_path, user_text, repo_map_text=decision.repo_map_text)`; falls back to positional-only call when the provider doesn't accept the keyword (test stubs, simple providers). Same skip rules as repo_map (no provider, no path, CLARIFY action).
+
+* **NEW `CodingArchitectConfig` in [`src/ultron/config.py`](../src/ultron/config.py).** Two knobs: `enabled` (default `false`), `max_prompt_chars` (default 32000). Wired into `CodingConfig.architect`. The orchestrator wiring (constructing an `ArchitectSupervisor` and passing it as `architect_provider`) is intentionally deferred — Phase 1 ships the architectural skeleton + tests; the runtime hookup is a small follow-up that needs `measure_baseline.py` validation.
+
+* **Tests.** 22 new in [`tests/coding/test_architect_supervisor.py`](../tests/coding/test_architect_supervisor.py):
+  * Plan generation (10): empty cascade rejected at construction; happy path; empty user_text; fallback on exception; fallback on empty; all-fail; budget skip to bigger; all-exceed-budget; prompt threading (repo map + digest + path); default-prompt forbids code blocks.
+  * Provider contract (4): basic `__call__`, with kwargs, total-failure returns None, frozen result.
+  * Quote stripping (2): on, off.
+  * `ProjectSupervisor` integration (6): attach on EDIT (kwarg threaded), skip on CLARIFY, skip when no path, error swallow, kwarg-less provider fallback, `to_log_dict` excludes `architect_plan_text`.
+
+**Catalog pass summary.** Across batches 1-6 the external-codebase pass added: 5 utility primitives (mtime_cache, token_budget, snapshot_guard, relative_indent, important_files), tree-sitter symbol extraction with 10 vendored language queries, a PageRank-weighted repo map wired through the supervisor with file-mention bias, tail-preserve history compression with race-protected wrappers, a three-layer pre-write lint cascade for completion-narration honesty, LLM commit-message generation with budget gating, file-mention auto-add by basename disambiguation, and the architect-plan scaffold. Net 212 new tests, all 6 modules default-OFF behind feature flags, every primitive wired into at least one real call site. `THIRD_PARTY_NOTICES.md` covers the Apache 2.0 lineage. Voice hot path untouched in every batch — the catalog's voice-adjacent items (architect TTS narration, ConfirmGroup, STT bias) stay deferred for a future supervised session.
+
+---
 
 **2026-05-22 catalog batch 5: LLM commit messages + file-mention auto-add -- COMPLETE.** Fifth batch of the external-codebase catalog pass — two independent capabilities. `commit_message.py` orchestrates an LLM-callable cascade to turn a diff + user context into a short imperative commit message, with per-LLM input-budget gating and outer-quote stripping. `file_mention_resolver.py` mines a user utterance for implicit file references via the basename-disambiguation heuristic (special-chars-required + uniqueness + blocklist of plain-English-word basenames). The mention resolver is wired into `RepoMapProviderCache.__call__` so the repo map's personalization vector now includes file mentions from the voice transcript automatically. Tests **4430 passing / 17 skipped / 0 failed in ~77 s** (+36 net; baseline 4394 from batch 4).
 
@@ -3764,6 +3791,9 @@ Sections:
   - `multi_language=true` (run tree-sitter on .js/.go/.rs/etc.; when false skip non-Python)
   - `flake8_timeout_seconds=5.0`
   - `attach_summary_to_audit=true` (attach summary + first 20 errors to audit rows)
+- `coding.architect` (2026-05-22 catalog batch 6 Phase 1 pre-dispatch architect) — two knobs:
+  - `enabled` (default FALSE; opt-in because the LLM plan call adds 3-5 s pre-dispatch on local Qwen)
+  - `max_prompt_chars=32000`
 
 ### `config/settings.py` (Phase 3 SHIM)
 
