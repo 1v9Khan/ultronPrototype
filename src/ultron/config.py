@@ -1540,6 +1540,37 @@ class CodingGoalAnchorsConfig(_Strict):
     resume_prepend_next_anchor: bool = True
 
 
+class CodingAiCommentWatcherConfig(_Strict):
+    """2026-05-22 catalog batch 10: in-editor ``# ai!`` watcher.
+
+    When enabled, the orchestrator spawns an
+    :class:`ultron.coding.ai_comment_watcher.AICommentWatcher` rooted
+    at ``root_path`` (or :data:`settings.CODING_SANDBOX_PATH` when
+    unset). The watcher scans tracked files for ``# ai!`` /
+    ``# ai?`` markers and dispatches each new occurrence as a
+    synthetic coding intent via the supervisor — no voice utterance
+    needed.
+
+    Default OFF because the watcher reads every file mutation in the
+    project tree, which adds disk I/O on a hot loop. Operators who
+    want the side-channel can flip it on once they're comfortable
+    with the latency cost.
+    """
+
+    enabled: bool = False
+    # Override watch root (absolute path). When empty, the
+    # orchestrator falls back to settings.CODING_SANDBOX_PATH so the
+    # watcher monitors all the user's sandbox projects.
+    root_path: str = ""
+    # Skip files larger than this (catalog default 1 MB).
+    max_file_bytes: int = Field(default=1_000_000, ge=1024, le=10_000_000)
+    # When True, ``# ai`` (no punctuation) also fires the callback.
+    # Default False (mentions are passive).
+    include_mention: bool = False
+    # watchfiles polling interval.
+    poll_interval_seconds: float = Field(default=0.5, ge=0.05, le=10.0)
+
+
 class CodingArchitectConfig(_Strict):
     """2026-05-22 catalog batch 6 (Phase 1): pre-dispatch architect.
 
@@ -1811,6 +1842,11 @@ class CodingConfig(_Strict):
     # CodingArchitectConfig for tuning knobs.
     architect: CodingArchitectConfig = Field(
         default_factory=CodingArchitectConfig,
+    )
+    # 2026-05-22 catalog batch 10: in-editor # ai! marker watcher.
+    # Default OFF. See CodingAiCommentWatcherConfig.
+    ai_comment_watcher: CodingAiCommentWatcherConfig = Field(
+        default_factory=CodingAiCommentWatcherConfig,
     )
     # A4 pre-task confirmation. Default OFF -- the spoken confirmation
     # adds ~0.5 s of TTS playback before every coding task dispatch,

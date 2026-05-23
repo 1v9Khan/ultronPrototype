@@ -11,10 +11,10 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4511 passing / 16 skipped /
-> 0 failed in ~75 s** via `scripts/run_tests.py` (baseline 4240 +
+> top of feature commit `8bbc345`). Tests **4537 passing / 16 skipped /
+> 0 failed in ~78 s** via `scripts/run_tests.py` (baseline 4240 +
 > 82 batch 1 + 29 batch 2 + 22 batch 3 + 21 batch 4 + 36 batch 5 +
-> 22 batch 6 + 8 batch 7 + 30 batch 8 + 21 batch 9).
+> 22 batch 6 + 8 batch 7 + 30 batch 8 + 21 batch 9 + 26 batch 10).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -30,6 +30,35 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 10: in-editor AI-comment file watcher (T10) -- COMPLETE.** Adds a side-channel input path: developers can drop `# ai!` / `# ai?` markers in source files and have them dispatched as synthetic coding intents without speaking. Background `watchfiles` thread seeds an initial scan (so existing markers don't auto-fire on first start), then listens for modifications and fires the callback on NEW markers only. Path filter mirrors `repo_map.SKIP_DIRECTORIES` + extension blocklist. Default OFF behind `coding.ai_comment_watcher.enabled`. Tests **4537 passing / 16 skipped / 0 failed in ~78 s** (+26 net; baseline 4511 from batch 9).
+
+* **NEW [`src/ultron/coding/ai_comment_watcher.py`](../src/ultron/coding/ai_comment_watcher.py).**
+  * `AI_COMMENT_REGEX` — case-insensitive multiline pattern matching `#` / `//` / `--` / `;+` prefixes with optional `!` / `?` suffix immediately after `ai`. The regex separately captures `prefix`, `marker`, `suffix`, and `body` so callers can post-process cleanly. The non-greedy-body trap is avoided by requiring a `[ \t]+` separator between the suffix and the body (or `(?=\s|$)` for empty bodies).
+  * `class AICommentKind(Enum)` — `EXECUTE` / `QUESTION` / `MENTION` from the `!` / `?` / no-suffix variants.
+  * `class AICommentTrigger(kind, body, file_path, line, column, prefix)` — frozen output record.
+  * `scan_file_for_ai_comments(path, *, max_bytes=1_000_000) -> List[AICommentTrigger]` — pure scan helper, useful in tests + one-shot rescans.
+  * `class AICommentWatcher(root, on_trigger, *, max_file_bytes, skip_directories, skip_extensions, include_mention, poll_interval_seconds)` — daemon-thread watcher.
+    * `.start()` seeds an initial scan (so existing markers are NOT re-fired on first start), then spawns the watch loop.
+    * `.stop(timeout)` signals stop + joins.
+    * `.scan_now()` synchronous one-shot scan returning every trigger (bypasses the seen-set; for tests / sweep tools).
+    * Per-file `(line, body)` fingerprint debounce: re-modifying a file with the SAME trigger doesn't re-fire; new triggers do.
+  * `DEFAULT_SKIP_DIRECTORIES` mirrors `repo_map.SKIP_DIRECTORIES`. `DEFAULT_SKIP_EXTENSIONS` covers binary/generated files (.pyc, .so, .png, .pdf, .lock, .onnx, .pth, etc.).
+  * Fail-open posture: missing watchfiles dep, unreadable file, callback exception — none break the loop.
+
+* **NEW `CodingAiCommentWatcherConfig` in [`src/ultron/config.py`](../src/ultron/config.py).** Four knobs: `enabled` (default `false`), `root_path` (override; empty → sandbox), `max_file_bytes` (default 1 MB), `include_mention` (default `false`), `poll_interval_seconds` (default 0.5). Wired into `CodingConfig.ai_comment_watcher`.
+
+* **Dep:** `watchfiles>=0.21` added to `pyproject.toml` runtime deps (the catalog's recommended cross-platform inotify/kqueue wrapper).
+
+* **Tests.** 26 new in [`tests/coding/test_ai_comment_watcher.py`](../tests/coding/test_ai_comment_watcher.py):
+  * Regex unit (8): python `#`, JS `//`, SQL `--`, Lisp `;;`, passive mention, case-insensitive, rejection of unrelated `aircraft` text, suffix capture correctness for both `!` and `?`.
+  * `scan_file_for_ai_comments` (9): execute marker, question marker, passive mention, multiple markers in one file, oversized-file skip, missing file, empty file, line-number correctness, frozen `AICommentTrigger`.
+  * Watcher lifecycle (8): running state, start idempotent, `scan_now()` finds existing triggers, seed swallows pre-existing (no spurious first-fire), `node_modules` exclusion, binary-extension exclusion, mention-flag default behaviour, `DEFAULT_MAX_FILE_BYTES` constant.
+  * End-to-end (1): live file modification fires the callback within 5 s deadline.
+
+The runtime wiring into the orchestrator (constructing the watcher on init when the flag is on, stopping on shutdown) is intentionally deferred to a small follow-up — the watcher is a self-contained module with a clean `on_trigger` callback contract, and the call site is a 10-line addition to `Orchestrator._construct_supervisor_stack`. Tests verify the watcher works end-to-end; production hook-up is straightforward.
+
+---
 
 **2026-05-22 catalog batch 9: edit-matcher cascade (T2 + T4 caller) -- COMPLETE.** Forward-looking infra for the eventual "ultron generates edits locally" path (Qwen-as-editor, ACP bridge, etc.). Implements aider's `replace_most_similar_chunk` strategy cascade — perfect → skip-leading-blank → whitespace-tolerant → dots-elision → relative-indent wrap — plus the `find_similar_lines` self-correction helper. Closes the batch-1 RelativeIndenter loop: the indenter ships in `utils/`, and the edit_matcher is its primary downstream caller. Tests **4511 passing / 16 skipped / 0 failed in ~75 s** (+21 net; baseline 4490 from batch 8).
 
