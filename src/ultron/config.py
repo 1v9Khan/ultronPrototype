@@ -40,10 +40,11 @@ responsibility per the docs.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, List, Literal, Optional
+from typing import Any, List, Literal, Mapping, Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -762,6 +763,23 @@ class LLMConfig(_Strict):
     # Set to e.g. 2147483648 (2 GiB) to re-enable. Host RAM only -- the
     # cache does NOT touch the 11.5 GB VRAM budget.
     prefix_cache_ram_bytes: int = Field(default=0, ge=0)
+    # 2026-05-22 -- when the voice path runs with ``enable_thinking=False``
+    # (Qwen3 /no_think marker), the LLM skips its chain-of-thought block
+    # entirely. That's the right call for latency (5-10 s saved on
+    # factual / math turns) and was empirically MORE accurate on the
+    # 7x8 case that triggered the fix. But "more accurate on one math
+    # question" doesn't prove it for every harder class of question.
+    # When this rate is > 0, the orchestrator dice-rolls each
+    # no-think generate_stream call and -- on a hit -- emits a
+    # ``thinking_drift_sample`` observation pairing the user text with
+    # the resulting response. Offline review of the JSONL spots
+    # regression classes before they hit a user.
+    #
+    # 0.02 (1 in 50) gives a few samples per session without spamming.
+    # Set 0.0 to disable; 1.0 to record every turn (debug only).
+    enable_thinking_drift_sample_rate: float = Field(
+        default=0.02, ge=0.0, le=1.0,
+    )
     system_prompt: str = ""
     server: LLMServerConfig = Field(default_factory=LLMServerConfig)
     persona: LLMPersonaConfig = Field(default_factory=LLMPersonaConfig)
@@ -1454,6 +1472,56 @@ class CodingGoalAnchorsConfig(_Strict):
     resume_prepend_next_anchor: bool = True
 
 
+SUPERVISOR_TIERS: dict[str, dict[str, bool]] = {
+    # "off"  -- legacy path; supervisor never constructed. Equivalent
+    # to enabled=False with everything else False; included for
+    # explicitness in operator-facing config.
+    "off": {
+        "enabled": False,
+        "digests_enabled": False,
+        "index_enabled": False,
+        "decide_enabled": False,
+        "narrate_enabled": False,
+        "enriched_context_enabled": False,
+    },
+    # "indexing_only" -- data layer only. Digests are generated at the
+    # end of every Claude session and upserted to the projects
+    # collection; no decision-side effect. Use this for the "let
+    # projects accumulate for a week" rollout step.
+    "indexing_only": {
+        "enabled": True,
+        "digests_enabled": True,
+        "index_enabled": True,
+        "decide_enabled": False,
+        "narrate_enabled": False,
+        "enriched_context_enabled": False,
+    },
+    # "deciding" -- add the decision layer. The supervisor intercepts
+    # coding utterances and emits RESUME/EDIT/CLARIFY/NEW verdicts,
+    # but narration + enriched context stay off so the UX is
+    # unchanged. Decisions land in the JSONL audit log for review.
+    "deciding": {
+        "enabled": True,
+        "digests_enabled": True,
+        "index_enabled": True,
+        "decide_enabled": True,
+        "narrate_enabled": False,
+        "enriched_context_enabled": False,
+    },
+    # "full" -- everything on. Decision layer + narration with
+    # barge-in + enriched-context Claude dispatch. The final
+    # rollout target.
+    "full": {
+        "enabled": True,
+        "digests_enabled": True,
+        "index_enabled": True,
+        "decide_enabled": True,
+        "narrate_enabled": True,
+        "enriched_context_enabled": True,
+    },
+}
+
+
 class CodingSupervisorConfig(_Strict):
     """2026-05-22 supervisor stack -- opencode-style project digest +
     semantic-resolution layer that sits between the routing classifier
@@ -1468,7 +1536,22 @@ class CodingSupervisorConfig(_Strict):
     path is byte-for-byte unchanged. Flip ``enabled`` once digests are
     populated to start letting the supervisor decide; flip the per-
     phase flags individually if you want to A/B specific sub-features.
+
+    Tier rollup
+    -----------
+    Setting ``tier`` to one of ``"off" | "indexing_only" | "deciding"
+    | "full"`` (see :data:`SUPERVISOR_TIERS`) auto-fills the individual
+    phase flags. Explicit per-flag YAML values still win over the
+    tier-derived defaults -- the validator only fills fields the
+    operator left unset. This keeps the per-flag knobs available as
+    debug overrides while making the typical "advance one rollout
+    step" change a single line.
     """
+
+    # Tier rollup. Resolves to a pre-blessed combination of the
+    # per-phase flags below; per-flag overrides in the same config
+    # block win. Default ``"off"`` keeps legacy behaviour.
+    tier: Literal["off", "indexing_only", "deciding", "full"] = "off"
 
     # Master switch. When False, every other knob is ignored and the
     # supervisor is never constructed.
@@ -1521,6 +1604,24 @@ class CodingSupervisorConfig(_Strict):
     # Max candidates retained in a Decision (for CLARIFY presentation
     # + audit log).
     max_candidates_in_decision: int = Field(default=5, ge=1, le=20)
+
+    @model_validator(mode="after")
+    def _apply_tier(self) -> "CodingSupervisorConfig":
+        """Fill the phase flags from ``tier`` for fields the user left unset.
+
+        Mirrors :meth:`LLMConfig._apply_preset`: only fields absent
+        from ``model_fields_set`` are touched. Explicit YAML values
+        always win, so an operator can sit at tier ``"deciding"``
+        while temporarily flipping ``narrate_enabled: true`` for an
+        A/B without writing out the full tier preset by hand.
+        """
+        defaults = SUPERVISOR_TIERS.get(self.tier)
+        if defaults is None:  # pragma: no cover -- Literal narrows this
+            return self
+        for field, value in defaults.items():
+            if field not in self.model_fields_set:
+                object.__setattr__(self, field, value)
+        return self
 
 
 class CodingConfig(_Strict):
@@ -2616,6 +2717,255 @@ def current_config_path() -> Optional[Path]:
     return _CONFIG_PATH
 
 
+# ---------------------------------------------------------------------------
+# Effective-config startup log (2026-05-22)
+# ---------------------------------------------------------------------------
+
+
+# Known environment overrides that affect runtime behaviour. Listed
+# here so the startup log explicitly calls them out when set. Not
+# exhaustive -- the log also dumps every ULTRON_* env var present, so
+# new overrides don't need to be added here to be visible. But the
+# names in this set get a one-line plain-English note describing what
+# they override; mystery names get a generic "override active" line.
+_ENV_OVERRIDE_NOTES: dict[str, str] = {
+    "ULTRON_LLM_PRESET": "llm.preset",
+    "ULTRON_LLM_MODEL_PATH": (
+        "llm.model_path (BEWARE: silently overrides the preset's auto-fill -- "
+        "this was the root cause of the 9B/4B mix-up; verify the model_path "
+        "matches the intended preset)"
+    ),
+    "ULTRON_AUDIO_DEVICE": "audio.input_device",
+    "ULTRON_AUDIO_OUTPUT_DEVICE": "audio.output_device",
+    "ULTRON_LOG_LEVEL": "logging.level",
+    "ULTRON_CONFIG_PATH": "config file path",
+    "ULTRON_BRAVE_API_KEY": "web_search.brave API key (value not logged)",
+    "ULTRON_CLAUDE_CLI": "coding.claude_cli",
+    "ULTRON_WHISPER_BEAM_SIZE": "stt.beam_size",
+    "ULTRON_WAKE_WORD_THRESHOLD": "wake_word.threshold",
+    "ULTRON_VAD_MIN_SILENCE_MS": "vad.min_silence_duration_ms",
+    "ULTRON_OPENCLAW_CLI": "openclaw.bridge.cli_path",
+    "ULTRON_OPENCLAW_WORKSPACE": "openclaw.bridge.workspace_dir",
+    "ULTRON_CODING_MCP_ALLOW_ANY_ROOT": (
+        "coding.mcp sandbox escape (test-only; should NEVER be set in production)"
+    ),
+}
+
+
+def log_effective_config(
+    cfg: Optional["UltronConfig"] = None,
+    *,
+    logger: Optional[logging.Logger] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> None:
+    """Log the effective runtime configuration at INFO level.
+
+    Surfaces the most-frequently-confused settings:
+      * Every ``ULTRON_*`` environment variable that's set (values
+        elided for the Brave API key; everything else logged verbatim
+        because the env var names are operator-set and not secrets in
+        themselves).
+      * Active LLM preset + resolved model_path + draft_model_path +
+        n_ctx + runtime mode + draft_kind.
+      * Active TTS engine + voice (for the kokoro / xtts_v3 engines).
+      * Active STT engine + STT model (for the whisper engine).
+      * Voice-baseline-adjacent toggles whose values are easy to lose
+        track of: memory.reranking.enabled, memory.rag_min_relevance,
+        coding.supervisor.tier, and a small set of default-OFF flags
+        that change retrieval behaviour when flipped on.
+
+    Args:
+        cfg: explicit config to log. When ``None``, calls
+            :func:`get_config`.
+        logger: explicit logger. When ``None``, uses
+            ``ultron.config.effective``.
+        env: explicit env mapping (for tests). When ``None``, uses
+            :data:`os.environ`.
+
+    Fail-open: any individual field-read or log call is caught and
+    the next field is logged. The function never raises.
+    """
+    if logger is None:
+        logger = logging.getLogger("ultron.config.effective")
+    if env is None:
+        env = os.environ
+    try:
+        cfg = cfg if cfg is not None else get_config()
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: get_config() failed: %s", e)
+        return
+
+    # --- ULTRON_* env vars ---
+    ultron_keys = sorted(k for k in env.keys() if k.startswith("ULTRON_"))
+    if ultron_keys:
+        logger.info("effective-config: %d ULTRON_* env var(s) set:", len(ultron_keys))
+        for key in ultron_keys:
+            note = _ENV_OVERRIDE_NOTES.get(key, "override active")
+            value = env.get(key, "")
+            # Don't log secret values verbatim. Known-secret env vars
+            # get elided; everything else (paths, preset names, log
+            # levels) is operator-set and useful in the log.
+            if "API_KEY" in key or "TOKEN" in key or "SECRET" in key:
+                value_repr = "<set>" if value else "<empty>"
+            else:
+                value_repr = repr(value)
+            logger.info("  %s=%s  (%s)", key, value_repr, note)
+    else:
+        logger.info("effective-config: no ULTRON_* env vars set")
+
+    # --- LLM ---
+    try:
+        llm = cfg.llm
+        logger.info(
+            "effective-config: LLM preset=%r model=%r draft=%r n_ctx=%d "
+            "runtime=%r draft_kind=%r",
+            llm.preset,
+            llm.model_path,
+            getattr(llm, "draft_model_path", None),
+            getattr(llm, "n_ctx", 0),
+            getattr(llm, "runtime", "in_process"),
+            getattr(llm, "draft_kind", "none"),
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: LLM section failed: %s", e)
+
+    # --- TTS ---
+    try:
+        tts = cfg.tts
+        engine = tts.engine
+        engine_info = f"engine={engine!r}"
+        if engine == "kokoro":
+            kk = getattr(tts, "kokoro", None)
+            if kk is not None:
+                engine_info += (
+                    f" voice={kk.voice!r} device={kk.device!r} speed={kk.speed}"
+                )
+        elif engine == "xtts_v3":
+            xv = getattr(tts, "xtts_v3", None)
+            if xv is not None:
+                engine_info += f" filter_preset={xv.filter_preset!r} speed={xv.speed}"
+        logger.info("effective-config: TTS %s", engine_info)
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: TTS section failed: %s", e)
+
+    # --- STT ---
+    try:
+        stt = cfg.stt
+        engine = getattr(stt, "engine", "whisper")
+        info = f"engine={engine!r}"
+        if engine == "moonshine":
+            info += f" model={stt.moonshine_model!r}"
+        elif engine == "parakeet":
+            info += f" model={stt.parakeet_model!r}"
+        else:
+            info += f" model={stt.model!r} beam={stt.beam_size}"
+        gaming = getattr(stt, "gaming_engine", "")
+        if gaming and gaming != engine:
+            info += f" gaming_engine={gaming!r}"
+        logger.info("effective-config: STT %s", info)
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: STT section failed: %s", e)
+
+    # --- Audio ---
+    try:
+        audio = cfg.audio
+        logger.info(
+            "effective-config: AUDIO input_device=%r gain_db=%s",
+            audio.input_device, audio.input_gain_db,
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: AUDIO section failed: %s", e)
+
+    # --- Memory ---
+    try:
+        mem = cfg.memory
+        reranking_enabled = getattr(getattr(mem, "reranking", None), "enabled", None)
+        topical = getattr(getattr(mem, "topical_chunking", None), "enabled", None)
+        discourse = getattr(getattr(mem, "discourse_tagging", None), "enabled", None)
+        bg_sum = getattr(getattr(mem, "background_summary", None), "enabled", None)
+        contextual = getattr(
+            getattr(mem, "contextual_retrieval", None), "enabled", None,
+        )
+        logger.info(
+            "effective-config: MEMORY rag_top_k=%d rag_min_relevance=%s "
+            "reranking=%s topical_chunking=%s discourse_tagging=%s "
+            "background_summary=%s contextual_retrieval=%s",
+            mem.rag_top_k, mem.rag_min_relevance,
+            reranking_enabled, topical, discourse, bg_sum, contextual,
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: MEMORY section failed: %s", e)
+
+    # --- Embedder + parallel encoding ---
+    try:
+        emb = cfg.embeddings
+        logger.info(
+            "effective-config: EMBEDDINGS dense=%r dim=%d parallel_query=%s",
+            emb.dense_model, emb.dense_dim,
+            getattr(emb, "parallel_query_embedding", None),
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: EMBEDDINGS section failed: %s", e)
+
+    # --- Coding supervisor (tier + per-flag) ---
+    try:
+        sup = cfg.coding.supervisor
+        logger.info(
+            "effective-config: SUPERVISOR tier=%r enabled=%s digests=%s index=%s "
+            "decide=%s narrate=%s enriched=%s thresholds=(%s/%s)",
+            sup.tier, sup.enabled, sup.digests_enabled, sup.index_enabled,
+            sup.decide_enabled, sup.narrate_enabled, sup.enriched_context_enabled,
+            sup.clarify_threshold, sup.resolve_threshold,
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: SUPERVISOR section failed: %s", e)
+
+    # --- Coding AST metadata + goal anchors ---
+    try:
+        coding = cfg.coding
+        ast_enabled = getattr(getattr(coding, "ast_metadata", None), "enabled", None)
+        anchors = getattr(getattr(coding, "goal_anchors", None), "enabled", None)
+        logger.info(
+            "effective-config: CODING ast_metadata=%s goal_anchors=%s "
+            "voice_task_require_testing=%s",
+            ast_enabled, anchors, coding.voice_task_require_testing,
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: CODING section failed: %s", e)
+
+    # --- Routing ---
+    try:
+        rt = cfg.routing
+        amb = getattr(rt, "ambiguity_band_clarification", None)
+        amb_enabled = getattr(amb, "enabled", None) if amb is not None else None
+        logger.info(
+            "effective-config: ROUTING ambiguity_band_clarification=%s",
+            amb_enabled,
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: ROUTING section failed: %s", e)
+
+    # --- Gaming mode ---
+    try:
+        gm = cfg.gaming_mode
+        logger.info(
+            "effective-config: GAMING_MODE enabled=%s llm_preset=%r",
+            gm.enabled, getattr(gm, "llm_preset", ""),
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: GAMING_MODE section failed: %s", e)
+
+    # --- OpenClaw ---
+    try:
+        oc = cfg.openclaw
+        logger.info(
+            "effective-config: OPENCLAW enabled=%s gateway_url=%r",
+            oc.enabled, oc.gateway_url,
+        )
+    except Exception as e:                                         # noqa: BLE001
+        logger.warning("effective-config: OPENCLAW section failed: %s", e)
+
+
 __all__ = [
     "PROJECT_ROOT",
     "MODELS_DIR",
@@ -2627,6 +2977,7 @@ __all__ = [
     "WakeWordConfig",
     "STTConfig",
     "LLMConfig",
+    "SUPERVISOR_TIERS",
     "EmbeddingsConfig",
     "QdrantCollections",
     "QdrantConfig",
@@ -2654,4 +3005,5 @@ __all__ = [
     "reload_config",
     "set_config",
     "current_config_path",
+    "log_effective_config",
 ]

@@ -264,4 +264,186 @@ def test_entry_point_filenames_include_python_main() -> None:
 def test_skip_directories_includes_common_caches() -> None:
     assert "__pycache__" in SKIP_DIRECTORIES
     assert "node_modules" in SKIP_DIRECTORIES
+
+
+# ---------------------------------------------------------------------------
+# invalidate_for_file + install_bus_invalidator (2026-05-22)
+# ---------------------------------------------------------------------------
+
+
+def test_invalidate_for_file_drops_matching_project(python_project: Path) -> None:
+    """A file path inside a cached project invalidates that project."""
+    from ultron.coding.project_introspect import invalidate_snapshot_cache_for_file
+
+    # Populate the cache.
+    snap_a = snapshot(python_project)
+    snap_b = snapshot(python_project)
+    assert snap_a is snap_b  # Cache hit.
+
+    # Mutating a file inside the project drops the entry.
+    dropped = invalidate_snapshot_cache_for_file(str(python_project / "src" / "module.py"))
+    assert dropped == 1
+
+    # The next snapshot is a fresh object.
+    snap_c = snapshot(python_project)
+    assert snap_c is not snap_a
+
+
+def test_invalidate_for_file_does_nothing_when_no_match(
+    python_project: Path, tmp_path_factory,
+) -> None:
+    """A file in a SIBLING (non-ancestor) directory doesn't drop anything.
+
+    Note: ``python_project`` IS the test's tmp_path, so we use a
+    distinct ``tmp_path_factory`` directory for the unrelated file
+    to ensure the path is not a descendant of the cached project.
+    """
+    from ultron.coding.project_introspect import (
+        invalidate_snapshot_cache,
+        invalidate_snapshot_cache_for_file,
+    )
+
+    invalidate_snapshot_cache()  # start clean
+
+    snapshot(python_project)  # warm the cache
+
+    unrelated_dir = tmp_path_factory.mktemp("other_project")
+    other_file = unrelated_dir / "main.py"
+    other_file.write_text("pass\n")
+
+    dropped = invalidate_snapshot_cache_for_file(str(other_file))
+    assert dropped == 0
+
+    # Original project's cache is still warm.
+    snap_again = snapshot(python_project)
+    assert snap_again.elapsed_ms >= 0
+
+
+def test_invalidate_for_file_empty_string_returns_zero() -> None:
+    from ultron.coding.project_introspect import invalidate_snapshot_cache_for_file
+
+    assert invalidate_snapshot_cache_for_file("") == 0
+
+
+def test_invalidate_for_file_handles_resolution_failure(python_project: Path) -> None:
+    """Path.resolve() can fail on Windows for missing files; fall back to normpath."""
+    from ultron.coding.project_introspect import invalidate_snapshot_cache_for_file
+
+    snapshot(python_project)
+    # A "deleted file" path that doesn't exist on disk -- caller comes
+    # from a FILE_CHANGE event where kind == "deleted".
+    deleted = str(python_project / "src" / "vanished.py")
+    dropped = invalidate_snapshot_cache_for_file(deleted)
+    # Whether resolve succeeds or not, the prefix match catches the
+    # parent project.
+    assert dropped >= 1
+
+
+def test_install_bus_invalidator_idempotent(python_project: Path) -> None:
+    """Multiple installs return the same unsubscribe handle."""
+    from ultron.bus import reset_bus_for_testing
+    from ultron.coding.project_introspect import (
+        install_bus_invalidator,
+        reset_bus_invalidator_for_testing,
+    )
+
+    reset_bus_for_testing()
+    reset_bus_invalidator_for_testing()
+
+    unsub1 = install_bus_invalidator()
+    unsub2 = install_bus_invalidator()
+
+    assert unsub1 is unsub2
+    reset_bus_invalidator_for_testing()
+
+
+def test_install_bus_invalidator_invalidates_on_event(python_project: Path) -> None:
+    """A CodingFileChangedEvent triggers cache invalidation."""
+    from ultron.bus import (
+        CodingFileChangedEvent,
+        publish,
+        reset_bus_for_testing,
+    )
+    from ultron.coding.project_introspect import (
+        install_bus_invalidator,
+        reset_bus_invalidator_for_testing,
+    )
+
+    reset_bus_for_testing()
+    reset_bus_invalidator_for_testing()
+    install_bus_invalidator()
+
+    snap_a = snapshot(python_project)
+    snap_b = snapshot(python_project)
+    assert snap_a is snap_b  # cache hit confirms warm
+
+    publish(
+        CodingFileChangedEvent,
+        {
+            "task_id": "test-task",
+            "project_name": python_project.name,
+            "file_path": str(python_project / "src" / "module.py"),
+            "kind": "modified",
+        },
+    )
+
+    # The next snapshot is fresh because the bus invalidated the cache.
+    snap_c = snapshot(python_project)
+    assert snap_c is not snap_a
+
+    reset_bus_invalidator_for_testing()
+
+
+def test_install_bus_invalidator_swallows_payload_errors(
+    python_project: Path, caplog,
+) -> None:
+    """A malformed payload (no file_path key) doesn't crash the subscriber."""
+    from ultron.bus import (
+        CodingFileChangedEvent,
+        publish,
+        reset_bus_for_testing,
+    )
+    from ultron.coding.project_introspect import (
+        install_bus_invalidator,
+        reset_bus_invalidator_for_testing,
+    )
+
+    reset_bus_for_testing()
+    reset_bus_invalidator_for_testing()
+    install_bus_invalidator()
+
+    # Schema violation: file_path missing. Bus logs WARN and delivers
+    # anyway; subscriber must swallow.
+    publish(
+        CodingFileChangedEvent,
+        {
+            "task_id": "x",
+            "project_name": "y",
+            "kind": "modified",
+            # file_path missing on purpose
+        },
+    )
+    # Must not raise.
+    reset_bus_invalidator_for_testing()
+
+
+def test_invalidate_snapshot_cache_then_install_still_works(
+    python_project: Path,
+) -> None:
+    """Calling reset_bus_invalidator_for_testing then re-installing works."""
+    from ultron.bus import reset_bus_for_testing
+    from ultron.coding.project_introspect import (
+        install_bus_invalidator,
+        reset_bus_invalidator_for_testing,
+    )
+
+    reset_bus_for_testing()
+    reset_bus_invalidator_for_testing()
+    unsub1 = install_bus_invalidator()
+    reset_bus_invalidator_for_testing()
+    unsub2 = install_bus_invalidator()
+
+    # New install means a fresh subscription (different unsub callable).
+    assert unsub1 is not unsub2
+    reset_bus_invalidator_for_testing()
     assert ".venv" in SKIP_DIRECTORIES

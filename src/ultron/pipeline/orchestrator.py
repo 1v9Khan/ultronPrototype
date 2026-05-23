@@ -32,6 +32,7 @@ Three threads matter:
 from __future__ import annotations
 
 import os
+import random
 import threading
 import time
 from enum import Enum
@@ -102,6 +103,7 @@ from ultron.web_search import (
     format_sources_for_prompt,
     format_sources_for_transcript,
 )
+from ultron.observations import observe_llm_thinking_drift_sample
 
 logger = get_logger("pipeline.orchestrator")
 
@@ -133,6 +135,55 @@ class Orchestrator:
     MAX_UTTERANCE_SECONDS = 30.0
 
     def __init__(self) -> None:
+        # 2026-05-22 -- diagnostic-only startup pass: log every
+        # ULTRON_* env var that's set + the effective values of the
+        # high-impact config sections. Catches stale-env-override
+        # bugs (the ULTRON_LLM_MODEL_PATH=9B silent override that ate
+        # hours during the 4B migration) within 5 seconds of startup
+        # instead of after a confused live session. Fail-open --
+        # logging errors don't block construction.
+        try:
+            from ultron.config import log_effective_config
+            log_effective_config()
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("effective-config log failed: %s", e)
+
+        # 2026-05-22 -- session-scoped fail-open counter. Tracks
+        # how many fail-open paths fired during the session
+        # (reranker fall-through, supervisor exceptions, bus slow
+        # subscribers, etc.) so a spike between sessions surfaces a
+        # regression that would otherwise stay quiet. Configure with
+        # the JSONL log path, then log the previous session's summary.
+        try:
+            from ultron.config import LOGS_DIR
+            from ultron.resilience import fail_open_log
+            from ultron.bus import set_slow_subscriber_recorder
+            fail_open_log.configure(LOGS_DIR / "fail_open_counts.jsonl")
+            # Hook the bus's slow-subscriber recorder so it
+            # contributes to the shared counter alongside other
+            # subsystems.
+            set_slow_subscriber_recorder(fail_open_log.record)
+            previous = fail_open_log.previous_session_counts()
+            logger.info(
+                "fail-open: previous session: %s",
+                fail_open_log.render_summary(previous),
+            )
+        except Exception as e:                                      # noqa: BLE001
+            logger.warning("fail_open_log init failed: %s", e)
+
+        # 2026-05-22 -- subscribe project-introspect cache invalidator
+        # to CodingFileChangedEvent on the bus. Without this, the
+        # 30 s TTL on snapshot() means rapid-iteration sessions can
+        # see stale file trees when Claude writes a new file and the
+        # supervisor immediately re-routes. Fail-open: bus unavailable
+        # or import error leaves the cache alive (manual invalidation
+        # still works).
+        try:
+            from ultron.coding.project_introspect import install_bus_invalidator
+            install_bus_invalidator()
+        except Exception as e:                                      # noqa: BLE001
+            logger.debug("project_introspect bus invalidator init: %s", e)
+
         self.audio = AudioCapture()
         # Mode-aware pre-roll: ring buffer is sized to the LARGER of
         # cold/warm pre-roll so the WARM path can take a longer slice
@@ -1723,6 +1774,15 @@ class Orchestrator:
         logger.info("Shutdown requested")
         self._shutdown.set()
         self._interrupt.set()
+        # 2026-05-22 -- flush the session's fail-open counts to disk
+        # so the next session's startup can read + display them. Done
+        # before tearing components down so a slow tts/audio shutdown
+        # doesn't lose the counts on a crash-on-shutdown. Fail-open.
+        try:
+            from ultron.resilience import fail_open_log
+            fail_open_log.flush_to_disk()
+        except Exception as e:                                      # noqa: BLE001
+            logger.debug("fail_open_log flush failed: %s", e)
         # 2026-05-19 Tracks 1c-1e: cancel any in-flight background
         # summarizer so the worker exits cleanly. The thread is daemon
         # so it would be reaped anyway, but the cancel lets the in-flight
@@ -3501,6 +3561,23 @@ class Orchestrator:
             print()  # newline after streamed response
             self._last_response_text = "".join(response_buf)
 
+            # 2026-05-22: enable_thinking=False is the active voice-path
+            # default (saves 5-10 s TTFT on factual / math turns via the
+            # Qwen3 /no_think marker). The trade-off is the loss of the
+            # model's chain-of-thought block, which on some classes of
+            # harder questions might regress accuracy. Sample
+            # ``llm.enable_thinking_drift_sample_rate`` of these turns
+            # and emit an observation pairing the user_text with the
+            # final response, so offline review can spot regression
+            # classes before they bite. Sampling + emit is fail-open --
+            # any failure leaves the voice path untouched.
+            try:
+                self._maybe_emit_thinking_drift_sample(
+                    user_text, self._last_response_text,
+                )
+            except Exception as e:                                  # noqa: BLE001
+                logger.debug("thinking_drift_sample emit failed: %s", e)
+
             # Sources go to the transcript only -- no TTS read-out, since
             # citations interleaved with the spoken answer would clutter the
             # voice output. The user can scan the printed list to verify.
@@ -3513,6 +3590,43 @@ class Orchestrator:
             self._interrupt.set()  # release watcher
             if watcher is not None:
                 watcher.join(timeout=1.0)
+
+    def _maybe_emit_thinking_drift_sample(
+        self, user_text: str, response_text: str,
+    ) -> None:
+        """Dice-roll a no-think turn into the observations file for review.
+
+        Called from the end of :meth:`_respond` (after the response is
+        fully streamed). When ``llm.enable_thinking_drift_sample_rate``
+        is > 0 AND ``random.random()`` lands below it, emits one
+        ``thinking_drift_sample`` observation with the user text +
+        response. Offline reviewers can grep
+        ``data/observations.jsonl`` to look for regression classes
+        that the no-think default might be masking.
+
+        Fail-open: any failure in the sampling or emit path is
+        swallowed -- the voice loop must never be impacted by
+        observation IO.
+        """
+        if not user_text or not response_text:
+            return
+        try:
+            from ultron.config import get_config
+            rate = float(
+                get_config().llm.enable_thinking_drift_sample_rate,
+            )
+        except Exception:                                          # noqa: BLE001
+            return
+        if rate <= 0.0:
+            return
+        if random.random() >= rate:
+            return
+        observe_llm_thinking_drift_sample(
+            user_text=user_text,
+            response_text=response_text,
+            user_message_len=len(user_text),
+            response_message_len=len(response_text),
+        )
 
     def _maybe_conversational_ack(self, user_text: str) -> Optional[str]:
         """Return a filler-ack phrase to prepend on the conversational

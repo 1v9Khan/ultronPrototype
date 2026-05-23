@@ -27,14 +27,17 @@ during a single user turn don't repeat the walk.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from ultron.coding.ast_metadata import AstMetadata, extract_metadata_from_path
+
+logger = logging.getLogger("ultron.coding.project_introspect")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -307,6 +310,43 @@ class _SnapshotCache:
                 return
             self._cache.pop(key, None)
 
+    def invalidate_for_file(self, file_path: str) -> int:
+        """Drop any cached snapshot whose project_path is an ancestor of file_path.
+
+        Args:
+            file_path: absolute or relative path to the changed file.
+
+        Returns:
+            Number of cache entries dropped. Zero when no cached
+            project contains the file (or when the cache is empty).
+        """
+        if not file_path:
+            return 0
+        try:
+            norm = str(Path(file_path).resolve())
+        except OSError:
+            # Resolution can fail on Windows when the file is gone
+            # (deleted event); fall back to string normalization.
+            norm = os.path.normpath(file_path)
+        norm_lower = norm.lower() if os.name == "nt" else norm
+
+        with self._lock:
+            to_drop: List[str] = []
+            for key in self._cache:
+                key_cmp = key.lower() if os.name == "nt" else key
+                # An exact match means a file rename / mutation to the
+                # project root itself; a prefix + separator means the
+                # changed file lives inside that project tree.
+                if (
+                    norm_lower == key_cmp
+                    or norm_lower.startswith(key_cmp + os.sep)
+                    or norm_lower.startswith(key_cmp + "/")
+                ):
+                    to_drop.append(key)
+            for key in to_drop:
+                del self._cache[key]
+        return len(to_drop)
+
 
 _DEFAULT_CACHE = _SnapshotCache()
 
@@ -323,6 +363,99 @@ def invalidate_snapshot_cache(project_path: Optional[Path] = None) -> None:
         _DEFAULT_CACHE.invalidate()
         return
     _DEFAULT_CACHE.invalidate(str(project_path.resolve()))
+
+
+def invalidate_snapshot_cache_for_file(file_path: str) -> int:
+    """Drop any cached snapshot containing ``file_path`` as a descendant.
+
+    Convenience wrapper around :meth:`_SnapshotCache.invalidate_for_file`
+    used by bus subscribers (which receive a file path rather than a
+    project root in :class:`CodingFileChangedEvent`).
+
+    Returns the number of cache entries dropped.
+    """
+    return _DEFAULT_CACHE.invalidate_for_file(file_path)
+
+
+# Bus-subscriber wiring -- single-installation guard prevents
+# duplicate subscriptions when the orchestrator restarts or tests
+# run install repeatedly. ``reset_bus_invalidator_for_testing``
+# wipes the guard so tests after ``reset_bus_for_testing()`` can
+# re-install cleanly.
+_BUS_UNSUBSCRIBE: Optional[Callable[[], None]] = None
+
+
+def install_bus_invalidator() -> Callable[[], None]:
+    """Subscribe to :class:`CodingFileChangedEvent` for cache invalidation.
+
+    The first call subscribes to the typed-event bus and stashes the
+    unsubscribe callable. Subsequent calls return that callable
+    without re-subscribing, so calling this from multiple init paths
+    (orchestrator construction, voice controller setup, test fixtures)
+    is safe.
+
+    Returns:
+        The unsubscribe callable. Calling it (or
+        :func:`reset_bus_invalidator_for_testing`) clears the
+        registration so a subsequent ``install_bus_invalidator()``
+        subscribes fresh.
+
+    Fail-open: when ``ultron.bus`` is unavailable for any reason
+    (import error, mock environment), returns a no-op unsubscribe
+    and logs a debug-level note. The cache still works manually via
+    :func:`invalidate_snapshot_cache_for_file`.
+    """
+    global _BUS_UNSUBSCRIBE
+    if _BUS_UNSUBSCRIBE is not None:
+        return _BUS_UNSUBSCRIBE
+
+    try:
+        from ultron.bus import CodingFileChangedEvent, subscribe
+    except Exception as e:                                         # noqa: BLE001
+        logger.debug(
+            "project_introspect: bus invalidator skipped (%s)", e,
+        )
+        _BUS_UNSUBSCRIBE = lambda: None  # noqa: E731
+        return _BUS_UNSUBSCRIBE
+
+    def _on_file_changed(payload) -> None:                          # noqa: ANN001
+        try:
+            file_path = payload.properties.get("file_path", "")
+            if file_path:
+                dropped = invalidate_snapshot_cache_for_file(file_path)
+                if dropped:
+                    logger.debug(
+                        "project_introspect: invalidated %d snapshot(s) "
+                        "after file_changed %s",
+                        dropped, file_path,
+                    )
+        except Exception as e:                                     # noqa: BLE001
+            # Subscriber must never raise -- the bus already swallows
+            # but we add a layer because cache invalidation is
+            # non-essential.
+            logger.debug(
+                "project_introspect: invalidator failed: %s", e,
+            )
+
+    _BUS_UNSUBSCRIBE = subscribe(CodingFileChangedEvent, _on_file_changed)
+    return _BUS_UNSUBSCRIBE
+
+
+def reset_bus_invalidator_for_testing() -> None:
+    """Clear the install guard so a fresh ``install_bus_invalidator()``
+    subscribes against the current (possibly reset) bus singleton.
+
+    Test-only escape hatch. The previous subscription is left dangling
+    on the old bus instance (if any); the test fixture is responsible
+    for resetting the bus too.
+    """
+    global _BUS_UNSUBSCRIBE
+    if _BUS_UNSUBSCRIBE is not None:
+        try:
+            _BUS_UNSUBSCRIBE()
+        except Exception:                                          # noqa: BLE001
+            pass
+        _BUS_UNSUBSCRIBE = None
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +738,9 @@ __all__ = [
     "MARKER_FILES",
     "ProjectSnapshot",
     "SKIP_DIRECTORIES",
+    "install_bus_invalidator",
     "invalidate_snapshot_cache",
+    "invalidate_snapshot_cache_for_file",
+    "reset_bus_invalidator_for_testing",
     "snapshot",
 ]

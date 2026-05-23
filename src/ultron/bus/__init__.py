@@ -40,10 +40,12 @@ shortcuts.
 
 from ultron.bus.event import BusEvent, EventPayload
 from ultron.bus.service import (
+    DEFAULT_SLOW_SUBSCRIBER_WARN_MS,
     Bus,
     get_bus,
     publish,
     reset_bus_for_testing,
+    set_slow_subscriber_recorder,
     subscribe,
     subscribe_all,
 )
@@ -73,6 +75,7 @@ __all__ = [
     "Bus",
     "BusEvent",
     "CodingFileChangedEvent",
+    "DEFAULT_SLOW_SUBSCRIBER_WARN_MS",
     "EventPayload",
     "GamingEngagedEvent",
     "GamingDisengagedEvent",
@@ -93,6 +96,7 @@ __all__ = [
     "get_bus",
     "publish",
     "reset_bus_for_testing",
+    "set_slow_subscriber_recorder",
     "subscribe",
     "subscribe_all",
 ]

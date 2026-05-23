@@ -23,6 +23,7 @@ dropped. The voice path must never block on observation IO.
 from .integrations import (
     observe_addressing_verdict,
     observe_llm_call,
+    observe_llm_thinking_drift_sample,
     observe_retrieval,
     observe_routing_verdict,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "new_event_id",
     "observe_addressing_verdict",
     "observe_llm_call",
+    "observe_llm_thinking_drift_sample",
     "observe_retrieval",
     "observe_routing_verdict",
     "resolve_outcomes",

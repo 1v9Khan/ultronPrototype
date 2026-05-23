@@ -21,12 +21,23 @@ Fail-open posture:
   * Schema validation failures are logged at WARNING but the event
     is still delivered (matches opencode's
     ``Effect.tryPromise(...).pipe(Effect.ignore)``).
+
+Slow-subscriber watchdog (2026-05-22):
+  * Every callback's wall-clock duration is measured. Subscribers that
+    take longer than ``DEFAULT_SLOW_SUBSCRIBER_WARN_MS`` (default
+    15 ms) emit a WARN log and bump :meth:`Bus.slow_subscriber_count`.
+    Because dispatch is synchronous on the publishing thread, a slow
+    callback blocks every later subscriber on that publish AND every
+    later publish until it returns. The watchdog surfaces those before
+    they wedge the voice loop. Subscribers needing async work must
+    hand the payload off to their own queue.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
@@ -43,6 +54,37 @@ EventCallback = Callable[[EventPayload], None]
 # event. Matches opencode's ``subscribeAll``.
 _WILDCARD = "*"
 
+# Default threshold for the slow-subscriber watchdog. Callbacks taking
+# longer than this on the synchronous dispatch path block every later
+# subscriber AND every later publish, so we surface them with a WARN
+# log. Tuned to comfortably exceed typical callback work (a few hundred
+# microseconds for log writes, dict updates, lightweight bus
+# republishes) but catch any subscriber that does blocking I/O,
+# heavy compute, or hits a deadlock.
+DEFAULT_SLOW_SUBSCRIBER_WARN_MS: float = 15.0
+
+# Optional cross-module fail-open counter hook. Set by
+# ``ultron.resilience.fail_open_log`` when wired in the orchestrator
+# so the bus's own slow-subscriber events get tallied alongside other
+# fail-open paths for the startup summary. The bus does NOT import
+# the resilience module (avoiding a circular dependency); the
+# resilience module installs itself.
+_SLOW_SUBSCRIBER_RECORDER: Optional[Callable[[str, str], None]] = None
+
+
+def set_slow_subscriber_recorder(
+    recorder: Optional[Callable[[str, str], None]],
+) -> None:
+    """Install a callback called whenever a subscriber exceeds the threshold.
+
+    The recorder receives ``(category, reason)`` where category is
+    ``"bus_slow_subscriber"`` and reason names the event type. Used by
+    :mod:`ultron.resilience.fail_open_log` to aggregate fail-open
+    events across subsystems. Pass ``None`` to clear the hook.
+    """
+    global _SLOW_SUBSCRIBER_RECORDER
+    _SLOW_SUBSCRIBER_RECORDER = recorder
+
 
 class Bus:
     """In-process pub/sub registry with type-channel + wildcard support.
@@ -52,7 +94,19 @@ class Bus:
     :func:`reset_bus_for_testing`.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        slow_subscriber_warn_ms: float = DEFAULT_SLOW_SUBSCRIBER_WARN_MS,
+    ) -> None:
+        """Construct a fresh bus.
+
+        Args:
+            slow_subscriber_warn_ms: WARN threshold (ms) for the
+                slow-subscriber watchdog. Callbacks taking longer
+                than this trigger a log + counter bump. Set to a
+                very large value to effectively disable.
+        """
         # Subscriber registry: channel name -> list of (token, callback).
         # The token (int) is the unsubscribe key; using a token rather
         # than callback-identity lets the same function subscribe
@@ -64,6 +118,9 @@ class Bus:
         self._lock = threading.RLock()
         # Publish counter for diagnostics + tests.
         self._published_count: int = 0
+        # Slow-subscriber watchdog state.
+        self._slow_subscriber_warn_ms: float = float(slow_subscriber_warn_ms)
+        self._slow_subscriber_count: int = 0
 
     # --- public API ---------------------------------------------------------
 
@@ -103,14 +160,39 @@ class Bus:
             typed = list(self._subscribers.get(event_def.type, ()))
             wildcard = list(self._subscribers.get(_WILDCARD, ()))
 
+        warn_threshold_ms = self._slow_subscriber_warn_ms
         for token, cb in typed + wildcard:
+            t0 = time.perf_counter()
+            raised = False
             try:
                 cb(payload)
             except Exception as e:                                  # noqa: BLE001
+                raised = True
                 logger.warning(
                     "bus: subscriber %d on %r raised %s (swallowed)",
                     token, event_def.type, e,
                 )
+            if raised:
+                # An exception path already short-circuits whatever
+                # work the subscriber intended; don't count its
+                # elapsed time against the slow-subscriber budget.
+                continue
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            if elapsed_ms > warn_threshold_ms:
+                with self._lock:
+                    self._slow_subscriber_count += 1
+                logger.warning(
+                    "bus: subscriber %d on %r took %.1f ms "
+                    "(>%.1f ms threshold; sync dispatch blocks the "
+                    "publishing thread -- hand off to a queue if slow)",
+                    token, event_def.type, elapsed_ms, warn_threshold_ms,
+                )
+                recorder = _SLOW_SUBSCRIBER_RECORDER
+                if recorder is not None:
+                    try:
+                        recorder("bus_slow_subscriber", event_def.type)
+                    except Exception:                              # noqa: BLE001
+                        pass
 
         return payload
 
@@ -156,6 +238,21 @@ class Bus:
         """Total publishes since construction. For tests / diagnostics."""
         with self._lock:
             return self._published_count
+
+    def slow_subscriber_count(self) -> int:
+        """Number of subscriber callbacks that exceeded the WARN threshold.
+
+        Counts each occurrence, not each unique subscriber. Aggregated
+        across all event types and all subscribers since bus
+        construction. Use to spot subscribers that need to hand off
+        to a queue.
+        """
+        with self._lock:
+            return self._slow_subscriber_count
+
+    def slow_subscriber_warn_ms(self) -> float:
+        """Current WARN threshold (ms) for the slow-subscriber watchdog."""
+        return self._slow_subscriber_warn_ms
 
     # --- internals ----------------------------------------------------------
 

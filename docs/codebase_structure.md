@@ -10,8 +10,9 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `1c887d4` on `origin/main`. Tests **4104 passing /
-> 16 skipped / 0 failed** in ~85 s via `scripts/run_tests.py`.
+> **Validating HEAD:** pending commit on top of `ff847a4`. Tests **4240
+> passing / 16 skipped / 0 failed in ~76 s** via direct pytest invocation
+> (baseline 4104 + 136 net from the 2026-05-22 review-feedback pass).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -27,6 +28,35 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 review-feedback pass: watchdog + diagnostics + flag rollout -- COMPLETE.** Tests **4240 passing / 16 skipped / 0 failed in ~76 s** (+136 net; baseline 4104). Pending commit on top of `ff847a4`. Driven by an external code-review pass on `docs/codebase_structure.md`; the actionable items from that feedback batched + shipped:
+
+* **NEW slow-subscriber watchdog in [`src/ultron/bus/service.py`](../src/ultron/bus/service.py).** Every callback's wall-clock duration is measured; subscribers exceeding `DEFAULT_SLOW_SUBSCRIBER_WARN_MS` (15 ms) emit a WARN log + bump `Bus.slow_subscriber_count()`. Because the bus dispatches synchronously on the publishing thread under an `RLock`, a slow callback blocks every later subscriber on that publish AND every later publish until it returns -- the watchdog surfaces those before they wedge the voice loop. New module-level `set_slow_subscriber_recorder(callback)` lets the fail-open counter receive bus events without a circular import. Exception path is excluded from the slow counter (the WARN is already logged for raising). +9 tests in [`tests/bus/test_service.py`](../tests/bus/test_service.py).
+
+* **NEW [`src/ultron/resilience/fail_open_log.py`](../src/ultron/resilience/fail_open_log.py).** Per-session counter for fail-open events across subsystems. `record(category, reason="")` increments the counter; `flush_to_disk()` appends one JSON line to `logs/fail_open_counts.jsonl` at shutdown; `previous_session_counts()` reads the most recent entry so the next orchestrator startup can log a summary (`"previous session: bus_slow_subscriber=2, reranker_load_fail=1"`). Catalog of 12 `KNOWN_CATEGORIES` (open-ended -- new categories work without registry update). Fail-safe at every entry point. +26 tests in [`tests/resilience/test_fail_open_log.py`](../tests/resilience/test_fail_open_log.py) (NEW).
+
+* **NEW `log_effective_config(cfg, env)` in [`src/ultron/config.py`](../src/ultron/config.py).** Diagnostic startup-log helper. Emits the active LLM preset + resolved model_path + draft + n_ctx + runtime + draft_kind; TTS engine + voice; STT engine + model; audio device + gain; memory rag tuning + supervisor tier; embeddings parallel-query state; coding ast_metadata / goal_anchors; gaming-mode + OpenClaw enable states. Calls out every `ULTRON_*` env var (elides secrets like `*_API_KEY`/`*_TOKEN`/`*_SECRET`; lists all others). Catches the `ULTRON_LLM_MODEL_PATH=9B` silent-override class of bug at startup. Catalogued env-var notes via `_ENV_OVERRIDE_NOTES` map -- 13 known overrides with one-line descriptions. +14 tests in [`tests/test_effective_config_log.py`](../tests/test_effective_config_log.py) (NEW).
+
+* **NEW `coding.supervisor.tier` rollup.** Adds `tier: Literal["off" | "indexing_only" | "deciding" | "full"]` to [`CodingSupervisorConfig`](../src/ultron/config.py); a `model_validator` fills the per-phase flags from `SUPERVISOR_TIERS` while explicit YAML overrides still win. Operators advance through the staged rollout via one line instead of toggling five flags at a time + remembering which combo they last validated. `config.yaml` flipped to `tier: "indexing_only"` -- digests + index population active; decide/narrate/enriched still off. +17 tests in [`tests/test_supervisor_tier_config.py`](../tests/test_supervisor_tier_config.py) (NEW).
+
+* **File-mutation -> introspect cache invalidation.** Two new helpers in [`src/ultron/coding/project_introspect.py`](../src/ultron/coding/project_introspect.py): `invalidate_snapshot_cache_for_file(file_path)` walks the cache for ancestor matches + drops them (Windows-case-insensitive + os.sep + "/" both checked); `install_bus_invalidator()` subscribes the invalidator to `CodingFileChangedEvent` on the bus with an idempotent guard so multiple inits don't double-subscribe. Drops the 30 s TTL window where a freshly-written file isn't visible to the next supervisor decision. Orchestrator init calls `install_bus_invalidator()`. +8 tests added to [`tests/coding/test_project_introspect.py`](../tests/coding/test_project_introspect.py).
+
+* **NEW `observe_llm_thinking_drift_sample` + `enable_thinking_drift_sample_rate` config knob.** The voice-path `enable_thinking=False` default saves 5-10 s TTFT on factual / math turns but loses the chain-of-thought block. The new helper records sampled user_text + response_text pairs to `data/observations.jsonl` so offline review can spot regression classes before they hit users. Sampling lives in the orchestrator: at the end of `_respond`, dice-roll against `cfg.llm.enable_thinking_drift_sample_rate` (default 0.02 = 1 in 50). Texts truncated at 4000 chars with explicit `... <truncated>` marker; secrets impossible because we only see user text and the LLM's own response. +9 tests in [`tests/observations/test_drift_sample.py`](../tests/observations/test_drift_sample.py) (NEW).
+
+* **NEW TTS narration-honesty fuzz tests.** [`tests/test_tts_text_normalization.py`](../tests/test_tts_text_normalization.py) covers `normalize_text_for_tts` (in xtts_v3.py) and `_speakable` (in supervisor_dispatch.py) against the adversarial inputs that historically caused real production bugs: paths with spaces, unicode hyphens / em-dashes / smart quotes, mixed slash directions, RTL Arabic text, shell metachars, very long URLs (1200+ chars), null bytes, embedded form feed / CR, emoji + ZWJ sequences. Contract: helpers don't synthesise content + drive letters/backslashes never appear in `_speakable` output. 40+ cases. (Tests intentionally pin the *current* behaviour where the Windows-path regex doesn't yet handle quoted-paths-with-spaces; future improvements can tighten the assertions then.)
+
+* **Orchestrator startup wiring.** `Orchestrator.__init__` now calls (in order, all fail-open): `log_effective_config()`, `fail_open_log.configure(LOGS_DIR / "fail_open_counts.jsonl")`, `set_slow_subscriber_recorder(fail_open_log.record)`, `install_bus_invalidator()`, then logs the previous session's fail-open summary at INFO. `Orchestrator.shutdown()` calls `fail_open_log.flush_to_disk()` before tearing components down so a crash-on-shutdown still persists the counts.
+
+* **Reranker asymmetry comment** in [`config.yaml`](../config.yaml). Inline box under `memory.reranking` explaining why the same `BAAI/bge-reranker-v2-m3` cross-encoder is OFF for memory (17-18 s/turn on CPU, voice hot path) but ON for web search (~5 candidates vs ~20, ack-masked latency). Closes the "looks contradictory at a glance" lookup cost the next reviewer would pay.
+
+* **Flag flips (safe + light-test, with rollback paths preserved):**
+    - `embeddings.parallel_query_embedding: true` -- pure perf win, ~5-15 ms saved per retrieve, no behavioural change.
+    - `coding.ast_metadata.enabled: true` -- AST FILE_CHANGE listener catches broken-syntax writes from the AI coding agent so completion narration can fact-check.
+    - `coding.supervisor.tier: "indexing_only"` -- digests + index population on; decide / narrate / enriched-context still off. Lets the projects collection accumulate before the decision layer flips.
+    - `memory.topical_chunking.enabled: true` + `memory.discourse_tagging.enabled: true` -- payload metadata only; `ranking.{topic,discourse}_match_weight` stays 0.0 so retrieval order is byte-for-byte unchanged.
+    - `routing.ambiguity_band_clarification.enabled: true` -- intents with confidence in [0.4, 0.65) on the ambiguity-relevant kinds get one clarifying question instead of a guess.
+
+---
 
 **2026-05-22 session E: opencode-inspired event bus + coding-supervisor stack (5 phases) -- COMPLETE.** Tests **4104 passing / 16 skipped / 0 failed in ~85 s** (+158 net). One commit on top of `9f2ac68`.
 
@@ -1382,6 +1412,7 @@ For the current decisions and Foundation phase status see
 │       ├── resilience/             ← Phase 4 resilience primitives
 │       │   ├── circuit_breaker.py  ← CircuitBreaker (3-state: CLOSED/OPEN/HALF_OPEN)
 │       │   ├── error_log.py        ← ErrorLog (logs/errors.jsonl writer + singleton)
+│       │   ├── fail_open_log.py    ← 2026-05-22: per-session fail-open counter (JSONL log to logs/fail_open_counts.jsonl; previous-session summary on startup)
 │       │   └── phrases.py          ← phrase_for() (shuffled phrase pool per failure mode)
 │       │
 │       └── utils/
@@ -3842,7 +3873,20 @@ Two responsibilities:
    touches a process tied to the live Ultron orchestrator (detected
    via the port-19761 listener and its ancestor/descendant chain).
 
-### Default suite (no env gate) — **4104 passed / 16 skipped (GPU-gated)**, ~85 s wall (2026-05-22 HEAD `b02af04`)
+### Default suite (no env gate) — **4240 passed / 16 skipped (GPU-gated)** in ~76 s (2026-05-22 review-feedback pass; +136 from the session-E baseline of 4104)
+
+**New test files in this pass:**
+- [`tests/resilience/test_fail_open_log.py`](../tests/resilience/test_fail_open_log.py) (+26) — per-session counter: record / accumulate / unknown-category open-ended / fail-safe on broken lock; configure + flush JSONL + previous-session read; render_summary alphabetisation + empty + None handling; KNOWN_CATEGORIES uniqueness + bus_slow_subscriber present.
+- [`tests/test_supervisor_tier_config.py`](../tests/test_supervisor_tier_config.py) (+17) — `SUPERVISOR_TIERS` catalog shape; tier `"off"|"indexing_only"|"deciding"|"full"` fills per-phase flags via the `model_validator`; explicit per-flag overrides win; threshold + log_path + digest knobs untouched by tier; unknown tier rejected.
+- [`tests/test_effective_config_log.py`](../tests/test_effective_config_log.py) (+14) — emits every high-impact section (LLM / TTS / STT / MEMORY / SUPERVISOR / GAMING_MODE); ULTRON_* env vars surface with override notes; known-secret env vars elided (`<set>` / `<empty>`); non-ULTRON env vars ignored; supervisor tier reflected; fail-open on broken cfg + partial section failure.
+- [`tests/test_tts_text_normalization.py`](../tests/test_tts_text_normalization.py) (+40 fuzz cases) — `normalize_text_for_tts` against URLs (https/http/ftp/bare-www / 1200+ char), Windows drive paths, mixed slashes, times (12-hour AM/PM / 24-hour / standalone markers), unicode (en-dash, em-dash, non-breaking hyphen, smart quotes, Arabic RTL, combining diacritics, emoji ZWJ), shell metachars + `$` currency, Latin abbreviations, acronym dots, idempotence on clean text, 10 KB stress; `_speakable` against drive paths, unix paths, mixed slashes, surrounding quotes, dots-in-leaf, unicode names, UNC paths, very long paths.
+- [`tests/observations/test_drift_sample.py`](../tests/observations/test_drift_sample.py) (+9) — emits well-formed row with `subsystem=llm event_type=thinking_drift_sample` + `enable_thinking=False`; parent_event_id chaining; extra-dict merge; user_text/response_text truncation at 4000 chars with explicit marker; exact-cap survives intact; None user_text treated as empty.
+
+**Bus tests extended** in [`tests/bus/test_service.py`](../tests/bus/test_service.py) (+9): `DEFAULT_SLOW_SUBSCRIBER_WARN_MS` pin (15.0); fast subscriber no-warn; slow subscriber WARN-logs + bumps counter; counter accumulates per-occurrence; subscriber exception path excluded from slow counter; `set_slow_subscriber_recorder` callback fires; recorder exceptions swallowed; threshold accessor; slow subscriber doesn't block later subscribers.
+
+**Introspect tests extended** in [`tests/coding/test_project_introspect.py`](../tests/coding/test_project_introspect.py) (+8): `invalidate_for_file` drops matching project / returns 0 on no match / handles empty string / handles Path.resolve() failure on deleted files; `install_bus_invalidator` idempotent; `CodingFileChangedEvent` actually invalidates the cache; payload errors swallowed; reset_bus_invalidator_for_testing + re-install yields fresh subscription.
+
+### Prior baseline (pre-review-feedback pass) -- 4104 passed / 16 skipped (~85 s wall) at HEAD `b02af04`
 
 Run via `scripts/run_tests.py` (2026-05-21 testing-process hardening: pre-flight kill of competing pytest workers + per-test 30 s timeout + live-streamed stdout + clean Ctrl-C shutdown).
 

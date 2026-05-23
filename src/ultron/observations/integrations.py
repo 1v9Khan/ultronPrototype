@@ -161,3 +161,55 @@ def observe_llm_call(
         extra=base_extra,
     )
     return obs.event_id if emit_observation(obs) else None
+
+
+def observe_llm_thinking_drift_sample(
+    *,
+    user_text: str,
+    response_text: str,
+    user_message_len: int,
+    response_message_len: int,
+    parent_event_id: Optional[str] = None,
+    extra: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """Emit a sampled observation pairing user text with the no-think response.
+
+    Stored verbatim (truncated) so a future review pass can spot
+    regressions when ``enable_thinking=False`` is the active default.
+    Production sampling is gated by
+    :class:`ultron.config.LLMConfig.enable_thinking_drift_sample_rate`;
+    when the dice roll lands the orchestrator calls this helper. The
+    helper itself does no sampling -- the caller decides whether to
+    emit.
+
+    Texts longer than 4000 chars are truncated with an explicit
+    ``"... <truncated>"`` marker so the observation file doesn't bloat
+    on long search-augmented responses.
+
+    Returns the event_id on success, None when the writer is
+    disabled / fails (fail-open).
+    """
+    def _truncate(text: str, cap: int = 4000) -> str:
+        if text is None:
+            return ""
+        if len(text) <= cap:
+            return text
+        return text[:cap] + "... <truncated>"
+
+    base_extra: dict[str, Any] = {
+        "user_text": _truncate(user_text),
+        "response_text": _truncate(response_text),
+        "user_message_len": int(user_message_len),
+        "response_message_len": int(response_message_len),
+        "enable_thinking": False,
+    }
+    if extra:
+        base_extra.update(extra)
+    obs = Observation.create(
+        subsystem="llm",
+        event_type="thinking_drift_sample",
+        outcome="unknown_yet",
+        parent_event_id=parent_event_id,
+        extra=base_extra,
+    )
+    return obs.event_id if emit_observation(obs) else None

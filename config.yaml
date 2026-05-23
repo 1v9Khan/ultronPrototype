@@ -522,6 +522,12 @@ embeddings:
   dense_model: "BAAI/bge-small-en-v1.5"   # ONNX INT8 via FastEmbed
   sparse_model: "Qdrant/bm25"
   dense_dim: 384
+  # 2026-05-22 -- flipped on. ThreadPoolExecutor overlaps dense + sparse
+  # encode on every single-query retrieve, saving ~5-15 ms per turn on
+  # CPU. No behavioural change (same vectors land in Qdrant the same
+  # order); pure perf win. The flaky test that previously gated this
+  # was hardened in 2026-05-19 with 200 ms stub delays + 3-retry logic.
+  parallel_query_embedding: true
 
 # ---------------------------------------------------------------------------
 # Qdrant (embedded vector DB)
@@ -589,6 +595,62 @@ memory:
   # 4 = 2 user+assistant pairs, enough for natural follow-ups
   # without a wall of stale context.
   history_turns_for_llm: 4
+
+  # 2026-05-22 -- topical chunking flipped on. Adds a ``topic_id``
+  # payload field to every memory turn write via cosine-similarity
+  # boundary detection between consecutive turns. Retrieval order is
+  # UNCHANGED at flip-time because ``ranking.topic_match_weight``
+  # stays at 0.0; the data accumulates so future tuning can raise the
+  # weight to use it. Pure data-layer change, no voice-path latency.
+  topical_chunking:
+    enabled: true
+    boundary_similarity_threshold: 0.4
+    idle_timeout_seconds: 300.0
+
+  # 2026-05-22 -- discourse tagging flipped on. Same shape as
+  # topical_chunking: adds a ``discourse_type`` payload field
+  # (QUESTION / STATEMENT / DECISION / CLARIFICATION_REQUEST /
+  # ACKNOWLEDGMENT / TOPIC_SHIFT) via a rule layer + embedding-
+  # centroid fallback. ``ranking.discourse_match_weight`` stays at
+  # 0.0 so retrieval is byte-for-byte unchanged; the data starts
+  # accumulating for future use.
+  discourse_tagging:
+    enabled: true
+    use_embedding_fallback: true
+    centroid_confidence_floor: 0.25
+
+  # ┌──────────────────────────────────────────────────────────────┐
+  # │  RERANKER ASYMMETRY NOTE  (2026-05-22)                       │
+  # │  Two surfaces use the SAME cross-encoder model               │
+  # │  (BAAI/bge-reranker-v2-m3, shared via a module-level cache   │
+  # │  in web_search.search). The defaults differ:                 │
+  # │                                                              │
+  # │    memory.reranking.enabled         -> false (this section)  │
+  # │    web_search.ranker                -> "cross_encoder"       │
+  # │                                                              │
+  # │  Why memory has it OFF:                                      │
+  # │    - Live perf measured 17-18 s per memory.retrieve() on     │
+  # │      CPU even after the 500-char content cap.                │
+  # │    - retrieve() is on the voice hot path -- every            │
+  # │      conversational turn pays the cost.                      │
+  # │    - The composite (cosine + RRF + recency) scorer + tighter │
+  # │      rag_min_relevance (0.78) recovers most of the signal    │
+  # │      quality without the latency.                            │
+  # │                                                              │
+  # │  Why web_search has it ON:                                   │
+  # │    - Fewer candidates (~5 search results vs ~20 memory       │
+  # │      candidates) -> ~265 ms cross-encode cost, not 17 s.     │
+  # │    - The web-search ack TTS (~0 ms cache-hit) masks the      │
+  # │      remaining latency; LLM TTFT on a search-augmented turn  │
+  # │      already dominates the perceived latency budget.         │
+  # │    - Ranking happens once per turn; not on every utterance.  │
+  # │                                                              │
+  # │  Flip memory.reranking.enabled true here if you move the     │
+  # │  reranker to GPU (CrossEncoder accepts device="cuda") AND    │
+  # │  have ~600 MB of VRAM headroom for bge-reranker-v2-m3.       │
+  # └──────────────────────────────────────────────────────────────┘
+  reranking:
+    enabled: false                 # see asymmetry note above
 
 # ---------------------------------------------------------------------------
 # Web search (Brave + Jina Reader)
@@ -678,6 +740,18 @@ coding:
     off_canonical_threshold: 3
     early_window_calls: 10
 
+  # 2026-05-22 -- AST metadata FILE_CHANGE listener flipped on. Adds
+  # ~5-50 ms per Python file Claude writes (invisible inside the
+  # coding-task latency budget that's measured in seconds) but catches
+  # broken-syntax writes so the "Done." narration doesn't claim
+  # success on a syntax error. Audit rows land in coding_tasks.jsonl
+  # as ast_syntax_ok / ast_syntax_failure so completion narration can
+  # fact-check.
+  ast_metadata:
+    enabled: true
+    syntax_check_on_file_change: true
+    attach_metadata_to_audit: true
+
   # A3 wiring — stored-facts fast-path on clarifications.
   # The Coordinator's decide_clarification consults the Qdrant ``facts``
   # collection (populated by scripts/maintenance.py) before the LLM
@@ -759,18 +833,30 @@ coding:
   skip_permissions: true       # --dangerously-skip-permissions (sandbox is project-local)
 
   # 2026-05-22 supervisor stack (opencode-style project digest +
-  # semantic resolution). All flags OFF for safe rollout -- once
-  # digests are generating on every Claude session for a week, flip
-  # decide_enabled to start letting the supervisor route. Per-phase
-  # docs live in src/ultron/config.py:CodingSupervisorConfig.
+  # semantic resolution). Rolled out in stages via the ``tier`` knob:
+  #
+  #   "off"           -- supervisor never constructed; legacy
+  #                      ProjectResolver path (default until
+  #                      2026-05-22).
+  #   "indexing_only" -- data layer only. Digests + index population
+  #                      run; no decision-side effect. Use this while
+  #                      the projects collection accumulates so the
+  #                      decide layer has something to score against
+  #                      when flipped on. **Current setting.**
+  #   "deciding"      -- adds the supervisor decision layer
+  #                      (RESUME / EDIT / CLARIFY / NEW). Decisions
+  #                      audit to logs/supervisor_decisions.jsonl;
+  #                      no narration or enriched-context yet.
+  #   "full"          -- everything on: decide + narration with
+  #                      barge-in + enriched Claude dispatch.
+  #
+  # Individual flags below act as DEBUG OVERRIDES: an explicit
+  # ``narrate_enabled: true`` in this block wins over the tier-derived
+  # value. Per-phase docs live in
+  # src/ultron/config.py:CodingSupervisorConfig.
   supervisor:
-    enabled: false
-    digests_enabled: false
-    index_enabled: false
-    decide_enabled: false
-    narrate_enabled: false
+    tier: "indexing_only"
     narration_barge_in_window_seconds: 1.5
-    enriched_context_enabled: false
     resolve_threshold: 0.75
     clarify_threshold: 0.55
     digest_max_summary_chars: 4000
@@ -948,6 +1034,21 @@ routing:
     rule_based_first: true
     llm_fallback_enabled: true
     confidence_threshold: 0.7
+  # 2026-05-22 -- confidence-band clarification flipped on. When a
+  # routing intent's confidence sits in [band_low, band_high) AND the
+  # intent kind is in the ambiguity-relevant set (automation kinds +
+  # app_launch + screen_context + window_move/close), the orchestrator
+  # consults :func:`ultron.openclaw_routing.ambiguity.should_clarify`
+  # and -- if it returns Yes -- asks one clarifying question via the
+  # IntentDisambiguator instead of executing the ambiguous verdict.
+  # Default band ``[0.4, 0.65)`` is the "guessing" zone; above 0.65
+  # we trust the classifier, below 0.4 we fall through to the legacy
+  # path. Watch logs/routing_decisions.jsonl for "clarify" outcomes
+  # in the next session and tighten / widen the band if needed.
+  ambiguity_band_clarification:
+    enabled: true
+    band_low: 0.4
+    band_high: 0.65
   # 4B plan Item 5 — IRMA-style input reformulation for the
   # IntentDisambiguator. Default ON so the disambiguator gets the
   # context (recent intents, active session, routing hints) it

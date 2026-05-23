@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -9,10 +10,12 @@ import pytest
 
 from ultron.bus.event import BusEvent
 from ultron.bus.service import (
+    DEFAULT_SLOW_SUBSCRIBER_WARN_MS,
     Bus,
     get_bus,
     publish,
     reset_bus_for_testing,
+    set_slow_subscriber_recorder,
     subscribe,
     subscribe_all,
 )
@@ -368,3 +371,147 @@ def test_published_count_increments(bus: Bus) -> None:
     bus.publish(event, {})
     bus.publish(event, {})
     assert bus.published_count() == 3
+
+
+# ---------------------------------------------------------------------------
+# Slow-subscriber watchdog (2026-05-22)
+# ---------------------------------------------------------------------------
+
+
+def test_default_warn_threshold_constant() -> None:
+    """The constant is the runtime default; pin it to catch accidental edits."""
+    assert DEFAULT_SLOW_SUBSCRIBER_WARN_MS == 15.0
+
+
+def test_fast_subscriber_does_not_warn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A callback that returns immediately must not trip the watchdog."""
+    bus = Bus()  # default 15 ms threshold
+    event = BusEvent.define("test.fast", {})
+    bus.subscribe(event, lambda p: None)
+
+    with caplog.at_level(logging.WARNING, logger="ultron.bus"):
+        bus.publish(event, {})
+
+    assert bus.slow_subscriber_count() == 0
+    assert not any("threshold" in r.message for r in caplog.records)
+
+
+def test_slow_subscriber_warns_and_increments_counter(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A callback that exceeds the threshold logs WARN + bumps the counter."""
+    bus = Bus(slow_subscriber_warn_ms=5.0)
+    event = BusEvent.define("test.slow", {})
+
+    def slow_cb(_p):
+        time.sleep(0.020)  # 20 ms > 5 ms threshold
+
+    bus.subscribe(event, slow_cb)
+
+    with caplog.at_level(logging.WARNING, logger="ultron.bus"):
+        bus.publish(event, {})
+
+    assert bus.slow_subscriber_count() == 1
+    # One log line names the event type + a number followed by "ms".
+    slow_logs = [r for r in caplog.records if "test.slow" in r.message and "threshold" in r.message]
+    assert len(slow_logs) == 1
+
+
+def test_slow_subscriber_counter_accumulates_across_publishes() -> None:
+    """Each slow callback fire bumps the counter; counts per-occurrence not per-subscriber."""
+    bus = Bus(slow_subscriber_warn_ms=5.0)
+    event = BusEvent.define("test.slow_count", {})
+    bus.subscribe(event, lambda p: time.sleep(0.020))
+
+    bus.publish(event, {})
+    bus.publish(event, {})
+    bus.publish(event, {})
+
+    assert bus.slow_subscriber_count() == 3
+
+
+def test_subscriber_exception_does_not_bump_slow_counter() -> None:
+    """The exception path short-circuits before the timing check.
+
+    A callback that raises has done some unknown amount of work; we
+    don't want to double-flag it (the exception warning already logged).
+    """
+    bus = Bus(slow_subscriber_warn_ms=5.0)
+    event = BusEvent.define("test.slow_exception", {})
+
+    def slow_then_raise(_p):
+        time.sleep(0.020)
+        raise RuntimeError("boom")
+
+    bus.subscribe(event, slow_then_raise)
+
+    bus.publish(event, {})
+
+    # Exception path logged at WARN already; the elapsed-time path
+    # was skipped so the slow-subscriber counter stays at 0.
+    assert bus.slow_subscriber_count() == 0
+
+
+def test_slow_subscriber_recorder_callback_fires() -> None:
+    """When a recorder is installed, slow-subscriber events are forwarded."""
+    bus = Bus(slow_subscriber_warn_ms=5.0)
+    event = BusEvent.define("test.recorder", {})
+
+    received: list[tuple[str, str]] = []
+
+    def recorder(category: str, reason: str) -> None:
+        received.append((category, reason))
+
+    set_slow_subscriber_recorder(recorder)
+    try:
+        bus.subscribe(event, lambda p: time.sleep(0.020))
+        bus.publish(event, {})
+
+        assert received == [("bus_slow_subscriber", "test.recorder")]
+    finally:
+        set_slow_subscriber_recorder(None)
+
+
+def test_recorder_exception_is_swallowed() -> None:
+    """A buggy recorder must not break the bus's fail-open contract."""
+    bus = Bus(slow_subscriber_warn_ms=5.0)
+    event = BusEvent.define("test.recorder_buggy", {})
+
+    def bad_recorder(_c: str, _r: str) -> None:
+        raise RuntimeError("recorder is broken")
+
+    set_slow_subscriber_recorder(bad_recorder)
+    try:
+        bus.subscribe(event, lambda p: time.sleep(0.020))
+        # Must not raise.
+        bus.publish(event, {})
+        # Watchdog still recorded the slow subscriber locally.
+        assert bus.slow_subscriber_count() == 1
+    finally:
+        set_slow_subscriber_recorder(None)
+
+
+def test_slow_subscriber_warn_ms_accessor() -> None:
+    """The configured threshold is readable for diagnostics."""
+    bus = Bus(slow_subscriber_warn_ms=42.0)
+    assert bus.slow_subscriber_warn_ms() == 42.0
+
+
+def test_slow_subscriber_does_not_block_other_subscribers() -> None:
+    """A slow subscriber bumps the counter but doesn't stop later ones firing.
+
+    The watchdog is observational only -- the synchronous-on-publisher-thread
+    contract is preserved.
+    """
+    bus = Bus(slow_subscriber_warn_ms=5.0)
+    event = BusEvent.define("test.slow_then_fast", {})
+    received: list = []
+    bus.subscribe(event, lambda p: time.sleep(0.020))
+    bus.subscribe(event, lambda p: received.append(p))
+
+    bus.publish(event, {})
+
+    assert len(received) == 1
+    assert bus.slow_subscriber_count() == 1

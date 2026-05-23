@@ -416,7 +416,11 @@ def test_pre_task_confirmation_when_enabled_returns_deferred(setup, monkeypatch)
     assert out is not None and out.handled
     # Confirmation phrase populated; bridge has NOT been called yet.
     assert out.pre_task_confirmation is not None
-    assert "claude code" in out.pre_task_confirmation.lower()
+    # 2026-05-22 brand sanitization: voice surface refers to the
+    # underlying coding subprocess as "AI coding agent" generically
+    # (the prior brand-name literal was sanitized in session G/H per
+    # the memory index).
+    assert "ai coding agent" in out.pre_task_confirmation.lower()
     assert "going ahead" in out.pre_task_confirmation.lower()
     assert "sample_two" in out.pre_task_confirmation.lower()
     assert out.deferred_dispatch is not None
