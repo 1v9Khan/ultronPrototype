@@ -11,10 +11,11 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** `65fc49c` on `origin/main` (this doc-bump is on
-> top of feature commit `8bbc345`). Tests **4537 passing / 16 skipped /
+> top of feature commit `8bbc345`). Tests **4593 passing / 16 skipped /
 > 0 failed in ~78 s** via `scripts/run_tests.py` (baseline 4240 +
 > 82 batch 1 + 29 batch 2 + 22 batch 3 + 21 batch 4 + 36 batch 5 +
-> 22 batch 6 + 8 batch 7 + 30 batch 8 + 21 batch 9 + 26 batch 10).
+> 22 batch 6 + 8 batch 7 + 30 batch 8 + 21 batch 9 + 26 batch 10 +
+> 56 batch 11).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -30,6 +31,39 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-22 catalog batch 11: spinner + V4A patch + multi-coder mode descriptors (T11 + T17 + T26) -- COMPLETE.** Three small independent items shipped together: an ASCII bounce spinner with cursor-stagger continuity (T11), a V4A patch-format parser/applier with fuzz-tier matching (T17), and a coder-mode descriptor registry (T26). All three are pure utilities with no runtime wiring requirement. Tests **4593 passing / 16 skipped / 0 failed in ~78 s** (+56 net; baseline 4537 from batch 10).
+
+* **NEW [`src/ultron/utils/spinner.py`](../src/ultron/utils/spinner.py).** Pre-rendered ASCII spinner with bounce + Unicode autodetect (catalog T11).
+  * `class Spinner(message, *, stream, first_frame_delay, update_interval, track_length, force_ascii)` — 18 pre-rendered frames (10 forward + 8 backward bounce). 0.5 s first-frame delay so fast operations don't flicker. 0.1 s update throttle so tight loops don't hammer the terminal. Width-truncated to terminal-width minus 2 so no wrap. Class-level `last_frame_index` for visual continuity across re-instantiated spinners.
+  * `class WaitingSpinner(message, *, tick_interval, stream, first_frame_delay)` — daemon-thread wrapper. Context-manager and explicit start/stop interfaces. Idempotent start.
+  * `Spinner.reset_continuity()` — clears the class-level frame index (test escape hatch).
+  * Unicode autodetect: probes the stream's encoding against `░█`; falls back to `=#` on `UnicodeEncodeError` / `LookupError`.
+
+* **NEW [`src/ultron/coding/coder_modes.py`](../src/ultron/coding/coder_modes.py).** Lightweight descriptor registry (catalog T26). The catalog rated T26 "refactor concept, not a discrete component" — instead of refactoring the runner into per-mode classes, ship a frozen-dataclass catalogue that existing code can opt into.
+  * `class EditFormat(Enum)` — `NONE / SEARCH_REPLACE / WHOLE_FILE / UDIFF / PATCH_V4A / ARCHITECT_DISPATCH`.
+  * `class CoderMode(name, description, prompt_template, edit_format, produces_edits, is_supervised)` — frozen.
+  * `CODER_MODES: Dict[str, CoderMode]` — 8 modes: `edit / ask / architect / context / whole_file / udiff / patch_v4a / help`.
+  * `get_coder_mode(name)` (case-insensitive), `list_coder_modes()`, `edit_modes()`, `read_only_modes()` lookups.
+  * Nothing in the existing routing path consults this — purely additive. Future supervisor + `/help`-by-voice surfaces can read descriptions + filter by `produces_edits` / `is_supervised`.
+
+* **NEW [`src/ultron/coding/patch_v4a.py`](../src/ultron/coding/patch_v4a.py).** V4A patch format (catalog T17).
+  * `class PatchAction(Enum)` — `ADD / UPDATE / DELETE`.
+  * `class PatchHunk(scope, before_context, removed_lines, added_lines, after_context, ends_at_eof)` — frozen.
+  * `class PatchFileBlock(action, file_path, hunks)` — frozen.
+  * `class ParsedPatch(blocks)` — frozen top-level container.
+  * `class PatchError(Exception)` — raised on malformed input.
+  * `parse_v4a_patch(text) -> ParsedPatch` — strict-ish parser. Catches missing `*** Begin Patch` / `*** End Patch` markers, unknown action prefixes, empty file paths, no-changes update blocks.
+  * `apply_patch(patch, files) -> Dict[str, Optional[str]]` — virtual-filesystem applier. Add to missing-path / Update existing / Delete existing. Deleted paths map to `None`. All-or-nothing per invocation: any hunk failing to locate raises `PatchError` (no partial application).
+  * Fuzz tiers per catalog: `FUZZ_EXACT=0` / `FUZZ_RSTRIP=1` / `FUZZ_STRIP=100` / `FUZZ_EOF_MISMATCH=10000`. Each tier's transform is applied to both haystack and needle; the search walks every window and requires UNIQUENESS (an ambiguous match is rejected).
+  * Catalog ★ priority — ships ready for when Qwen-as-editor wants an alternative to SEARCH/REPLACE.
+
+* **Tests.** 56 new total:
+  * `tests/utils/test_spinner.py` (17): track-length constant, default-delay constants, constructor builds frames, first-frame delay blocks visible output, step renders after delay, update-interval throttles, force-ascii uses ASCII chars, 18-frame bounce count, continuity class-var updates after step + carries across instances + reset clears, context-manager clears on exit, end-safe-before-any-step, WaitingSpinner lifecycle + context manager + start-idempotent.
+  * `tests/coding/test_coder_modes.py` (14): registry contains expected modes, case-insensitive lookup, unknown returns None, ask/architect roles, sorted listing, edit/read-only subsets, frozen dataclass, EditFormat enum values, every-mode-has-description sanity.
+  * `tests/coding/test_patch_v4a.py` (25): parse failure cases (empty / no Begin / no End / empty body / unknown prefix / unknown line prefix / no-changes), parse Delete / Add / Update / scope-marker / EOF marker / multiple-block; apply Delete missing → error; apply Add creates / Add-existing → error; apply Update exact match / missing target → error / ambiguous → error / rstrip-fuzz match / multi-block combines; fuzz constants match catalog values; frozen dataclasses.
+
+---
 
 **2026-05-22 catalog batch 10: in-editor AI-comment file watcher (T10) -- COMPLETE.** Adds a side-channel input path: developers can drop `# ai!` / `# ai?` markers in source files and have them dispatched as synthetic coding intents without speaking. Background `watchfiles` thread seeds an initial scan (so existing markers don't auto-fire on first start), then listens for modifications and fires the callback on NEW markers only. Path filter mirrors `repo_map.SKIP_DIRECTORIES` + extension blocklist. Default OFF behind `coding.ai_comment_watcher.enabled`. Tests **4537 passing / 16 skipped / 0 failed in ~78 s** (+26 net; baseline 4511 from batch 9).
 
