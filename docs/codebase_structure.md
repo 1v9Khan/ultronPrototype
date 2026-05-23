@@ -11,10 +11,10 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** to be bumped on the SWE-Agent porting commit.
-> Tests **5081 passing / 16 skipped / 0 failed in ~92 s** via
+> Tests **5167 passing / 16 skipped / 0 failed in ~91 s** via
 > `scripts/run_tests.py` (prior baseline 4750 + 98 batch 1 + 39
-> batch 2 + 114 batch 3 + 58 batch 4 + 22 batch 5 (T6 diff snapshot
-> + T13 salvage on error)).
+> batch 2 + 114 batch 3 + 58 batch 4 + 22 batch 5 + 86 batch 6
+> (T7 SubmitReviewLoop + T8 ForfeitController + T14 RequeryLoop)).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -30,6 +30,18 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-23 SWE-Agent porting -- batch 6 (T7 submit review + T8 forfeit + T14 format-error requery) -- COMPLETE.** Three new modules covering the supervisor / agent-loop quality surfaces. Tests **5167 passing / 16 skipped / 0 failed in ~91 s** (+86 batch 6 tests from 5081).
+
+* **NEW [`src/ultron/coding/submit_review.py`](../src/ultron/coding/submit_review.py) (T7).** `SubmitReviewLoop` multi-stage review state machine backed by :class:`SessionRegistry`. Three default stages: `VOICE_LOCK` (refuses completion when the session diff touches SOUL.md / RVC / Piper / vocal WAV / LLM model file / fine-tuned voicepack -- the partial-lift contract files), `TESTS` (sweep status check), `DOC_DRIFT` (codebase_structure.md update reminder). Each stage has a substitution-friendly template (`{diff}`, `{files_touched}`, `{voice_locked_hits}`, `{doc_touched}`). `resolve(stage_name, outcome, note)` enforces the single-resolution invariant; `force_complete(reason)` short-circuits remaining stages on user override. State survives instance recreation (crash recovery). `detect_voice_lock_hits(files_touched)` is the standalone helper for pre-flighting before the stage fires.
+
+* **NEW [`src/ultron/coding/forfeit.py`](../src/ultron/coding/forfeit.py) (T8).** `ForfeitController` per-session decision point for forfeit attempts. Three tiers: `SAFE` (record + salvage via T13 only), `REVERT` (also undo session-touched files via T20 FileHistory), `FOLLOWUP` (also invokes caller-supplied writer so the why-we-failed reason reaches the next session). Per-session minimum-effort threshold (`min_actions_before_forfeit=3`, `min_runtime_seconds=30`) prevents over-use; below threshold returns `DENIED_TOO_EARLY`. `ForfeitOutcome` enum + `ForfeitResult` frozen record carry the outcome metadata. Optional `listener` callback isolates third-party exceptions. State persists across instances.
+
+* **NEW [`src/ultron/llm/requery.py`](../src/ultron/llm/requery.py) (T14).** `RequeryLoop` temp-history-without-pollution requery cycle. `build_requery_history(base, broken_output, error_template, context)` constructs the SWE-Agent shape: real history + fake assistant turn with broken output + fake user turn with rendered error. `RequeryLoop.run(base_messages, initial_output)` iterates up to `max_retries` (default 3 matching SWE-Agent), returning `RequeryResult(final_output, succeeded, attempts, max_retries_reached)`. `RequeryReason` enum classifies failure modes (FORMAT / BASH_SYNTAX / BLOCKED_ACTION / CONTENT_POLICY / EMPTY / OTHER). Pre-built validators: `validate_non_empty`, `validate_json` (handles ```json fenced output). Per-attempt `context_per_attempt` callable lets callers compute per-retry template context.
+
+* **3 new test files (86 tests):** [`tests/coding/test_submit_review.py`](../tests/coding/test_submit_review.py) (33 -- default stages, voice-lock hit detection, loop construction with dedup + factory + skip_defaults, state machine resolve/skip/fail/blocked/force/already-resolved/unknown/double-resolve, persistence across instances, status summary); [`tests/coding/test_forfeit.py`](../tests/coding/test_forfeit.py) (28 -- construction validation, action counter, forfeit grants / denials (disabled / too-early-by-actions / too-early-by-runtime / already-forfeited), tier handlers (safe / repo salvage / followup writer / writer exception swallowed), listener fires + exception swallowed, state inspection + reset + persistence, factory, frozen dataclass); [`tests/llm/test_requery.py`](../tests/llm/test_requery.py) (25 -- constants, build_requery_history (includes broken/error, substitutes template, missing keys, no base mutation, dict copies), validators (non-empty / JSON with fences / garbage), RequeryLoop happy path (first try / second try / max-retries reached / gen-exception / validator-exception / max-retries=0), base messages never mutated, temp history shape, context_per_attempt override, construction validation).
+
+---
 
 **2026-05-23 SWE-Agent porting -- batch 5 (T6 diff snapshot + T13 salvage) -- COMPLETE.** Cumulative diff snapshot machinery + autosubmission salvage on error. One new module; one new test file. Tests **5081 passing / 16 skipped / 0 failed in ~92 s** (+22 batch 5 tests from 5059).
 
@@ -1807,6 +1819,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── context_scoring.py  ← 2026-05-18 Phase 1: adaptive context-window heuristic (default-OFF; ContextRecommendation)
 │       │   ├── draft_model.py      ← 2026-05-22: make_qwen08b_draft_model factory + prefix-cached state machine; llm.draft_kind: "none"|"pld"|"model" selector (default "none")
 │       │   ├── history_processors.py ← 2026-05-23 SWE-Agent batch 2 (T2 + T9): ClosedWindowHistoryProcessor (collapse repeated file-view snapshots) + LastNObservations (elide all but last N with polling for cache stability) + TagToolCallObservations (tag observations by source tool) + apply_history_processors composer + build_default_processors factory; wired into LLMEngine._build_messages history block (default ON, fail-open)
+│       │   ├── requery.py            ← 2026-05-23 SWE-Agent batch 6 (T14): RequeryLoop temp-history-without-pollution requery cycle; build_requery_history (real + broken-assistant + error-user shape verbatim from SWE-Agent get_model_requery_history); pre-built validators validate_non_empty + validate_json; max_retries default 3 matching SWE-Agent
 │       │   └── self_consistency.py ← 4B plan Item 6: N-sample majority-vote driver + aggregators (text/JSON/label) (default OFF)
 │       │
 │       ├── memory/                 ← Phase 3 (original) Qdrant memory + 2026-05 frontier
@@ -1858,6 +1871,8 @@ For the current decisions and Foundation phase status see
 │       │   ├── diff_snapshot.py     ← 2026-05-23 SWE-Agent batch 5 (T6 + T13): capture_diff_snapshot (git add -A + diff --cached; file-list fallback) + salvage_on_error (decorates exit_status as submitted (<original>); fall back to pre-persisted diff when fresh capture empty) + AutosubmissionGuard (context manager, KeyboardInterrupt bypasses); mirrors last_diff + stats into SessionRegistry; writes last_diff.patch + last_salvage.json under data/coding/sessions/<id>/
 │       │   ├── edit_diagnostics.py  ← 2026-05-23 SWE-Agent batch 3 (T12): diagnose_edit_failure -> EditDiagnosticResult (NOT_FOUND / NOT_FOUND_IN_WINDOW / MULTIPLE_OCCURRENCES_IN_WINDOW / NO_CHANGES_MADE / AMBIGUOUS_CROSS_FILE / OK); SWE-Agent error-template shapes verbatim; cross-file ambiguity is the creative-extension when search appears in other session-touched files
 │       │   ├── file_history.py       ← 2026-05-23 SWE-Agent batch 3 (T20): FileHistory per-session multi-file undo stack backed by SessionRegistry; record_pre_edit (with narration / origin metadata) + undo_last (atomic write-back / delete-on-undo-creation) + peek_last / history_for / find_by_narration substring search; max_history_per_file=10 cap; round-trip across instances tested
+│       │   ├── forfeit.py            ← 2026-05-23 SWE-Agent batch 6 (T8): ForfeitController per-session decision point; three tiers (SAFE / REVERT / FOLLOWUP); minimum-effort threshold gate (denies too-early forfeits); listener callback isolation; state persists across instances; integrates with T13 salvage + T20 FileHistory undo
+│       │   ├── submit_review.py      ← 2026-05-23 SWE-Agent batch 6 (T7): SubmitReviewLoop multi-stage review state machine backed by SessionRegistry; default stages VOICE_LOCK + TESTS + DOC_DRIFT enforce ultron's binding contracts before completion; single-resolution invariant + force_complete user override; detect_voice_lock_hits helper
 │       │   ├── lint_diff.py          ← 2026-05-23 SWE-Agent batch 3 (T1): parse_flake8_output + shift_pre_edit_errors (line-shift arithmetic verbatim from SWE-Agent flake8_utils) + compute_new_errors + format_revert_message (twin-window "would have looked" + "original code before" + DO NOT re-run hint) + evaluate_edit_lint end-to-end; primitives shipped; runner-side wiring with auto-revert via FileHistory is next-batch wiring
 │       │   ├── observation_format.py ← 2026-05-23 SWE-Agent batch 1 (T10 + T19): truncate_observation (head + tail + elided-char count template) + wrap_empty_observation (explicit no-output message) + format_observation chain; constants DEFAULT_MAX_OBSERVATION_CHARS=10_000 / COMPACT_MAX_OBSERVATION_CHARS=4_000 / EMPTY_OUTPUT_MESSAGE / SUPPRESSED_OUTPUT_MESSAGE
 │       │   ├── project_digest.py     ← 2026-05-22 supervisor Phase A: opencode-style SUMMARY_TEMPLATE port; generate_digest(request, llm_call) -> ProjectDigest; fails open to render_template() (deterministic fallback); parse_digest_sections / extract_files_from_digest helpers
