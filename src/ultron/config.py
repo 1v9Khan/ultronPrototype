@@ -481,6 +481,43 @@ class LLMSelfConsistencyConfig(_Strict):
     disabled_sites: List[str] = Field(default_factory=list)
 
 
+class LLMHistoryCompressionConfig(_Strict):
+    """SWE-Agent porting batch 2 (catalog T2 + T9) — LLM history-shape
+    compression knobs applied inside :meth:`LLMEngine._build_messages`.
+
+    Two independent processors share this config:
+
+    * **closed_window_enabled** (T2): walk the recent-turn history
+      in reverse; when the same file's view appears more than once,
+      collapse the older snapshots to a one-line
+      ``Outdated window with N lines omitted...`` summary. Catches
+      the common redundancy when the user / model re-opens the same
+      file in consecutive turns. Pure text rewrite -- zero token cost
+      to construct, frees model attention budget. Default ON.
+    * **last_n_enabled** (T9): elide all but the last ``last_n``
+      observations to ``Old environment output: (M lines omitted)``.
+      The ``last_n_polling`` parameter slows the elision-window
+      update so Anthropic prompt caching stays warm for ``polling``
+      turns at a time. Default OFF on the in-process voice path
+      (Qwen 3.5 4B doesn't use prompt caching and the existing
+      ``memory.history_turns_for_llm`` cap already serves this role)
+      but the knob is in place for the future ACP / HTTP-client
+      paths that go to Anthropic.
+
+    Both processors are pure -- they don't touch the system message
+    or the current user message, only the recent-history block
+    between them. Compressor exceptions are caught and the raw
+    history flows through unchanged (fail-open per the binding
+    rule).
+    """
+
+    enabled: bool = True
+    closed_window_enabled: bool = True
+    last_n_enabled: bool = False
+    last_n: int = Field(5, ge=1, le=100)
+    last_n_polling: int = Field(1, ge=1, le=50)
+
+
 class LLMPersonaConfig(_Strict):
     """Where the voice-path system prompt comes from.
 
@@ -791,6 +828,17 @@ class LLMConfig(_Strict):
     # 4B plan Item 4 — context compression (RAG / web / history blocks).
     compression: LLMCompressionConfig = Field(
         default_factory=LLMCompressionConfig,
+    )
+    # SWE-Agent batch 2 (T2 + T9) — history-shape compression knobs
+    # for the recent-turn block inside :meth:`LLMEngine._build_messages`.
+    # Defaults: closed-window ON (no-op when no file-view headers in
+    # history -- ultron's voice path rarely sees them), last-N OFF
+    # (the existing memory.history_turns_for_llm cap covers this for
+    # the in-process voice path; the knob is in place for the future
+    # ACP / HTTP-client path that goes to Anthropic with prompt
+    # caching).
+    history_compression: LLMHistoryCompressionConfig = Field(
+        default_factory=LLMHistoryCompressionConfig,
     )
 
     @model_validator(mode="after")

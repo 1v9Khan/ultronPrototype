@@ -11,10 +11,11 @@
 > current — see "Maintenance contract" at the bottom.
 >
 > **Validating HEAD:** to be bumped on the SWE-Agent porting commit.
-> Tests **4848 passing / 16 skipped / 0 failed in ~97 s** via
+> Tests **4887 passing / 16 skipped / 0 failed in ~86 s** via
 > `scripts/run_tests.py` (prior baseline 4750 + 98 SWE-Agent batch 1
-> tests for catalog T15 SessionRegistry + T17 sentinels + T10/T19
-> observation formatters).
+> (T15 SessionRegistry + T17 sentinels + T10/T19 observation formatters)
+> + 39 SWE-Agent batch 2 (T2 ClosedWindowHistoryProcessor + T9
+> LastNObservations + T9 companion TagToolCallObservations)).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -30,6 +31,22 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-23 SWE-Agent porting -- batch 2 (T2 closed-window + T9 last-N polling) -- COMPLETE.** History-shape compression for the LLM message-list path. One new module, one new test directory entry, one config block, one wiring point inside :meth:`LLMEngine._build_messages`. All defaults respect the existing voice-baseline contract -- closed-window compression is ON (no-op when no file-view headers appear in history; ultron's voice path rarely sees them) and last-N elision is OFF (the existing `memory.history_turns_for_llm` cap covers it for the in-process voice path; the knob is in place for the future ACP / HTTP-client path that goes to Anthropic with prompt caching). Tests **4887 passing / 16 skipped / 0 failed in ~86 s** (+39 batch 2 tests from 4848).
+
+* **NEW [`src/ultron/llm/history_processors.py`](../src/ultron/llm/history_processors.py) (T2 + T9 + T9 companion).** Three pure-function / dataclass processors with composable chain:
+  - `ClosedWindowHistoryProcessor` (T2) walks history in reverse, regex-matches the SWE-Agent file-view header (`[File: <path> (<N> lines total)]` + `<line>:<content>` block pattern verbatim from `sweagent/agent/history_processors.py`), and collapses older snapshots of each file to a `Outdated window with N lines omitted...` summary while preserving surrounding chatter.
+  - `LastNObservations` (T9) elides all but the last ``n`` observations to `Old environment output: (M lines omitted)`. The ``polling`` parameter rounds the keep-window down to multiples of ``polling`` so Anthropic prompt-caching stays warm for ``polling`` turns at a time. First observation (index 0 -- the instance template) ALWAYS preserved. Tag overrides: `always_keep_output_for_tags={"keep_output"}` survives elision regardless of position; `always_remove_output_for_tags={"remove_output"}` elides regardless of position (catches large `view_image` outputs).
+  - `TagToolCallObservations` (T9 companion) walks history once and tags the NEXT observation after every assistant turn that invoked a configured tool. Used together with `LastNObservations` to selectively keep / elide observations by source tool.
+  - `apply_history_processors(history, processors)` composes a processor chain with per-processor try/except fail-open. `build_default_processors(closed_window_enabled, last_n, polling, keep_for_tools, remove_for_tools)` builds the canonical chain.
+
+* **Integration: [`src/ultron/llm/inference.py`](../src/ultron/llm/inference.py) `_build_messages`.** The recent-turn history block is now passed through the processor chain (when `llm.history_compression.enabled=True`, default ON) before being appended to the message list. Fail-open: any compressor exception falls through to the raw history. No effect on the system message, RAG block, or current user message -- only the conversation-history segment.
+
+* **NEW config schema `LLMHistoryCompressionConfig` in [`src/ultron/config.py`](../src/ultron/config.py).** Five knobs: `enabled` (default True), `closed_window_enabled` (default True), `last_n_enabled` (default False), `last_n` (default 5, range 1-100), `last_n_polling` (default 1, range 1-50). Wired into `LLMConfig.history_compression`.
+
+* **NEW [`tests/llm/test_history_processors.py`](../tests/llm/test_history_processors.py) (39 tests):** ClosedWindowHistoryProcessor (11 -- single view kept, repeated collapsed, different files don't interfere, assistant turns not touched, demo passthrough, template override, disabled passthrough, input not mutated, default constant); LastNObservations (12 -- empty input, n/polling validation, last-N kept verbatim, polling stabilises window, first observation always kept, keep/remove tags, line-count in elision, default constant, disabled passthrough, no-observation passthrough, tag container normalisation); TagToolCallObservations (7 -- tags following observation, ignores unmatched tools, multiple calls in one turn, legacy name shape, no-observation noop, disabled passthrough, existing tags preserved); composer (5 -- empty chain copy, runs in order, swallows exceptions, default chain includes closed-window, last-N optional); end-to-end (1 -- collapse-then-elide chain).
+
+---
 
 **2026-05-23 SWE-Agent porting -- batch 1 (T15 + T17 + T10 + T19) -- COMPLETE.** First batch of the SWE-Agent catalog (`F:\reference_repos\catalog\02_swe-agent.md`) lands the foundation primitives that later batches depend on. Three new utility modules under `src/ultron/coding/`, all pure-function or thread-safe state with no runtime wiring required yet. Attribution added to `THIRD_PARTY_NOTICES.md` (MIT, Yang et al. 2024, arXiv 2405.15793). Tests **4848 passing / 16 skipped / 0 failed in ~97 s** (+98 batch 1 tests from baseline 4750).
 
@@ -1738,6 +1755,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── compression.py      ← 4B plan Item 4: heuristic + perplexity-scorer-hook compressor for RAG/web/history (default OFF)
 │       │   ├── context_scoring.py  ← 2026-05-18 Phase 1: adaptive context-window heuristic (default-OFF; ContextRecommendation)
 │       │   ├── draft_model.py      ← 2026-05-22: make_qwen08b_draft_model factory + prefix-cached state machine; llm.draft_kind: "none"|"pld"|"model" selector (default "none")
+│       │   ├── history_processors.py ← 2026-05-23 SWE-Agent batch 2 (T2 + T9): ClosedWindowHistoryProcessor (collapse repeated file-view snapshots) + LastNObservations (elide all but last N with polling for cache stability) + TagToolCallObservations (tag observations by source tool) + apply_history_processors composer + build_default_processors factory; wired into LLMEngine._build_messages history block (default ON, fail-open)
 │       │   └── self_consistency.py ← 4B plan Item 6: N-sample majority-vote driver + aggregators (text/JSON/label) (default OFF)
 │       │
 │       ├── memory/                 ← Phase 3 (original) Qdrant memory + 2026-05 frontier

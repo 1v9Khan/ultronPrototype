@@ -904,11 +904,55 @@ class LLMEngine:
                     int(getattr(mem_cfg, "history_turns_for_llm", mem_cfg.recent_turns)),
                     int(mem_cfg.recent_turns),
                 )
-                for turn in self._memory.recent(history_n):
-                    msgs.append({"role": turn.role, "content": turn.content})
+                history_block = [
+                    {"role": turn.role, "content": turn.content}
+                    for turn in self._memory.recent(history_n)
+                ]
             else:
-                for role, content in self._history:
-                    msgs.append({"role": role, "content": content})
+                history_block = [
+                    {"role": role, "content": content}
+                    for role, content in self._history
+                ]
+            # 2026-05-23 SWE-Agent batch 2 (T2 closed-window + T9
+            # last-N): compress redundant file-view snapshots in the
+            # history block before appending. Pure-text history (the
+            # voice path's recent turns) typically has no file-view
+            # headers so the processors are no-ops -- but coding
+            # sessions that pull file content into the conversation
+            # benefit measurably. Default ON; the config knob lives
+            # under ``llm.history_compression``.
+            try:
+                llm_cfg = get_config().llm
+                compress_cfg = getattr(llm_cfg, "history_compression", None)
+            except Exception:
+                compress_cfg = None
+            if compress_cfg is not None and getattr(
+                compress_cfg, "enabled", False
+            ):
+                try:
+                    from ultron.llm.history_processors import build_default_processors, apply_history_processors
+
+                    procs = build_default_processors(
+                        closed_window_enabled=bool(
+                            getattr(compress_cfg, "closed_window_enabled", True)
+                        ),
+                        last_n=(
+                            int(getattr(compress_cfg, "last_n", 0))
+                            if getattr(compress_cfg, "last_n_enabled", False)
+                            else None
+                        ),
+                        polling=int(getattr(compress_cfg, "last_n_polling", 1)),
+                    )
+                    if procs:
+                        history_block = list(
+                            apply_history_processors(history_block, procs)
+                        )
+                except Exception:
+                    # Fail-open: any compressor exception leaves the
+                    # raw history block untouched.
+                    pass
+            for entry in history_block:
+                msgs.append({"role": entry.get("role", "user"), "content": entry.get("content", "")})
 
         if rag_block and rag_position == "recency":
             user_content = rag_block.lstrip("\n") + "\n\n" + user_message

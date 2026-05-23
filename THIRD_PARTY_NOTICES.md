@@ -55,6 +55,7 @@ ultron's bus + supervisor + safety-validator stack.
 | `src/ultron/coding/sentinels.py` | `tools/submit/bin/submit`, `tools/forfeit/bin/exit_forfeit`, `tools/windowed_edit_replace/bin/edit` | Pair-marker + single-fire sentinel parser (T17). Strings namespaced to `ULTRON_*` to avoid clashing with any SWE-Agent harness that happens to share a process. |
 | `src/ultron/coding/observation_format.py` | `config/bash_only.yaml:next_step_truncated_observation_template`, `config/default.yaml:next_step_no_output_template` | Truncated-observation head + tail + elided-chars template (T10); empty-output explicit message (T19). |
 | `src/ultron/coding/session_registry.py` | `tools/registry/lib/registry.py:EnvRegistry` | Per-session JSON registry (T15). Ultron version adds per-session isolation, thread-safe RLock, atomic temp-file writes, transactions, and per-key TTL. |
+| `src/ultron/llm/history_processors.py` | `sweagent/agent/history_processors.py` (ClosedWindowHistoryProcessor + LastNObservations + TagToolCallObservations) | History-shape compression (T2 + T9). File-view + line-block regex patterns are verbatim ports; polling-aware elision algorithm is verbatim; ultron version adds composer + build_default_processors factory + integration into LLMEngine._build_messages. |
 
 ### MIT License (verbatim)
 
