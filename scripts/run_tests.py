@@ -494,6 +494,14 @@ class _Watchdog:
         while not self._stop_event.is_set():
             if self._stop_event.wait(WATCHDOG_POLL_INTERVAL_SECONDS):
                 return
+            # Subprocess exit check FIRST -- a fast sweep can finish
+            # before the heartbeat file ever gets written. Checking
+            # staleness against a stale-from-the-previous-run heartbeat
+            # would then mis-fire the watchdog. Without this guard the
+            # watchdog kills an already-exited pytest and the wrapper
+            # reports exit 3 for a green sweep.
+            if self._proc.poll() is not None:
+                return
             # Wall-clock deadline
             elapsed = time.monotonic() - self._started_at
             if elapsed > self._max_runtime_seconds:
@@ -503,9 +511,6 @@ class _Watchdog:
             stale = self._heartbeat_staleness()
             if stale is not None and stale > self._stale_heartbeat_seconds:
                 self._fire("heartbeat", stale)
-                return
-            # Subprocess might exit cleanly; stop polling if so.
-            if self._proc.poll() is not None:
                 return
 
     def _heartbeat_staleness(self) -> Optional[float]:
@@ -755,6 +760,19 @@ def main(argv: list[str]) -> int:
           f"stale-heartbeat threshold: {args.stale_heartbeat:.0f}s")
     print()
     print("-" * 70)
+
+    # Clear stale observability files from prior runs so the watchdog
+    # never sees a heartbeat mtime older than this sweep's pytest_sessionstart.
+    # Without this, a previous run's heartbeat lingering on disk causes the
+    # watchdog to mis-fire on fast sweeps that finish before the conftest's
+    # pytest_sessionstart hook has run.
+    for stale_path in (HEARTBEAT_PATH, CURRENT_TEST_PATH, PROGRESS_LOG_PATH):
+        try:
+            stale_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"  (could not clear {stale_path.name}: {e}; continuing)")
 
     t0 = time.monotonic()
     try:
