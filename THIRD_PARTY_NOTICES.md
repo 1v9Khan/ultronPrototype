@@ -35,6 +35,26 @@ short attribution header. These query files are configuration data describing
 how to extract symbol definitions and references from a parsed AST, not
 executable source code.
 
+## OpenHands (MIT License)
+
+Repository: https://github.com/All-Hands-AI/OpenHands
+License: MIT (the portions of OpenHands outside of `enterprise/` are MIT-licensed;
+a copy of the MIT text is included in the SWE-Agent section below).
+
+The following ultron components are clean-room re-implementations whose
+*approach* is informed by the corresponding OpenHands V1 app-server modules.
+Algorithm shapes and contract names are adapted; no source code is copied
+verbatim. Ultron's versions are restructured to fit the voice-first,
+single-host, native-Windows runtime (OpenHands is multi-user web-server +
+Docker sandbox; the patterns being borrowed are the orchestration layer,
+not the execution layer).
+
+| Ultron component | Inspired by | Notes |
+| --- | --- | --- |
+| `src/ultron/parsing/frontmatter.py` | `openhands/app_server/user/skills_router.py:_parse_skill_frontmatter` + `_load_skills_from_dir` | Fail-open YAML frontmatter parser (T11). Ultron's version returns both the parsed mapping AND the post-frontmatter body in a frozen :class:`FrontmatterResult`, handles the empty-frontmatter edge case (`---\n---\nbody`), tolerates CRLF line endings, and ships a directory walker with skip-dir + skip-filename filters. |
+| `src/ultron/utils/poll.py` | `openhands/app_server/event_callback/set_title_callback_processor.py:_poll_for_title` | Bounded-retry polling primitive (T14). Default `max_attempts=4`, `delay_seconds=3.0` mirror the OpenHands constants. Ultron's version generalises to arbitrary callables (sync + async), supports a custom `is_done` predicate, optional exponential backoff with ceiling, and an async-only `cancel_check` for "voice resumed -- abandon" semantics. |
+| `src/ultron/install/idempotent.py` | `openhands/app_server/app_conversation/app_conversation_service_base.py:maybe_setup_git_hooks` | Marker-comment idempotent installer (T8). Ultron's marker is `# INSTALLED-BY-ULTRON-3f9a7d2` (UUID-suffixed per the catalog's marker-collision mitigation). Atomic write via tmp + `os.replace`; best-effort audit log at `logs/install_log.jsonl`; explicit refuse-vs-preserve-vs-replace policy for unmarked existing files; `dry_run` mode for safe pre-flight. |
+
 ## SWE-Agent (MIT License)
 
 Repository: https://github.com/SWE-agent/SWE-agent

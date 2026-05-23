@@ -10,14 +10,12 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `73fafba` on `origin/main` (doc bump synchronising
-> this file with the SWE-Agent T1-T20 catalog port; feature work landed
-> at `8fe8701` and earlier).
-> Tests **5215 passing / 16 skipped / 0 failed in ~93 s** via
-> `scripts/run_tests.py` (prior baseline 4750 + 98 batch 1 + 39
-> batch 2 + 114 batch 3 + 58 batch 4 + 22 batch 5 + 86 batch 6 +
-> 48 batch 7 (T16 click preview + T18 image markdown) -- SWE-Agent
-> catalog T1-T20 all landed).
+> **Validating HEAD:** `bbced3a` on `origin/main` (the OpenHands batch 1
+> feature work lands on top -- doc bumped post-batch on the next commit).
+> Tests **5281 passing / 16 skipped / 0 failed in ~97 s** via
+> `scripts/run_tests.py` (prior baseline 5215 + 22 frontmatter + 24
+> poll + 20 idempotent installer -- OpenHands catalog batch 1
+> foundation primitives T11 + T14 + T8 all landed).
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -33,6 +31,18 @@
 > the commit — don't bypass with `--no-verify`. The full hygiene
 > contract lives in the local-only `CLAUDE.md` orientation file and
 > the auto-loaded `MEMORY.md` index.
+
+**2026-05-23 OpenHands porting -- batch 1 (T11 frontmatter + T14 polling + T8 idempotent installer) -- COMPLETE.** Foundation primitives for the OpenHands catalog port. Three new modules under `src/ultron/parsing/`, `src/ultron/utils/`, and `src/ultron/install/` providing the fail-open building blocks the later batches (skills, event store, callbacks, condensers, start tasks, pending message queue, project discovery) depend on. Tests **5281 passing / 16 skipped / 0 failed in ~97 s** (+66 batch 1 tests from 5215).
+
+* **NEW [`src/ultron/parsing/frontmatter.py`](../src/ultron/parsing/frontmatter.py) (T11).** Fail-open YAML frontmatter parser. `parse_frontmatter(path)` and `parse_frontmatter_text(text)` return a frozen :class:`FrontmatterResult` with both the parsed mapping and the post-frontmatter body. Every error path (missing file, decode error, invalid YAML, non-mapping at top level, missing closing delimiter) returns a populated result with `error` set rather than raising. `walk_directory_with_frontmatter(dir, extensions, recursive, skip_directories, skip_filenames)` swallows per-file errors so one bad file never breaks discovery. Defaults skip `.git/`, `node_modules/`, `__pycache__/`, `.venv/`, READMEs. Edge case handled: empty frontmatter block `---\n---\nbody` returns `frontmatter={}` (not error).
+
+* **NEW [`src/ultron/utils/poll.py`](../src/ultron/utils/poll.py) (T14).** Bounded-retry polling primitive. Both sync (`poll_until`) and async (`apoll_until`) variants. Defaults `max_attempts=4`, `delay_seconds=3.0` matching the OpenHands `_poll_for_title` shape. Custom `is_done` predicate (default: "non-None is acceptable"); exponential `backoff_factor` with `max_delay_seconds` ceiling; `swallow_exceptions=True` default with WARN logging; optional `cancel_check` callable on the async variant for "voice resumed -- abandon" abort. Returns frozen :class:`PollResult` with `succeeded`, `attempts`, `elapsed_seconds`, `last_error`.
+
+* **NEW [`src/ultron/install/idempotent.py`](../src/ultron/install/idempotent.py) (T8).** Marker-comment-detecting idempotent file installer. `install_with_marker(target_path, content, marker=DEFAULT_MARKER, preserve_existing_as=None, replace_unmarked=False, dry_run=False)` -> :class:`InstallResult`. `DEFAULT_MARKER = "# INSTALLED-BY-ULTRON-3f9a7d2"` (UUID-suffixed to defend against catalog's documented foot-gun). Five `InstallAction` outcomes: INSTALLED / SKIPPED_ALREADY_MARKED / REPLACED_UNMARKED / MOVED_THEN_INSTALLED / DRY_RUN. Atomic writes via tmp + `os.replace`. Best-effort audit log JSONL at `logs/install_log.jsonl` (configurable via `set_install_log_writer`). Refuses to overwrite unmarked existing files unless `preserve_existing_as` or `replace_unmarked=True` is explicitly set.
+
+* **Three new test files (66 tests):** [`tests/parsing/test_frontmatter.py`](../tests/parsing/test_frontmatter.py) (22 -- no fm passthrough, well-formed parse, invalid YAML preserves body, missing closing delimiter, non-mapping rejected, empty fm == {}, get() helper, file read + missing file + decode error, walker yields per-file, walker skips READMEs / default-skip dirs, walker non-recursive, walker custom extensions, walker swallows per-file parse error, walker missing root returns [], CRLF line endings, str path accepted, constants pinned, frozen dataclass); [`tests/utils/test_poll.py`](../tests/utils/test_poll.py) (24 -- sync + async happy / eventual / all-fail paths, custom predicate, exception caught vs swallow disabled, invalid inputs raise, default constants pin, label in logs, async cancel_check aborts early, async CancelledError propagates, exponential backoff with ceiling, zero-delay fast); [`tests/install/test_idempotent.py`](../tests/install/test_idempotent.py) (20 -- install to missing, skip when marked, preserve unmarked, replace_unmarked=True, refuse unmarked without consent, dry_run, custom marker, warning when content lacks marker, creates parents, extra metadata preserved, audit log writes / records skip / records move, audit failure swallowed, set_install_log_writer swap, frozen result, unreadable existing recorded as error, string paths accepted, log entry shape).
+
+---
 
 **2026-05-23 SWE-Agent porting -- batch 7 (T16 click preview + T18 image markdown) -- COMPLETE.** Two new modules: VLM-confirmed desktop click preview with confidence-gated auto-pass, and image-as-base64-markdown encoding + multimodal-segment parser. Closes the SWE-Agent catalog T1-T20. Tests **5215 passing / 16 skipped / 0 failed in ~93 s** (+48 batch 7 tests from 5167).
 
@@ -1956,9 +1966,23 @@ For the current decisions and Foundation phase status see
 │       │   ├── fail_open_log.py    ← 2026-05-22: per-session fail-open counter (JSONL log to logs/fail_open_counts.jsonl; previous-session summary on startup)
 │       │   └── phrases.py          ← phrase_for() (shuffled phrase pool per failure mode)
 │       │
+│       ├── parsing/                ← 2026-05-23 OpenHands batch 1 (T11): fail-open YAML frontmatter parser
+│       │   ├── __init__.py         ← Public API re-exports
+│       │   └── frontmatter.py      ← parse_frontmatter(path) + parse_frontmatter_text(text) + walk_directory_with_frontmatter helper; frozen FrontmatterResult with body + frontmatter + error
+│       │
+│       ├── install/                ← 2026-05-23 OpenHands batch 1 (T8): idempotent marker-comment installer
+│       │   ├── __init__.py         ← Public API re-exports incl. DEFAULT_MARKER
+│       │   └── idempotent.py       ← install_with_marker(target, content, marker, preserve_existing_as, replace_unmarked, dry_run) -> InstallResult with InstallAction enum; atomic writes; logs/install_log.jsonl audit log
+│       │
 │       └── utils/
 │           ├── fairseq_compat.py   ← Workarounds for fairseq dataclass + torch.load issues
-│           └── logging.py          ← configure_logging(), get_logger() (rotating file + console)
+│           ├── logging.py          ← configure_logging(), get_logger() (rotating file + console)
+│           ├── mtime_cache.py      ← aider catalog batch 1 (T-supporting): SQLite + dict-fallback mtime-keyed cache
+│           ├── token_budget.py     ← aider catalog batch 1: binary-search-to-budget with tolerance
+│           ├── snapshot_guard.py   ← aider catalog batch 1: snapshot-identity race protection
+│           ├── relative_indent.py  ← aider catalog batch 1: indent-relative text transform
+│           ├── spinner.py          ← aider catalog batch 11 (T11): ASCII bounce spinner with cursor-stagger continuity
+│           └── poll.py             ← 2026-05-23 OpenHands batch 1 (T14): poll_until + apoll_until bounded-retry helpers with custom is_done predicate + exponential backoff + cancel_check
 │
 ├── config/
 │   ├── __init__.py                 ← (empty)
@@ -2098,6 +2122,9 @@ For the current decisions and Foundation phase status see
 │   ├── eval/                       ← 2026-05-18 Phase 0 build: classifier-only eval harness
 │   │   ├── corpus.jsonl            ← 60-row labeled routing / addressing / web-gate corpus
 │   │   └── test_eval_harness_*.py
+│   ├── install/                    ← 2026-05-23 OpenHands batch 1 (T8): idempotent installer tests
+│   │   ├── __init__.py
+│   │   └── test_idempotent.py      ← 20 tests: install / skip / preserve / replace / dry_run / custom marker / audit log / unreadable error / string paths
 │   ├── memory/                     ← Memory subsystem unit tests (was 2026-05-19 onward; reranker / contextualizer / qdrant store / topic / discourse)
 │   │   └── (test_qdrant_*, test_memory_qdrant.py at top-level, etc.)
 │   ├── observations/               ← 2026-05-18 Phase 1 observation framework tests
@@ -2105,6 +2132,9 @@ For the current decisions and Foundation phase status see
 │   │   ├── test_integrations.py
 │   │   ├── test_outcome_resolver.py
 │   │   └── test_lineage_overlap.py
+│   ├── parsing/                    ← 2026-05-23 OpenHands batch 1 (T11): frontmatter parser tests
+│   │   ├── __init__.py
+│   │   └── test_frontmatter.py     ← 22 tests: parse / walk / fail-open / CRLF / empty fm / missing closer / non-mapping / decode error / custom extensions / skip dirs / frozen
 │   ├── routing/                    ← Phase 5 + 2026-05 extensions: classifier + dispatcher + decomposer + ambiguity + gaming_mode + decision_log + dispatcher_a1_c3
 │   │   ├── conftest.py
 │   │   ├── test_classifier.py      ← Top-level classifier with 23 RoutingIntentKind branches + 2026-05-22 _NAVIGATE_TO_SITE + _OPEN_LAST_SOURCE_AMBIGUOUS lists
@@ -2134,19 +2164,27 @@ For the current decisions and Foundation phase status see
 │   │   ├── test_addressing_pipeline.py
 │   │   ├── test_error_recovery_pipeline.py
 │   │   └── test_bridge_e2e.py      ← OpenClaw Phase 3 bridge e2e (real subprocess against stub CLI)
-│   └── openclaw_bridge/            ← OpenClaw Phases 3–13 bridge tests (158 tests)
+│   ├── openclaw_bridge/            ← OpenClaw Phases 3–13 bridge tests (158 tests)
+│   │   ├── __init__.py
+│   │   ├── test_client.py          ← OpenClawClient: subprocess transport + result parsing
+│   │   ├── test_workspace.py       ← WorkspaceWriter: atomic + filelock + concurrency
+│   │   ├── test_events.py          ← OpenClawEventReceiver: prefix matching + dispatch
+│   │   ├── test_mcp_registration.py ← UltronMcpRegistrar: idempotent + retry
+│   │   ├── test_holder.py          ← OpenClawBridge: from_config / start / shutdown / fire_and_forget / record_heartbeat_alert / auto-resolve
+│   │   ├── test_notifications.py   ← NotificationDispatcher: per-event gating + recipient resolution + transport errors
+│   │   ├── test_heartbeat_alerts.py ← HeartbeatAlertLog: record / get / acknowledge / prune / concurrency
+│   │   ├── test_browser.py         ← BrowserTool: six primitives + result extraction edge cases
+│   │   ├── test_mcp_tools.py       ← Stdio MCP tools (+ Phase 11 desktop MCP tools)
+│   │   ├── test_mcp_tools_desktop.py    ← Phase 11 19 desktop MCP tools
+│   │   └── test_system_status.py   ← SystemStatusReporter: alerts / projects / all foci + voice rendering
+│   └── utils/                      ← Foundation primitives test suite
 │       ├── __init__.py
-│       ├── test_client.py          ← OpenClawClient: subprocess transport + result parsing
-│       ├── test_workspace.py       ← WorkspaceWriter: atomic + filelock + concurrency
-│       ├── test_events.py          ← OpenClawEventReceiver: prefix matching + dispatch
-│       ├── test_mcp_registration.py ← UltronMcpRegistrar: idempotent + retry
-│       ├── test_holder.py          ← OpenClawBridge: from_config / start / shutdown / fire_and_forget / record_heartbeat_alert / auto-resolve
-│       ├── test_notifications.py   ← NotificationDispatcher: per-event gating + recipient resolution + transport errors
-│       ├── test_heartbeat_alerts.py ← HeartbeatAlertLog: record / get / acknowledge / prune / concurrency
-│       ├── test_browser.py         ← BrowserTool: six primitives + result extraction edge cases
-│       ├── test_mcp_tools.py       ← Stdio MCP tools (+ Phase 11 desktop MCP tools)
-│       ├── test_mcp_tools_desktop.py    ← Phase 11 19 desktop MCP tools
-│       └── test_system_status.py   ← SystemStatusReporter: alerts / projects / all foci + voice rendering
+│       ├── test_mtime_cache.py     ← aider catalog batch 1 (11 tests)
+│       ├── test_token_budget.py    ← aider catalog batch 1 (13 tests)
+│       ├── test_snapshot_guard.py  ← aider catalog batch 1 (17 tests)
+│       ├── test_relative_indent.py ← aider catalog batch 1 (15 tests)
+│       ├── test_spinner.py         ← aider catalog batch 11 (17 tests)
+│       └── test_poll.py            ← 2026-05-23 OpenHands batch 1 (T14): 24 tests covering sync + async + backoff + cancel_check
 │
 ├── data/                           ← runtime data (gitignored except for stub structure)
 │   ├── qdrant/                     ← embedded Qdrant store (4 collections: conversations, facts, web_results, projects)
