@@ -396,6 +396,25 @@ def strip_thinking_text(text: str) -> str:
     return "".join(out).strip()
 
 
+def _resolve_current_mode_for_skills() -> str:
+    """Return ``"gaming"`` when gaming mode is engaged, else ``"standby"``.
+
+    Used by ``_build_messages`` to thread the current mode into
+    ``maybe_get_skills_block`` so the skill registry can filter on
+    mode-scoped manifests. Fail-open: any import / lookup error
+    returns ``"standby"`` so the legacy unfiltered path stays the
+    default.
+    """
+    try:
+        from ultron.openclaw_routing.gaming_mode import is_gaming_mode_active
+    except Exception:  # noqa: BLE001
+        return "standby"
+    try:
+        return "gaming" if is_gaming_mode_active() else "standby"
+    except Exception:  # noqa: BLE001
+        return "standby"
+
+
 class LLMEngine:
     """LLM client with chat history.
 
@@ -836,10 +855,19 @@ class LLMEngine:
         # prepend their bodies to the system prompt for THIS turn only.
         # Fail-open: any error returns an empty string, leaving the
         # system prompt byte-identical to the pre-skills path.
+        #
+        # 2026-05-26 (openclaw-clawhub T5 wiring) -- thread current
+        # mode ("gaming"/"standby") so the registry filters skills
+        # whose frontmatter ``modes`` excludes the current mode.
+        # ``GamingModeManager`` is the source of truth via the
+        # process-global ``is_gaming_mode_active`` flag.
         try:
             from ultron.skills import maybe_get_skills_block
 
-            skills_block = maybe_get_skills_block(user_message)
+            current_mode = _resolve_current_mode_for_skills()
+            skills_block = maybe_get_skills_block(
+                user_message, mode=current_mode,
+            )
         except Exception:
             skills_block = ""
         if skills_block:

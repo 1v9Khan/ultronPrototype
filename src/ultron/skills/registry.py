@@ -222,7 +222,12 @@ class SkillRegistry:
 
     # -- matching --
 
-    def matching_skills(self, user_text: str) -> list[SkillMatch]:
+    def matching_skills(
+        self,
+        user_text: str,
+        *,
+        mode: str = "standby",
+    ) -> list[SkillMatch]:
         """Return the skills the registry would inject for ``user_text``.
 
         Always-on skills are always included (the orchestrator can
@@ -230,16 +235,28 @@ class SkillRegistry:
         Trigger-matching skills add their match if and only if the
         trigger matches AND the skill isn't on the disabled list.
 
+        2026-05-26 (openclaw-clawhub catalog T5 wiring):
+        ``mode`` filters out skills whose frontmatter ``modes`` list
+        excludes the current mode. ``"standby"`` (the default) +
+        ``"gaming"`` are the two ultron modes today. A skill with no
+        ``modes`` declaration matches every mode (legacy
+        compatibility). Useful for gaming-mode where a coding skill
+        with a heavy system prompt would burn budget the user doesn't
+        want spent.
+
         At most :attr:`_max_matches_per_turn` non-always-on skills are
         returned, in source-precedence order then by name.
         """
 
         self._maybe_reload_if_stale()
+        normalised_mode = (mode or "standby").lower().strip()
         results: list[SkillMatch] = []
         triggered_results: list[SkillMatch] = []
         with self._lock:
             for skill in self._cache.values():
                 if skill.name.lower() in self._disabled_skills:
+                    continue
+                if not _skill_active_in_mode(skill, normalised_mode):
                     continue
                 if skill.is_always_on:
                     results.append(SkillMatch(skill=skill, matched_terms=()))
@@ -259,15 +276,46 @@ class SkillRegistry:
         return results + triggered_results
 
     @staticmethod
-    def _terms_matching(skill: Skill, user_text: str) -> tuple[str, ...]:
-        trigger = skill.trigger
-        if isinstance(trigger, KeywordTrigger):
-            if user_text and len(user_text) < trigger.min_user_text_chars:
-                return ()
-            return find_matched_keywords(user_text, trigger.keywords)
-        if isinstance(trigger, TaskTrigger):
-            return find_matched_commands(user_text, trigger.commands)
-        return ()
+    def _terms_matching(skill: Skill, user_text: str) -> tuple[str, ...]:  # noqa: D401
+        return _terms_matching_inner(skill, user_text)
+
+
+def _skill_active_in_mode(skill: Skill, mode: str) -> bool:
+    """Return True iff ``skill`` should be active in ``mode``.
+
+    Reads the optional ``modes`` list from ``skill.extra`` (sourced
+    from frontmatter at load time). A skill with no declaration
+    matches every mode (legacy / unscoped). When the declaration is
+    present it must contain ``mode`` (case-insensitive) for the
+    skill to be active.
+    """
+    extra = getattr(skill, "extra", None) or {}
+    raw = extra.get("modes")
+    if raw is None:
+        return True
+    if isinstance(raw, str):
+        # Tolerate a single string in addition to the list form.
+        modes = [raw]
+    elif isinstance(raw, (list, tuple)):
+        modes = list(raw)
+    else:
+        # Unknown shape -> fail-open (skill stays active).
+        return True
+    normalised = {str(m).lower().strip() for m in modes if m is not None}
+    if not normalised:
+        return True
+    return mode.lower().strip() in normalised
+
+
+def _terms_matching_inner(skill: Skill, user_text: str) -> tuple[str, ...]:
+    trigger = skill.trigger
+    if isinstance(trigger, KeywordTrigger):
+        if user_text and len(user_text) < trigger.min_user_text_chars:
+            return ()
+        return find_matched_keywords(user_text, trigger.keywords)
+    if isinstance(trigger, TaskTrigger):
+        return find_matched_commands(user_text, trigger.commands)
+    return ()
 
 
 # -- module-level singleton accessor --
@@ -359,6 +407,7 @@ def maybe_get_skills_block(
     *,
     leading_label: str = "Skills",
     max_chars: int | None = None,
+    mode: str = "standby",
 ) -> str:
     """Return the formatted skills block for ``user_text`` (or empty).
 
@@ -366,6 +415,10 @@ def maybe_get_skills_block(
     addendum if any skills match, otherwise nothing". When no module-
     level registry is set OR the registry returns no matches, returns
     ``""`` so callers can concatenate unconditionally.
+
+    ``mode`` (default ``"standby"``) is forwarded to
+    :meth:`SkillRegistry.matching_skills` so the caller can ask for
+    the gaming-mode-only catalog when ``GamingModeManager`` is engaged.
 
     Every error is swallowed (fail-open) -- a malformed skill catalog
     must never break the voice loop. The catalog's `min_user_text_chars`
@@ -376,7 +429,7 @@ def maybe_get_skills_block(
         registry = get_skill_registry()
         if registry is None:
             return ""
-        matches = registry.matching_skills(user_text)
+        matches = registry.matching_skills(user_text, mode=mode)
         if not matches:
             return ""
         return format_skills_block(
