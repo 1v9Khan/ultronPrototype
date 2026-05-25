@@ -806,3 +806,79 @@ def test_input_impls_validator_block_propagates(monkeypatch):
     out = mouse_click_impl(x=100, y=200)
     assert out["success"] is False
     assert "safety" in (out.get("error") or "")
+
+
+# ---------------------------------------------------------------------------
+# Catalog 09 T1 / T3 / T7 -- new kwargs on existing impls
+# ---------------------------------------------------------------------------
+
+
+def test_scroll_impl_forwards_direction_horizontal(monkeypatch):
+    fake = _patch_input_controller(
+        monkeypatch, result_kwargs={"success": True, "action": "scroll"},
+    )
+    out = scroll_impl(amount=80, direction="horizontal", x=200, y=300)
+    assert out["success"] is True
+    _, kwargs = fake.scroll.call_args
+    assert kwargs["direction"] == "horizontal"
+    assert kwargs["amount"] == 80
+
+
+def test_scroll_impl_default_direction_is_vertical(monkeypatch):
+    """Existing scroll callers that omit direction must still get
+    vertical scroll (back-compat)."""
+    fake = _patch_input_controller(
+        monkeypatch, result_kwargs={"success": True, "action": "scroll"},
+    )
+    out = scroll_impl(amount=120)
+    assert out["success"] is True
+    _, kwargs = fake.scroll.call_args
+    assert kwargs["direction"] == "vertical"
+
+
+def test_type_text_impl_forwards_wpm(monkeypatch):
+    fake = _patch_input_controller(
+        monkeypatch, result_kwargs={"success": True, "action": "type_text"},
+    )
+    out = type_text_impl(text="hello world", wpm=80)
+    assert out["success"] is True
+    _, kwargs = fake.type_text.call_args
+    assert kwargs["wpm"] == 80
+    assert kwargs["text"] == "hello world"
+
+
+def test_type_text_impl_default_wpm_is_none(monkeypatch):
+    """Back-compat: omitting wpm preserves the legacy interval_s
+    contract -- the controller sees wpm=None and falls through to
+    the caller-supplied interval."""
+    fake = _patch_input_controller(
+        monkeypatch, result_kwargs={"success": True, "action": "type_text"},
+    )
+    out = type_text_impl(text="hi", interval_s=0.02)
+    assert out["success"] is True
+    _, kwargs = fake.type_text.call_args
+    assert kwargs.get("wpm") is None
+    assert kwargs["interval_s"] == pytest.approx(0.02)
+
+
+def test_mouse_move_impl_forwards_smooth(monkeypatch):
+    fake = _patch_input_controller(
+        monkeypatch, result_kwargs={"success": True, "action": "move_mouse"},
+    )
+    out = mouse_move_impl(x=100, y=200, duration_s=0.4, smooth=True)
+    assert out["success"] is True
+    _, kwargs = fake.move_mouse.call_args
+    assert kwargs["smooth"] is True
+    assert kwargs["duration_s"] == pytest.approx(0.4)
+
+
+def test_mouse_move_impl_default_smooth_is_false(monkeypatch):
+    """Back-compat: existing mouse_move callers without smooth keep
+    using the default linear move."""
+    fake = _patch_input_controller(
+        monkeypatch, result_kwargs={"success": True, "action": "move_mouse"},
+    )
+    out = mouse_move_impl(x=10, y=20)
+    assert out["success"] is True
+    _, kwargs = fake.move_mouse.call_args
+    assert kwargs["smooth"] is False

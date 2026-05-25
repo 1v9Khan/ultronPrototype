@@ -323,20 +323,46 @@ class InputController:
         y: int,
         *,
         duration_s: float = 0.1,
+        smooth: bool = False,
         user_text: str = "",
     ) -> InputControlResult:
-        """Move the cursor to (x, y). Duration smooths the motion."""
+        """Move the cursor to (x, y). Duration smooths the motion.
+
+        Catalog 09 T7 (GREEN): when ``smooth=True`` AND ``duration_s > 0``
+        the move uses a quadratic ease-in / ease-out tween
+        (:func:`pyautogui.easeInOutQuad`) so the cursor follows a
+        bezier-shaped acceleration-then-deceleration curve rather than
+        a straight constant-velocity line. Useful for gaming-mode
+        anti-detection (some anti-cheat heuristics flag teleporting
+        cursors) and demo-mode narration where the user is watching
+        the cursor move. With ``smooth=False`` (default, back-compat)
+        or ``duration_s=0``, pyautogui's default linear motion is used.
+        """
+        args = {
+            "x": int(x),
+            "y": int(y),
+            "duration_s": float(duration_s),
+            "smooth": bool(smooth),
+        }
         gate = self._gate(
             action="move_mouse",
-            arguments={"x": int(x), "y": int(y), "duration_s": float(duration_s)},
+            arguments=args,
             user_text=user_text,
         )
         if gate is not None:
             return gate
+        clamped_duration = max(0.0, float(duration_s))
         try:
-            pyautogui.moveTo(
-                int(x), int(y), duration=max(0.0, float(duration_s)),
-            )
+            if smooth and clamped_duration > 0:
+                pyautogui.moveTo(
+                    int(x), int(y),
+                    duration=clamped_duration,
+                    tween=pyautogui.easeInOutQuad,
+                )
+            else:
+                pyautogui.moveTo(
+                    int(x), int(y), duration=clamped_duration,
+                )
         except Exception as e:  # noqa: BLE001
             return InputControlResult(
                 success=False, action="move_mouse", error=str(e)[:200],
@@ -418,12 +444,29 @@ class InputController:
         text: str,
         *,
         interval_s: float = 0.0,
+        wpm: Optional[int] = None,
         user_text: str = "",
     ) -> InputControlResult:
         """Type a string at the current focus.
 
         Use :meth:`ultron.desktop.uia.type_text_into_element` for
         targeting a specific UI element semantically.
+
+        Catalog 09 T3 (GREEN): optional ``wpm`` kwarg overrides
+        ``interval_s`` with a human-cadence per-character delay. The
+        conversion uses the standard 5-characters-per-word assumption:
+
+            chars_per_second = (wpm * 5) / 60
+            interval_s       = 1.0 / chars_per_second
+
+        Some web forms with JavaScript validators and remote desktop
+        sessions reject instant input (``interval_s=0``). 60-80 WPM
+        passes most rate detectors. The voice-side intent surface
+        maps "type slowly" -> 30 WPM, "type normally" -> 60 WPM,
+        "type fast" -> 120 WPM. Non-positive ``wpm`` values are
+        rejected (the upstream plugin's bare division would raise
+        ``ZeroDivisionError`` -- ultron returns a structured error
+        instead).
         """
         if not isinstance(text, str):
             return InputControlResult(
@@ -432,12 +475,27 @@ class InputController:
         if not text:
             return InputControlResult(success=True, action="type_text")
 
+        # T3: convert WPM -> per-character interval. wpm takes priority
+        # over interval_s when both are supplied (matches the upstream
+        # plugin's contract). Guard against wpm <= 0 -- the upstream's
+        # bare ``1.0 / ((wpm * 5) / 60)`` would raise on 0 and produce
+        # a negative interval on negative values.
+        effective_interval = float(interval_s)
+        if wpm is not None:
+            if wpm <= 0:
+                return InputControlResult(
+                    success=False, action="type_text",
+                    error=f"wpm must be positive, got {wpm}",
+                )
+            effective_interval = 1.0 / ((float(wpm) * 5.0) / 60.0)
+
         gate = self._gate(
             action="type_text",
             arguments={
                 "text_preview": text[:120],
                 "length": len(text),
-                "interval_s": float(interval_s),
+                "interval_s": effective_interval,
+                "wpm": int(wpm) if wpm is not None else None,
             },
             user_text=user_text,
         )
@@ -445,7 +503,7 @@ class InputController:
             return gate
 
         try:
-            pyautogui.write(text, interval=max(0.0, float(interval_s)))
+            pyautogui.write(text, interval=max(0.0, effective_interval))
         except Exception as e:  # noqa: BLE001
             return InputControlResult(
                 success=False, action="type_text", error=str(e)[:200],
@@ -624,16 +682,35 @@ class InputController:
         self,
         amount: int,
         *,
+        direction: str = "vertical",
         x: Optional[int] = None,
         y: Optional[int] = None,
         user_text: str = "",
     ) -> InputControlResult:
-        """Scroll up (positive ``amount``) or down (negative) at (x, y) or
-        the current cursor location.
+        """Scroll the wheel at ``(x, y)`` or current cursor location.
 
-        ``amount`` is in OS-specific scroll units (typically ~120 per notch).
+        Catalog 09 T1 (YELLOW): supports both vertical and horizontal
+        axis via the ``direction`` kwarg. ``direction="vertical"`` (the
+        default, back-compat) dispatches to :func:`pyautogui.scroll`;
+        ``direction="horizontal"`` dispatches to
+        :func:`pyautogui.hscroll`. Catalog T5 browser-content
+        extraction can read static UIA text but cannot scroll the
+        browser to load lazy content -- T1 scroll closes that gap.
+
+        ``amount`` is in OS-specific scroll units (typically ~120 per
+        notch). Positive scrolls up (vertical) or left (horizontal);
+        negative scrolls down or right, following pyautogui's
+        convention. Unlike the upstream plugin which silently falls
+        through unknown direction strings to ``hscroll``, ultron
+        rejects unknown values with a structured error.
         """
-        args: dict = {"amount": int(amount)}
+        if direction not in ("vertical", "horizontal"):
+            return InputControlResult(
+                success=False, action="scroll",
+                error=f"unknown direction {direction!r}; "
+                      "must be 'vertical' or 'horizontal'",
+            )
+        args: dict = {"amount": int(amount), "direction": direction}
         if x is not None:
             args["x"] = int(x)
         if y is not None:
@@ -644,11 +721,23 @@ class InputController:
         if gate is not None:
             return gate
         try:
-            pyautogui.scroll(
-                int(amount),
-                x=int(x) if x is not None else None,
-                y=int(y) if y is not None else None,
-            )
+            if direction == "horizontal":
+                # pyautogui.hscroll positions at (x, y) when both are
+                # provided; matches the vertical-scroll calling
+                # convention. The upstream plugin moves the cursor
+                # first with moveTo and then scrolls -- pyautogui
+                # already does the equivalent via the x/y kwargs.
+                pyautogui.hscroll(
+                    int(amount),
+                    x=int(x) if x is not None else None,
+                    y=int(y) if y is not None else None,
+                )
+            else:
+                pyautogui.scroll(
+                    int(amount),
+                    x=int(x) if x is not None else None,
+                    y=int(y) if y is not None else None,
+                )
         except Exception as e:  # noqa: BLE001
             return InputControlResult(
                 success=False, action="scroll", error=str(e)[:200],

@@ -1008,9 +1008,15 @@ def mouse_move_impl(
     x: int,
     y: int,
     duration_s: float = 0.1,
+    smooth: bool = False,
     user_text: str = "",
 ) -> Dict[str, Any]:
-    """Move the cursor to absolute (x, y) coordinates."""
+    """Move the cursor to absolute (x, y) coordinates.
+
+    Catalog 09 T7 (GREEN): when ``smooth=True`` with ``duration_s>0``
+    the move uses pyautogui's quadratic ease-in/ease-out tween rather
+    than a linear path.
+    """
     try:
         from ultron.desktop.input_control import get_input_controller
     except Exception as e:                                       # noqa: BLE001
@@ -1018,6 +1024,7 @@ def mouse_move_impl(
     ctrl = get_input_controller()
     result = ctrl.move_mouse(
         x=int(x), y=int(y), duration_s=float(duration_s),
+        smooth=bool(smooth),
         user_text=user_text,
     )
     return {
@@ -1031,9 +1038,16 @@ def type_text_impl(
     *,
     text: str,
     interval_s: float = 0.0,
+    wpm: Optional[int] = None,
     user_text: str = "",
 ) -> Dict[str, Any]:
-    """Type text at the current keyboard focus (validator-gated)."""
+    """Type text at the current keyboard focus (validator-gated).
+
+    Catalog 09 T3 (GREEN): optional ``wpm`` (positive integer)
+    overrides ``interval_s`` with the standard 5-chars-per-word
+    cadence formula. 60-80 WPM passes most JS form validators that
+    reject ``interval_s=0`` instant input.
+    """
     try:
         from ultron.desktop.input_control import get_input_controller
     except Exception as e:                                       # noqa: BLE001
@@ -1041,6 +1055,7 @@ def type_text_impl(
     ctrl = get_input_controller()
     result = ctrl.type_text(
         text=text, interval_s=float(interval_s),
+        wpm=int(wpm) if wpm is not None else None,
         user_text=user_text,
     )
     return {
@@ -1077,18 +1092,27 @@ def press_hotkey_impl(
 def scroll_impl(
     *,
     amount: int,
+    direction: str = "vertical",
     x: Optional[int] = None,
     y: Optional[int] = None,
     user_text: str = "",
 ) -> Dict[str, Any]:
-    """Scroll the wheel at ``(x, y)`` (or current cursor location)."""
+    """Scroll the wheel at ``(x, y)`` (or current cursor location).
+
+    Catalog 09 T1 (YELLOW): ``direction="vertical"`` (default) maps to
+    pyautogui.scroll; ``direction="horizontal"`` maps to
+    pyautogui.hscroll. Closes the browser-content-extraction gap
+    where catalog 08 T5 can read UIA text but can't scroll the page
+    to load lazy content.
+    """
     try:
         from ultron.desktop.input_control import get_input_controller
     except Exception as e:                                       # noqa: BLE001
         return {"success": False, "error": f"import failed: {e}"}
     ctrl = get_input_controller()
     result = ctrl.scroll(
-        amount=int(amount), x=x, y=y, user_text=user_text,
+        amount=int(amount), direction=direction, x=x, y=y,
+        user_text=user_text,
     )
     return {
         "success": result.success,
@@ -1486,28 +1510,43 @@ def build_server():
         name="mouse_move",
         description=(
             "Move the cursor to absolute (x, y) coordinates over "
-            "duration_s seconds."
+            "duration_s seconds. When smooth=true with duration_s>0 the "
+            "move uses a bezier ease-in/ease-out tween (catalog 09 T7) "
+            "rather than the default linear path -- helps with gaming-"
+            "mode anti-detection and demo narration."
         ),
     )
     def mouse_move(
-        x: int, y: int, duration_s: float = 0.1, user_text: str = "",
+        x: int,
+        y: int,
+        duration_s: float = 0.1,
+        smooth: bool = False,
+        user_text: str = "",
     ) -> Dict[str, Any]:
         return mouse_move_impl(
-            x=x, y=y, duration_s=duration_s, user_text=user_text,
+            x=x, y=y, duration_s=duration_s, smooth=smooth,
+            user_text=user_text,
         )
 
     @mcp.tool(
         name="type_text",
         description=(
             "Type a string at the current keyboard focus. For semantic "
-            "targeting use type_into_uia. Validator + rate-limit gated."
+            "targeting use type_into_uia. Validator + rate-limit gated. "
+            "Optional wpm (catalog 09 T3) overrides interval_s with a "
+            "human-cadence delay -- 60-80 WPM passes most JS form "
+            "validators that reject interval_s=0 instant input."
         ),
     )
     def type_text(
-        text: str, interval_s: float = 0.0, user_text: str = "",
+        text: str,
+        interval_s: float = 0.0,
+        wpm: Optional[int] = None,
+        user_text: str = "",
     ) -> Dict[str, Any]:
         return type_text_impl(
-            text=text, interval_s=interval_s, user_text=user_text,
+            text=text, interval_s=interval_s, wpm=wpm,
+            user_text=user_text,
         )
 
     @mcp.tool(
@@ -1526,19 +1565,23 @@ def build_server():
     @mcp.tool(
         name="scroll",
         description=(
-            "Scroll the mouse wheel. Positive amount scrolls up; "
-            "negative down. amount is in OS-specific scroll units "
-            "(~120 per notch)."
+            "Scroll the mouse wheel at (x, y) or current cursor "
+            "location. direction='vertical' (default) scrolls up "
+            "(positive amount) or down (negative); direction='horizontal' "
+            "(catalog 09 T1) scrolls left (positive) or right (negative). "
+            "amount is in OS-specific scroll units (~120 per notch)."
         ),
     )
     def scroll(
         amount: int,
+        direction: str = "vertical",
         x: Optional[int] = None,
         y: Optional[int] = None,
         user_text: str = "",
     ) -> Dict[str, Any]:
         return scroll_impl(
-            amount=amount, x=x, y=y, user_text=user_text,
+            amount=amount, direction=direction, x=x, y=y,
+            user_text=user_text,
         )
 
     return mcp

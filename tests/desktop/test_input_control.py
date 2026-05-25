@@ -637,3 +637,255 @@ def test_drag_to_works_at_zero_duration(monkeypatch):
     assert r.success is True
     _, kwargs = pa.dragTo.call_args
     assert kwargs["duration"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Catalog 09 T1 -- scroll direction (vertical default + horizontal axis)
+# ---------------------------------------------------------------------------
+
+
+def test_scroll_default_direction_is_vertical_back_compat(monkeypatch):
+    """Existing scroll callers without ``direction`` should keep using
+    pyautogui.scroll (vertical axis). Back-compat invariant."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    r = c.scroll(120, x=200, y=300)
+    assert r.success is True
+    pa.scroll.assert_called_once_with(120, x=200, y=300)
+    pa.hscroll.assert_not_called()
+
+
+def test_scroll_horizontal_dispatches_to_hscroll(monkeypatch):
+    """direction='horizontal' must route to pyautogui.hscroll, not scroll."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    r = c.scroll(80, direction="horizontal", x=400, y=500)
+    assert r.success is True
+    pa.hscroll.assert_called_once_with(80, x=400, y=500)
+    pa.scroll.assert_not_called()
+
+
+def test_scroll_vertical_explicit_still_uses_scroll(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    r = c.scroll(-60, direction="vertical")
+    assert r.success is True
+    pa.scroll.assert_called_once_with(-60, x=None, y=None)
+
+
+def test_scroll_rejects_unknown_direction(monkeypatch):
+    """Unlike the upstream plugin (silent fallthrough), ultron rejects
+    invalid ``direction`` with a structured error."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    c = _no_block_controller()
+    r = c.scroll(50, direction="diagonal")
+    assert r.success is False
+    assert "unknown direction" in (r.error or "")
+    pa.scroll.assert_not_called()
+    pa.hscroll.assert_not_called()
+
+
+def test_scroll_horizontal_with_no_coords_passes_none(monkeypatch):
+    """When x/y are not supplied, both are passed as None to pyautogui
+    so the scroll fires at the current cursor location."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    r = c.scroll(40, direction="horizontal")
+    assert r.success is True
+    pa.hscroll.assert_called_once_with(40, x=None, y=None)
+
+
+def test_scroll_validator_arguments_carry_direction(monkeypatch):
+    """The validator must see the direction so audit log entries
+    distinguish vertical vs horizontal scroll attempts."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    seen: dict = {}
+
+    def _spy(**kw):
+        seen.update(kw)
+        from ultron.safety.validator import ValidatorVerdict, Verdict
+        return ValidatorVerdict(verdict=Verdict.ALLOW, reason="ok")
+
+    monkeypatch.setattr(
+        "ultron.desktop.input_control._validate_input_action", _spy,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.input_control._foreground_is_security_window",
+        lambda: False,
+    )
+    c = InputController(max_actions_per_second=999.0)
+    c.scroll(30, direction="horizontal")
+    args = seen.get("arguments") or {}
+    assert args.get("direction") == "horizontal"
+    assert args.get("amount") == 30
+
+
+# ---------------------------------------------------------------------------
+# Catalog 09 T3 -- WPM-cadence typing
+# ---------------------------------------------------------------------------
+
+
+def test_type_text_wpm_overrides_interval_s(monkeypatch):
+    """When ``wpm`` is set, ``interval_s`` is overridden by the standard
+    5-chars-per-word formula: chars_per_second = wpm * 5 / 60;
+    interval = 1.0 / chars_per_second.
+    """
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    # 60 WPM = 300 chars/min = 5 chars/s -> interval = 0.2 s
+    r = c.type_text("hello", interval_s=0.001, wpm=60)
+    assert r.success is True
+    _, kwargs = pa.write.call_args
+    assert kwargs["interval"] == pytest.approx(0.2, abs=1e-6)
+
+
+def test_type_text_wpm_120_yields_short_interval(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    # 120 WPM = 600 chars/min = 10 chars/s -> interval = 0.1 s
+    r = c.type_text("fast", wpm=120)
+    assert r.success is True
+    _, kwargs = pa.write.call_args
+    assert kwargs["interval"] == pytest.approx(0.1, abs=1e-6)
+
+
+def test_type_text_wpm_zero_rejected(monkeypatch):
+    """The upstream plugin's bare ``1.0 / ((wpm * 5) / 60)`` would raise
+    ZeroDivisionError on wpm=0. Ultron returns a structured error."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    c = _no_block_controller()
+    r = c.type_text("hi", wpm=0)
+    assert r.success is False
+    assert "wpm must be positive" in (r.error or "")
+    pa.write.assert_not_called()
+
+
+def test_type_text_wpm_negative_rejected(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    c = _no_block_controller()
+    r = c.type_text("hi", wpm=-30)
+    assert r.success is False
+    assert "wpm must be positive" in (r.error or "")
+    pa.write.assert_not_called()
+
+
+def test_type_text_wpm_none_falls_back_to_interval_s(monkeypatch):
+    """Back-compat: wpm=None preserves the legacy interval_s contract."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    r = c.type_text("hello", interval_s=0.025)
+    assert r.success is True
+    _, kwargs = pa.write.call_args
+    assert kwargs["interval"] == pytest.approx(0.025, abs=1e-9)
+
+
+def test_type_text_validator_arguments_carry_wpm(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    seen: dict = {}
+
+    def _spy(**kw):
+        seen.update(kw)
+        from ultron.safety.validator import ValidatorVerdict, Verdict
+        return ValidatorVerdict(verdict=Verdict.ALLOW, reason="ok")
+
+    monkeypatch.setattr(
+        "ultron.desktop.input_control._validate_input_action", _spy,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.input_control._foreground_is_security_window",
+        lambda: False,
+    )
+    c = InputController(max_actions_per_second=999.0)
+    c.type_text("hi", wpm=80)
+    args = seen.get("arguments") or {}
+    assert args.get("wpm") == 80
+    # Computed interval is reflected in audit args:
+    assert args.get("interval_s") == pytest.approx(60.0 / (80.0 * 5.0))
+
+
+# ---------------------------------------------------------------------------
+# Catalog 09 T7 -- bezier-smooth mouse movement
+# ---------------------------------------------------------------------------
+
+
+def test_move_mouse_smooth_off_uses_linear(monkeypatch):
+    """Default smooth=False matches the legacy back-compat call shape:
+    no ``tween`` kwarg to pyautogui.moveTo."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    r = c.move_mouse(100, 200, duration_s=0.2)
+    assert r.success is True
+    _, kwargs = pa.moveTo.call_args
+    assert kwargs["duration"] == pytest.approx(0.2, abs=1e-9)
+    assert "tween" not in kwargs
+
+
+def test_move_mouse_smooth_with_duration_uses_easeInOutQuad(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    r = c.move_mouse(300, 400, duration_s=0.5, smooth=True)
+    assert r.success is True
+    _, kwargs = pa.moveTo.call_args
+    assert kwargs["duration"] == pytest.approx(0.5, abs=1e-9)
+    assert kwargs["tween"] is pa.easeInOutQuad
+
+
+def test_move_mouse_smooth_true_but_zero_duration_no_tween(monkeypatch):
+    """smooth=True with duration_s=0 yields an instant non-tweened
+    move (matches the upstream plugin's branching)."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    c = InputController(max_actions_per_second=999.0)
+    r = c.move_mouse(50, 50, duration_s=0.0, smooth=True)
+    assert r.success is True
+    _, kwargs = pa.moveTo.call_args
+    assert kwargs["duration"] == 0.0
+    assert "tween" not in kwargs
+
+
+def test_move_mouse_validator_arguments_carry_smooth(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    seen: dict = {}
+
+    def _spy(**kw):
+        seen.update(kw)
+        from ultron.safety.validator import ValidatorVerdict, Verdict
+        return ValidatorVerdict(verdict=Verdict.ALLOW, reason="ok")
+
+    monkeypatch.setattr(
+        "ultron.desktop.input_control._validate_input_action", _spy,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.input_control._foreground_is_security_window",
+        lambda: False,
+    )
+    c = InputController(max_actions_per_second=999.0)
+    c.move_mouse(10, 20, duration_s=0.4, smooth=True)
+    args = seen.get("arguments") or {}
+    assert args.get("smooth") is True
+    assert args.get("duration_s") == pytest.approx(0.4)
