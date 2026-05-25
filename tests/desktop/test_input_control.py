@@ -490,3 +490,150 @@ def test_click_preview_skips_when_no_coordinates(monkeypatch):
     assert r.success is True
     assert pa.click.call_count == 1
     assert captures == []
+
+
+# ---------------------------------------------------------------------------
+# Catalog 08 T8: drag_to
+# ---------------------------------------------------------------------------
+
+
+def test_drag_to_rejects_unknown_button(monkeypatch):
+    monkeypatch.setattr(
+        "ultron.desktop.input_control.pyautogui",
+        MagicMock(),
+    )
+    c = _no_block_controller()
+    r = c.drag_to(10, 20, 30, 40, button="weird")
+    assert r.success is False
+    assert "unknown button" in (r.error or "")
+
+
+def test_drag_to_rejects_negative_duration(monkeypatch):
+    monkeypatch.setattr(
+        "ultron.desktop.input_control.pyautogui",
+        MagicMock(),
+    )
+    c = _no_block_controller()
+    r = c.drag_to(10, 20, 30, 40, duration_s=-0.1)
+    assert r.success is False
+    assert "non-negative" in (r.error or "")
+
+
+def test_drag_to_returns_success_when_pyautogui_succeeds(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    c = _no_block_controller()
+    r = c.drag_to(100, 200, 300, 400, duration_s=0.05)
+    assert r.success is True
+    assert r.action == "drag_to"
+    pa.moveTo.assert_called_once_with(100, 200)
+    pa.dragTo.assert_called_once()
+    # dragTo args: (x, y, duration=..., button=...)
+    args, kwargs = pa.dragTo.call_args
+    assert args == (300, 400)
+    assert kwargs["duration"] == 0.05
+    assert kwargs["button"] == "left"
+
+
+def test_drag_to_supports_right_button(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    c = _no_block_controller()
+    r = c.drag_to(10, 20, 30, 40, button="right")
+    assert r.success is True
+    _, kwargs = pa.dragTo.call_args
+    assert kwargs["button"] == "right"
+
+
+def test_drag_to_rate_limit_enforced(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    c = InputController(
+        max_actions_per_second=1.0,
+        enforce_security_window_block=False,
+    )
+    # First call passes; second within the 1-second window must fail.
+    r1 = c.drag_to(0, 0, 10, 10, duration_s=0.0)
+    r2 = c.drag_to(0, 0, 10, 10, duration_s=0.0)
+    assert r1.success is True
+    assert r2.success is False
+    assert "rate limit" in (r2.error or "")
+
+
+def test_drag_to_blocked_by_security_window(monkeypatch):
+    monkeypatch.setattr(
+        "ultron.desktop.input_control.pyautogui",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.input_control._foreground_is_security_window",
+        lambda: True,
+    )
+    c = InputController(max_actions_per_second=999.0)
+    r = c.drag_to(0, 0, 10, 10)
+    assert r.success is False
+    assert "security window" in (r.error or "")
+
+
+def test_drag_to_blocked_by_safety_validator(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    from ultron.safety.validator import ValidatorVerdict, Verdict
+    blocked = ValidatorVerdict(
+        verdict=Verdict.BLOCK_HARD, reason="cap-3 hardstop",
+        triggered_rule_id="test", user_message="refused",
+    )
+    monkeypatch.setattr(
+        "ultron.safety.validator.get_validator",
+        lambda: type("V", (), {"check": lambda self, ctx: blocked})(),
+    )
+    c = _no_block_controller()
+    r = c.drag_to(0, 0, 10, 10, user_text="drag the icon")
+    assert r.success is False
+    assert "safety" in (r.error or "")
+    assert pa.dragTo.call_count == 0
+
+
+def test_drag_to_returns_failure_when_pyautogui_raises(monkeypatch):
+    pa = MagicMock()
+    pa.dragTo.side_effect = RuntimeError("pyautogui blew up")
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    c = _no_block_controller()
+    r = c.drag_to(0, 0, 10, 10)
+    assert r.success is False
+    assert "blew up" in (r.error or "")
+
+
+def test_drag_to_click_preview_block_short_circuits(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    png = _build_test_png()
+
+    # VLM response without the "yes" confirmation keyword should produce
+    # a BLOCK decision via the existing preview_click logic.
+    c = InputController(
+        max_actions_per_second=999.0,
+        enforce_security_window_block=False,
+        click_preview_enabled=True,
+        click_preview_capture_screen=lambda: png,
+        click_preview_vlm_describe=lambda _i, _p: "no, this is the wrong target",
+        click_preview_require_confirmation_keyword="yes",
+    )
+    r = c.drag_to(50, 60, 100, 120)
+    assert r.success is False
+    assert r.action == "drag_to"
+    assert "click_preview" in (r.error or "") or "BLOCK" in (r.error or "")
+    # pyautogui should NOT have fired.
+    assert pa.dragTo.call_count == 0
+
+
+def test_drag_to_works_at_zero_duration(monkeypatch):
+    """duration_s=0 is valid (snap drag, no animation)."""
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    c = _no_block_controller()
+    r = c.drag_to(0, 0, 50, 50, duration_s=0.0)
+    assert r.success is True
+    _, kwargs = pa.dragTo.call_args
+    assert kwargs["duration"] == 0.0

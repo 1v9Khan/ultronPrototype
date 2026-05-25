@@ -34,6 +34,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -536,3 +537,98 @@ def focus_by_title(
             f"no AppActivate fallback succeeded for '{title}'"
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Catalog 08 T4: wait-for-window primitive
+# ---------------------------------------------------------------------------
+
+
+# Defaults mirror the upstream clawhub-windows-control ``wait_for_window``
+# script: 30 s total timeout, 500 ms poll interval. The two-tuple of
+# constants matches the equivalents in :mod:`ultron.desktop.uia` so the
+# wait family has consistent defaults across the desktop surface.
+DEFAULT_WAIT_TIMEOUT_S: float = 30.0
+DEFAULT_WAIT_INTERVAL_S: float = 0.5
+
+
+def wait_for_window(
+    partial_title: str,
+    *,
+    timeout_s: float = DEFAULT_WAIT_TIMEOUT_S,
+    interval_s: float = DEFAULT_WAIT_INTERVAL_S,
+    by_process: bool = True,
+    exclude_cloaked: bool = True,
+    prefer_monitor: Optional[int] = None,
+    sleep_fn: Optional[object] = None,
+    clock_fn: Optional[object] = None,
+) -> Optional[WindowInfo]:
+    """Poll until a window matching ``partial_title`` appears.
+
+    Catalog 08 T4 (GREEN, read-only). The synchronous companion to
+    :func:`find_window` for "wait until this window opens" automation
+    barriers (post-app-launch settle, post-dialog-trigger wait, etc.).
+    Each poll iteration delegates to :func:`find_window` so the
+    matching semantics (substring against title and optionally process
+    name, exact-match tiebreaker, foreground / monitor preference) are
+    identical.
+
+    Args:
+        partial_title: case-insensitive substring match against window
+            title. Forwarded to :func:`find_window`.
+        timeout_s: wall-clock timeout in seconds.
+        interval_s: poll interval in seconds.
+        by_process: forwarded to :func:`find_window` for substring
+            match against process name as well.
+        exclude_cloaked: forwarded to :func:`find_window` so cloaked /
+            virtual-desktop-occluded windows are skipped.
+        prefer_monitor: tiebreaker forwarded to :func:`find_window`
+            when multiple windows match.
+        sleep_fn: optional ``(float) -> None`` injection for tests so
+            the polling loop doesn't actually sleep. Defaults to
+            :func:`time.sleep`.
+        clock_fn: optional ``() -> float`` injection for tests so the
+            deadline computation is deterministic. Defaults to
+            :func:`time.monotonic`.
+
+    Returns:
+        The matched :class:`WindowInfo` on first hit, or ``None`` on
+        timeout. Empty ``partial_title`` returns None without polling
+        (matches the upstream guard).
+
+    Fail-open: any :func:`find_window` exception logs DEBUG and the
+    loop retries on the next iteration.
+    """
+
+    title = (partial_title or "").strip()
+    if not title:
+        return None
+    if timeout_s <= 0:
+        return None
+
+    sleeper = sleep_fn if callable(sleep_fn) else time.sleep
+    clock = clock_fn if callable(clock_fn) else time.monotonic
+
+    deadline = clock() + float(timeout_s)
+    poll_interval = max(0.01, float(interval_s))
+
+    while True:
+        try:
+            match = find_window(
+                query=title,
+                prefer_foreground=False,
+                prefer_monitor=prefer_monitor,
+                by_process=by_process,
+                exclude_cloaked=exclude_cloaked,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("wait_for_window find_window raised: %s", exc)
+            match = None
+        if match is not None:
+            return match
+
+        now = clock()
+        if now >= deadline:
+            return None
+        remaining = deadline - now
+        sleeper(min(poll_interval, remaining))

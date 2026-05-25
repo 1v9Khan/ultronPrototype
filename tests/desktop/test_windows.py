@@ -10,6 +10,8 @@ import pytest
 
 from ultron.desktop.monitors import Monitor
 from ultron.desktop.windows import (
+    DEFAULT_WAIT_INTERVAL_S,
+    DEFAULT_WAIT_TIMEOUT_S,
     FocusResult,
     WindowInfo,
     _appactivate_via_powershell,
@@ -20,6 +22,7 @@ from ultron.desktop.windows import (
     find_window,
     focus_by_title,
     get_foreground_window,
+    wait_for_window,
 )
 
 
@@ -762,3 +765,188 @@ def test_find_window_forwards_exclude_cloaked(monkeypatch):
     assert captured["exclude_cloaked"] is False
     find_window("anything", exclude_cloaked=True)
     assert captured["exclude_cloaked"] is True
+
+
+# ---------------------------------------------------------------------------
+# Catalog 08 T4: wait_for_window
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self._t = 0.0
+
+    def __call__(self) -> float:
+        return self._t
+
+    def advance(self, dt: float) -> None:
+        self._t += dt
+
+
+def _make_target(hwnd: int = 1, title: str = "Notepad") -> WindowInfo:
+    return WindowInfo(
+        hwnd=hwnd, title=title, class_name="Notepad",
+        process_name="notepad.exe", pid=4242,
+        rect=(0, 0, 600, 400), monitor_index=0,
+        is_minimized=False, is_foreground=False,
+    )
+
+
+def test_wait_for_window_constants_match_upstream():
+    assert DEFAULT_WAIT_TIMEOUT_S == 30.0
+    assert DEFAULT_WAIT_INTERVAL_S == 0.5
+
+
+def test_wait_for_window_returns_none_on_empty_title():
+    assert wait_for_window("") is None
+    assert wait_for_window("   ") is None
+
+
+def test_wait_for_window_returns_none_on_zero_timeout(monkeypatch):
+    # find_window must not even be consulted when timeout is 0.
+    sentinel = {"called": False}
+
+    def _no_call(**kw):
+        sentinel["called"] = True
+        return _make_target()
+
+    monkeypatch.setattr("ultron.desktop.windows.find_window", _no_call)
+    result = wait_for_window("notepad", timeout_s=0.0)
+    assert result is None
+    assert sentinel["called"] is False
+
+
+def test_wait_for_window_found_on_first_poll(monkeypatch):
+    target = _make_target(hwnd=77, title="Notepad - Untitled")
+    monkeypatch.setattr(
+        "ultron.desktop.windows.find_window", lambda **kw: target,
+    )
+    clock = _FakeClock()
+    slept = []
+    result = wait_for_window(
+        "notepad", timeout_s=10.0, interval_s=0.5,
+        sleep_fn=lambda s: slept.append(s),
+        clock_fn=clock,
+    )
+    assert result is target
+    assert slept == []
+
+
+def test_wait_for_window_polls_until_appears(monkeypatch):
+    target = _make_target(hwnd=88, title="Save As")
+    calls = [0]
+
+    def _appear_on_third_poll(**kw):
+        calls[0] += 1
+        return target if calls[0] >= 3 else None
+
+    monkeypatch.setattr(
+        "ultron.desktop.windows.find_window", _appear_on_third_poll,
+    )
+    clock = _FakeClock()
+
+    def _sleep(dt: float) -> None:
+        clock.advance(dt)
+
+    result = wait_for_window(
+        "save", timeout_s=5.0, interval_s=0.1,
+        sleep_fn=_sleep,
+        clock_fn=clock,
+    )
+    assert result is target
+    assert calls[0] == 3
+
+
+def test_wait_for_window_returns_none_on_timeout(monkeypatch):
+    monkeypatch.setattr(
+        "ultron.desktop.windows.find_window", lambda **kw: None,
+    )
+    clock = _FakeClock()
+    sleeps: list[float] = []
+
+    def _sleep(dt: float) -> None:
+        sleeps.append(dt)
+        clock.advance(dt)
+
+    result = wait_for_window(
+        "missing", timeout_s=1.0, interval_s=0.25,
+        sleep_fn=_sleep,
+        clock_fn=clock,
+    )
+    assert result is None
+    # 1.0s timeout / 0.25s interval -> roughly 4 sleeps.
+    assert 3 <= len(sleeps) <= 5
+
+
+def test_wait_for_window_forwards_keyword_args_to_find_window(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def _capture(**kw):
+        captured.update(kw)
+        return _make_target()
+
+    monkeypatch.setattr(
+        "ultron.desktop.windows.find_window", _capture,
+    )
+    wait_for_window(
+        "notepad",
+        timeout_s=1.0, interval_s=0.1,
+        by_process=False,
+        exclude_cloaked=False,
+        prefer_monitor=2,
+        sleep_fn=lambda s: None,
+        clock_fn=_FakeClock(),
+    )
+    assert captured["by_process"] is False
+    assert captured["exclude_cloaked"] is False
+    assert captured["prefer_monitor"] == 2
+    # Foreground preference is suppressed for "appears" polling.
+    assert captured["prefer_foreground"] is False
+
+
+def test_wait_for_window_fail_open_on_find_exception(monkeypatch):
+    """find_window raising should NOT abort the loop -- the next poll
+    iteration retries. After timeout the function returns None."""
+    raised = [0]
+
+    def _raise(**kw):
+        raised[0] += 1
+        raise RuntimeError("simulated UIA failure")
+
+    monkeypatch.setattr(
+        "ultron.desktop.windows.find_window", _raise,
+    )
+    clock = _FakeClock()
+
+    def _sleep(dt: float) -> None:
+        clock.advance(dt)
+
+    result = wait_for_window(
+        "notepad", timeout_s=1.0, interval_s=0.25,
+        sleep_fn=_sleep,
+        clock_fn=clock,
+    )
+    assert result is None
+    assert raised[0] >= 1
+
+
+def test_wait_for_window_caps_sleep_to_deadline(monkeypatch):
+    """If interval > remaining time, the final sleep should be clamped
+    to the remaining deadline (no overshoot)."""
+    monkeypatch.setattr(
+        "ultron.desktop.windows.find_window", lambda **kw: None,
+    )
+    clock = _FakeClock()
+    sleeps: list[float] = []
+
+    def _sleep(dt: float) -> None:
+        sleeps.append(dt)
+        clock.advance(dt)
+
+    wait_for_window(
+        "missing", timeout_s=0.3, interval_s=0.5,
+        sleep_fn=_sleep,
+        clock_fn=clock,
+    )
+    # The first sleep should be clamped down from 0.5 to <= 0.3.
+    assert sleeps[0] <= 0.3

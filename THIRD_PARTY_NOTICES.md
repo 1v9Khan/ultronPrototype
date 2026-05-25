@@ -303,3 +303,38 @@ no source code is copied verbatim.
 The full Apache License 2.0 text is available at the URL above. Section 4(c)
 requires retention of copyright notices in derivative works; this file
 satisfies that obligation for the components listed above.
+
+## clawhub-windows-control (MIT License)
+
+Repository: ClawHub marketplace skill `windows-control` (author Spliff7AI per
+the plugin's package.json metadata).
+License: MIT (the substantive terms match the SWE-Agent / OpenClaw copy
+reproduced earlier; ultron's port is governed by that text).
+
+The following ultron components are clean-room re-implementations whose
+*approach* is informed by the corresponding clawhub-windows-control scripts.
+The plugin source (~37 KB across 23 thin scripts) was read read-only under
+the binding ClawHub-batch security rules (per
+`feedback_reference_repo_catalog_workflow.md`) and pattern extraction was
+performed via Sonnet 4.6 Explore agents that report algorithm shapes +
+constants + edge cases in prose, never copying source. No source code is
+copied verbatim. Algorithm shapes + constant values (e.g. `DIALOG_CLASSES`
+membership, `BROWSER_NAMES` heuristic list, `CLICKABLE_TYPES` set,
+`DISMISS_BUTTONS` order) are factual identifiers from documented public
+Microsoft UI Automation + Win32 APIs and are not copyrightable expression;
+they appear as API-contract anchors so audit logs and dashboards can
+cross-reference upstream tooling.
+
+| Ultron component | Inspired by (pattern source) | Notes |
+| --- | --- | --- |
+| `src/ultron/desktop/uia.py` (`get_ui_element_inventory` + `UIElementInfo`) | `read_ui_elements.py` (T2) | Structured interactive-element inventory walk. Categorises descendants by `control_type` into ten buckets (`buttons` / `links` / `menu_items` / `list_items` / `tabs` / `checkboxes` / `radio_buttons` / `text_fields` / `dropdowns` / `other`). Captures name + automation_id + enabled state + physical-pixel rect + integer centre + optional truncated edit value. `Edit` / `Document` control types are admitted without a name (their value carries the content). Ultron's variant adds: optional `control_types` allowlist for narrow scans, value truncation knob, `value_truncate=0` skips value capture entirely, max-element / max-depth caps shared with `collect_window_text`, full fail-open at per-element + per-tree-walk granularity, frozen `UIElementInfo` dataclass result. GREEN (read-only). |
+| `src/ultron/desktop/uia.py` (`wait_for_text_in_window`) | `wait_for_text.py` (T4) | Synchronous UIA-tree polling barrier with title-filter + substring match. Defaults match upstream (`DEFAULT_WAIT_TIMEOUT_S=30.0`, `DEFAULT_WAIT_INTERVAL_S=0.5`). Ultron's variant adds: `sleep_fn` + `clock_fn` injection for deterministic tests, case-sensitivity opt-out, deadline-clamped final sleep so the loop never overshoots the timeout, fail-open per-window enumeration + per-window collect failures (continue rather than abort the whole wait). Empty-needle returns True immediately; non-positive timeout returns False without polling. GREEN. |
+| `src/ultron/desktop/windows.py` (`wait_for_window`) | `wait_for_window.py` (T4) | Synchronous "appears" barrier delegating each poll to existing `find_window` so substring + process-name + exact-match + monitor-preference + cloak-filter semantics are identical. Defaults match upstream. Ultron's variant adds: `sleep_fn` + `clock_fn` injection, `prefer_foreground=False` during polling (foreground tiebreaker is for instantaneous lookup, not waiting for a window to appear), `prefer_monitor` forwarding, deadline-clamped final sleep, fail-open `find_window` exceptions. Empty title returns None without polling. GREEN. |
+| `src/ultron/desktop/input_control.py` (`InputController.drag_to`) | `drag.py` (T8) | Pyautogui-backed absolute-coord drag. Source ⟶ destination drag via `pyautogui.moveTo(x1, y1)` + `pyautogui.dragTo(x2, y2, duration, button)`. Upstream used relative-offset `drag(dx, dy)`; ultron uses absolute `dragTo` for determinism (relative drag drifts if the cursor moved between argparse and the call). Goes through the full controller gate stack: foreground security check (UAC / credential dialog refusal) → rate limit → safety validator (`tool_name="desktop.input.drag_to"` with coordinates + button + duration as arguments) → click-preview gate on SOURCE coordinate (drag is bound by where you pick up from). Validates button against {left, right, middle} and rejects negative duration. YELLOW (gated through Cap-3 + click_preview). |
+
+### MIT License (verbatim)
+
+The MIT license text governing the clawhub-windows-control repository is
+identical in substantive terms to the MIT license already reproduced in
+the SWE-Agent section above. This file satisfies the attribution
+requirement for the components listed in the table above.

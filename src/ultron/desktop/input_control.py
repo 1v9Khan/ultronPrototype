@@ -510,6 +510,116 @@ class InputController:
             )
         return InputControlResult(success=True, action="press_hotkey")
 
+    def drag_to(
+        self,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        *,
+        button: str = "left",
+        duration_s: float = 0.5,
+        user_text: str = "",
+    ) -> InputControlResult:
+        """Drag from ``(x1, y1)`` to ``(x2, y2)`` with smooth animation.
+
+        Catalog 08 T8 (YELLOW). The only pyautogui primitive missing
+        from this controller pre-port. Designed for drag-to-reorder
+        list items, drag-and-drop file moves between windows, drag-to-
+        select rectangles in image editors -- any operation where the
+        target ends up moved by a sustained pointer-down + motion.
+
+        Goes through the same gate stack as :meth:`click` and
+        :meth:`move_mouse`:
+
+        1. **Foreground security check** -- refuses when a Windows
+           security dialog (UAC, credential prompt) holds focus.
+        2. **Rate limit** -- counts against the per-second budget.
+        3. **Safety validator** -- runs the Cap-3 input rules with
+           tool_name ``desktop.input.drag_to`` and coordinates +
+           button + duration as arguments.
+        4. **Click-preview gate** -- when ``click_preview_enabled``,
+           previews the SOURCE coordinate ``(x1, y1)`` via the same
+           VLM-confirmation path as :meth:`click`. The catalog flags
+           drag as inherently irreversible (dragging a file to Trash,
+           rearranging tabs, list reordering), so confirming the
+           source pixel is the right safety contract; the destination
+           is implied by the source confirmation.
+
+        Implementation uses :func:`pyautogui.moveTo` to position the
+        cursor at the source absolutely, then :func:`pyautogui.dragTo`
+        to drag to the absolute destination. Absolute-coord variants
+        avoid the relative-offset drift that bit the upstream plugin
+        when the cursor moved between argparse and the drag call.
+
+        Args:
+            x1, y1: source coordinates (absolute physical pixels).
+            x2, y2: destination coordinates (absolute physical pixels).
+            button: ``"left"`` / ``"right"`` / ``"middle"``.
+            duration_s: animation duration in seconds. Default 0.5 s
+                matches the upstream pyautogui smoothness profile;
+                shorten to 0.05 - 0.1 s for snappy applications.
+            user_text: forwarded to the safety validator so the Cap-3
+                explicit-intent matcher can verify the user actually
+                asked for a drag.
+
+        Returns:
+            :class:`InputControlResult` with action ``"drag_to"``.
+        """
+
+        if button not in ("left", "right", "middle"):
+            return InputControlResult(
+                success=False, action="drag_to",
+                error=f"unknown button {button!r}",
+            )
+        if duration_s < 0:
+            return InputControlResult(
+                success=False, action="drag_to",
+                error=f"duration_s must be non-negative, got {duration_s}",
+            )
+
+        args = {
+            "x1": int(x1),
+            "y1": int(y1),
+            "x2": int(x2),
+            "y2": int(y2),
+            "button": button,
+            "duration_s": float(duration_s),
+        }
+
+        gate = self._gate(
+            action="drag_to", arguments=args, user_text=user_text,
+        )
+        if gate is not None:
+            return gate
+
+        # Preview the SOURCE coordinate. Drag is bound by where you
+        # pick up from (the file icon, the slider knob, the tab); the
+        # destination is implied. Matching the click() pattern for
+        # consistency.
+        preview_block = self._maybe_preview_click(
+            x=x1, y=y1, user_text=user_text,
+        )
+        if preview_block is not None:
+            return InputControlResult(
+                success=False,
+                action="drag_to",
+                error=preview_block.error,
+            )
+
+        try:
+            pyautogui.moveTo(int(x1), int(y1))
+            pyautogui.dragTo(
+                int(x2), int(y2),
+                duration=max(0.0, float(duration_s)),
+                button=button,
+            )
+        except Exception as e:  # noqa: BLE001
+            return InputControlResult(
+                success=False, action="drag_to", error=str(e)[:200],
+            )
+        return InputControlResult(success=True, action="drag_to")
+
     def scroll(
         self,
         amount: int,

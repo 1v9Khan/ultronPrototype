@@ -8,14 +8,19 @@ from unittest.mock import MagicMock
 import pytest
 
 from ultron.desktop.uia import (
+    DEFAULT_WAIT_INTERVAL_S,
+    DEFAULT_WAIT_TIMEOUT_S,
     UIAActionResult,
     UIAElement,
+    UIElementInfo,
     _resolve_hwnd,
     _validate_uia_action,
     click_element,
     collect_window_text,
     find_element,
+    get_ui_element_inventory,
     type_text_into_element,
+    wait_for_text_in_window,
 )
 from ultron.desktop.windows import WindowInfo
 
@@ -511,3 +516,506 @@ class TestDpiAwareClickAtElementCenter:
         result = dpi_aware_click_at_element_center(elem)
         assert result.success is False
         assert "input controller unavailable" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Catalog 08 T2: get_ui_element_inventory
+# ---------------------------------------------------------------------------
+
+
+class _Rect:
+    def __init__(self, left: int, top: int, right: int, bottom: int) -> None:
+        self.left = left
+        self.top = top
+        self.right = right
+        self.bottom = bottom
+
+
+class _UINode:
+    """Minimal pywinauto element_info stand-in for inventory walk tests."""
+
+    def __init__(
+        self,
+        *,
+        name: str = "",
+        control_type: str = "",
+        automation_id: str = "",
+        enabled: bool = True,
+        rect: tuple[int, int, int, int] = (0, 0, 0, 0),
+        value: str = "",
+        children: list | None = None,
+    ) -> None:
+        self.name = name
+        self.control_type = control_type
+        self.automation_id = automation_id
+        self.enabled = enabled
+        self.rectangle = _Rect(*rect)
+        if value:
+            self.value = value
+        self._children = list(children or [])
+
+    def children(self):
+        return list(self._children)
+
+
+def _spec_with(root: _UINode) -> MagicMock:
+    spec = MagicMock()
+    spec.element_info = root
+    return spec
+
+
+def test_ui_element_info_defaults():
+    info = UIElementInfo(name="OK")
+    assert info.name == "OK"
+    assert info.control_type == ""
+    assert info.enabled is True
+    assert info.rect == (0, 0, 0, 0)
+    assert info.center == (0, 0)
+    assert info.value == ""
+
+
+def test_ui_element_info_is_frozen():
+    info = UIElementInfo(name="OK")
+    with pytest.raises(Exception):
+        info.name = "Submit"
+
+
+def test_get_ui_element_inventory_returns_empty_when_connect_fails(monkeypatch):
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: None,
+    )
+    assert get_ui_element_inventory(0) == {}
+
+
+def test_get_ui_element_inventory_returns_empty_when_element_info_raises(monkeypatch):
+    spec = MagicMock()
+    type(spec).element_info = property(
+        lambda self: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: spec,
+    )
+    assert get_ui_element_inventory(0) == {}
+
+
+def test_get_ui_element_inventory_buckets_by_control_type(monkeypatch):
+    root = _UINode(
+        name="root",
+        control_type="Window",
+        children=[
+            _UINode(name="Save", control_type="Button", rect=(0, 0, 100, 50)),
+            _UINode(name="Open Link", control_type="Hyperlink", rect=(0, 60, 200, 80)),
+            _UINode(name="Yes", control_type="CheckBox", rect=(0, 100, 80, 130)),
+            _UINode(
+                name="",
+                control_type="Edit",
+                rect=(0, 140, 300, 170),
+                value="filename.txt",
+            ),
+            _UINode(name="Item A", control_type="ListItem", rect=(0, 180, 200, 200)),
+        ],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+
+    inv = get_ui_element_inventory(0)
+    assert "buttons" in inv
+    assert "links" in inv
+    assert "checkboxes" in inv
+    assert "text_fields" in inv
+    assert "list_items" in inv
+    # The Window control_type itself should NOT be present (no name -> skipped).
+    # Window has a name though ("root"), so it lands in "other".
+    assert inv["buttons"][0].name == "Save"
+    assert inv["buttons"][0].center == (50, 25)
+    assert inv["text_fields"][0].value == "filename.txt"
+
+
+def test_get_ui_element_inventory_strips_empty_buckets(monkeypatch):
+    root = _UINode(
+        name="root",
+        control_type="Window",
+        children=[
+            _UINode(name="OK", control_type="Button", rect=(0, 0, 50, 20)),
+        ],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+    inv = get_ui_element_inventory(0)
+    # No links / checkboxes / tabs in this tree -- buckets should be omitted.
+    assert "buttons" in inv
+    assert "links" not in inv
+    assert "checkboxes" not in inv
+
+
+def test_get_ui_element_inventory_admits_edit_without_name(monkeypatch):
+    """Edit + Document controls are inventoried even when name is empty
+    because their value field carries the content."""
+    root = _UINode(
+        name="root",
+        control_type="Window",
+        children=[
+            _UINode(
+                name="",
+                control_type="Edit",
+                rect=(0, 0, 200, 20),
+                value="some user text",
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+    inv = get_ui_element_inventory(0)
+    assert inv["text_fields"][0].value == "some user text"
+    assert inv["text_fields"][0].name == ""
+
+
+def test_get_ui_element_inventory_skips_nameless_other_controls(monkeypatch):
+    """Buttons / Hyperlinks etc. without a name are dropped from the
+    inventory because they're not actionable without a label."""
+    root = _UINode(
+        name="root",
+        control_type="Window",
+        children=[
+            _UINode(name="", control_type="Button", rect=(0, 0, 30, 20)),
+            _UINode(name="Save", control_type="Button", rect=(0, 40, 60, 60)),
+        ],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+    inv = get_ui_element_inventory(0)
+    assert len(inv["buttons"]) == 1
+    assert inv["buttons"][0].name == "Save"
+
+
+def test_get_ui_element_inventory_filters_by_control_types(monkeypatch):
+    root = _UINode(
+        name="root",
+        control_type="Window",
+        children=[
+            _UINode(name="OK", control_type="Button"),
+            _UINode(name="More", control_type="Hyperlink"),
+            _UINode(name="Tab1", control_type="TabItem"),
+        ],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+    inv = get_ui_element_inventory(0, control_types=["Button", "Hyperlink"])
+    assert "buttons" in inv
+    assert "links" in inv
+    assert "tabs" not in inv
+
+
+def test_get_ui_element_inventory_truncates_value(monkeypatch):
+    long = "x" * 500
+    root = _UINode(
+        name="root",
+        control_type="Window",
+        children=[
+            _UINode(name="", control_type="Edit", value=long),
+        ],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+    inv = get_ui_element_inventory(0, value_truncate=20)
+    assert len(inv["text_fields"][0].value) == 20
+
+
+def test_get_ui_element_inventory_respects_max_elements(monkeypatch):
+    """A wide tree with cap=5 visits at most 5 elements."""
+    children = [
+        _UINode(name=f"Btn{i}", control_type="Button")
+        for i in range(20)
+    ]
+    root = _UINode(name="root", control_type="Window", children=children)
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+    inv = get_ui_element_inventory(0, max_elements=5)
+    total = sum(len(items) for items in inv.values())
+    assert total <= 5
+
+
+def test_get_ui_element_inventory_skips_broken_children(monkeypatch):
+    class _BrokenChildren(_UINode):
+        def children(self):
+            raise RuntimeError("simulated UIA failure")
+
+    broken = _BrokenChildren(name="Bad", control_type="Button")
+    root = _UINode(
+        name="root",
+        control_type="Window",
+        children=[broken, _UINode(name="Healthy", control_type="Button")],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+    inv = get_ui_element_inventory(0)
+    # "Bad" is itself admitted because its name + control_type are intact;
+    # the failure is in walking ITS children, which is harmless.
+    names = {info.name for info in inv.get("buttons", [])}
+    assert "Healthy" in names
+    assert "Bad" in names
+
+
+def test_get_ui_element_inventory_classifies_unknown_as_other(monkeypatch):
+    root = _UINode(
+        name="root",
+        control_type="Window",
+        children=[
+            _UINode(name="WeirdBox", control_type="CustomControl"),
+        ],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia._connect_window", lambda hwnd: _spec_with(root),
+    )
+    inv = get_ui_element_inventory(0)
+    assert "other" in inv
+    # Root (Window control_type) and WeirdBox (CustomControl) both land
+    # in "other" because neither maps to a known bucket; assert by name
+    # rather than position so insertion order doesn't matter.
+    names = {info.name for info in inv["other"]}
+    assert "WeirdBox" in names
+    assert "root" in names
+
+
+# ---------------------------------------------------------------------------
+# Catalog 08 T4: wait_for_text_in_window
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self._t = 0.0
+
+    def __call__(self) -> float:
+        return self._t
+
+    def advance(self, dt: float) -> None:
+        self._t += dt
+
+
+def test_wait_constants_match_upstream():
+    assert DEFAULT_WAIT_TIMEOUT_S == 30.0
+    assert DEFAULT_WAIT_INTERVAL_S == 0.5
+
+
+def test_wait_for_text_returns_true_on_empty_needle():
+    assert wait_for_text_in_window("", "any") is True
+
+
+def test_wait_for_text_returns_false_on_zero_timeout():
+    assert wait_for_text_in_window(
+        "x", "any", timeout_s=0.0,
+    ) is False
+
+
+def test_wait_for_text_found_on_first_poll(monkeypatch):
+    target = WindowInfo(
+        hwnd=42, title="Save As", class_name="#32770",
+        process_name="explorer.exe", pid=1234,
+        rect=(0, 0, 400, 300), monitor_index=0,
+        is_minimized=False, is_foreground=True,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.windows.enumerate_windows", lambda **kw: [target],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia.collect_window_text",
+        lambda w, **kw: ["File name:", "Choose a folder"],
+    )
+
+    clock = _FakeClock()
+    slept = []
+
+    found = wait_for_text_in_window(
+        "file name", "save",
+        timeout_s=10.0, interval_s=0.5,
+        sleep_fn=lambda s: slept.append(s),
+        clock_fn=clock,
+    )
+    assert found is True
+    assert slept == []
+
+
+def test_wait_for_text_case_insensitive(monkeypatch):
+    target = WindowInfo(
+        hwnd=1, title="An App Window", class_name="C",
+        process_name="p", pid=1,
+        rect=(0, 0, 1, 1), monitor_index=0,
+        is_minimized=False, is_foreground=False,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.windows.enumerate_windows", lambda **kw: [target],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia.collect_window_text",
+        lambda w, **kw: ["Connected to Server"],
+    )
+    assert wait_for_text_in_window(
+        "CONNECTED", "an app",
+        timeout_s=1.0, interval_s=0.1,
+        sleep_fn=lambda s: None,
+        clock_fn=_FakeClock(),
+    ) is True
+
+
+def test_wait_for_text_case_sensitive_when_disabled(monkeypatch):
+    target = WindowInfo(
+        hwnd=1, title="App", class_name="C", process_name="p", pid=1,
+        rect=(0, 0, 1, 1), monitor_index=0,
+        is_minimized=False, is_foreground=False,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.windows.enumerate_windows", lambda **kw: [target],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia.collect_window_text",
+        lambda w, **kw: ["connected"],
+    )
+    clock = _FakeClock()
+    found = wait_for_text_in_window(
+        "Connected", "app",
+        timeout_s=0.2, interval_s=0.1,
+        case_insensitive=False,
+        sleep_fn=lambda s: clock.advance(s),
+        clock_fn=clock,
+    )
+    assert found is False
+
+
+def test_wait_for_text_returns_false_on_timeout(monkeypatch):
+    target = WindowInfo(
+        hwnd=1, title="App", class_name="C", process_name="p", pid=1,
+        rect=(0, 0, 1, 1), monitor_index=0,
+        is_minimized=False, is_foreground=False,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.windows.enumerate_windows", lambda **kw: [target],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia.collect_window_text",
+        lambda w, **kw: ["nothing matching here"],
+    )
+
+    clock = _FakeClock()
+    slept = []
+
+    def _sleep(dt: float) -> None:
+        slept.append(dt)
+        clock.advance(dt)
+
+    found = wait_for_text_in_window(
+        "missing", "app",
+        timeout_s=2.0, interval_s=0.5,
+        sleep_fn=_sleep,
+        clock_fn=clock,
+    )
+    assert found is False
+    # We should have slept multiple times (4 polls * 0.5s = 2.0s).
+    assert len(slept) >= 3
+
+
+def test_wait_for_text_filters_by_window_title(monkeypatch):
+    other = WindowInfo(
+        hwnd=2, title="Browser - example.com", class_name="C",
+        process_name="chrome.exe", pid=2,
+        rect=(0, 0, 1, 1), monitor_index=0,
+        is_minimized=False, is_foreground=False,
+    )
+    target = WindowInfo(
+        hwnd=1, title="Save Dialog", class_name="#32770",
+        process_name="explorer.exe", pid=1,
+        rect=(0, 0, 1, 1), monitor_index=0,
+        is_minimized=False, is_foreground=False,
+    )
+    visited: list[int] = []
+
+    def _collect(win, **kw):
+        visited.append(win.hwnd)
+        return ["matched text"]
+
+    monkeypatch.setattr(
+        "ultron.desktop.windows.enumerate_windows", lambda **kw: [other, target],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia.collect_window_text", _collect,
+    )
+    found = wait_for_text_in_window(
+        "matched", "save",
+        timeout_s=1.0, interval_s=0.1,
+        sleep_fn=lambda s: None,
+        clock_fn=_FakeClock(),
+    )
+    assert found is True
+    # Only the save dialog should have been visited; the browser was filtered.
+    assert visited == [1]
+
+
+def test_wait_for_text_fail_open_on_enumerate_exception(monkeypatch):
+    """If enumerate_windows raises, the poll falls through silently."""
+
+    calls = [0]
+
+    def _enumerate(**kw):
+        calls[0] += 1
+        raise RuntimeError("simulated enumerate failure")
+
+    monkeypatch.setattr(
+        "ultron.desktop.windows.enumerate_windows", _enumerate,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia.collect_window_text", lambda w, **kw: [],
+    )
+
+    clock = _FakeClock()
+
+    def _sleep(dt: float) -> None:
+        clock.advance(dt)
+
+    found = wait_for_text_in_window(
+        "anything", "",
+        timeout_s=1.0, interval_s=0.5,
+        sleep_fn=_sleep,
+        clock_fn=clock,
+    )
+    assert found is False
+    assert calls[0] >= 1
+
+
+def test_wait_for_text_skips_collect_exception(monkeypatch):
+    """If a single window's collect_window_text raises, the loop continues."""
+    bad = WindowInfo(
+        hwnd=1, title="Bad", class_name="C", process_name="p", pid=1,
+        rect=(0, 0, 1, 1), monitor_index=0,
+        is_minimized=False, is_foreground=False,
+    )
+    good = WindowInfo(
+        hwnd=2, title="Good", class_name="C", process_name="p", pid=2,
+        rect=(0, 0, 1, 1), monitor_index=0,
+        is_minimized=False, is_foreground=False,
+    )
+
+    def _collect(win, **kw):
+        if win.hwnd == 1:
+            raise RuntimeError("broken")
+        return ["the secret phrase"]
+
+    monkeypatch.setattr(
+        "ultron.desktop.windows.enumerate_windows", lambda **kw: [bad, good],
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.uia.collect_window_text", _collect,
+    )
+    assert wait_for_text_in_window(
+        "secret", "",
+        timeout_s=1.0, interval_s=0.1,
+        sleep_fn=lambda s: None,
+        clock_fn=_FakeClock(),
+    ) is True

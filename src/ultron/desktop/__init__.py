@@ -39,6 +39,7 @@ from ultron.desktop.windows import (
     enumerate_windows,
     get_foreground_window,
     find_window,
+    wait_for_window,
 )
 from ultron.desktop.placement import (
     PlacementResult,
@@ -58,10 +59,13 @@ from ultron.desktop.launcher import (
 from ultron.desktop.uia import (
     UIAElement,
     UIAActionResult,
+    UIElementInfo,
     collect_window_text,
     find_element,
     click_element,
     type_text_into_element,
+    get_ui_element_inventory,
+    wait_for_text_in_window,
 )
 from ultron.desktop.input_control import (
     InputControlResult,
@@ -111,6 +115,7 @@ __all__ = [
     "enumerate_windows",
     "get_foreground_window",
     "find_window",
+    "wait_for_window",
     # placement
     "PlacementResult",
     "move_window_to_monitor",
@@ -127,10 +132,13 @@ __all__ = [
     # uia
     "UIAElement",
     "UIAActionResult",
+    "UIElementInfo",
     "collect_window_text",
     "find_element",
     "click_element",
     "type_text_into_element",
+    "get_ui_element_inventory",
+    "wait_for_text_in_window",
     # input_control
     "InputControlResult",
     "InputController",

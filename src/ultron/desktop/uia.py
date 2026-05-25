@@ -55,8 +55,9 @@ Coordinate-space convention (catalog 07 T5):
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 
 from ultron.desktop.windows import WindowInfo
 from ultron.utils.logging import get_logger
@@ -761,9 +762,334 @@ def dpi_aware_click_at_element_center(
     )
 
 
+# ---------------------------------------------------------------------------
+# Catalog 08 T2: structured UI element inventory
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UIElementInfo:
+    """Snapshot of one interactive UI element with its click coordinates.
+
+    Catalog 08 T2 read-only inventory primitive. Mirrors the upstream
+    ``read_ui_elements`` shape: control_type + accessible name + enabled
+    state + bounding rect + centre coordinates, plus an optional edit
+    value for ``Edit``/``Document`` controls (the upstream plugin admits
+    those even when ``name`` is empty, since they often have meaningful
+    text content but no label).
+
+    Attributes:
+        name: accessible name (label text). May be empty for
+            ``Edit``/``Document`` elements whose value field carries
+            the content.
+        control_type: UIA control type (``"Button"``, ``"Hyperlink"``,
+            etc.).
+        automation_id: AutomationId property (often empty).
+        enabled: True iff the element is enabled and clickable.
+        rect: ``(left, top, right, bottom)`` in physical pixels.
+        center: ``(x, y)`` integer centre coordinates for click
+            targeting (already physical pixels per the catalog 07 T5
+            convention).
+        value: current edit-field value (only populated for
+            ``Edit``/``Document``; empty string otherwise). Truncated
+            to ``value_truncate`` chars in :func:`get_ui_element_inventory`.
+    """
+
+    name: str
+    control_type: str = ""
+    automation_id: str = ""
+    enabled: bool = True
+    rect: tuple[int, int, int, int] = (0, 0, 0, 0)
+    center: tuple[int, int] = (0, 0)
+    value: str = ""
+
+
+# Map from UIA control_type string -> inventory bucket key. Mirrors the
+# clawhub-windows-control category split with the ultron addition that
+# ``Document`` is treated as a text field (Edge / Chrome PDF viewer
+# exposes the document body as a Document control with editable focus).
+_INVENTORY_BUCKETS: dict[str, str] = {
+    "Button": "buttons",
+    "Hyperlink": "links",
+    "MenuItem": "menu_items",
+    "ListItem": "list_items",
+    "TabItem": "tabs",
+    "CheckBox": "checkboxes",
+    "RadioButton": "radio_buttons",
+    "Edit": "text_fields",
+    "Document": "text_fields",
+    "ComboBox": "dropdowns",
+}
+
+# Control types that get added to the inventory even when their name is
+# empty (text content lives in the value attribute, not the label).
+_INVENTORY_NAMELESS_OK = frozenset({"Edit", "Document"})
+
+
+def get_ui_element_inventory(
+    window: object,
+    *,
+    control_types: Optional[Sequence[str]] = None,
+    max_elements: int = _DEFAULT_MAX_ELEMENTS,
+    max_depth: int = _DEFAULT_MAX_DEPTH,
+    value_truncate: int = 100,
+) -> dict[str, list[UIElementInfo]]:
+    """Walk a window's UIA tree and bucket interactive controls by type.
+
+    Catalog 08 T2 (GREEN, read-only). Adapted from the upstream
+    ``read_ui_elements`` pattern in clawhub-windows-control: per
+    descendant capture ``control_type`` + ``window_text()`` + ``enabled``
+    + rect + centre, dispatch into ten buckets (buttons / links /
+    menu_items / list_items / tabs / checkboxes / radio_buttons /
+    text_fields / dropdowns / other). Empty buckets are omitted from
+    the returned dict so the caller's iteration stays narrow.
+
+    Args:
+        window: :class:`WindowInfo` or raw hwnd.
+        control_types: optional case-insensitive allowlist of UIA
+            control types. When provided, only elements whose control
+            type matches one of these strings are inventoried.
+        max_elements: cap on total elements visited (defense against
+            10k-element trees in browsers / IDEs). Default matches
+            :func:`collect_window_text`.
+        max_depth: cap on tree depth.
+        value_truncate: cap on edit-field value length in the captured
+            snapshot. Set to 0 to omit values entirely.
+
+    Returns:
+        Dict keyed by bucket name (``"buttons"``, ``"links"``, ...).
+        Values are lists of :class:`UIElementInfo` in tree-walk order.
+        Empty buckets are stripped. Empty dict when pywinauto is
+        unavailable or the window can't be connected to.
+
+    Fail-open at every layer: per-element exceptions are silently
+    skipped; a failed tree walk logs WARN and returns ``{}``.
+    """
+    hwnd = _resolve_hwnd(window)
+    spec = _connect_window(hwnd)
+    if spec is None:
+        return {}
+
+    try:
+        root = spec.element_info
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("element_info failed hwnd=%d: %s", hwnd, exc)
+        return {}
+
+    allow_types: Optional[set[str]] = None
+    if control_types is not None:
+        allow_types = {str(t).strip().lower() for t in control_types if str(t).strip()}
+        if not allow_types:
+            allow_types = None
+
+    visited = [0]
+    buckets: dict[str, list[UIElementInfo]] = {}
+
+    def _admit(node) -> None:
+        try:
+            ctype = (node.control_type or "")
+        except Exception:  # noqa: BLE001
+            return
+        ctype_s = str(ctype)
+        if allow_types is not None and ctype_s.lower() not in allow_types:
+            return
+
+        try:
+            raw_name = node.name or ""
+        except Exception:  # noqa: BLE001
+            raw_name = ""
+        name = str(raw_name).strip()
+        if not name and ctype_s not in _INVENTORY_NAMELESS_OK:
+            return
+
+        try:
+            enabled = bool(getattr(node, "enabled", True))
+        except Exception:  # noqa: BLE001
+            enabled = True
+
+        rect: tuple[int, int, int, int] = (0, 0, 0, 0)
+        center: tuple[int, int] = (0, 0)
+        try:
+            r = node.rectangle
+            left = int(r.left)
+            top = int(r.top)
+            right = int(r.right)
+            bottom = int(r.bottom)
+            rect = (left, top, right, bottom)
+            center = ((left + right) // 2, (top + bottom) // 2)
+        except Exception:  # noqa: BLE001
+            pass
+
+        value = ""
+        if value_truncate > 0 and ctype_s in _INVENTORY_NAMELESS_OK:
+            try:
+                raw_value = getattr(node, "value", None)
+                if raw_value is not None:
+                    value = str(raw_value)[:value_truncate]
+            except Exception:  # noqa: BLE001
+                value = ""
+
+        try:
+            auto_id = node.automation_id or ""
+        except Exception:  # noqa: BLE001
+            auto_id = ""
+
+        info = UIElementInfo(
+            name=name,
+            control_type=ctype_s,
+            automation_id=str(auto_id),
+            enabled=enabled,
+            rect=rect,
+            center=center,
+            value=value,
+        )
+
+        bucket = _INVENTORY_BUCKETS.get(ctype_s, "other")
+        buckets.setdefault(bucket, []).append(info)
+
+    def _walk(node, depth: int) -> None:
+        if visited[0] >= max_elements:
+            return
+        visited[0] += 1
+        try:
+            _admit(node)
+        except Exception:  # noqa: BLE001
+            pass
+        if depth >= max_depth:
+            return
+        try:
+            children = node.children()
+        except Exception:  # noqa: BLE001
+            return
+        for child in children:
+            if visited[0] >= max_elements:
+                return
+            _walk(child, depth + 1)
+
+    try:
+        _walk(root, 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("UI inventory walk hwnd=%d failed: %s", hwnd, exc)
+
+    return buckets
+
+
+# ---------------------------------------------------------------------------
+# Catalog 08 T4 (partial): wait-for-text in window
+# ---------------------------------------------------------------------------
+
+
+# Defaults mirror the upstream clawhub-windows-control wait scripts: 30 s
+# total timeout, 500 ms poll interval. The constants are module-level
+# so callers can introspect / override.
+DEFAULT_WAIT_TIMEOUT_S: float = 30.0
+DEFAULT_WAIT_INTERVAL_S: float = 0.5
+
+
+def wait_for_text_in_window(
+    text: str,
+    partial_window_title: str,
+    *,
+    timeout_s: float = DEFAULT_WAIT_TIMEOUT_S,
+    interval_s: float = DEFAULT_WAIT_INTERVAL_S,
+    case_insensitive: bool = True,
+    max_elements: int = _DEFAULT_MAX_ELEMENTS,
+    max_depth: int = _DEFAULT_MAX_DEPTH,
+    sleep_fn: Optional[object] = None,
+    clock_fn: Optional[object] = None,
+) -> bool:
+    """Poll until ``text`` appears in any window matching ``partial_window_title``.
+
+    Catalog 08 T4 (GREEN, read-only). Synchronous UIA-tree polling
+    barrier. Each iteration re-resolves the target window via the
+    foreground enumerator + walks its UIA descendants via
+    :func:`collect_window_text`, checking for substring presence.
+    Exits as soon as the text is found or the timeout elapses.
+
+    Args:
+        text: substring to search for in the window's UIA tree.
+        partial_window_title: case-insensitive substring match against
+            window title. Restricts the search scope (matching the
+            upstream pattern of mandatory window filter). Empty string
+            scans every visible window.
+        timeout_s: wall-clock timeout in seconds.
+        interval_s: poll interval in seconds.
+        case_insensitive: when True (default), substring match is
+            case-insensitive.
+        max_elements: forwarded to :func:`collect_window_text` per
+            poll iteration.
+        max_depth: forwarded to :func:`collect_window_text`.
+        sleep_fn: optional ``(float) -> None`` injection for tests so
+            the polling loop doesn't actually sleep. Defaults to
+            :func:`time.sleep`.
+        clock_fn: optional ``() -> float`` injection for tests so the
+            deadline computation is deterministic. Defaults to
+            :func:`time.monotonic`.
+
+    Returns:
+        True when text found, False on timeout.
+
+    Fail-open: per-window enumeration exceptions silently skip the
+    affected window (the next poll re-tries). Empty ``text`` returns
+    True immediately. Non-positive ``timeout_s`` returns False without
+    polling.
+    """
+    needle = (text or "")
+    if not needle:
+        return True
+    if timeout_s <= 0:
+        return False
+
+    sleeper = sleep_fn if callable(sleep_fn) else time.sleep
+    clock = clock_fn if callable(clock_fn) else time.monotonic
+
+    title_filter = (partial_window_title or "").strip().lower()
+    needle_cmp = needle.lower() if case_insensitive else needle
+
+    deadline = clock() + float(timeout_s)
+    poll_interval = max(0.01, float(interval_s))
+
+    # Lazy import so a test that monkeypatches enumerate_windows in this
+    # module picks up the test double.
+    from ultron.desktop.windows import enumerate_windows
+
+    while True:
+        try:
+            windows = enumerate_windows()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("wait_for_text enumerate failed: %s", exc)
+            windows = []
+
+        for win in windows:
+            try:
+                if title_filter and title_filter not in (win.title or "").lower():
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            try:
+                names = collect_window_text(
+                    win, max_elements=max_elements, max_depth=max_depth,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            for name in names:
+                haystack = name.lower() if case_insensitive else name
+                if needle_cmp in haystack:
+                    return True
+
+        now = clock()
+        if now >= deadline:
+            return False
+        remaining = deadline - now
+        sleeper(min(poll_interval, remaining))
+
+
 __all__ = [
     "UIAElement",
     "UIAActionResult",
+    "UIElementInfo",
+    "DEFAULT_WAIT_TIMEOUT_S",
+    "DEFAULT_WAIT_INTERVAL_S",
     "collect_window_text",
     "find_element",
     "click_element",
@@ -771,4 +1097,6 @@ __all__ = [
     "physical_center_of_element",
     "physical_rect_of_element",
     "dpi_aware_click_at_element_center",
+    "get_ui_element_inventory",
+    "wait_for_text_in_window",
 ]
