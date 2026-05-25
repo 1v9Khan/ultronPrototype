@@ -10,10 +10,11 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `92ee711` on `origin/main` (2026-05-24 cline
-> catalog port batch 10 -- T2 mode policy + T13 per-mode LLM router
-> + T16 subagent runner). Tests **6263 passing / 24 skipped / 0
-> failed in ~119 s** via `scripts/run_tests.py`.
+> **Validating HEAD:** `188931a` on `origin/main` (2026-05-25 post-
+> cline integration pass -- orchestrator startup wiring for OpenHands
+> T6 + T7, SWE-Agent T16 click-preview gate, skills + events flag
+> flips, OpenHands deep API docs backfill). Tests **6270 passing /
+> 24 skipped / 0 failed in ~121 s** via `scripts/run_tests.py`.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -43,6 +44,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-25 | `188931a` | post-cline integration pass: orchestrator startup wiring (install_default_injectors with closures returning existing STT/TTS engine instances + discover_project_config caching .ultron/ snapshot on `self._project_config`; both fail-open), SWE-Agent T16 click-preview gate wired through new InputController kwargs + new `desktop.click_preview.*` config section (default OFF; when ON the orchestrator builds a new InputController with VLM-backed `vlm_describe` + screen-capture closures and replaces the singleton via `set_input_controller`), two safe behavioural flag flips (`skills.enabled: true` + `events.enabled: true`, both fail-open, voice baseline preserved via untouched gaming_mode/llm.preset/llm.draft_kind), OpenHands deep API docs backfilled (9 packages: parsing / install / projects / services / skills / events / lifecycle / llm/condensers + utils/poll.py). | 6270 | (cline-port memory pending) |
 | 2026-05-24 | `92ee711` | cline catalog port batch 10 -- mode policy + per-mode LLM router + subagent runner (T2 + T13 + T16): new `agent_loop/mode.py` (canonical `Mode` enum ACT/PLAN/CODING_ARCHITECT/CODING_EDITOR/GAMING + frozen `ModePolicy` with wrap-template + confirmation-TTL + preset override + `PendingConfirmation` queue with intent-topic filter + `ModeSession` state machine + flip history + module-level registry `get_mode_session`); new `llm/mode_router.py` (frozen `PresetEntry` + `ModeLLMRouter` mapping `Mode` to preset name, skip-when-already-active via injected probe, protected-mode set, `on_swap` callback with fail-open semantics, default routes target ultron's qwen3.5-4b for ACT/PLAN/CODING_* + llama-3.2-3b-abliterated for GAMING); new `agent_loop/subagent.py` (frozen `SubagentTask` + `SubagentResult` + `SubagentBatchStats` + `ToolGuard` whitelist enforcer + thread-safe `TokenLedger` + `SubagentRunner` ThreadPoolExecutor-backed dispatcher with `max_parallel=1` default + `DEFAULT_READONLY_TOOL_WHITELIST` matching cline's subagent allowed set). All three I/O-free, clock-injectable, no orchestrator wiring (primitives only). | 6263 | (cline-port memory pending) |
 | 2026-05-24 | `14e4653` | cline catalog port batch 9 -- dual-array API/UI history split (T4): new `memory/dual_history.py` with `DualHistoryStore` (per-session in-memory store), `VerbatimTurn` (text + tts_clip_ref + image_refs + metadata -- the literal user/agent exchange), `ApiTurn` (LLM-facing shape with `compacted` + `elided_count` for drift reporting), shared `turn_id` UUID indexing so verbatim<->api resolves O(1) -- the basis for "what did I say earlier?" voice queries. Methods: `record` / `record_api` / `truncate_after_turn` (anchor-based) / `truncate_to_offset` (last-N) / `replace_api_range` (condenser hook) / `find_verbatim_by_substring` (newest-first fuzzy) / `snapshot` (frozen view with both indices) / `drift_report` (per-call counts of `verbatim_only` / `api_only` / `shared`). Verbatim/api caps default unlimited (verbatim is cheap; api cap is what costs tokens). Primitive is I/O-free; callers wire their own persistence. | 6191 | (cline-port memory pending) |
 | 2026-05-24 | `cf0cbef` | cline catalog port batch 8 -- shadow-repo checkpoints with three-axis restore (T1): new `checkpoints/` package -- `exclusions.py` (DEFAULT_CHECKPOINT_EXCLUSIONS + VOICE_BASELINE_PROTECTED_PATTERNS guarding SOUL.md / RVC / Piper / Kokoro voicepack / LLM GGUFs from accidental rollback), `shadow_repo.py` (ShadowRepoTracker git CLI wrapper + per-session RLock + 15s init timeout + CREATE_NO_WINDOW + hash_working_dir), `restore.py` (plan-then-execute three-axis restore — voice_history / workspace / both), `registry.py` (SessionCheckpointManager bus subscription + CheckpointRegistry singleton). | 6161 | (cline-port memory pending) |
@@ -2690,6 +2692,176 @@ pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
   - `.make_absolute(text) -> str` — decode back; validates pairing and outdent integrity
 - `relative_indent(text, *, marker=None) -> str` — one-shot encode
 - `absolute_indent(text, *, marker=None) -> str` — one-shot decode
+
+#### `utils/poll.py` (2026-05-24 OpenHands batch 2, T14)
+
+Bounded-retry polling primitive ported from OpenHands'
+`_poll_for_title`. See `THIRD_PARTY_NOTICES.md` for attribution.
+
+- `@dataclass(frozen=True) PollResult[T]` — `value` / `succeeded` / `attempts` / `elapsed_seconds` / `last_error`.
+- `poll_until(fn, *, is_done=_is_present, max_attempts=4, delay_seconds=3.0, backoff_factor=1.0, max_delay_seconds=60.0) -> PollResult[T]` — synchronous bounded-retry. Default predicate is `value is not None`; replace for "good-enough" semantics.
+- `apoll_until(fn_or_coro, *, is_done, max_attempts, delay_seconds, backoff_factor, max_delay_seconds, cancel_check=None) -> PollResult[T]` — async variant; cooperative `cancel_check` callable lets the voice path abandon a long poll when the user resumes speaking.
+- Defaults `DEFAULT_MAX_ATTEMPTS=4`, `DEFAULT_DELAY_SECONDS=3.0`, `DEFAULT_BACKOFF_FACTOR=1.0`, `DEFAULT_MAX_DELAY_SECONDS=60.0` mirror the OpenHands constants.
+
+### `src/ultron/parsing/` (2026-05-24 OpenHands batch 1, T11)
+
+YAML frontmatter parser. Used by skills + projects + rule conditionals.
+
+#### `parsing/frontmatter.py`
+- `@dataclass(frozen=True) FrontmatterResult` — `frontmatter: Mapping[str, Any]` (parsed YAML mapping, empty dict on absent/malformed) + `body: str` (post-frontmatter text) + `raw_frontmatter: str` (verbatim block).
+- `parse_frontmatter_text(text, *, strict_yaml=False) -> FrontmatterResult` — accepts CRLF + LF + empty frontmatter (`---\n---\nbody`); fail-open on parse errors (returns empty frontmatter + full text as body when `strict_yaml=False`).
+- `parse_frontmatter(path) -> FrontmatterResult` — file wrapper.
+- `walk_directory_with_frontmatter(root, *, suffixes=(".md",), skip_dirs=frozenset(), skip_files=frozenset()) -> Iterator[tuple[Path, FrontmatterResult]]` — recursive walk with filterable dir/file skips.
+
+### `src/ultron/install/` (2026-05-24 OpenHands batch 1, T8)
+
+Marker-comment idempotent installer with audit log.
+
+#### `install/idempotent.py`
+- `class InstallAction(str, Enum)` — `INSTALLED` / `REUSED` / `REPLACED` / `REFUSED_EXISTS_UNMARKED` / `DRY_RUN`.
+- `@dataclass(frozen=True) InstallResult` — `path`, `action`, `marker`, `bytes_written`, `reason` (per-action explanation).
+- `@dataclass(frozen=True) InstallLogEntry` + `class InstallLogWriter` (JSONL writer with `logs/install_log.jsonl` default).
+- `set_install_log_writer(writer)` / module-level singleton.
+- `install_with_marker(target: Path, content: str, *, marker: str = "# INSTALLED-BY-ULTRON-3f9a7d2", policy: str = "preserve_unmarked", encoding="utf-8", dry_run=False, audit_log_writer=None) -> InstallResult` — atomic temp-write + `os.replace`; UUID-suffixed marker prevents collisions when two installers race on the same file; explicit `policy ∈ {refuse, preserve, replace}` for unmarked existing files; `dry_run=True` reports without writing.
+
+### `src/ultron/projects/` (2026-05-24 OpenHands batch 7, T7)
+
+Per-project `.ultron/` configuration discovery.
+
+#### `projects/discovery.py`
+- `DEFAULT_PROJECT_CONFIG_DIRNAME = ".ultron"`.
+- `class ProjectConfigField(str, Enum)` — `SKILLS_DIR` / `SETUP_SCRIPT` / `PRE_COMMIT_SCRIPT` / `IDENTITY_OVERRIDE` / `SAFETY_RULES` / `TEST_COMMAND` / `VOICEPACK_OVERRIDE` / `INTENT_TRIGGERS` / `HOOKS`.
+- `@dataclass(frozen=True) ProjectDiscoveryStats` — `repo_root`, `config_dir`, `files_checked`, `files_found`, `parse_errors`, `duration_seconds`.
+- `@dataclass(frozen=True) ProjectConfig` — `repo_root` / `config_dir` / `discovered_at` + 9 optional fields (`skills_dir`, `setup_script`, `pre_commit_script`, `identity_override`, `safety_rules`, `test_command`, `voicepack_override`, `intent_triggers`, `hooks`) + their `*_path` siblings + `raw_paths` mapping + `parse_errors` tuple. `has_any_field` boolean shortcut + `get_path(field)` lookup.
+- `discover_project_config(repo_root, *, use_cache=True) -> ProjectConfig` — never raises; per-file errors land in `parse_errors`. Mtime-cached keyed by `(repo_root, .ultron mtime)`.
+- `invalidate_discovery_cache(repo_root=None)` — drop entry (or all when `None`).
+
+### `src/ultron/services/` (2026-05-24 OpenHands batch 8, T6)
+
+Sync Injector ABC + state + registry. Future per-mode router seed.
+
+#### `services/injector.py`
+- `class InjectorState` — thread-safe key/value blob shared across nested injections; `__getattr__` / `__setattr__` / `__contains__` / `get` / `update` / `snapshot`.
+- `class Injector[T](ABC)` — `inject(state) -> T` (subclass implements); `stream(state) -> Iterator[T]` (default delegates to inject); `context(state=None)` context manager.
+- `class SingletonInjector[T]` — `__init__(build_fn)`; constructs once + caches; `reset()` drops the cached instance.
+- `class StreamInjector[T]` — wraps a generator factory so callers don't have to subclass.
+- `@dataclass InjectorRegistry` — `register(key, injector)` / `unregister(key) -> bool` / `get(key)` / `require(key) -> Injector` / `keys() -> list[str]` / `clear()`.
+- `get_injector_registry() -> InjectorRegistry | None` + `set_injector_registry(registry)` + `reset_injector_registry_for_testing()` module-level singleton.
+- `install_default_injectors(*, registry=None, stt_injector=None, tts_injector=None) -> InjectorRegistry` — registers starter STT + TTS injectors on the singleton registry; missing args fall to the default `build_stt_engine_injector()` + `build_tts_engine_injector()`.
+
+#### `services/engine_injectors.py`
+- `@dataclass STTEngineInjector(Injector[Any])` — `standby_factory` + `gaming_factory`; `inject(state)` switches by `state.get("mode", "standby")`; default falls through to `ultron.transcription.make_stt_engine()`.
+- `@dataclass TTSEngineInjector(Injector[Any])` — same shape; default falls through to `ultron.tts.make_tts_engine()` returning `(rvc, engine)` tuple.
+- `build_stt_engine_injector(*, standby_factory=None, gaming_factory=None)` / `build_tts_engine_injector(...)` factory helpers.
+
+### `src/ultron/skills/` (2026-05-24 OpenHands batch 2, T1)
+
+Trigger-loaded knowledge bundles. Three sources merged with PROJECT > USER > PUBLIC precedence.
+
+#### `skills/registry.py`
+- `class SkillRegistry` — walks N directories (each tagged as PUBLIC/USER/PROJECT), parses each `.md` file via `parsing/frontmatter`, dedupes by name (later precedence wins), supports KEYWORD + SLASH_COMMAND + ALWAYS_ON trigger kinds.
+  - `reload() -> list[SkillReloadStats]` — re-scan every source dir; mtime cache keyed on `(directory, mtime_fingerprint)`.
+  - `match_for_turn(user_text, *, max_matches=6, min_user_text_chars=8, always_on_only=False) -> list[Skill]` — keyword/slash matching with fail-soft caps.
+- `get_skill_registry()` / `set_skill_registry(registry)` / `reset_skill_registry_for_testing()` module-level singleton accessors.
+- `format_skills_block(skills, *, max_block_chars=8000) -> str` — render matched skills into a `<skill name="X">...</skill>` block bounded by char cap.
+- `maybe_get_skills_block(user_text, *, max_matches=6, min_user_text_chars=8, max_block_chars=8000) -> str` — convenience wrapper called from `LLMEngine._build_messages` when `skills.enabled: true`.
+- `build_default_registry(*, project_root, user_home=None, extra_project_dirs=(), disabled_skills=(), always_on_only=False, default_min_user_text_chars=8, max_matches_per_turn=6) -> SkillRegistry` — orchestrator-side factory wiring the three default sources + config overrides.
+
+### `src/ultron/events/` (2026-05-24 OpenHands batches 3 + 4, T2 + T3 + T13)
+
+Canonical event store + bus sink + per-event hash chain + callbacks.
+
+#### `events/models.py`
+- `class EventSortOrder(str, Enum)` — `ASC` / `DESC`.
+- `class EventKind` — string-constant namespace (e.g. `EventKind.AGENT_TURN_STARTED`, `EventKind.MEMORY_WRITE`, `EventKind.SAFETY_BLOCK`). New event kinds are added here so consumers can grep one file for the canonical list.
+- `new_event_id() -> str` — 32-char hex UUID4.
+- `@dataclass(frozen=True) StoredEvent` — `id` / `session_id` / `kind` / `timestamp` / `payload: Mapping` / `chain_hash: str` (set by chain.compute on insert) / `sequence: int` / `tags: tuple[str, ...]`.
+- `@dataclass(frozen=True) EventPage` — `events: tuple[StoredEvent, ...]` + `next_cursor: str | None`.
+- `@dataclass(frozen=True) EventQuery` — `session_id` / `kinds` / `since_ts` / `until_ts` / `tags_any` / `tags_all` / `limit` / `cursor` / `sort_order`.
+- `canonical_event_json(event) -> str` — deterministic JSON serialisation feeding the SHA-256 chain.
+- `kinds_in(events) -> list[str]` — distinct kinds helper for the per-session histogram.
+
+#### `events/chain.py` (T13)
+- `compute_event_chain_hash(prev_hash: str, event_json: str) -> str` — `sha256(prev || canonical)`.
+- `verify_chain(events: Sequence[StoredEvent]) -> tuple[bool, int | None]` — re-walk the chain; returns `(ok, first_break_index_or_None)`.
+
+#### `events/store.py`
+- `class EventStoreError(RuntimeError)`.
+- `class EventStore(ABC)` — five abstract methods: `save_event` / `get_event` / `search_events` / `count_events` / `batch_get_events`. Subclasses honour per-session prefix scoping.
+- `class MemoryEventStore` — in-process dict-of-list per session. Fastest; volatile.
+- `class JsonlEventStore` — one `.jsonl` per session under `base_dir`; atomic append + per-session RLock; recovers gracefully on partial-write tail rows.
+- `class QdrantEventStore` — Qdrant collection per session; embeds canonical JSON for vector search. Falls back to JSONL when Qdrant unreachable.
+- `get_event_store()` / `set_event_store(store)` / `reset_event_store_for_testing()` module-level singleton.
+- `build_event_store(backend: str, *, base_dir, qdrant_collection, default_session_id) -> EventStore` — factory matching `events.store_backend` config.
+
+#### `events/export.py`
+- `export_session_to_bytes(store, session_id) -> bytes` — zip blob: `events.jsonl` + `meta.json` (event count, chain verification result, exported_at).
+- `export_session_to_path(store, session_id, path)` — disk variant.
+
+#### `events/bus_sink.py`
+- `class BusEventSink` — subscribes to the ultron bus, converts every published envelope to `StoredEvent` with per-session sequence counter, persists via the active `EventStore`, fires the `CallbackRegistry` after persistence.
+- `install_bus_sink(store, callback_registry=None) -> BusEventSink` — orchestrator-side wiring helper.
+
+#### `events/callbacks.py` (T3)
+- `class CallbackStatus(str, Enum)` — `ACTIVE` / `DISABLED` / `ARCHIVED`.
+- `class CallbackResultStatus(str, Enum)` — `OK` / `ERROR` / `SKIPPED`.
+- `@dataclass CallbackResult` — `callback_id`, `status: CallbackResultStatus`, `error_message`, `deactivate_after`.
+- `class CallbackProcessor(ABC)` — `__call__(event: StoredEvent, callback: RegisteredCallback) -> CallbackResult`.
+- `@dataclass RegisteredCallback` — id + session/kind filters + processor reference + `enabled` flag.
+- `class CallbackRegistry` — register / unregister / list / dispatch; per-callback session+kind filter + self-deactivation pattern; JSONL persistence option; slow-callback watchdog.
+- `get_callback_registry()` / `set_callback_registry(registry)` / `reset_callback_registry_for_testing()` module-level singleton.
+- `class FunctionProcessor(CallbackProcessor)` — adapter so a plain callable can be a processor without subclassing.
+
+#### `events/processors.py` (T3 built-ins)
+- `class LoggingCallbackProcessor` — logs event id + kind + payload preview.
+- `class CountingCallbackProcessor` — per-kind counter + checkpoint persistence.
+- `class ThresholdSnapshotProcessor` — fires once when a per-event counter crosses threshold (the load-bearing OpenHands `SetTitleCallbackProcessor` pattern).
+- `class MemoryWriteProcessor` — writes event content into the conversation memory.
+- `class ChannelGuardProcessor` — payload redaction (regex blocklist) before downstream sinks.
+- `class SkillActivatorProcessor` — toggles a skill name based on payload condition.
+- `build_default_processors() -> list[CallbackProcessor]` — returns one of each built-in.
+
+### `src/ultron/lifecycle/` (2026-05-23 OpenHands batches 6, T5 + T16)
+
+Typed start-task state machine + pending-message queue.
+
+#### `lifecycle/start_task.py` (T5)
+- `class StartTaskStatus(str, Enum)` — `PENDING` / `RUNNING` / `COMPLETED` / `FAILED` / `CANCELLED` / `TIMED_OUT`.
+- `is_terminal_status(status) -> bool` — `True` for COMPLETED/FAILED/CANCELLED/TIMED_OUT.
+- `class StartTaskError(RuntimeError)`.
+- `@dataclass StartTask` — `task_id` / `kind` / `started_at` / `status` / `progress` / `payload` / `error_message`. Mutable status field; transitions are explicit so transcript / persistence can observe each step.
+- `create_start_task(kind, *, task_id=None, payload=None) -> StartTask` — factory.
+- `class StartTaskRecorder` — `record(task: StartTask)` writes a typed event into the `EventStore` (when wired) on every transition.
+- `async drive_start_task(task: StartTask, body: Callable[..., Awaitable], *, recorder: StartTaskRecorder | None = None, timeout_seconds: float = 0.0) -> StartTask` — runs `body` under timeout; transitions through RUNNING -> COMPLETED/FAILED/TIMED_OUT; persists every transition via recorder.
+
+#### `lifecycle/pending_message_queue.py` (T16)
+- `class PendingMessageState(str, Enum)` — `QUEUED` / `DELIVERED` / `CANCELLED`.
+- `@dataclass PendingMessage` — `message_id` / `temp_task_id` / `bound_task_id` / `state` / `payload` / `created_at` / `delivered_at`.
+- `class PendingMessageQueue` — `enqueue(temp_task_id, payload) -> PendingMessage` / `bind(temp_task_id, bound_task_id)` (rebind on real task arrival) / `cancel(message_id_or_temp_id)` / `drain(bound_task_id) -> list[PendingMessage]` / `pending_for(bound_task_id) -> list[PendingMessage]`. Overflow drops oldest beyond `max_size`. Optional JSONL persistence.
+- `rebind_pending_messages(queue, old_temp_id, new_bound_id) -> int` — convenience alias for the rebind pattern.
+
+### `src/ultron/llm/condensers/` (2026-05-23 OpenHands batch 5, T4)
+
+Swappable history compression. Five concrete condensers + factory + intent selector.
+
+#### `llm/condensers/base.py`
+- `Turn = tuple[str, str]` (role, content) matching `LLMEngine.Turn`.
+- `class CondenserError(RuntimeError)`.
+- `@dataclass(frozen=True) CondenseResult` — `turns: tuple[Turn, ...]` (post-condensation) + `dropped: int` (verbatim turns elided) + `compaction_summary: str` (LLM-generated for the LLM-summarising variant; empty for others).
+- `class Condenser(ABC)` — `condense(turns: Sequence[Turn]) -> CondenseResult`.
+- `turn_text(turn) -> str` — content extraction helper.
+- `char_count_tokens_for_turns(turns) -> int` — cheap budget probe.
+
+#### `llm/condensers/{noop,recent,amortized,observation_masking,llm_summarizing}.py`
+- `class NoOpCondenser` — passthrough.
+- `class RecentCondenser(*, head_keep=2, tail_keep=4)` — head + tail; middle dropped.
+- `class AmortizedCondenser(*, target_token_budget, token_counter=char_count_tokens)` — no-LLM intelligent forgetting; drops oldest turns until under budget; recovers if a single recent turn alone exceeds budget.
+- `class ObservationMaskingCondenser(*, mask_after_turn_age=8, mask_template="[NOTE] Tool/system output elided")` — masks old tool/system content without dropping the turn.
+- `class LLMSummarizingCondenser(*, summarize_fn: Callable[[Sequence[Turn]], str], head_keep=2, tail_keep=4)` — folds the middle into one summary turn using the injected `summarize_fn`. Keeps the package LLM-independent.
+
+#### `llm/condensers/factory.py`
+- `build_condenser(name, **kwargs) -> Condenser` — string-keyed factory (`noop` / `recent` / `amortized` / `observation_masking` / `llm_summarizing`).
+- `select_condenser_for_intent(intent_label: str, *, summarize_fn=None, fallback_name="noop") -> Condenser` — the catalog's "adaptive switching by intent" extension. Greetings -> NoOp; factual -> Recent; coding -> LLMSummarizing (requires `summarize_fn`); fallback `fallback_name` when unmatched.
 
 ---
 
