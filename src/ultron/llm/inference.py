@@ -415,6 +415,45 @@ def _resolve_current_mode_for_skills() -> str:
         return "standby"
 
 
+def _resolve_vlm_loaded_for_skills() -> bool:
+    """Return True iff the VLM holder reports the model is loaded.
+
+    Used by ``_build_messages`` to thread the VLM availability
+    context into ``maybe_get_skills_block`` so the catalog 07 T4
+    filter can drop skills tagged :attr:`REQUIRES_VLM` when the
+    moondream2 weights aren't resident. Fail-open: any import or
+    lookup error returns True so the legacy "skills load
+    unconditionally" path stays the default.
+    """
+    try:
+        from ultron.desktop.vlm import get_vlm
+    except Exception:  # noqa: BLE001
+        return True
+    try:
+        vlm = get_vlm()
+    except Exception:  # noqa: BLE001
+        return True
+    if vlm is None:
+        return False
+    # The VLM holder lazy-loads weights on the first describe() call;
+    # the ``_model`` attribute is the durable indicator of "weights are
+    # in memory now". Treat the no-attribute case as "we can't tell,
+    # assume yes" so skills don't unexpectedly disappear from the
+    # prompt when the holder ships a different attribute name.
+    try:
+        loaded = getattr(vlm, "_model", None)
+    except Exception:  # noqa: BLE001
+        return True
+    if loaded is None:
+        # The holder exists but the weights haven't been forced into
+        # memory yet. The first describe() call will trigger the
+        # load; until then we treat the VLM as unavailable for skill-
+        # filter purposes so the prompt doesn't claim a capability
+        # the next turn can't deliver.
+        return False
+    return True
+
+
 class LLMEngine:
     """LLM client with chat history.
 
@@ -861,12 +900,24 @@ class LLMEngine:
         # whose frontmatter ``modes`` excludes the current mode.
         # ``GamingModeManager`` is the source of truth via the
         # process-global ``is_gaming_mode_active`` flag.
+        #
+        # 2026 catalog 07 T4 wiring -- also thread the capability
+        # context (vlm_loaded, has_internet) so the registry filters
+        # skills whose frontmatter ``capability_tags`` requires a
+        # capability the runtime currently can't deliver. Default
+        # has_internet=True (assume connectivity; the per-fetch
+        # circuit breakers handle outages); vlm_loaded reflects the
+        # VLM holder's actual state.
         try:
             from ultron.skills import maybe_get_skills_block
 
             current_mode = _resolve_current_mode_for_skills()
+            vlm_loaded = _resolve_vlm_loaded_for_skills()
             skills_block = maybe_get_skills_block(
-                user_message, mode=current_mode,
+                user_message,
+                mode=current_mode,
+                vlm_loaded=vlm_loaded,
+                has_internet=True,
             )
         except Exception:
             skills_block = ""

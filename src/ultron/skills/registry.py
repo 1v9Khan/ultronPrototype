@@ -227,6 +227,9 @@ class SkillRegistry:
         user_text: str,
         *,
         mode: str = "standby",
+        gaming_mode: bool | None = None,
+        vlm_loaded: bool = True,
+        has_internet: bool = True,
     ) -> list[SkillMatch]:
         """Return the skills the registry would inject for ``user_text``.
 
@@ -244,12 +247,32 @@ class SkillRegistry:
         with a heavy system prompt would burn budget the user doesn't
         want spent.
 
+        2026 (catalog 07 T4 wiring): ``capability_tags`` in the
+        frontmatter filters skills against the current runtime
+        capability context.
+
+        * ``gaming_mode`` (when ``True``, or when ``None`` and
+          ``mode == "gaming"``): drops skills with any tag in
+          :data:`ultron.skills.capability_tags.GAMING_MODE_INCOMPATIBLE_TAGS`.
+          Default ``None`` derives the flag from ``mode``.
+        * ``vlm_loaded=False``: drops skills tagged
+          :attr:`CapabilityTag.REQUIRES_VLM`.
+        * ``has_internet=False``: drops skills tagged
+          :attr:`CapabilityTag.REQUIRES_INTERNET`.
+
+        Skills with no ``capability_tags`` declaration pass every
+        capability check (legacy / unscoped). Unknown tag strings
+        are ignored (forward-compatible with future tag additions).
+        Fail-open if the capability_tags module can't be imported.
+
         At most :attr:`_max_matches_per_turn` non-always-on skills are
         returned, in source-precedence order then by name.
         """
 
         self._maybe_reload_if_stale()
         normalised_mode = (mode or "standby").lower().strip()
+        if gaming_mode is None:
+            gaming_mode = normalised_mode == "gaming"
         results: list[SkillMatch] = []
         triggered_results: list[SkillMatch] = []
         with self._lock:
@@ -257,6 +280,13 @@ class SkillRegistry:
                 if skill.name.lower() in self._disabled_skills:
                     continue
                 if not _skill_active_in_mode(skill, normalised_mode):
+                    continue
+                if not _skill_active_for_capability_tags(
+                    skill,
+                    gaming_mode=bool(gaming_mode),
+                    vlm_loaded=vlm_loaded,
+                    has_internet=has_internet,
+                ):
                     continue
                 if skill.is_always_on:
                     results.append(SkillMatch(skill=skill, matched_terms=()))
@@ -305,6 +335,101 @@ def _skill_active_in_mode(skill: Skill, mode: str) -> bool:
     if not normalised:
         return True
     return mode.lower().strip() in normalised
+
+
+def _coerce_capability_tag_strings(raw: object) -> list[str]:
+    """Normalise a frontmatter ``capability_tags`` value to a list of strings.
+
+    Accepts:
+
+    * ``None`` -> ``[]``
+    * a single string -> wrapped in a one-element list
+    * a list / tuple of strings or stringifiable values -> stringified
+      and stripped, dropping empty entries
+    * any other shape -> ``[]`` (fail-open; the predicate then treats
+      the skill as unrestricted)
+    """
+
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        return [stripped] if stripped else []
+    if isinstance(raw, (list, tuple)):
+        out: list[str] = []
+        for item in raw:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+    return []
+
+
+def _skill_active_for_capability_tags(
+    skill: Skill,
+    *,
+    gaming_mode: bool,
+    vlm_loaded: bool,
+    has_internet: bool,
+) -> bool:
+    """Return True iff ``skill`` survives the current capability context.
+
+    Reads the optional ``capability_tags`` list from
+    ``skill.extra`` (sourced from frontmatter at load time). Skills
+    with no declaration -- the common case for the six built-in
+    skills -- pass every check (legacy / unscoped).
+
+    The filter rules mirror
+    :func:`ultron.skills.capability_tags.filter_capabilities`:
+
+    * Gaming mode drops skills tagged with anything in
+      :data:`GAMING_MODE_INCOMPATIBLE_TAGS`.
+    * ``vlm_loaded=False`` drops skills tagged
+      :attr:`REQUIRES_VLM`.
+    * ``has_internet=False`` drops skills tagged
+      :attr:`REQUIRES_INTERNET`.
+
+    Unknown tag strings are silently ignored so adding tags upstream
+    is forward-compatible. The capability_tags module is imported
+    lazily so the skill-registry import doesn't pay its cost when
+    capability filtering isn't engaged.
+    """
+
+    extra = getattr(skill, "extra", None) or {}
+    raw_tags = _coerce_capability_tag_strings(extra.get("capability_tags"))
+    if not raw_tags:
+        return True
+
+    try:
+        from ultron.skills.capability_tags import (
+            CapabilityTag,
+            GAMING_MODE_INCOMPATIBLE_TAGS,
+        )
+    except Exception as exc:  # noqa: BLE001  -- fail-open
+        logger.debug("capability_tags filter skipped: %s", exc)
+        return True
+
+    tags: set[CapabilityTag] = set()
+    for value in raw_tags:
+        try:
+            tags.add(CapabilityTag(value))
+        except ValueError:
+            # Unknown tag -- ignore (forward-compatible with upstream
+            # additions before the enum knows about them).
+            continue
+
+    if not tags:
+        return True
+
+    if gaming_mode and (tags & GAMING_MODE_INCOMPATIBLE_TAGS):
+        return False
+    if not vlm_loaded and CapabilityTag.REQUIRES_VLM in tags:
+        return False
+    if not has_internet and CapabilityTag.REQUIRES_INTERNET in tags:
+        return False
+    return True
 
 
 def _terms_matching_inner(skill: Skill, user_text: str) -> tuple[str, ...]:
@@ -408,6 +533,9 @@ def maybe_get_skills_block(
     leading_label: str = "Skills",
     max_chars: int | None = None,
     mode: str = "standby",
+    gaming_mode: bool | None = None,
+    vlm_loaded: bool = True,
+    has_internet: bool = True,
 ) -> str:
     """Return the formatted skills block for ``user_text`` (or empty).
 
@@ -420,6 +548,12 @@ def maybe_get_skills_block(
     :meth:`SkillRegistry.matching_skills` so the caller can ask for
     the gaming-mode-only catalog when ``GamingModeManager`` is engaged.
 
+    ``gaming_mode`` / ``vlm_loaded`` / ``has_internet`` are forwarded
+    to :meth:`SkillRegistry.matching_skills` (catalog 07 T4) so skills
+    whose frontmatter ``capability_tags`` list excludes the current
+    capability context are filtered out. ``gaming_mode=None`` (the
+    default) defers to the ``mode`` argument.
+
     Every error is swallowed (fail-open) -- a malformed skill catalog
     must never break the voice loop. The catalog's `min_user_text_chars`
     guard is respected per-skill.
@@ -429,7 +563,13 @@ def maybe_get_skills_block(
         registry = get_skill_registry()
         if registry is None:
             return ""
-        matches = registry.matching_skills(user_text, mode=mode)
+        matches = registry.matching_skills(
+            user_text,
+            mode=mode,
+            gaming_mode=gaming_mode,
+            vlm_loaded=vlm_loaded,
+            has_internet=has_internet,
+        )
         if not matches:
             return ""
         return format_skills_block(
