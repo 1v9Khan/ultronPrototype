@@ -374,6 +374,69 @@ class Orchestrator:
         # speak_stream) doesn't change.
         self.rvc, self.tts = self._load_tts_engine()
         self.tts.warmup()
+        # 2026-05-24 OpenHands batch 8 (T6) -- install the default STT +
+        # TTS injectors on the module-level registry. The closures hand
+        # back the already-built engines so callers that go through the
+        # registry (gaming-mode hot-swap, tests, future per-mode
+        # routing) get the same instances the orchestrator owns -- no
+        # parallel construction. Fail-open: any error logs WARN and
+        # leaves the registry unset; callers that pre-date the registry
+        # path keep working untouched.
+        try:
+            from ultron.services.injector import install_default_injectors
+            from ultron.services.engine_injectors import (
+                STTEngineInjector,
+                TTSEngineInjector,
+            )
+
+            stt_engine = self.stt
+            rvc_handle = self.rvc
+            tts_engine = self.tts
+
+            def _stt_standby_factory(_state):
+                return stt_engine
+
+            def _tts_standby_factory(_state):
+                return (rvc_handle, tts_engine)
+
+            install_default_injectors(
+                stt_injector=STTEngineInjector(standby_factory=_stt_standby_factory),
+                tts_injector=TTSEngineInjector(standby_factory=_tts_standby_factory),
+            )
+            logger.info("services: STT + TTS injectors installed on registry")
+        except Exception as e:                                          # noqa: BLE001
+            logger.warning("install_default_injectors failed: %s", e)
+
+        # 2026-05-24 OpenHands batch 7 (T7) -- discover .ultron/
+        # per-project configuration once at startup and cache the
+        # snapshot on the orchestrator so downstream subsystems can
+        # consult it without re-walking. Fail-open: any error logs WARN
+        # and leaves ``self._project_config = None``; consumers that
+        # check ``getattr(self, "_project_config", None) is None`` keep
+        # the standby behaviour.
+        try:
+            from ultron.config import PROJECT_ROOT
+            from ultron.projects import discover_project_config
+
+            self._project_config = discover_project_config(PROJECT_ROOT)
+            if self._project_config.has_any_field:
+                discovered = [
+                    name for name in (
+                        "skills_dir", "setup_script", "pre_commit_script",
+                        "identity_override", "safety_rules", "test_command",
+                        "voicepack_override", "intent_triggers", "hooks",
+                    ) if getattr(self._project_config, name) is not None
+                ]
+                logger.info(
+                    "projects: .ultron/ discovery found %d component(s): %s",
+                    len(discovered), ", ".join(discovered),
+                )
+            else:
+                logger.debug("projects: no .ultron/ configuration discovered")
+        except Exception as e:                                          # noqa: BLE001
+            logger.warning("project discovery failed: %s", e)
+            self._project_config = None
+
         # 2026-05-15 latency: pre-render the ack phrase pools. On cache
         # hit (every conversational filler-ack + every web-search ack)
         # the engine skips its HTTP + filter chain and returns the
