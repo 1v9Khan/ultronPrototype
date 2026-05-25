@@ -10,10 +10,10 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `cf0cbef` on `origin/main` (2026-05-24 cline
-> catalog port batch 8 -- T1 shadow-repo checkpoint system with
-> three-axis restore). Tests **6161 passing / 24 skipped / 0 failed
-> in ~113 s** via `scripts/run_tests.py`.
+> **Validating HEAD:** `14e4653` on `origin/main` (2026-05-24 cline
+> catalog port batch 9 -- T4 dual-array API/UI history split as a
+> per-session primitive). Tests **6191 passing / 24 skipped / 0
+> failed in ~112 s** via `scripts/run_tests.py`.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -43,6 +43,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-24 | `14e4653` | cline catalog port batch 9 -- dual-array API/UI history split (T4): new `memory/dual_history.py` with `DualHistoryStore` (per-session in-memory store), `VerbatimTurn` (text + tts_clip_ref + image_refs + metadata -- the literal user/agent exchange), `ApiTurn` (LLM-facing shape with `compacted` + `elided_count` for drift reporting), shared `turn_id` UUID indexing so verbatim<->api resolves O(1) -- the basis for "what did I say earlier?" voice queries. Methods: `record` / `record_api` / `truncate_after_turn` (anchor-based) / `truncate_to_offset` (last-N) / `replace_api_range` (condenser hook) / `find_verbatim_by_substring` (newest-first fuzzy) / `snapshot` (frozen view with both indices) / `drift_report` (per-call counts of `verbatim_only` / `api_only` / `shared`). Verbatim/api caps default unlimited (verbatim is cheap; api cap is what costs tokens). Primitive is I/O-free; callers wire their own persistence. | 6191 | (cline-port memory pending) |
 | 2026-05-24 | `cf0cbef` | cline catalog port batch 8 -- shadow-repo checkpoints with three-axis restore (T1): new `checkpoints/` package -- `exclusions.py` (DEFAULT_CHECKPOINT_EXCLUSIONS + VOICE_BASELINE_PROTECTED_PATTERNS guarding SOUL.md / RVC / Piper / Kokoro voicepack / LLM GGUFs from accidental rollback), `shadow_repo.py` (ShadowRepoTracker git CLI wrapper + per-session RLock + 15s init timeout + CREATE_NO_WINDOW + hash_working_dir), `restore.py` (plan-then-execute three-axis restore — voice_history / workspace / both), `registry.py` (SessionCheckpointManager bus subscription + CheckpointRegistry singleton). | 6161 | (cline-port memory pending) |
 | 2026-05-24 | `34894d9` | cline catalog port batch 7 -- hooks lifecycle (T5 + T21): new `hooks/` package -- 9 cline lifecycle points (TaskStart / TaskResume / TaskCancel / TaskComplete / UserPromptSubmit / PreToolUse / PostToolUse / PreCompact / Notification) + 5 ultron-specific (PreLLMRequest / PreMemoryWrite / PreGamingEngage / PreDesktopAction / WakeWordTriggered). `HookRegistry` parallel fan-out + cancel aggregation + `<hook_context>` concatenation; `HookRunner` subprocess executor with per-suffix interpreter selection (.py / .ps1 / .sh / .bat / .cmd / shebang) + JSON stdin/stdout envelope + 10 s default timeout + 8 kB context-mod cap + last-balanced-JSON parser; `HookDiscovery` mtime-validated cache with 30 s TTL; module-level `get_hook_registry()` singleton. | 6119 | (cline-port memory pending) |
 | 2026-05-24 | `75353f7` | cline catalog port batch 6 -- mentions + focus-chain (T14 + T11): `coding/mention_resolvers.py` (extended `@`-mention regex covering URLs / `workspace:` / `memory:` / `problems` / `last` / `diff` / `clipboard` / `screenshot` / Windows drive-letter paths + provider-driven resolution + per-mention body cap + per-call cap + dedup); `coding/focus_chain.py` (parse / render / diff markdown checklists + atomic temp+rename writes + `FocusChainWatcher` with 300 ms debounce + manual `poll_now` fallback when watchdog absent + `render_critical_info_block` for the user-edit CRITICAL INFORMATION block + `progress_hint` per-band prompt tailoring). | 6079 | (cline-port memory pending) |
@@ -1620,6 +1621,34 @@ VAD" rather than misclassifying.
 #### `memory/background_summarizer.py` (2026-05-19 Tracks 1c+1d+1e)
 - `class BackgroundSummarizer` — idle-gated LLM-driven summary + structured fact extraction. Runs on a worker thread when the orchestrator is idle.
 - Default OFF (`memory.background_summary.enabled: false`).
+
+#### `memory/dual_history.py` (2026-05-24 cline batch 9, T4)
+
+Adapted from cline's `MessageStateHandler` pattern (Apache 2.0; see `THIRD_PARTY_NOTICES.md`). Per-session primitive that splits "what the user actually heard / said" from "what the LLM saw" so the verbatim record survives every condenser / dedup / redaction pass.
+
+- `ROLE_USER` / `ROLE_ASSISTANT` / `ROLE_SYSTEM` / `ROLE_TOOL` — canonical role constants matching the existing `ConversationMemory` convention.
+- `new_turn_id() -> str` — 32-char hex UUID4 turn identifier.
+- `@dataclass(frozen=True) class VerbatimTurn` — `turn_id` / `role` / `text` / `timestamp` / `channel` / `tts_clip_ref` / `image_refs` / `metadata`. The literal user utterance + agent response (NOT the prompt-augmented body). Image refs survive even when the api history strips them post-VLM-description.
+- `@dataclass(frozen=True) class ApiTurn` — `turn_id` / `role` / `content` (str OR typed-block list) / `compacted` / `elided_count`. Subject to truncation, dedup, condenser passes. `elided_count` records how many verbatim turns a single summary entry covers, powering the drift dashboard's "you've been silenced 14 times today" counter.
+- `@dataclass(frozen=True) class HistorySnapshot` — frozen tuple-of-VerbatimTurn + tuple-of-ApiTurn + both lookup indices, returned by `snapshot()`.
+- `class DualHistoryStore` — `__init__(*, verbatim_cap: int | None = None, api_cap: int | None = None)`. RLock-guarded. Verbatim cap defaults unlimited (verbatim is cheap to keep); api cap is what costs tokens on every LLM call.
+  - `record(role, text, *, turn_id?, timestamp, channel, tts_clip_ref, image_refs?, metadata?, api_content?) -> str` — append verbatim AND (optionally) the matching api turn under the same UUID. Returns the turn_id used.
+  - `record_api(turn_id, role, content, *, compacted=False, elided_count=0)` — append just an api turn (used when the api shape is computed after the verbatim record).
+  - `replace_api_range(start, stop, replacement=None) -> int` — condenser hook: replace `api[start:stop]` with optional single replacement. Verbatim is UNCHANGED.
+  - `truncate_after_turn(turn_id) -> (verbatim_dropped, api_dropped)` — anchor-based restore path. Empty string clears everything.
+  - `truncate_to_offset(*, offset_from_end) -> (verbatim_dropped, api_dropped)` — drop the last N verbatim turns + matching api entries. Collects api indices BEFORE deletion + deletes descending so positions stay valid.
+  - `verbatim() / api()` — full tuple snapshots; `recent_verbatim(n) / recent_api(n)` — last-N convenience.
+  - `get_verbatim(turn_id) / get_api(turn_id) -> Optional[...]` — O(1) lookup via the per-array index dicts.
+  - `find_verbatim_by_substring(needle, *, limit=10, case_insensitive=True) -> tuple` — newest-first fuzzy search powering "what did I say earlier?".
+  - `snapshot() -> HistorySnapshot` — frozen view including both lookup indices.
+  - `verbatim_turn_count() / api_turn_count() -> int`.
+  - `drift_report() -> dict[str, int]` — per-call counts (`verbatim_only`, `api_only`, `shared`, `verbatim_total`, `api_total`) for the daily drift-audit dashboard mentioned in the catalog.
+  - `clear()` — drop everything (both arrays + both indices).
+- `_maybe_evict_verbatim_locked() / _maybe_evict_api_locked()` — internal LRU eviction when a cap is set; rebuilds the index after eviction so positions stay accurate.
+
+Module is I/O-free. Callers wire their own persistence (Qdrant payload, JSONL audit log, in-memory recency cache); `DualHistoryStore` is just the data structure + indices.
+
+**In:** verbatim text + optional api shape, both keyed by stable UUID. **Out:** O(1) verbatim<->api resolution, condenser-safe drift reporting, anchor + offset restore paths.
 
 #### `memory/qdrant_store.py`
 - `class MemoryTurn` — dataclass: id, ts, role, content, summary, entities, ...
