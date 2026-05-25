@@ -10,11 +10,11 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `6d66d96` on `origin/main` (2026-05-24 cline
-> catalog port batch 5 -- T8 windowed output writer + T12 presentation
-> scheduler + T19 reasoning demultiplexer + T20 stream coordinator).
-> Tests **6028 passing / 24 skipped / 0 failed in ~94 s** via
-> `scripts/run_tests.py`.
+> **Validating HEAD:** (in-flight cline batch 6; bumped post-commit)
+> last code-touching commit was `6d66d96` (cline batch 5). Batch 6
+> lands T14 extended `@`-mention resolver + T11 bidirectional
+> focus-chain markdown checklist. Tests **6079 passing / 24 skipped /
+> 0 failed in ~94 s** via `scripts/run_tests.py`.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -44,6 +44,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-24 | (in-flight) | cline catalog port batch 6 -- mentions + focus-chain (T14 + T11): `coding/mention_resolvers.py` (extended `@`-mention regex covering URLs / `workspace:` / `memory:` / `problems` / `last` / `diff` / `clipboard` / `screenshot` / Windows drive-letter paths + provider-driven resolution + per-mention body cap + per-call cap + dedup); `coding/focus_chain.py` (parse / render / diff markdown checklists + atomic temp+rename writes + `FocusChainWatcher` with 300 ms debounce + manual `poll_now` fallback when watchdog absent + `render_critical_info_block` for the user-edit CRITICAL INFORMATION block + `progress_hint` per-band prompt tailoring). | 6079 | (cline-port memory pending) |
 | 2026-05-24 | `6d66d96` | cline catalog port batch 5 -- streaming infrastructure (T8 + T12 + T19 + T20): new `streaming/` package with `window.py` (WindowedOutputWriter with 20-line/2KB/100ms debounce + 1000-line/512KB spill thresholds + head-100/tail-100 preserved + `COMPILING_MARKERS` hot-timeout detection), `presentation_scheduler.py` (priority-banded chunk scheduler with environment-adaptive cadence — local/remote/Bluetooth profiles + `set_drop_low_priority` for `enable_thinking=False`), `reasoning_stream.py` (ReasoningDemultiplexer with first-text-finalises semantics + dedicated audit channel keeps reasoning out of TTS), `coordinator.py` (StreamCoordinator state machine + `RetryStatus` payloads + `on_usage` live token meters). | 6028 | (cline-port memory pending) |
 | 2026-05-24 | `3ca8879` | cline catalog port batch 4 -- auto-approve matrix + structured 8-section condenser (T3 + T15): `safety/auto_approval.py` (four-mode per-rule policy `always_ask` / `allow_local` / `allow_external` / `allow_all` + `yolo_mode` master override + per-session "warming" allowlist after N consecutive user approvals + injected `LocalityProbe` predicate); `llm/condensers/structured_8_section.py` (8 canonical headers Primary Request / Key Technical Concepts / Files and Code Sections / Problem Solving / Pending Tasks / Task Evolution / Current Work / Next Step + tolerant `parse_summary` with alias resolution + `compact_for_voice` 3-section TTS-friendly continuity ack). | 5973 | (cline-port memory pending) |
 | 2026-05-24 | `03019fb` | cline catalog port batch 3 -- ignore + conditional rules (T6 + T10): `safety/ignore.py` (three-layer `.ultronignore` with `!include`, `validate_command` covering POSIX + PowerShell file-readers, registry singleton); new `rules/` package with `conditionals.py` (frontmatter `paths` / `intents` / `topics` / `system_state` evaluator, `all_of` + `not_in_gaming_mode` combinators, comparator-prefixed state matching, path-extraction heuristic that strips fenced code + URLs). | 5928 | (cline-port memory pending) |
@@ -323,6 +324,8 @@ For the current decisions and Foundation phase status see
 │       │   ├── narration.py          ← StatusNarrator (delta-aware progress narration)
 │       │   ├── diff_snapshot.py     ← 2026-05-23 SWE-Agent batch 5 (T6 + T13): capture_diff_snapshot (git add -A + diff --cached; file-list fallback) + salvage_on_error (decorates exit_status as submitted (<original>); fall back to pre-persisted diff when fresh capture empty) + AutosubmissionGuard (context manager, KeyboardInterrupt bypasses); mirrors last_diff + stats into SessionRegistry; writes last_diff.patch + last_salvage.json under data/coding/sessions/<id>/
 │       │   ├── edit_diagnostics.py  ← 2026-05-23 SWE-Agent batch 3 (T12): diagnose_edit_failure -> EditDiagnosticResult (NOT_FOUND / NOT_FOUND_IN_WINDOW / MULTIPLE_OCCURRENCES_IN_WINDOW / NO_CHANGES_MADE / AMBIGUOUS_CROSS_FILE / OK); SWE-Agent error-template shapes verbatim; cross-file ambiguity is the creative-extension when search appears in other session-touched files
+│       │   ├── focus_chain.py        ← 2026-05-24 cline batch 6 (T11): bidirectional markdown checklist; FocusChain (load/save/mark_done/mark_pending/progress_ratio); parse_focus_chain + render_focus_chain + diff_focus_chains + render_critical_info_block + progress_hint helpers; FocusChainWatcher (watchdog when available, manual poll_now fallback) with 300 ms debounce
+│       │   ├── mention_resolvers.py  ← 2026-05-24 cline batch 6 (T14): extended @-mention regex (URLs, workspace:, memory:, problems, last, diff, clipboard, screenshot, Windows drive-letter paths); MentionResolutionContext with provider callables; resolve_extended_mentions emits <mention kind="..." source="...">...</mention> blocks; per-mention body cap + per-call mention cap + intra-call dedup
 │       │   ├── file_history.py       ← 2026-05-23 SWE-Agent batch 3 (T20): FileHistory per-session multi-file undo stack backed by SessionRegistry; record_pre_edit (with narration / origin metadata) + undo_last (atomic write-back / delete-on-undo-creation) + peek_last / history_for / find_by_narration substring search; max_history_per_file=10 cap; round-trip across instances tested
 │       │   ├── forfeit.py            ← 2026-05-23 SWE-Agent batch 6 (T8): ForfeitController per-session decision point; three tiers (SAFE / REVERT / FOLLOWUP); minimum-effort threshold gate (denies too-early forfeits); listener callback isolation; state persists across instances; integrates with T13 salvage + T20 FileHistory undo
 │       │   ├── submit_review.py      ← 2026-05-23 SWE-Agent batch 6 (T7): SubmitReviewLoop multi-stage review state machine backed by SessionRegistry; default stages VOICE_LOCK + TESTS + DOC_DRIFT enforce ultron's binding contracts before completion; single-resolution invariant + force_complete user override; detect_voice_lock_hits helper
