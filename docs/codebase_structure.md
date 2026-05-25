@@ -10,10 +10,11 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `3ca8879` on `origin/main` (2026-05-24 cline
-> catalog port batch 4 -- T3 per-rule auto-approval matrix + T15
-> structured 8-section condenser). Tests **5973 passing / 24 skipped
-> / 0 failed in ~94 s** via `scripts/run_tests.py`.
+> **Validating HEAD:** (in-flight cline batch 5; bumped post-commit)
+> last code-touching commit was `3ca8879` (cline batch 4). Batch 5
+> lands T8 windowed output writer + T12 presentation scheduler + T19
+> reasoning demultiplexer + T20 stream coordinator. Tests **6028
+> passing / 24 skipped / 0 failed in ~94 s** via `scripts/run_tests.py`.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -43,6 +44,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-24 | (in-flight) | cline catalog port batch 5 -- streaming infrastructure (T8 + T12 + T19 + T20): new `streaming/` package with `window.py` (WindowedOutputWriter with 20-line/2KB/100ms debounce + 1000-line/512KB spill thresholds + head-100/tail-100 preserved + `COMPILING_MARKERS` hot-timeout detection), `presentation_scheduler.py` (priority-banded chunk scheduler with environment-adaptive cadence — local/remote/Bluetooth profiles + `set_drop_low_priority` for `enable_thinking=False`), `reasoning_stream.py` (ReasoningDemultiplexer with first-text-finalises semantics + dedicated audit channel keeps reasoning out of TTS), `coordinator.py` (StreamCoordinator state machine + `RetryStatus` payloads + `on_usage` live token meters). | 6028 | (cline-port memory pending) |
 | 2026-05-24 | `3ca8879` | cline catalog port batch 4 -- auto-approve matrix + structured 8-section condenser (T3 + T15): `safety/auto_approval.py` (four-mode per-rule policy `always_ask` / `allow_local` / `allow_external` / `allow_all` + `yolo_mode` master override + per-session "warming" allowlist after N consecutive user approvals + injected `LocalityProbe` predicate); `llm/condensers/structured_8_section.py` (8 canonical headers Primary Request / Key Technical Concepts / Files and Code Sections / Problem Solving / Pending Tasks / Task Evolution / Current Work / Next Step + tolerant `parse_summary` with alias resolution + `compact_for_voice` 3-section TTS-friendly continuity ack). | 5973 | (cline-port memory pending) |
 | 2026-05-24 | `03019fb` | cline catalog port batch 3 -- ignore + conditional rules (T6 + T10): `safety/ignore.py` (three-layer `.ultronignore` with `!include`, `validate_command` covering POSIX + PowerShell file-readers, registry singleton); new `rules/` package with `conditionals.py` (frontmatter `paths` / `intents` / `topics` / `system_state` evaluator, `all_of` + `not_in_gaming_mode` combinators, comparator-prefixed state matching, path-extraction heuristic that strips fenced code + URLs). | 5928 | (cline-port memory pending) |
 | 2026-05-24 | `7f18a24` | cline catalog port batch 2 -- caching, loop detection, telemetry, zombie killer (T7 + T18 + T17 + T23): `coding/file_read_cache.py` (per-session mtime-validated cache with LRU eviction + registry singleton); new `agent_loop/` package with `loop_detection.py` (canonical signature + soft/hard escalation tiers); `llm/dedup_file_reads.py` (in-place dedup of duplicate file-read tool results in API history + generic payload dedup + 30 % skip-compaction threshold); `observations/safe_capture.py` (sync + async + decorator triple with `SafeCaptureStats` counters); new `subprocess/` package with `zombie_killer.py` (10-min hard cap + persistent-tag carve-out + RSS warning tier + clock/terminator/RSS-probe injection hooks). | 5872 | (cline-port memory pending) |
@@ -429,6 +431,13 @@ For the current decisions and Foundation phase status see
 │       │   ├── bus_sink.py         ← BusEventSink subscribes to the bus, converts envelopes to StoredEvent, writes to the store + fires callbacks
 │       │   ├── callbacks.py        ← 2026-05-23 OpenHands batch 4 (T3): CallbackRegistry + CallbackProcessor ABC + RegisteredCallback + CallbackResult + FunctionProcessor adapter + JSONL persistence + singleton accessors
 │       │   └── processors.py       ← 2026-05-23 OpenHands batch 4 (T3): built-in processors (Logging, Counting, ThresholdSnapshot, MemoryWrite, ChannelGuard, SkillActivator) + build_default_processors factory
+│       │
+│       ├── streaming/               ← 2026-05-24 cline batch 5 (T8 + T12 + T19 + T20)
+│       │   ├── __init__.py          ← Public API re-exports
+│       │   ├── window.py            ← WindowedOutputWriter with debounce + head/tail preservation + disk spillover (T8); is_compiling_output marker check
+│       │   ├── presentation_scheduler.py ← Priority-banded chunk scheduler with cadence map per AudioProfile (T12); local/remote/Bluetooth defaults; set_drop_low_priority for thinking suppression
+│       │   ├── reasoning_stream.py  ← ReasoningDemultiplexer separates reasoning from text (T19); first-text finalises pending reasoning block; ReasoningChunkEvent / ReasoningFinalisedEvent
+│       │   └── coordinator.py       ← StreamCoordinator state machine + RetryStatus payload (T20); on_usage live-meter callback; publish_retry_attempt surfaces retries as in-place status
 │       │
 │       ├── agent_loop/              ← 2026-05-24 cline batch 2 (T7b): outer-loop primitives
 │       │   ├── __init__.py          ← Public API re-exports
