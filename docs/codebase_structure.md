@@ -10,22 +10,25 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** OpenClaw catalog port batches 1-11 complete on
-> branch `claude/musing-jones-5835e2`. Pre-port baseline `5c81f80` on
-> `origin/main` (cline catalog port + post-cline integration pass at
-> code-active HEAD `23cbf71`). Tests **6270 passing / 24 skipped / 0
-> failed in ~121 s** via `scripts/run_tests.py` at pre-port baseline;
-> batches 1-11 add ~550 net tests landing 22 OpenClaw techniques
-> (T1-T22 except deferred T17 / T19 / T20 per catalog ★ rating)
-> across `utils/ansi_safe`, `subprocess/{kill_tree, process_registry}`,
-> `safety/{path_resolver realpath, validator T16, policy_chain,
-> two_phase_approval, hierarchical_policy}`, `llm/{context_window_guard,
-> condensers/splitter}`, `agent_loop/{loop_detection_extended,
+> **Validating HEAD:** `0ec1e42` on `origin/main` (2026-05-25 OpenClaw
+> catalog port -- 11 batches, 19 of 22 cataloged techniques landed;
+> T17 / T19 / T20 deferred per catalog star rating). Tests **6820
+> passing / 26 skipped / 0 failed in ~101 s** via `scripts/run_tests.py`
+> (use `--stale-heartbeat=180` to ride out the documented-flaky
+> `tests/integration/test_bridge_e2e.py::test_health_through_real_subprocess`
+> on slow Windows subprocess startup). The OpenClaw port added 18 new
+> modules / packages across `utils/ansi_safe`, `subprocess/{kill_tree,
+> process_registry}`, `safety/{path_resolver T21 additions, validator
+> T16 additions, policy_chain, two_phase_approval, hierarchical_policy}`,
+> `llm/{context_window_guard, condensers/splitter}`, `agent_loop/{loop_detection_extended,
 > subagent_policy}`, `hooks/lifecycle` (36-event expansion +
 > HookDecision), `coding/edit_recovery`, `skills/{activation,
-> marketplace}`, `providers/` (auth-profile rotation + failover
-> taxonomy), `install/static_scanner`, `mcp/`. See
-> `THIRD_PARTY_NOTICES.md` for the per-component attribution table.
+> marketplace}`, new packages `providers/` (auth-profile rotation +
+> 13-reason failover taxonomy), `install/static_scanner`, `mcp/`
+> (transport + registry; closes the deferred T9 from cline). All ship
+> as importable infrastructure -- voice baseline contract byte-identical
+> to the pre-port baseline. See `THIRD_PARTY_NOTICES.md` for the
+> per-component attribution table.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -55,6 +58,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-25 | `0ec1e42` | OpenClaw catalog port -- 11 batches landing 19 of 22 cataloged techniques (T17 / T19 / T20 deferred per catalog star rating). Importable primitives across 18 new modules / packages: `utils/ansi_safe`, `subprocess/{kill_tree, process_registry}`, `safety/{path_resolver T21 additions, validator T16 additions, policy_chain, two_phase_approval, hierarchical_policy}`, `llm/{context_window_guard, condensers/splitter}`, `agent_loop/{loop_detection_extended, subagent_policy}`, `hooks/lifecycle` (29-event expansion to 43 total + new HookDecision discriminated dataclass), `coding/edit_recovery`, `skills/{activation, marketplace}`, new packages `providers/` (failover_policy + auth_profiles + rotation), `install/static_scanner` (Python tokenize-based scanner + dependency denylist), `mcp/` (transport with env/header sanitisation + McpServerRegistry with kill-on-disconnect; closes the deferred T9 MCP-hub from the cline port). 14 GREEN ports + 5 YELLOW ports (T12 / T6 / T2 / T5 / T22 / T9 gated through the existing safety stack -- spawn-tool, credential storage, decision channel, Cap-1 + new Category L groundwork, Cap-3 + T12 + T8 + env-filter + connection-timeout, T5 scanner + per-source verification respectively). 0 RED -- every powerful pattern has a legitimate use case once gated. No orchestrator hot-path wiring (all importable infrastructure); voice baseline contract byte-identical to pre-port baseline. OpenClaw (MIT, 2026) attribution added to THIRD_PARTY_NOTICES.md with per-component mapping (18 entries). | 6820 | [project_ultron_2026_05_25_openclaw_catalog_porting.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_25_openclaw_catalog_porting.md) |
 | 2026-05-25 | `188931a` | post-cline integration pass: orchestrator startup wiring (install_default_injectors with closures returning existing STT/TTS engine instances + discover_project_config caching .ultron/ snapshot on `self._project_config`; both fail-open), SWE-Agent T16 click-preview gate wired through new InputController kwargs + new `desktop.click_preview.*` config section (default OFF; when ON the orchestrator builds a new InputController with VLM-backed `vlm_describe` + screen-capture closures and replaces the singleton via `set_input_controller`), two safe behavioural flag flips (`skills.enabled: true` + `events.enabled: true`, both fail-open, voice baseline preserved via untouched gaming_mode/llm.preset/llm.draft_kind), OpenHands deep API docs backfilled (9 packages: parsing / install / projects / services / skills / events / lifecycle / llm/condensers + utils/poll.py). | 6270 | [project_ultron_2026_05_25_cline_catalog_port_and_post_cline_integration.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_25_cline_catalog_port_and_post_cline_integration.md) |
 | 2026-05-24 | `92ee711` | cline catalog port batch 10 -- mode policy + per-mode LLM router + subagent runner (T2 + T13 + T16): new `agent_loop/mode.py` (canonical `Mode` enum ACT/PLAN/CODING_ARCHITECT/CODING_EDITOR/GAMING + frozen `ModePolicy` with wrap-template + confirmation-TTL + preset override + `PendingConfirmation` queue with intent-topic filter + `ModeSession` state machine + flip history + module-level registry `get_mode_session`); new `llm/mode_router.py` (frozen `PresetEntry` + `ModeLLMRouter` mapping `Mode` to preset name, skip-when-already-active via injected probe, protected-mode set, `on_swap` callback with fail-open semantics, default routes target ultron's qwen3.5-4b for ACT/PLAN/CODING_* + llama-3.2-3b-abliterated for GAMING); new `agent_loop/subagent.py` (frozen `SubagentTask` + `SubagentResult` + `SubagentBatchStats` + `ToolGuard` whitelist enforcer + thread-safe `TokenLedger` + `SubagentRunner` ThreadPoolExecutor-backed dispatcher with `max_parallel=1` default + `DEFAULT_READONLY_TOOL_WHITELIST` matching cline's subagent allowed set). All three I/O-free, clock-injectable, no orchestrator wiring (primitives only). | 6263 | [project_ultron_2026_05_25_cline_catalog_port_and_post_cline_integration.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_25_cline_catalog_port_and_post_cline_integration.md) |
 | 2026-05-24 | `14e4653` | cline catalog port batch 9 -- dual-array API/UI history split (T4): new `memory/dual_history.py` with `DualHistoryStore` (per-session in-memory store), `VerbatimTurn` (text + tts_clip_ref + image_refs + metadata -- the literal user/agent exchange), `ApiTurn` (LLM-facing shape with `compacted` + `elided_count` for drift reporting), shared `turn_id` UUID indexing so verbatim<->api resolves O(1) -- the basis for "what did I say earlier?" voice queries. Methods: `record` / `record_api` / `truncate_after_turn` (anchor-based) / `truncate_to_offset` (last-N) / `replace_api_range` (condenser hook) / `find_verbatim_by_substring` (newest-first fuzzy) / `snapshot` (frozen view with both indices) / `drift_report` (per-call counts of `verbatim_only` / `api_only` / `shared`). Verbatim/api caps default unlimited (verbatim is cheap; api cap is what costs tokens). Primitive is I/O-free; callers wire their own persistence. | 6191 | [project_ultron_2026_05_25_cline_catalog_port_and_post_cline_integration.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_25_cline_catalog_port_and_post_cline_integration.md) |
