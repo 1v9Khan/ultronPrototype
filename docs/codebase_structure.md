@@ -10,15 +10,15 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** OpenClaw catalog port batches 1-3 in-flight on
+> **Validating HEAD:** OpenClaw catalog port batches 1-4 in-flight on
 > branch `claude/musing-jones-5835e2`. Pre-port baseline `5c81f80` on
 > `origin/main` (cline catalog port + post-cline integration pass at
 > code-active HEAD `23cbf71`). Tests **6270 passing / 24 skipped / 0
 > failed in ~121 s** via `scripts/run_tests.py` at pre-port baseline;
-> batches 1-3 add ~225 tests across foundation utilities, safety
-> extensions, and agent-loop extensions. Continuing the OpenClaw
-> port across subsequent batches; see `THIRD_PARTY_NOTICES.md` for
-> the per-component attribution table.
+> batches 1-4 add ~280 tests across foundation utilities, safety
+> extensions, agent-loop extensions, and compaction + edit recovery.
+> Continuing the OpenClaw port across subsequent batches; see
+> `THIRD_PARTY_NOTICES.md` for the per-component attribution table.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
