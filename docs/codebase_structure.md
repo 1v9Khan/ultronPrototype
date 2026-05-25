@@ -10,11 +10,11 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `03019fb` on `origin/main` (2026-05-24 cline
-> catalog port batch 3 -- T6 `.ultronignore` policy + T10
-> frontmatter-driven conditional rule activation). Tests
-> **5928 passing / 24 skipped / 0 failed in ~94 s** via
-> `scripts/run_tests.py`.
+> **Validating HEAD:** (in-flight cline batch 4; bumped post-commit)
+> last code-touching commit was `03019fb` (cline batch 3). Batch 4
+> lands T3 per-rule auto-approval matrix + T15 structured 8-section
+> condenser. Tests **5973 passing / 24 skipped / 0 failed in ~94 s**
+> via `scripts/run_tests.py`.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -44,6 +44,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-24 | (in-flight) | cline catalog port batch 4 -- auto-approve matrix + structured 8-section condenser (T3 + T15): `safety/auto_approval.py` (four-mode per-rule policy `always_ask` / `allow_local` / `allow_external` / `allow_all` + `yolo_mode` master override + per-session "warming" allowlist after N consecutive user approvals + injected `LocalityProbe` predicate); `llm/condensers/structured_8_section.py` (8 canonical headers Primary Request / Key Technical Concepts / Files and Code Sections / Problem Solving / Pending Tasks / Task Evolution / Current Work / Next Step + tolerant `parse_summary` with alias resolution + `compact_for_voice` 3-section TTS-friendly continuity ack). | 5973 | (cline-port memory pending) |
 | 2026-05-24 | `03019fb` | cline catalog port batch 3 -- ignore + conditional rules (T6 + T10): `safety/ignore.py` (three-layer `.ultronignore` with `!include`, `validate_command` covering POSIX + PowerShell file-readers, registry singleton); new `rules/` package with `conditionals.py` (frontmatter `paths` / `intents` / `topics` / `system_state` evaluator, `all_of` + `not_in_gaming_mode` combinators, comparator-prefixed state matching, path-extraction heuristic that strips fenced code + URLs). | 5928 | (cline-port memory pending) |
 | 2026-05-24 | `7f18a24` | cline catalog port batch 2 -- caching, loop detection, telemetry, zombie killer (T7 + T18 + T17 + T23): `coding/file_read_cache.py` (per-session mtime-validated cache with LRU eviction + registry singleton); new `agent_loop/` package with `loop_detection.py` (canonical signature + soft/hard escalation tiers); `llm/dedup_file_reads.py` (in-place dedup of duplicate file-read tool results in API history + generic payload dedup + 30 % skip-compaction threshold); `observations/safe_capture.py` (sync + async + decorator triple with `SafeCaptureStats` counters); new `subprocess/` package with `zombie_killer.py` (10-min hard cap + persistent-tag carve-out + RSS warning tier + clock/terminator/RSS-probe injection hooks). | 5872 | (cline-port memory pending) |
 | 2026-05-24 | `a7d03dd` | cline catalog port batch 1 -- foundation utilities (T22 + T13b + T25): `llm/response_format.py` (30+ structured error/notice templates with voice-friendly variants + progressive-escalation tiers); `utils/retry.py` (async + sync `with_retry` decorator + `RetryBudget` + retry-after header parsing with delta-seconds-vs-unix-timestamp heuristic + `RetriableError` + async-generator decoration + `asyncio.CancelledError` pass-through); `search/ripgrep.py` (subprocess wrapper around `rg --json` with byte-cap 0.25 MB / result-cap 300 / wall-clock kill / Windows `CREATE_NO_WINDOW` / optional ignore-predicate). | 5778 | (cline-port memory pending; see `THIRD_PARTY_NOTICES.md`) |
