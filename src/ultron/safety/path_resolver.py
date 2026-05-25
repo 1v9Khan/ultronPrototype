@@ -315,6 +315,122 @@ class PathResolver:
                 continue
         return False
 
+    # ------------------------------------------------------------------
+    # T21 (OpenClaw catalog) — realpath-aware containment helpers.
+    #
+    # The default :meth:`resolve` follows symlinks via
+    # ``Path.resolve(strict=False)``. For install-time symlink-target
+    # checks (where a symlink target outside the install root is the
+    # exact attack vector) callers need a fast fail-open path
+    # (``is_inside``) AND a slow realpath path (``is_inside_with_realpath``)
+    # that re-walks every component to its filesystem-real target.
+    # Pattern shape from OpenClaw's ``src/infra/path-safety.ts`` re-export
+    # of ``@openclaw/fs-safe/path`` (MIT; see ``THIRD_PARTY_NOTICES.md``).
+
+    def safe_realpath(self, raw: str | Path) -> Optional[Path]:
+        """Resolve every component of ``raw`` to its filesystem target.
+
+        On Windows this calls :func:`os.path.realpath` which follows
+        reparse points / junctions / symlinks. On POSIX it follows
+        symlinks the same way. Returns ``None`` when the path is
+        unreadable, when realpath raises (e.g. broken symlink loop),
+        or when the resolver rejects the input via
+        :meth:`reject_dangerous_chars`.
+
+        Unlike :meth:`resolve`, this method requires the target to
+        be readable AND fully canonical. Use for install scans and
+        other cold paths where a broken symlink should be treated as
+        suspect, not silently accepted.
+
+        Args:
+            raw: A string path or Path object.
+
+        Returns:
+            Canonical absolute :class:`Path` on success, ``None`` on
+            any error (broken symlink, permission denied, dangerous
+            input).
+        """
+        if isinstance(raw, Path):
+            raw_str = str(raw)
+        else:
+            raw_str = raw
+        try:
+            self.reject_dangerous_chars(raw_str)
+        except PathResolveError:
+            return None
+        try:
+            normalised = self.normalise_separators(raw_str)
+            normalised = self.strip_long_path_prefix(normalised)
+            real = os.path.realpath(normalised, strict=False)
+            p = Path(real)
+            if self._is_windows:
+                try:
+                    p = self._expand_short_names_windows(p)
+                except PathResolveError:
+                    pass
+                s = str(p)
+                if len(s) >= 2 and s[1] == ":":
+                    p = Path(s[0].upper() + s[1:])
+            return p
+        except (OSError, ValueError):
+            return None
+
+    def is_inside_with_realpath(
+        self,
+        candidate: str | Path,
+        allowed_root: str | Path,
+    ) -> bool:
+        """Like :meth:`is_inside` but resolves symlinks for both args.
+
+        Defends against the install-time attack where a symlink inside
+        the install root points to a target OUTSIDE the root. The
+        fast :meth:`is_inside` accepts the symlink because its own
+        path lives under the root; this method rejects it because the
+        realpath target is outside.
+
+        Returns ``False`` (not raises) when either path is unresolvable
+        via realpath; the caller can decide whether to treat that as
+        a block or fall back to the fast path.
+        """
+        candidate_real = self.safe_realpath(candidate)
+        root_real = self.safe_realpath(allowed_root)
+        if candidate_real is None or root_real is None:
+            return False
+        try:
+            candidate_real.relative_to(root_real)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def is_symlink_open_error(error: BaseException) -> bool:
+        """Return ``True`` when ``error`` is the OS' "is a symlink" raise.
+
+        Useful when opening a file with the ``O_NOFOLLOW`` flag and
+        wanting to recognise the specific failure mode where the
+        target is a symlink. On Windows / POSIX this surfaces as
+        ``OSError`` with ``errno.ELOOP`` (or ``EMLINK`` on some
+        kernels).
+        """
+        import errno
+        if not isinstance(error, OSError):
+            return False
+        return error.errno in (errno.ELOOP, errno.EMLINK)
+
+    def normalise_for_comparison(self, raw: str | Path) -> str:
+        """Return ``raw`` canonicalised + lower-cased on Windows.
+
+        Use for case-insensitive set lookups where the full
+        :meth:`resolve` (symlink follow, short-name expansion) is
+        overkill but plain ``str()`` comparison would miss
+        ``C:`` vs ``c:`` mismatches.
+        """
+        p = self.resolve(raw)
+        s = str(p)
+        if self._is_windows:
+            s = s.lower()
+        return s
+
 
 _resolver_singleton: Optional[PathResolver] = None
 

@@ -10,13 +10,15 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `b066533` on `origin/main` (2026-05-25 session-
-> end handoff cleanup: linked Recent-sessions table to new cline-port
-> memory file. Code-active HEAD is `23cbf71` which shipped the post-
-> cline integration pass -- orchestrator startup wiring for OpenHands
-> T6 + T7, SWE-Agent T16 click-preview gate, skills + events flag
-> flips, OpenHands deep API docs backfill). Tests **6270 passing /
-> 24 skipped / 0 failed in ~121 s** via `scripts/run_tests.py`.
+> **Validating HEAD:** OpenClaw catalog port batches 1-2 in-flight on
+> branch `claude/musing-jones-5835e2`. Pre-port baseline `5c81f80` on
+> `origin/main` (cline catalog port + post-cline integration pass at
+> code-active HEAD `23cbf71`). Tests **6270 passing / 24 skipped / 0
+> failed in ~121 s** via `scripts/run_tests.py` at pre-port baseline;
+> batch 1 (T18 + T21 + T8) adds 82 tests; batch 2 (T16 + T4 + T13)
+> adds 63 tests. Continuing the OpenClaw port across subsequent
+> batches; see `THIRD_PARTY_NOTICES.md` for the per-component
+> attribution table.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -221,7 +223,8 @@ For the current decisions and Foundation phase status see
 
 │       ├── safety/                  ← 2026-05-12 Phase 2-5: runtime tool-call validator
 │       │   ├── __init__.py
-│       │   ├── validator.py        ← ToolCallValidator core dispatcher, Verdict, RuleContext, RuleResult
+│       │   ├── validator.py        ← ToolCallValidator core dispatcher, Verdict, RuleContext, RuleResult. 2026-05-25 OpenClaw batch 2 (T16): RuleResult + ValidatorVerdict gain optional `user_message` (rule-supplied clean text) + `category` (analytics label) + `metadata` (opaque per-rule blob). Audit log emits category + rule_metadata in the context dict when present; voice-message synthesis prefers user_message over the auto-synthesised "I held off..." prefix.
+│       │   ├── policy_chain.py     ← 2026-05-25 OpenClaw batch 2 (T13): composable trusted-tool-policy chain. TrustedToolPolicyChain runs policies in registration order with block-terminates / params-stacks / approval-first-wins semantics. FunctionPolicy adapter; module-level singleton via get_policy_chain(). ApprovalRequest typed handoff payload consumed by future T2 two-phase approval router. Policies fail-open: exceptions are swallowed as pass-through with WARN.
 │       │   ├── path_resolver.py    ← Windows-aware canonicalization (symlinks, junctions, 8.3, bidi-override rejection)
 │       │   ├── audit.py            ← tamper-evident hash-chain audit log (logs/safety_audit.jsonl)
 │       │   ├── policy.py           ← Policy dataclass + load_policy() with K-protected paths
@@ -282,6 +285,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── dedup_file_reads.py   ← 2026-05-24 cline batch 2 (T18): dedup_duplicate_file_reads walks API history, groups tool-result blocks by (tool_name, file_path), elides every duplicate except latest (or first) with the duplicate_file_read_notice template; DedupResult carries bytes_saved + tokens_saved_estimate + savings_ratio; should_skip_compaction(result, threshold=0.30) implements the cline >=30%-savings heuristic; dedup_payload_duplicates is the generalised non-file equivalent (nvidia-smi heartbeats, repeated RAG snippets, etc.)
 │       │   ├── response_format.py    ← 2026-05-24 cline batch 1 (T22): 30+ structured LLM-facing + user-facing notice templates (tool_error / tool_denied / missing_tool_parameter_error / write_to_file_missing_content_error 3-tier escalation / file_edit_with[out]_user_changes / diff_error / context_truncation_notice / file_context_warning / loop_soft_warning / loop_hard_escalation / task_resumption / plan_mode_instructions / format_files_list with ignore_predicate / create_pretty_patch); voice-friendly *_voice variants for templates that may be spoken via TTS
 │       │   ├── mode_router.py         ← 2026-05-24 cline batch 10 (T13): per-Mode LLM preset router. frozen PresetEntry (preset_name + sampling_overrides + context_window_override) + DEFAULT_ROUTES (Mode.ACT/PLAN/CODING_* -> qwen3.5-4b with per-mode temperature; Mode.GAMING -> llama-3.2-3b-abliterated) + ModeLLMRouter.ensure_preset_for(mode) -> SwapResult with skip-when-already-active via injected probe + protected-mode set + on_swap fail-open callback; reloader callable abstracts the hot-swap path (real wiring would inject LLMEngine.reload_for_preset)
+│       │   ├── context_window_guard.py ← 2026-05-25 OpenClaw batch 2 (T4): multi-tier LLM context-window guard. resolve_context_window_info merges caller_override -> models_config -> default; agent_cap_tokens applied as ceiling. Dynamic thresholds (`max(absolute_floor, tokens * ratio)`) via resolve_thresholds. evaluate_context_window_guard returns ContextWindowGuardResult (should_block / should_warn / formatted messages tailored per source). run_guard_or_raise is the orchestrator-startup convenience that raises ContextWindowGuardError on block and logs WARN on warn. Constants DEFAULT_HARD_MIN_TOKENS=4000, DEFAULT_WARN_BELOW_TOKENS=8000.
 │       │   └── self_consistency.py ← 4B plan Item 6: N-sample majority-vote driver + aggregators (text/JSON/label) (default OFF)
 │       │
 │       ├── memory/                 ← Phase 3 (original) Qdrant memory + 2026-05 frontier
@@ -476,7 +480,8 @@ For the current decisions and Foundation phase status see
 │       │
 │       ├── subprocess/              ← 2026-05-24 cline batch 2 (T23): subprocess lifecycle
 │       │   ├── __init__.py          ← Public API re-exports
-│       │   └── zombie_killer.py     ← ZombieKiller periodic reaper (DEFAULT_HARD_TIMEOUT_S=10*60, DEFAULT_POLL_INTERVAL_S=60) with persistent-tag carve-out + RSS warning tier (DEFAULT_WARN_RSS_MB / DEFAULT_WARN_AGE_S) + clock / terminator / rss_probe injection hooks for deterministic tests; TrackedProcess registry with re-register-in-place semantics; get_zombie_killer() module-level singleton; recent_reports() bounded buffer; on_terminate callback fires after successful kill
+│       │   ├── zombie_killer.py     ← ZombieKiller periodic reaper (DEFAULT_HARD_TIMEOUT_S=10*60, DEFAULT_POLL_INTERVAL_S=60) with persistent-tag carve-out + RSS warning tier (DEFAULT_WARN_RSS_MB / DEFAULT_WARN_AGE_S) + clock / terminator / rss_probe injection hooks for deterministic tests; TrackedProcess registry with re-register-in-place semantics; get_zombie_killer() module-level singleton; recent_reports() bounded buffer; on_terminate callback fires after successful kill
+│       │   └── kill_tree.py         ← 2026-05-25 OpenClaw batch 1 (T8): cross-platform process-tree termination via psutil. kill_process_tree(pid, *, grace_seconds, detached, clock) walks descendants → graceful terminate → wait grace → force-kill survivors; KillTreeResult dataclass (terminated / force_killed / unreachable / elapsed_seconds / used_process_group). kill_pid_if_alive(pid) is the leaf-only convenience. Grace clamped to [0, MAX_GRACE_SECONDS=60]. Fail-open on missing psutil. Replaces ad-hoc per-site terminate patterns in cleanup_stale_processes + future Parakeet/MCP shutdown wiring.
 │       │
 │       └── utils/
 │           ├── fairseq_compat.py   ← Workarounds for fairseq dataclass + torch.load issues
@@ -487,7 +492,8 @@ For the current decisions and Foundation phase status see
 │           ├── relative_indent.py  ← aider catalog batch 1: indent-relative text transform
 │           ├── spinner.py          ← aider catalog batch 11 (T11): ASCII bounce spinner with cursor-stagger continuity
 │           ├── poll.py             ← 2026-05-23 OpenHands batch 1 (T14): poll_until + apoll_until bounded-retry helpers with custom is_done predicate + exponential backoff + cancel_check
-│           └── retry.py            ← 2026-05-24 cline batch 1 (T13b): with_retry async decorator + with_retry_sync + RetriableError + RetryBudget + RetryAttempt record + parse_retry_after (delta-seconds vs unix-timestamp heuristic) + onRetry async/sync callback + asyncio.CancelledError pass-through + jitter; default classifier matches HTTP 429 + RetriableError; per-session sleep-budget cap
+│           ├── retry.py            ← 2026-05-24 cline batch 1 (T13b): with_retry async decorator + with_retry_sync + RetriableError + RetryBudget + RetryAttempt record + parse_retry_after (delta-seconds vs unix-timestamp heuristic) + onRetry async/sync callback + asyncio.CancelledError pass-through + jitter; default classifier matches HTTP 429 + RetriableError; per-session sleep-budget cap
+│           └── ansi_safe.py        ← 2026-05-25 OpenClaw batch 1 (T18): ANSI / control-character sanitisation + grapheme-aware width. strip_ansi (CSI + OSC + two-byte ESC), sanitize_for_log (CWE-117 log-forging defence: ANSI + C0/C1/DEL stripped; tab/LF/CR preserved), split_graphemes / iter_graphemes (grapheme cluster boundaries from runtime-built codepoint class so source stays ASCII-safe), grapheme_width / visible_width (East-Asian-Width + emoji = 2; combining marks + ZWJ + variation selectors = 0), truncate_to_visible_width helper for TTS chunking and log budgeting
 │
 ├── config/
 │   ├── __init__.py                 ← (empty)

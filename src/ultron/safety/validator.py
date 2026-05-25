@@ -90,12 +90,35 @@ class Verdict(Enum):
 
 @dataclass(frozen=True)
 class RuleResult:
-    """One rule's decision."""
+    """One rule's decision.
+
+    The ``reason`` field is INTERNAL — it appears in the audit log
+    and ops dashboards but is never spoken to the user verbatim (it
+    may include matched patterns, file paths, regex fragments). When
+    a rule wants a different string spoken to the user, it sets
+    ``user_message`` separately.
+
+    The ``category`` field is the analytics label (e.g. ``"pii"`` /
+    ``"cost_limit"`` / ``"violence"`` / ``"voice_lock"``). Categories
+    let the audit dashboard group blocks without hard-coding the
+    taxonomy into the validator core. The ``metadata`` field is an
+    opaque per-rule blob for whatever cross-call state the rule
+    needs (e.g. "user has been warned about this category 3 times
+    today").
+
+    T16 (OpenClaw catalog port; see ``THIRD_PARTY_NOTICES.md``):
+    the optional ``user_message`` / ``category`` / ``metadata``
+    split mirrors OpenClaw's ``HookDecisionBlock`` discriminated
+    union shape.
+    """
 
     rule_id: str
     verdict: Verdict
     reason: str
     context: dict[str, Any] = field(default_factory=dict)
+    user_message: Optional[str] = None
+    category: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +183,8 @@ class ValidatorVerdict:
     triggered_rule_id: str = ""
     user_message: str = ""
     rule_results: tuple[RuleResult, ...] = ()
+    category: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
 
     @property
     def is_allowed(self) -> bool:
@@ -295,35 +320,48 @@ class ToolCallValidator:
         # Audit any non-ALLOW outcome.
         if dominant.verdict != Verdict.ALLOW:
             try:
+                # T16: include category + metadata in audit context so
+                # the audit log can group blocks by analytics label
+                # without re-parsing the reason string.
+                audit_context: dict[str, Any] = {
+                    "arguments_keys": sorted(ctx.arguments.keys()),
+                    "paths": [str(p) for p in ctx.paths],
+                    "user_text_preview": ctx.user_text[:120],
+                    "rule_details": dominant.context,
+                }
+                if dominant.category is not None:
+                    audit_context["category"] = dominant.category
+                if dominant.metadata is not None:
+                    audit_context["rule_metadata"] = dominant.metadata
                 self.audit_log.record(
                     rule_id=dominant.rule_id,
                     verdict=dominant.verdict.value,
                     tool_name=ctx.tool_name,
                     capability=ctx.capability,
                     reason=dominant.reason,
-                    context={
-                        "arguments_keys": sorted(ctx.arguments.keys()),
-                        "paths": [str(p) for p in ctx.paths],
-                        "user_text_preview": ctx.user_text[:120],
-                        "rule_details": dominant.context,
-                    },
+                    context=audit_context,
                 )
             except Exception as e:
                 # Audit failure must not block the verdict.
                 logger.warning("safety audit write failed: %s", e)
 
-        # Construct the user-facing message.
+        # Construct the user-facing message. T16: prefer the rule's
+        # explicit user_message (clean, free of internal pattern
+        # details) when present; otherwise synthesise from reason.
         user_message = ""
         if dominant.verdict == Verdict.BLOCK_HARD:
-            user_message = (
-                "I held off on that. "
-                f"{dominant.reason}"
-            )
+            if dominant.user_message:
+                user_message = dominant.user_message
+            else:
+                user_message = f"I held off on that. {dominant.reason}"
         elif dominant.verdict == Verdict.NEEDS_EXPLICIT_INTENT:
-            user_message = (
-                "I won't do that without you explicitly asking for it. "
-                f"{dominant.reason}"
-            )
+            if dominant.user_message:
+                user_message = dominant.user_message
+            else:
+                user_message = (
+                    "I won't do that without you explicitly asking for it. "
+                    f"{dominant.reason}"
+                )
 
         return ValidatorVerdict(
             verdict=dominant.verdict,
@@ -331,6 +369,8 @@ class ToolCallValidator:
             triggered_rule_id=dominant.rule_id,
             user_message=user_message,
             rule_results=tuple(results),
+            category=dominant.category,
+            metadata=dominant.metadata,
         )
 
 
