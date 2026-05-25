@@ -394,6 +394,12 @@ class InputController:
         if preview_block is not None:
             return preview_block
 
+        # T1 (catalog 07): pyautogui's Windows backend uses
+        # ``SendInput`` (atomic, interleave-safe since Windows 2000),
+        # not the legacy ``mouse_event`` API. Multi-event sequences
+        # from this method coalesce into a single input block that
+        # other input sources cannot interleave. Documenting the API
+        # choice; no functional change.
         try:
             pyautogui.click(
                 x=int(x) if x is not None else None,
@@ -474,6 +480,16 @@ class InputController:
         """Press a hotkey combination (``ctrl, s``, ``alt, tab``, etc.).
 
         Keys are pressed in order then released in reverse.
+
+        Ordering note (T3, catalog 07): ``pyautogui.hotkey`` returns
+        BEFORE the target window has processed the keystroke. For
+        sequences where the next action depends on the key landing
+        (e.g., Alt+F4 then confirm-dialog Enter), callers must add
+        an explicit short ``time.sleep`` or a UIA structure-change
+        wait between calls. The synchronous-wait semantic that
+        PowerShell's ``SendKeys.SendWait`` provides is not present
+        here; use :meth:`type_text` for ordered text + key sequences
+        where ordering matters, or sleep between calls.
         """
         if not keys:
             return InputControlResult(
