@@ -344,3 +344,149 @@ def test_scroll_invokes_pyautogui(monkeypatch):
     r = c.scroll(120, x=500, y=400)
     assert r.success is True
     pa.scroll.assert_called_once_with(120, x=500, y=400)
+
+
+# ---------------------------------------------------------------------------
+# Click preview gate (SWE-Agent T16)
+# ---------------------------------------------------------------------------
+
+
+def _build_test_png(*, width: int = 100, height: int = 100) -> bytes:
+    """Build a tiny PNG so the preview's PIL pipeline has real bytes."""
+    from io import BytesIO
+
+    from PIL import Image  # type: ignore[import-not-found]
+
+    img = Image.new("RGB", (width, height), (0, 0, 0))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_click_preview_default_disabled_skips_vlm(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    # No capture / vlm callables set -> preview path inert.
+    c = InputController(max_actions_per_second=999.0)
+    r = c.click(100, 200)
+    assert r.success is True
+    pa.click.assert_called_once()
+
+
+def test_click_preview_blocks_when_vlm_disagrees(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    png = _build_test_png()
+    captures: list[None] = []
+
+    def capture():
+        captures.append(None)
+        return png
+
+    def vlm(_image, _prompt):
+        return "actually that is a Submit button, not what you wanted"
+
+    c = InputController(
+        max_actions_per_second=999.0,
+        click_preview_enabled=True,
+        click_preview_capture_screen=capture,
+        click_preview_vlm_describe=vlm,
+    )
+    r = c.click(50, 50, user_text="open the Files menu")
+    assert r.success is False
+    assert "click_preview" in (r.error or "")
+    assert pa.click.call_count == 0
+    assert len(captures) == 1
+
+
+def test_click_preview_allows_when_vlm_confirms(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    png = _build_test_png()
+    c = InputController(
+        max_actions_per_second=999.0,
+        click_preview_enabled=True,
+        click_preview_capture_screen=lambda: png,
+        click_preview_vlm_describe=lambda _img, _p: "yes that's the Files menu",
+    )
+    r = c.click(50, 50, user_text="open the Files menu")
+    assert r.success is True
+    pa.click.assert_called_once()
+
+
+def test_click_preview_auto_pass_skips_second_vlm_round(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    png = _build_test_png()
+    vlm_calls = []
+
+    def vlm(_img, _p):
+        vlm_calls.append(None)
+        return "yes"
+
+    c = InputController(
+        max_actions_per_second=999.0,
+        click_preview_enabled=True,
+        click_preview_capture_screen=lambda: png,
+        click_preview_vlm_describe=vlm,
+        click_preview_auto_pass_radius_px=100,
+    )
+    c.click(50, 50, user_text="open the Files menu")
+    c.click(60, 60, user_text="click near the same spot")
+    assert len(vlm_calls) == 1  # second click is auto-pass
+
+
+def test_click_preview_degraded_default_allows(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    # vlm_describe=None forces DEGRADED -> default policy is allow.
+    png = _build_test_png()
+    c = InputController(
+        max_actions_per_second=999.0,
+        click_preview_enabled=True,
+        click_preview_capture_screen=lambda: png,
+        click_preview_vlm_describe=None,
+    )
+    r = c.click(50, 50)
+    assert r.success is True
+    pa.click.assert_called_once()
+
+
+def test_click_preview_degraded_blocks_when_strict(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    png = _build_test_png()
+    c = InputController(
+        max_actions_per_second=999.0,
+        click_preview_enabled=True,
+        click_preview_capture_screen=lambda: png,
+        click_preview_vlm_describe=None,
+        click_preview_block_on_degraded=True,
+    )
+    r = c.click(50, 50)
+    assert r.success is False
+    assert "DEGRADED" in (r.error or "")
+    assert pa.click.call_count == 0
+
+
+def test_click_preview_skips_when_no_coordinates(monkeypatch):
+    pa = MagicMock()
+    monkeypatch.setattr("ultron.desktop.input_control.pyautogui", pa)
+    _set_allow_all(monkeypatch)
+    captures = []
+    c = InputController(
+        max_actions_per_second=999.0,
+        click_preview_enabled=True,
+        click_preview_capture_screen=lambda: captures.append(None) or b"",
+        click_preview_vlm_describe=lambda _i, _p: "yes",
+    )
+    r = c.click()  # no x/y -> click at current cursor; preview not invoked
+    assert r.success is True
+    assert pa.click.call_count == 1
+    assert captures == []

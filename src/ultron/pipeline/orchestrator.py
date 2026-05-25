@@ -530,6 +530,71 @@ class Orchestrator:
         # screen_context module can call into it via the registered
         # describe-bridge.
         self._load_desktop_vlm_if_enabled()
+        # 2026-05-24 SWE-Agent batch 7 (T16) -- visual click-preview
+        # gate. When ``desktop.click_preview.enabled: true`` AND a VLM
+        # is loaded, install a new InputController singleton that
+        # wraps every click through ``preview_click``. Default OFF so
+        # the existing call sites that hit pyautogui.click directly
+        # keep working unchanged.
+        try:
+            from ultron.config import get_config
+            cp_cfg = getattr(getattr(get_config(), "desktop", None), "click_preview", None)
+        except Exception:                                              # noqa: BLE001
+            cp_cfg = None
+        if cp_cfg is not None and bool(getattr(cp_cfg, "enabled", False)):
+            try:
+                from ultron.desktop.vlm import get_vlm
+                from ultron.desktop.capture import get_screen_capture
+                from ultron.desktop.input_control import (
+                    InputController,
+                    set_input_controller,
+                )
+
+                vlm_handle = get_vlm()
+                if vlm_handle is None:
+                    logger.info(
+                        "click_preview: VLM not loaded -- gate disabled "
+                        "(degraded path would allow every click)",
+                    )
+                else:
+                    def _click_preview_capture_screen() -> bytes:
+                        cap = get_screen_capture()
+                        if cap is None:
+                            return b""
+                        shot = cap.capture_monitor(1)
+                        if shot is None or shot.image_bytes is None:
+                            return b""
+                        return shot.image_bytes
+
+                    def _click_preview_vlm_describe(image_bytes: bytes, prompt: str) -> str:
+                        try:
+                            return vlm_handle.describe(image_bytes, prompt) or ""
+                        except Exception as exc:                       # noqa: BLE001
+                            logger.debug("click_preview VLM describe raised: %s", exc)
+                            return ""
+
+                    new_controller = InputController(
+                        click_preview_enabled=True,
+                        click_preview_capture_screen=_click_preview_capture_screen,
+                        click_preview_vlm_describe=_click_preview_vlm_describe,
+                        click_preview_auto_pass_radius_px=int(cp_cfg.auto_pass_radius_px),
+                        click_preview_crosshair_size=int(cp_cfg.crosshair_size),
+                        click_preview_crosshair_thickness=int(cp_cfg.crosshair_thickness),
+                        click_preview_require_confirmation_keyword=str(
+                            cp_cfg.require_confirmation_keyword
+                        ),
+                        click_preview_history_depth=int(cp_cfg.history_depth),
+                        click_preview_block_on_degraded=bool(cp_cfg.block_on_degraded),
+                    )
+                    set_input_controller(new_controller)
+                    logger.info(
+                        "click_preview: wired (auto_pass=%dpx, block_on_degraded=%s)",
+                        int(cp_cfg.auto_pass_radius_px),
+                        bool(cp_cfg.block_on_degraded),
+                    )
+            except Exception as e:                                     # noqa: BLE001
+                logger.warning("click_preview wiring failed: %s", e)
+
         # 2026-05-22 -- engine-agnostic intent recognizer. When
         # ``intent.enabled`` is True, matched utterances short-circuit
         # the LLM gating path; the dispatcher fires registered handlers

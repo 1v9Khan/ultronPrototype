@@ -2646,6 +2646,36 @@ class GamingModeConfig(_Strict):
     llm_preset: str = "llama-3.2-3b-abliterated"
 
 
+class ClickPreviewConfig(_Strict):
+    """2026-05-24 SWE-Agent batch 7 (T16): visual crosshair preview before clicks.
+
+    When enabled, every desktop click runs through the
+    :mod:`ultron.desktop.click_preview` gate: a red crosshair is drawn
+    on a screenshot at the proposed click coordinate; the annotated
+    image is shown to the VLM with the user's intent description; the
+    click only fires when the VLM confirms the target. Subsequent
+    clicks within ``auto_pass_radius_px`` of a recently-confirmed
+    point skip the VLM round-trip (the auto-pass tier).
+
+    Default OFF -- this adds a 1-2 s VLM round-trip per first-click
+    in a region. Enable when the user wants the extra safety on
+    pixel-coordinate-driven desktop automation (per the catalog's
+    "auto-pass tier amortises cost" guidance).
+    """
+
+    enabled: bool = False
+    auto_pass_radius_px: int = Field(default=100, ge=0, le=1000)
+    crosshair_size: int = Field(default=20, ge=1, le=200)
+    crosshair_thickness: int = Field(default=3, ge=1, le=50)
+    require_confirmation_keyword: str = "yes"
+    history_depth: int = Field(default=20, ge=1, le=500)
+    # When True, a DEGRADED preview (VLM unavailable / screenshot
+    # failed) BLOCKS the click. Default False -- DEGRADED treats as
+    # ALLOW with an audit-log note so click flow doesn't grind to a
+    # halt on a transient VLM hiccup.
+    block_on_degraded: bool = False
+
+
 class DesktopConfig(_Strict):
     """V1-gap C3: voice routing for the OpenClaw ``desktop-control`` plugin.
 
@@ -2667,6 +2697,8 @@ class DesktopConfig(_Strict):
     # index. None falls back to the legacy "main" behaviour.
     # Set to 2 for "right monitor" on a typical dual-monitor desktop.
     default_monitor_index: Optional[int] = Field(default=2, ge=1, le=8)
+    # 2026-05-24 SWE-Agent batch 7 (T16): click-preview gate.
+    click_preview: ClickPreviewConfig = Field(default_factory=ClickPreviewConfig)
 
 
 class WindowControlConfig(_Strict):

@@ -159,6 +159,15 @@ class InputController:
         *,
         max_actions_per_second: float = 5.0,
         enforce_security_window_block: bool = True,
+        click_preview_enabled: bool = False,
+        click_preview_capture_screen: Optional[object] = None,
+        click_preview_vlm_describe: Optional[object] = None,
+        click_preview_auto_pass_radius_px: int = 100,
+        click_preview_crosshair_size: int = 20,
+        click_preview_crosshair_thickness: int = 3,
+        click_preview_require_confirmation_keyword: str = "yes",
+        click_preview_history_depth: int = 20,
+        click_preview_block_on_degraded: bool = False,
     ) -> None:
         self._rate = max(0.1, float(max_actions_per_second))
         self._enforce_security_block = bool(enforce_security_window_block)
@@ -166,11 +175,98 @@ class InputController:
         self._action_times: deque[float] = deque(maxlen=64)
         self._lock = Lock()
 
+        # 2026-05-24 SWE-Agent batch 7 (T16): click-preview gate.
+        # Lazy-imported so the preview-disabled path doesn't pay the
+        # Pillow import at module load.
+        self._click_preview_enabled = bool(click_preview_enabled)
+        self._click_preview_capture_screen = click_preview_capture_screen
+        self._click_preview_vlm_describe = click_preview_vlm_describe
+        self._click_preview_auto_pass_radius_px = int(click_preview_auto_pass_radius_px)
+        self._click_preview_crosshair_size = int(click_preview_crosshair_size)
+        self._click_preview_crosshair_thickness = int(click_preview_crosshair_thickness)
+        self._click_preview_require_confirmation_keyword = str(
+            click_preview_require_confirmation_keyword
+        )
+        self._click_preview_block_on_degraded = bool(click_preview_block_on_degraded)
+        self._click_preview_history = None  # built lazily on first preview call
+        self._click_preview_history_depth = int(click_preview_history_depth)
+
         # Keep pyautogui's failsafe enabled (move mouse to corner aborts).
         try:
             pyautogui.FAILSAFE = True  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
+
+    def _maybe_preview_click(
+        self,
+        *,
+        x: Optional[int],
+        y: Optional[int],
+        user_text: str,
+    ) -> Optional[InputControlResult]:
+        """Run the SWE-Agent click-preview gate before firing.
+
+        Returns:
+            ``None`` when the preview path is disabled, the
+            coordinates are absent, or the gate decides ALLOW /
+            AUTO_PASS / DEGRADED-with-allow. Returns a failure
+            :class:`InputControlResult` when the gate BLOCKs.
+        """
+        if not self._click_preview_enabled:
+            return None
+        if x is None or y is None:
+            # No coordinate to preview -- pyautogui will click at the
+            # current cursor location. Skip the preview rather than
+            # try to capture an arbitrary point.
+            return None
+        capture = self._click_preview_capture_screen
+        if capture is None:
+            return None
+        try:
+            from ultron.desktop.click_preview import (
+                ConfirmationHistory,
+                PreviewDecision,
+                preview_click,
+            )
+        except Exception as e:                                          # noqa: BLE001
+            logger.debug("click_preview unavailable: %s", e)
+            return None
+        if self._click_preview_history is None:
+            self._click_preview_history = ConfirmationHistory(
+                max_entries=self._click_preview_history_depth,
+            )
+        try:
+            result = preview_click(
+                x=int(x),
+                y=int(y),
+                capture_screen=capture,
+                vlm_describe=self._click_preview_vlm_describe,
+                history=self._click_preview_history,
+                intent_description=user_text or "click on the target",
+                auto_pass_radius=self._click_preview_auto_pass_radius_px,
+                crosshair_size=self._click_preview_crosshair_size,
+                crosshair_thickness=self._click_preview_crosshair_thickness,
+                require_confirmation_keyword=self._click_preview_require_confirmation_keyword,
+            )
+        except Exception as e:                                          # noqa: BLE001
+            logger.warning("click_preview gate raised: %s", e)
+            return None
+        if result.decision is PreviewDecision.BLOCK:
+            return InputControlResult(
+                success=False,
+                action="click",
+                error=f"click_preview: BLOCK: {result.reason or result.vlm_response[:160]}",
+            )
+        if (
+            result.decision is PreviewDecision.DEGRADED
+            and self._click_preview_block_on_degraded
+        ):
+            return InputControlResult(
+                success=False,
+                action="click",
+                error=f"click_preview: DEGRADED (blocked per config): {result.reason}",
+            )
+        return None
 
     # ---- gating helpers ----
 
@@ -288,6 +384,15 @@ class InputController:
         )
         if gate is not None:
             return gate
+
+        # 2026-05-24 SWE-Agent batch 7 (T16): visual crosshair preview
+        # gate. Runs only when ``click_preview_enabled=True``. Defaults
+        # to OFF -- when off this is a single-attribute branch.
+        preview_block = self._maybe_preview_click(
+            x=x, y=y, user_text=user_text,
+        )
+        if preview_block is not None:
+            return preview_block
 
         try:
             pyautogui.click(
