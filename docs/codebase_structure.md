@@ -10,7 +10,115 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `ee9eca5` on `origin/main` (clawhub-windows-ui-automation
+> **Validating HEAD:** `2cad783` on `main` (clawhub-windows-control catalog 08
+> port batch 5 closing commit; doc-bump pending). Seven of eight cataloged
+> techniques (T1-T6 + T8; T7 OCR deferred per catalog `★` recommendation)
+> landed across 5 feature commits on top of `a48ec9d`:
+>
+> * **T2 (`desktop/uia.py`):** `UIElementInfo` frozen dataclass +
+>   `get_ui_element_inventory` categorised UIA walk (10 buckets:
+>   buttons / links / menu_items / list_items / tabs / checkboxes /
+>   radio_buttons / text_fields / dropdowns / other). Edit / Document
+>   admitted without name (their value carries content); other types
+>   require a non-empty name. Optional `control_types` allowlist;
+>   `value_truncate=0` skips value capture entirely.
+>
+> * **T4 (dual: `desktop/uia.py` + `desktop/windows.py`):** synchronous
+>   polling barriers. `wait_for_text_in_window` polls
+>   :func:`enumerate_windows` + :func:`collect_window_text` looking for
+>   substring presence in any window matching the title filter.
+>   `wait_for_window` polls :func:`find_window` until a match appears
+>   (`prefer_foreground=False` during polling because the appearing
+>   window won't be foregrounded yet). Shared
+>   `DEFAULT_WAIT_TIMEOUT_S=30.0` / `DEFAULT_WAIT_INTERVAL_S=0.5`
+>   defaults. `sleep_fn` / `clock_fn` injection for deterministic
+>   tests; deadline-clamped final sleep.
+>
+> * **T8 (`desktop/input_control.py`):** `InputController.drag_to`
+>   absolute-coord drag via `pyautogui.moveTo` + `pyautogui.dragTo`.
+>   Full controller gate stack (foreground security + rate limit +
+>   safety validator + click-preview gate on SOURCE coordinate).
+>   Validates button against {left, right, middle}; rejects negative
+>   duration.
+>
+> * **T5 (`desktop/uia.py`):** structured browser content extraction.
+>   `BrowserContent` + `BrowserLink` frozen dataclasses + `BROWSER_NAMES`
+>   (chrome/firefox/edge/brave/opera/vivaldi/arc) + `is_browser_window`
+>   + `find_browser_window` + `extract_browser_content`. Walks browser
+>   UIA tree categorising descendants into headings (heuristic: short
+>   uppercase / colon-terminated Text + Static), longer text, buttons
+>   (gated), Hyperlinks (gated; URL extracted from `automation_id` when
+>   starts with `http`), Edit / ComboBox inputs (gated; current value
+>   captured), Image alt text (gated). Per-bucket dedup preserves tree-
+>   walk order; per-bucket caps applied after dedup. `full=True`
+>   shorthand enables all four include flags. **20-100 ms** on a typical
+>   webpage with zero GPU cost (vs 300-800 ms + ~330 MB VRAM for the
+>   moondream2 screenshot path).
+>
+> * **T1 (NEW `src/ultron/desktop/dialog_control.py`):** native Windows
+>   dialog detection + CRUD interaction. Constants `DIALOG_CLASSES`
+>   (`#32770` + 4 standard dialog classes) / `DIALOG_CONTROL_TYPES`
+>   (Window / Dialog / Pane) / `DIALOG_TITLE_KEYWORDS` (7 entries) /
+>   `DISMISS_BUTTONS` (9 entries in least-destructive order: OK / Close /
+>   Cancel / Yes / No / Dismiss / Got it / Accept / Done). Six frozen
+>   dataclasses (`DialogInfo` / `DialogButton` / `DialogField` /
+>   `DialogCheckbox` / `DialogContent` / `DialogActionResult`). Surface:
+>   `find_dialogs` + `read_dialog` + `click_dialog_button` +
+>   `type_into_dialog_field` + `dismiss_dialog` + `wait_for_dialog`. All
+>   write actions route through `ultron.safety.validator.get_validator()`
+>   with `tool_name=desktop.dialog.<action>`. `dismiss_dialog` does
+>   per-candidate validator re-check so blocking one candidate falls
+>   through to the next + ESC fallback gated with
+>   `action=dismiss_escape`.
+>
+> * **T3 (NEW `src/ultron/desktop/element_click.py`):** cross-window
+>   semantic UIA element search + click via the gated `InputController`.
+>   `CLICKABLE_TYPES` (9-entry standard UIA control-type set) + frozen
+>   `UIElementMatch` + `TextMatch` + `ClickResult` dataclasses +
+>   `find_elements_by_name` + `click_element_by_name` +
+>   `find_text_in_window`. Exact-matches-first stable-sort ranking;
+>   `enabled_only` filter defaults True; per-window descendant cap
+>   `DEFAULT_MAX_ELEMENTS_PER_WINDOW=500`; per-element fail-open
+>   during walks. **The key safety win**: all clicks route through
+>   `InputController.click(x, y, user_text)` so click-preview VLM +
+>   foreground security + safety validator + Cap-3 explicit-intent +
+>   rate limit all apply uniformly (vs upstream's pywinauto-native
+>   `click_input()` which bypasses every gate).
+>
+> * **T6 (`desktop/windows.py` + `desktop/placement.py`):**
+>   `get_active_window_title` lightweight foreground probe via pywin32
+>   directly (skips the psutil + monitor-index work
+>   :func:`get_foreground_window` does). `close_window(partial_title,
+>   *, force=False, user_text)` graceful WM_CLOSE via
+>   `win32gui.PostMessage` (the app's own close hook fires so editors
+>   with unsaved changes surface their save prompt); `force=True`
+>   escalates to :func:`ultron.subprocess.kill_tree.kill_process_tree`.
+>   `UNSAVED_CHANGES_TITLE_HINTS` (`*`, `[modified]` / `(modified)`,
+>   VS Code dot, em-dash modified) + `_title_suggests_unsaved_changes`
+>   predicate + `CloseWindowResult.suspected_unsaved` on result for
+>   orchestrators to gate behind voice confirmation.
+>   `minimize_window_idempotent` / `maximize_window_idempotent` /
+>   `restore_window_idempotent` state-check-before-act helpers
+>   (check current state; return `PlacementResult(success=True,
+>   error="already <state>")` on no-op).
+>
+> ≈ +199 net tests across the 5 feature batches. Tier summary: 4 GREEN
+> + 4 YELLOW + 0 RED. Source plugin (~37 KB across 23 thin scripts)
+> read read-only via the Read tool; never executed (per the binding
+> ClawHub-batch security rules). Pattern extraction via a Sonnet 4.6
+> Explore agent that independently confirmed the catalog's zero-RED
+> security finding (no registry access, no network calls, no
+> persistence, no anti-forensics, no DLL injection, no credential
+> access). Tests: **7715 passing / 26 skipped / 0 failed** in ~149 s
+> via `scripts/run_tests.py --stale-heartbeat=400`. Voice baseline
+> contract intact (no SOUL.md / RVC / Piper / vocal WAV / LLM model
+> file / Kokoro fine-tune voicepack touch; no orchestrator hot-path
+> edit; all surfaces ship as importable infrastructure for future
+> opt-in wiring). `THIRD_PARTY_NOTICES.md` extended with
+> clawhub-windows-control MIT attribution + per-component mapping
+> for T1 / T2 / T3 / T4 / T5 / T6 / T8.
+>
+> **Earlier validating HEAD:** `ee9eca5` on `origin/main` (clawhub-windows-ui-automation
 > catalog 07 port closing test-fix commit). Six techniques (T1-T6) landed
 > across 5 batches on top of `c3966a7` (plus one test-fix follow-up):
 >
@@ -176,6 +284,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-28 | `2cad783` | **clawhub-windows-control catalog 08 port.** Five feature commits on top of `a48ec9d`. 7 of 8 cataloged techniques landed (T7 OCR deferred per catalog `★`; existing Moondream2 VLM tier covers the use case). Batch 1 (`44087e3`): T2 `UIElementInfo` + `get_ui_element_inventory` 10-bucket UIA walk in `desktop/uia.py`; T4 `wait_for_text_in_window` (uia.py) + `wait_for_window` (windows.py) synchronous polling barriers with `sleep_fn`/`clock_fn` injection + `DEFAULT_WAIT_TIMEOUT_S=30.0` / `DEFAULT_WAIT_INTERVAL_S=0.5` shared constants; T8 `InputController.drag_to` absolute-coord drag (`pyautogui.moveTo` + `pyautogui.dragTo`) through full controller gate stack + click-preview gate on SOURCE coordinate. Batch 2 (`9dafeca`): T5 `BrowserContent` + `BrowserLink` + `BROWSER_NAMES` (chrome/firefox/edge/brave/opera/vivaldi/arc) + `is_browser_window` + `find_browser_window` + `extract_browser_content` (20-100 ms vs 300-800 ms + ~330 MB VRAM for the VLM tier); UIA-based browser content extraction with headings (uppercase / colon-terminated Text + Static heuristic) / longer text / buttons / Hyperlinks (URL from automation_id when http(s)://) / Edit + ComboBox inputs / Images; per-bucket dedup + per-bucket caps + `full=True` shorthand. Batch 3 (`8e007b0`): T1 NEW `src/ultron/desktop/dialog_control.py` (DIALOG_CLASSES + DIALOG_CONTROL_TYPES + DIALOG_TITLE_KEYWORDS + DISMISS_BUTTONS constants; DialogInfo / DialogButton / DialogField / DialogCheckbox / DialogContent / DialogActionResult frozen dataclasses; find_dialogs + read_dialog + click_dialog_button + type_into_dialog_field + dismiss_dialog + wait_for_dialog with Cap-3 safety validator gating per-action; dismiss_dialog per-candidate validator re-check + ESC fallback gated with action=dismiss_escape). Batch 4 (`9a810b3`): T3 NEW `src/ultron/desktop/element_click.py` (CLICKABLE_TYPES 9-entry standard UIA control-type set + UIElementMatch / TextMatch / ClickResult frozen dataclasses + find_elements_by_name + click_element_by_name + find_text_in_window; exact-matches-first stable-sort ranking; enabled_only filter defaults True; ALL clicks route through gated InputController so click-preview VLM + foreground security + safety validator + Cap-3 explicit-intent + rate limit apply uniformly vs the upstream's pywinauto-native click_input() which bypasses every gate). Batch 5 (`2cad783`): T6 `get_active_window_title` lightweight foreground probe + `close_window` graceful WM_CLOSE via `win32gui.PostMessage` + `force=True` escalation to `kill_process_tree` + `UNSAVED_CHANGES_TITLE_HINTS` (5-entry editor convention) + `_title_suggests_unsaved_changes` predicate + `CloseWindowResult.suspected_unsaved` flag, plus `minimize_window_idempotent` / `maximize_window_idempotent` / `restore_window_idempotent` state-check-before-act helpers in placement.py. Tier summary: 4 GREEN + 4 YELLOW + 0 RED. Source plugin (~37 KB across 23 thin scripts) read read-only via Read tool; never executed (per binding ClawHub-batch security rules). Pattern extraction via Sonnet 4.6 Explore agent that independently confirmed catalog's zero-RED security finding (no registry access, no network calls, no persistence, no anti-forensics, no DLL injection, no credential access). `THIRD_PARTY_NOTICES.md` extended with clawhub-windows-control MIT attribution + per-component mapping for T1/T2/T3/T4/T5/T6/T8. Voice baseline contract intact (no SOUL.md / RVC / Piper / vocal WAV / LLM model file / Kokoro fine-tune voicepack touch; no orchestrator hot-path edit; all surfaces ship as importable infrastructure for future opt-in wiring). | 7715 | [project_ultron_2026_05_28_clawhub_windows_control.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_28_clawhub_windows_control.md) |
 | 2026 | `ee9eca5` | **clawhub-windows-ui-automation catalog 07 port + test fixes.** Six commits on top of `c3966a7`. Five batches landing T1-T6: T1+T3 doc comments in `desktop/input_control.py` (pyautogui uses modern atomic `SendInput`; `pyautogui.hotkey` is async unlike `SendKeys.SendWait`); T2 new `desktop/win32_helpers.py` (ctypes wrappers for `GetDpiForMonitor`, `GetLastInputInfo`, `DwmGetWindowAttribute(DWMWA_CLOAKED)`, hardened `block_input_context` with watchdog + try/finally + UIPI safety floor + 30s hard cap, plus `logical_to_physical` / `physical_to_logical` primitives); T6 `focus_by_title` two-tier focus in `desktop/windows.py` (primary `SetForegroundWindow`, fallback in-process `WScript.Shell.AppActivate` via `win32com.client`, final `CREATE_NO_WINDOW` PowerShell subprocess) plus `enumerate_windows`/`find_window` gain `exclude_cloaked: bool = True`; T5 DPI-aware coordinate helpers in `desktop/uia.py` (`physical_center_of_element` / `physical_rect_of_element` / `dpi_aware_click_at_element_center` -- identity on 100%-DPI; opt-in `assume_logical=True` for non-DPI-aware sources); T4 frontmatter `capability_tags:` filter wiring (`SkillRegistry.matching_skills` accepts `gaming_mode` / `vlm_loaded` / `has_internet` kwargs; `_skill_active_for_capability_tags` predicate; `LLMEngine._build_messages` threads live VLM holder state via new `_resolve_vlm_loaded_for_skills()`). Closing `ee9eca5` test-fix commit updated 2 tests broken by the prior production-wiring flag flips (`coding.pre_write_lint.enabled` + `coding.pre_task_confirmation_enabled` both flipped to True) -- tests now monkeypatch per-test config state instead of depending on the global default; added companion `test_runner_lint_listener_enabled_returns_callable` so both branches stay pinned. `THIRD_PARTY_NOTICES.md` extended with clawhub-windows-ui-automation MIT attribution. Voice baseline contract intact (no SOUL.md / RVC / Piper / vocal WAV / LLM model file / Kokoro fine-tune voicepack touch; no orchestrator hot-path edit beyond the additive `vlm_loaded` thread). | 7516 | [project_ultron_2026_05_27_catalog_07_clawhub_windows_ui_automation.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_27_catalog_07_clawhub_windows_ui_automation.md) |
 | 2026-05-26 | `29ffe49` | **Production-wiring pass batch 10 (voice baseline re-measure post-flags).** `scripts/measure_baseline.py` ran cleanly under the new config: VRAM loaded **6254 MB (-343 MB vs 2026-05-23 baseline)**, peak **6664 MB (-343 MB)**, STT median **16 ms** (unchanged), LLM TTFT median **172 ms (-31 ms)**, TTS synth median **78 ms (-31 ms)**, composite TTFA median **266 ms (-47 ms)**. The Batch 9 flag flips (supervisor.tier=full, architect, click_preview, contextual_retrieval, background_summary, pre_write_lint, goal_anchors, etc.) did NOT regress the voice baseline -- they only fire on coding / desktop / write paths, not on the simple voice-query path measured by measure_baseline. No optimisation pass needed; the production wiring is net-positive on every measured axis. `baselines.json` updated. | (no test change) | [project_ultron_2026_05_26_production_wiring_pass.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_26_production_wiring_pass.md) |
 | 2026-05-26 | `2e1f8b8` | **Production-wiring pass batch 6 (SWE-Agent T7 SubmitReviewLoop into supervisor COMPLETE listener).** New `CapabilityVoiceController._attach_submit_review_listener` registers on every supervisor-dispatched task's COMPLETE event. The listener walks `event.files_created`/`files_modified`/`files_deleted`, runs `detect_voice_lock_hits()` (matches SOUL.md / IDENTITY.md / Piper / RVC / Qwen GGUFs / Kokoro voicepack + fine-tune / tts/rvc.py / tts/ultron_filter.py), and on any hit: logs WARN with the hit list AND queues a voice narration ("Voice-baseline contract: the session touched X. Review before continuing.") onto `controller._pending_completion` for the orchestrator's idle drain. Wired in after `_attach_supervisor_digest_listener` in `_dispatch_supervisor_task`. Fail-open: listener registration / dispatch errors log WARN, never abort. Skipped T14 edit_recovery + SWE-Agent T1 auto-revert (need pre-edit snapshot of agent-owned writes — needs deeper agent-tool integration). Also updated `tests/test_coding_voice.py::test_pre_task_confirmation_disabled_dispatches_immediately` to monkeypatch the legacy-shim flag after the Batch 9 flip. | 7394 | [project_ultron_2026_05_26_production_wiring_pass.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_26_production_wiring_pass.md) |
