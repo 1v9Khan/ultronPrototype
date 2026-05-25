@@ -10,10 +10,11 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `7f18a24` on `origin/main` (2026-05-24 cline
-> catalog port batch 2 -- T7 file-read cache + loop detector, T18
-> dedup, T17 safe-capture wrapper, T23 zombie killer). Tests
-> **5872 passing / 24 skipped / 0 failed in ~94 s** via
+> **Validating HEAD:** (in-flight cline batch 3; bumped post-commit)
+> last code-touching commit was `7f18a24` (cline batch 2). Batch 3
+> lands T6 `.ultronignore` policy file + command-arg validator, T10
+> frontmatter-driven conditional rule activation engine. Tests
+> **5928 passing / 24 skipped / 0 failed in ~94 s** via
 > `scripts/run_tests.py`.
 >
 > **Public-repo hygiene:** the repo lives at
@@ -44,6 +45,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-24 | (in-flight) | cline catalog port batch 3 -- ignore + conditional rules (T6 + T10): `safety/ignore.py` (three-layer `.ultronignore` with `!include`, `validate_command` covering POSIX + PowerShell file-readers, registry singleton); new `rules/` package with `conditionals.py` (frontmatter `paths` / `intents` / `topics` / `system_state` evaluator, `all_of` + `not_in_gaming_mode` combinators, comparator-prefixed state matching, path-extraction heuristic that strips fenced code + URLs). | 5928 | (cline-port memory pending) |
 | 2026-05-24 | `7f18a24` | cline catalog port batch 2 -- caching, loop detection, telemetry, zombie killer (T7 + T18 + T17 + T23): `coding/file_read_cache.py` (per-session mtime-validated cache with LRU eviction + registry singleton); new `agent_loop/` package with `loop_detection.py` (canonical signature + soft/hard escalation tiers); `llm/dedup_file_reads.py` (in-place dedup of duplicate file-read tool results in API history + generic payload dedup + 30 % skip-compaction threshold); `observations/safe_capture.py` (sync + async + decorator triple with `SafeCaptureStats` counters); new `subprocess/` package with `zombie_killer.py` (10-min hard cap + persistent-tag carve-out + RSS warning tier + clock/terminator/RSS-probe injection hooks). | 5872 | (cline-port memory pending) |
 | 2026-05-24 | `a7d03dd` | cline catalog port batch 1 -- foundation utilities (T22 + T13b + T25): `llm/response_format.py` (30+ structured error/notice templates with voice-friendly variants + progressive-escalation tiers); `utils/retry.py` (async + sync `with_retry` decorator + `RetryBudget` + retry-after header parsing with delta-seconds-vs-unix-timestamp heuristic + `RetriableError` + async-generator decoration + `asyncio.CancelledError` pass-through); `search/ripgrep.py` (subprocess wrapper around `rg --json` with byte-cap 0.25 MB / result-cap 300 / wall-clock kill / Windows `CREATE_NO_WINDOW` / optional ignore-predicate). | 5778 | (cline-port memory pending; see `THIRD_PARTY_NOTICES.md`) |
 | 2026-05-24 | `18fab56` | OpenHands catalog T1-T8 port -- 8 batches, 11 new packages: `parsing/`, `install/`, `skills/` + `skills/` catalogue, `events/`, `llm/condensers/`, `lifecycle/`, `projects/`, `services/`. Two opt-in config sections (`skills.*`, `events.*`, default OFF). | 5640 | `project_ultron_2026_05_24_openhands_catalog_porting.md` |
