@@ -10,10 +10,12 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `a7d03dd` on `origin/main` (2026-05-24 cline
-> catalog port batch 1 -- T22 response_format + T13b retry decorator +
-> T25 ripgrep wrapper). Tests **5778 passing / 24 skipped / 0 failed
-> in ~103 s** via `scripts/run_tests.py`.
+> **Validating HEAD:** (in-flight cline batch 2; bumped post-commit)
+> last code-touching commit was `a7d03dd` (cline batch 1 -- T22 +
+> T13b + T25). Batch 2 lands T7 file-read cache + loop detector,
+> T18 dedup, T17 safe-capture wrapper, T23 zombie killer. Tests
+> **5872 passing / 24 skipped / 0 failed in ~94 s** via
+> `scripts/run_tests.py`.
 >
 > **Public-repo hygiene:** the repo lives at
 > `https://github.com/1v9Khan/ultronPrototype` (visibility flips between
@@ -43,6 +45,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-24 | (in-flight) | cline catalog port batch 2 -- caching, loop detection, telemetry, zombie killer (T7 + T18 + T17 + T23): `coding/file_read_cache.py` (per-session mtime-validated cache with LRU eviction + registry singleton); new `agent_loop/` package with `loop_detection.py` (canonical signature + soft/hard escalation tiers); `llm/dedup_file_reads.py` (in-place dedup of duplicate file-read tool results in API history + generic payload dedup + 30 % skip-compaction threshold); `observations/safe_capture.py` (sync + async + decorator triple with `SafeCaptureStats` counters); new `subprocess/` package with `zombie_killer.py` (10-min hard cap + persistent-tag carve-out + RSS warning tier + clock/terminator/RSS-probe injection hooks). | 5872 | (cline-port memory pending) |
 | 2026-05-24 | `a7d03dd` | cline catalog port batch 1 -- foundation utilities (T22 + T13b + T25): `llm/response_format.py` (30+ structured error/notice templates with voice-friendly variants + progressive-escalation tiers); `utils/retry.py` (async + sync `with_retry` decorator + `RetryBudget` + retry-after header parsing with delta-seconds-vs-unix-timestamp heuristic + `RetriableError` + async-generator decoration + `asyncio.CancelledError` pass-through); `search/ripgrep.py` (subprocess wrapper around `rg --json` with byte-cap 0.25 MB / result-cap 300 / wall-clock kill / Windows `CREATE_NO_WINDOW` / optional ignore-predicate). | 5778 | (cline-port memory pending; see `THIRD_PARTY_NOTICES.md`) |
 | 2026-05-24 | `18fab56` | OpenHands catalog T1-T8 port -- 8 batches, 11 new packages: `parsing/`, `install/`, `skills/` + `skills/` catalogue, `events/`, `llm/condensers/`, `lifecycle/`, `projects/`, `services/`. Two opt-in config sections (`skills.*`, `events.*`, default OFF). | 5640 | `project_ultron_2026_05_24_openhands_catalog_porting.md` |
 | 2026-05-23 | `73fafba` | SWE-Agent catalog T1-T20 port -- 7 batches: `coding/{sentinels, session_registry, window_expand, window_state, file_history, edit_diagnostics, lint_diff, search_primitives, diff_snapshot, submit_review, forfeit, observation_format}`, `llm/{history_processors, requery, image_markdown, draft_model}`, `safety/rules/category_it`, `desktop/click_preview`. Two production knobs flipped (`llm.history_compression.enabled: true`, `safety.interactive_tools.enabled: true`). | 5215 | `project_ultron_2026_05_23_swe_agent_catalog_porting.md` |
@@ -197,6 +200,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── screen_context.py     ← orchestrator: assemble foreground + windows + UIA text + optional VLM description for LLM injection
 │       │   ├── vlm.py                ← Moondream2 VLM wrapper (transformers + trust_remote_code), CPU-only on-demand, lazy-loaded, fail-open; 2026-05-22 Moondream2VLM.unload() for gaming-mode engage callback
 │       │   ├── click_preview.py      ← 2026-05-23 SWE-Agent batch 7 (T16): preview_click VLM-confirmed click target with confidence-gated auto-pass; ConfirmationHistory bounded recent-click store; draw_crosshair_on_image pure-Pillow renderer; first click always confirms then subsequent clicks within AUTO_PASS_RADIUS_PX (100px) auto-pass
+│       │   ├── file_read_cache.py    ← 2026-05-24 cline batch 2 (T7a): per-session mtime-validated file-read cache; FileReadCache (RLock-guarded) with maybe_serve_from_cache (consult + increment read_count) / record_read (capture mtime + content) / invalidate / clear; CachedReadEntry returns the cached_read_notice template; get_file_read_cache(session_id, max_entries=None) module-level registry; optional LRU eviction by lowest read_count
 │       │   ├── voice.py              ← Phase 8 voice handlers (handle_app_launch / handle_screen_context_query) + 2026-05-14 third-pass handlers (handle_window_move / handle_window_close) bridging RoutingIntent -> native primitives
 │       │   └── preferences.py        ← Phase 10 preference learning (JSONL log + optional OpenClaw workspace mirror; find_preference_for_phrase for recency-weighted lookup)
 │       │
@@ -265,6 +269,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── history_processors.py ← 2026-05-23 SWE-Agent batch 2 (T2 + T9): ClosedWindowHistoryProcessor (collapse repeated file-view snapshots) + LastNObservations (elide all but last N with polling for cache stability) + TagToolCallObservations (tag observations by source tool) + apply_history_processors composer + build_default_processors factory; wired into LLMEngine._build_messages history block (default ON, fail-open)
 │       │   ├── image_markdown.py     ← 2026-05-23 SWE-Agent batch 7 (T18): encode_image_as_markdown (![<alt>](data:<mime>;base64,<b64>) verbatim SWE-Agent format with optional Pillow auto-thumbnail) + parse_image_markdown (regex split into multimodal segments; image/jpg -> image/jpeg normalisation) + history_to_multimodal rewrite helper; allowed MIME types image/png / image/jpeg / image/webp
 │       │   ├── requery.py            ← 2026-05-23 SWE-Agent batch 6 (T14): RequeryLoop temp-history-without-pollution requery cycle; build_requery_history (real + broken-assistant + error-user shape verbatim from SWE-Agent get_model_requery_history); pre-built validators validate_non_empty + validate_json; max_retries default 3 matching SWE-Agent
+│       │   ├── dedup_file_reads.py   ← 2026-05-24 cline batch 2 (T18): dedup_duplicate_file_reads walks API history, groups tool-result blocks by (tool_name, file_path), elides every duplicate except latest (or first) with the duplicate_file_read_notice template; DedupResult carries bytes_saved + tokens_saved_estimate + savings_ratio; should_skip_compaction(result, threshold=0.30) implements the cline >=30%-savings heuristic; dedup_payload_duplicates is the generalised non-file equivalent (nvidia-smi heartbeats, repeated RAG snippets, etc.)
 │       │   ├── response_format.py    ← 2026-05-24 cline batch 1 (T22): 30+ structured LLM-facing + user-facing notice templates (tool_error / tool_denied / missing_tool_parameter_error / write_to_file_missing_content_error 3-tier escalation / file_edit_with[out]_user_changes / diff_error / context_truncation_notice / file_context_warning / loop_soft_warning / loop_hard_escalation / task_resumption / plan_mode_instructions / format_files_list with ignore_predicate / create_pretty_patch); voice-friendly *_voice variants for templates that may be spoken via TTS
 │       │   └── self_consistency.py ← 4B plan Item 6: N-sample majority-vote driver + aggregators (text/JSON/label) (default OFF)
 │       │
@@ -425,9 +430,17 @@ For the current decisions and Foundation phase status see
 │       │   ├── callbacks.py        ← 2026-05-23 OpenHands batch 4 (T3): CallbackRegistry + CallbackProcessor ABC + RegisteredCallback + CallbackResult + FunctionProcessor adapter + JSONL persistence + singleton accessors
 │       │   └── processors.py       ← 2026-05-23 OpenHands batch 4 (T3): built-in processors (Logging, Counting, ThresholdSnapshot, MemoryWrite, ChannelGuard, SkillActivator) + build_default_processors factory
 │       │
+│       ├── agent_loop/              ← 2026-05-24 cline batch 2 (T7b): outer-loop primitives
+│       │   ├── __init__.py          ← Public API re-exports
+│       │   └── loop_detection.py    ← LoopDetector with canonical tool_call_signature (JSON sorted-keys minus DEFAULT_NOISE_KEYS like task_progress / turn_id / trace_id); LoopVerdict with soft_warning at DEFAULT_SOFT_THRESHOLD=3 + hard_escalation at DEFAULT_HARD_THRESHOLD=5; halted flag persists across distinct observations once hard tier fires; reset() clears state
+│       │
 │       ├── search/                  ← 2026-05-24 cline batch 1 (T25): direct-search utilities
 │       │   ├── __init__.py          ← Public API re-exports
 │       │   └── ripgrep.py           ← Ripgrep subprocess wrapper: regex_search_files(cwd, directory, pattern, *, file_pattern, context_lines, timeout_s, ignore_predicate, binary_name, extra_args) -> RipgrepResult with grouped-by-file rendering, `│----` separators, byte cap 0.25 MB (MAX_RIPGREP_BYTES), result cap 300 (MAX_RESULTS), line cap MAX_RIPGREP_LINES; rg_binary_available with Windows install-location fallback; CREATE_NO_WINDOW on Windows; per-call wall-clock kill; fail-open on missing binary or malformed JSON lines
+│       │
+│       ├── subprocess/              ← 2026-05-24 cline batch 2 (T23): subprocess lifecycle
+│       │   ├── __init__.py          ← Public API re-exports
+│       │   └── zombie_killer.py     ← ZombieKiller periodic reaper (DEFAULT_HARD_TIMEOUT_S=10*60, DEFAULT_POLL_INTERVAL_S=60) with persistent-tag carve-out + RSS warning tier (DEFAULT_WARN_RSS_MB / DEFAULT_WARN_AGE_S) + clock / terminator / rss_probe injection hooks for deterministic tests; TrackedProcess registry with re-register-in-place semantics; get_zombie_killer() module-level singleton; recent_reports() bounded buffer; on_terminate callback fires after successful kill
 │       │
 │       └── utils/
 │           ├── fairseq_compat.py   ← Workarounds for fairseq dataclass + torch.load issues
