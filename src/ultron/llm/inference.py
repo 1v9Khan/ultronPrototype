@@ -524,6 +524,13 @@ class LLMEngine:
         self._cancel = Event()
         self._runtime = runtime
         self._logged_initial_persona = False
+        # Catalog 09 batch G wiring: per-turn condenser selection.
+        # The orchestrator sets this attribute before calling
+        # generate_stream(); _build_messages reads it inside the
+        # existing history_compression branch when
+        # ``llm.condensers.intent_adaptive.enabled`` is True.
+        # ``None`` (default) preserves the legacy back-compat path.
+        self._current_intent_kind: Optional[str] = None
 
         if runtime == "in_process":
             self._init_in_process(cfg, model_path, n_ctx, n_gpu_layers)
@@ -1024,6 +1031,37 @@ class LLMEngine:
             if compress_cfg is not None and getattr(
                 compress_cfg, "enabled", False
             ):
+                # Catalog 09 batch G wiring: when intent-adaptive is on,
+                # pick a per-intent condenser FIRST so the recent-turn
+                # history is shaped before the closed-window / last-N
+                # processors run on top. NoOp for greeting/conversational
+                # short turns (zero-cost passthrough), Recent for
+                # factual, LLMSummarizing for long coding contexts.
+                # Default OFF -- the legacy fixed pipeline runs unchanged
+                # so the voice-path TTFT baseline is preserved.
+                if getattr(compress_cfg, "intent_adaptive", False):
+                    try:
+                        from ultron.llm.condensers.factory import (
+                            select_condenser_for_intent,
+                        )
+
+                        condenser = select_condenser_for_intent(
+                            self._current_intent_kind,
+                        )
+                        turns_in: list = [
+                            (entry.get("role", "user"), entry.get("content", ""))
+                            for entry in history_block
+                        ]
+                        result = condenser.condense(turns_in)
+                        if result is not None and result.ok:
+                            history_block = [
+                                {"role": role, "content": content}
+                                for (role, content) in result.turns
+                            ]
+                    except Exception:
+                        # Fail-open: any condenser exception leaves the
+                        # raw history block untouched.
+                        pass
                 try:
                     from ultron.llm.history_processors import build_default_processors, apply_history_processors
 
@@ -1169,6 +1207,34 @@ class LLMEngine:
         finishes — but the iterator will exit immediately afterward.
         """
         self._cancel.set()
+
+    # --- catalog 09 batch G: per-intent condenser selection ----------------
+
+    def set_current_intent_kind(self, intent_kind: Optional[str]) -> None:
+        """Set the intent classification for the *next* generation.
+
+        The orchestrator calls this immediately before
+        :meth:`generate_stream` so the recent-history compression
+        branch in :meth:`_build_messages` can pick an intent-tailored
+        condenser (NoOp for conversational, Recent for factual,
+        LLMSummarizing for long coding contexts).
+
+        Accepts the string value of a
+        :class:`ultron.openclaw_routing.intents.RoutingIntentKind` (e.g.
+        ``"conversational"``, ``"code_task"``) or ``None`` to clear.
+
+        Only consulted when
+        ``llm.history_compression.intent_adaptive`` is ``True``; the
+        default ``False`` value preserves the legacy fixed pipeline.
+        """
+        self._current_intent_kind = intent_kind
+
+    def get_current_intent_kind(self) -> Optional[str]:
+        """Return the intent kind set by the most recent
+        :meth:`set_current_intent_kind` call, or ``None`` if unset.
+        Exposed primarily for tests.
+        """
+        return self._current_intent_kind
 
     # --- 4B plan: voice-driven on-the-fly model reload ---------------------
 

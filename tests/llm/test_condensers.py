@@ -409,3 +409,77 @@ def test_select_for_intent_case_insensitive():
     cond_a = select_condenser_for_intent("CODING")
     cond_b = select_condenser_for_intent("coding")
     assert type(cond_a) is type(cond_b)
+
+
+# -- catalog 09 batch G: RoutingIntentKind coverage --
+
+
+@pytest.mark.parametrize(
+    "intent_value,expected_cls",
+    [
+        # Conversational / lightweight voice path -> NoOp (zero-cost
+        # passthrough, no churn).
+        ("conversational", NoOpCondenser),
+        ("greeting", NoOpCondenser),
+        ("ack", NoOpCondenser),
+        ("progress_query", NoOpCondenser),
+        ("cancel", NoOpCondenser),
+        ("mid_session_adjustment", NoOpCondenser),
+        ("clarification_response", NoOpCondenser),
+        ("model_switch", NoOpCondenser),
+        ("gaming_mode", NoOpCondenser),
+        ("system_status", NoOpCondenser),
+        ("active_window_query", NoOpCondenser),
+        ("window_close_confirmation", NoOpCondenser),
+        # Factual + memory recall -> Recent / Amortized.
+        ("factual", RecentCondenser),
+        ("memory_recall", AmortizedCondenser),
+        ("gaming", RecentCondenser),
+        # Desktop automation / window operations -> Recent.
+        ("browser_automation", RecentCondenser),
+        ("media_generation", RecentCondenser),
+        ("messaging", RecentCondenser),
+        ("file_operation", RecentCondenser),
+        ("shell_operation", RecentCondenser),
+        ("desktop_automation", RecentCondenser),
+        ("window_automation", RecentCondenser),
+        ("app_launch", RecentCondenser),
+        ("screen_context_query", RecentCondenser),
+        ("window_move", RecentCondenser),
+        ("window_close", RecentCondenser),
+        ("open_last_source", RecentCondenser),
+        ("navigate_to_site", RecentCondenser),
+        ("semantic_click", RecentCondenser),
+        # Coding path -> LLMSummarizing.
+        ("coding", LLMSummarizingCondenser),
+        ("refactor", LLMSummarizingCondenser),
+        ("code_task", LLMSummarizingCondenser),
+        ("hybrid_task", LLMSummarizingCondenser),
+    ],
+)
+def test_select_for_intent_routing_intent_kinds(
+    intent_value, expected_cls,
+):
+    """Each :class:`RoutingIntentKind` value maps to a documented
+    condenser. Pin every value so an accidental rename of an enum
+    member shows up here as a failure."""
+    cond = select_condenser_for_intent(intent_value)
+    assert isinstance(cond, expected_cls), (
+        f"intent={intent_value!r} mapped to {type(cond).__name__}, "
+        f"expected {expected_cls.__name__}"
+    )
+
+
+def test_select_for_intent_covers_every_routing_intent_kind():
+    """Every value of :class:`RoutingIntentKind` MUST resolve to a
+    non-default condenser (i.e. is in ``_INTENT_KIND_MAP`` explicitly).
+    A new enum member that drifts past this guard would silently fall
+    to the ``default`` (``recent``) entry, masking missed wiring."""
+    from ultron.llm.condensers.factory import _INTENT_KIND_MAP
+    from ultron.openclaw_routing.intents import RoutingIntentKind
+
+    for member in RoutingIntentKind:
+        assert member.value in _INTENT_KIND_MAP, (
+            f"RoutingIntentKind.{member.name} ({member.value!r}) missing "
+            "from _INTENT_KIND_MAP -- add an explicit entry"
+        )

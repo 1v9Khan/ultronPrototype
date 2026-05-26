@@ -85,16 +85,47 @@ def build_condenser(
 
 _INTENT_KIND_MAP: dict[str, str] = {
     # Voice-path intents: lean strategies for the latency budget.
+    # ``noop`` is a zero-cost passthrough -- no per-turn churn, no
+    # synthetic summary turn, no prompt-cache invalidation. Use it for
+    # short conversational turns and lightweight quick-probe surfaces.
     "greeting": "noop",
     "ack": "noop",
+    "conversational": "noop",
     "factual": "recent",
     "memory_recall": "amortized",
     "gaming": "recent",
-    # Coding-path intents: more aggressive compression OK because the
-    # LLM call is the bottleneck.
+    "gaming_mode": "noop",
+    "system_status": "noop",
+    "progress_query": "noop",
+    "cancel": "noop",
+    "mid_session_adjustment": "noop",
+    "clarification_response": "noop",
+    "model_switch": "noop",
+    "active_window_query": "noop",
+    "window_close_confirmation": "noop",
+    # Coding-path intents: aggressive summarization OK because the
+    # LLM call is the bottleneck, not the latency budget.
     "coding": "llm_summarizing",
     "refactor": "llm_summarizing",
     "code_task": "llm_summarizing",
+    "hybrid_task": "llm_summarizing",
+    # Desktop automation / window operations: lean recent-window shape;
+    # the user typically threads a multi-step automation through
+    # several recent turns but rarely re-reads older context.
+    "browser_automation": "recent",
+    "media_generation": "recent",
+    "messaging": "recent",
+    "file_operation": "recent",
+    "shell_operation": "recent",
+    "desktop_automation": "recent",
+    "window_automation": "recent",
+    "app_launch": "recent",
+    "screen_context_query": "recent",
+    "window_move": "recent",
+    "window_close": "recent",
+    "open_last_source": "recent",
+    "navigate_to_site": "recent",
+    "semantic_click": "recent",
     # Default for unknown intents.
     "default": "recent",
 }

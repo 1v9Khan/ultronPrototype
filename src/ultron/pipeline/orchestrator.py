@@ -2604,7 +2604,22 @@ class Orchestrator:
                     )
 
                 trace.set_phase("respond")
-                self._respond(user_text)
+                # Catalog 09 batch G wiring: thread the classified
+                # intent kind through to _respond so the LLM can pick
+                # a per-intent condenser before generating. Default
+                # ``None`` when the coding_voice (and thus the routing
+                # classifier) isn't wired -- legacy fixed-condenser
+                # behavior preserved.
+                _intent_kind: Optional[str] = None
+                try:
+                    _intent_kind = (
+                        routing_intent.kind.value
+                        if self.coding_voice is not None
+                        else None
+                    )
+                except Exception:
+                    _intent_kind = None
+                self._respond(user_text, routing_intent_kind=_intent_kind)
                 self._last_response_finished_monotonic = time.monotonic()
                 if _addr_cfg.follow_up_enabled:
                     follow_up_until = (
@@ -3941,7 +3956,12 @@ class Orchestrator:
                 routing_intent,
             )
 
-    def _respond(self, user_text: str) -> None:
+    def _respond(
+        self,
+        user_text: str,
+        *,
+        routing_intent_kind: Optional[str] = None,
+    ) -> None:
         """Stream LLM tokens into TTS and watch for wake-word interruption.
 
         Phase 4: classifies the utterance through the web-search gate first.
@@ -3949,6 +3969,13 @@ class Orchestrator:
         (Brave + Jina + LLM rank) in parallel with the ack TTS, then
         generate the final response with sources injected.
         NO_SEARCH / UNCERTAIN -> base path (unchanged from Phase 3).
+
+        ``routing_intent_kind`` (catalog 09 batch G) is the string value
+        of the :class:`RoutingIntentKind` that classified this turn (or
+        ``None`` when routing was bypassed). When
+        ``llm.history_compression.intent_adaptive`` is enabled the LLM
+        engine reads it to pick a per-intent condenser before building
+        the prompt. The legacy fixed pipeline ignores it entirely.
         """
         self._interrupt.clear()
         self._last_search_payload = None
@@ -3965,6 +3992,17 @@ class Orchestrator:
             watcher.start()
         else:
             logger.info("Barge-in wake watcher disabled")
+
+        # Catalog 09 batch G wiring: thread the intent through to the
+        # engine BEFORE building the response stream so _build_messages
+        # can pick the right condenser. The clear-on-exit lives in the
+        # finally below so a mid-stream exception still leaves the
+        # engine in a clean state for the next turn.
+        try:
+            if self.llm is not None:
+                self.llm.set_current_intent_kind(routing_intent_kind)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("set_current_intent_kind failed: %s", e)
 
         try:
             print("  ultron: ", end="", flush=True)
@@ -4012,6 +4050,15 @@ class Orchestrator:
             self._interrupt.set()  # release watcher
             if watcher is not None:
                 watcher.join(timeout=1.0)
+            # Catalog 09 batch G wiring: clear the per-turn intent so a
+            # subsequent direct (non-routed) generate_stream call -- e.g.
+            # the speculative LLM thread, the model-swap pre-warm, or a
+            # test fixture -- doesn't inherit stale state from this turn.
+            try:
+                if self.llm is not None:
+                    self.llm.set_current_intent_kind(None)
+            except Exception as e:                                   # noqa: BLE001
+                logger.debug("set_current_intent_kind(None) failed: %s", e)
 
     def _maybe_emit_thinking_drift_sample(
         self, user_text: str, response_text: str,

@@ -516,6 +516,13 @@ class LLMHistoryCompressionConfig(_Strict):
     last_n_enabled: bool = False
     last_n: int = Field(5, ge=1, le=100)
     last_n_polling: int = Field(1, ge=1, le=50)
+    # Catalog 09 batch G wiring: pick a condenser per-intent (NoOp for
+    # short conversational turns, Recent for factual, LLMSummarizing
+    # for long coding contexts) before applying the closed-window /
+    # last-N processors. When ``False`` (default) the legacy fixed
+    # pipeline runs unchanged so the voice-path TTFT baseline is
+    # preserved bit-for-bit.
+    intent_adaptive: bool = False
 
 
 class LLMPersonaConfig(_Strict):
