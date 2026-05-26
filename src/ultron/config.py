@@ -1619,6 +1619,32 @@ class CodingAiCommentWatcherConfig(_Strict):
     poll_interval_seconds: float = Field(default=0.5, ge=0.05, le=10.0)
 
 
+class CodingDialogAutoHandlerConfig(_Strict):
+    """2026 catalog 08 + 09 wiring: dialog auto-handler for coding tasks.
+
+    When enabled (default ON because the safety + UX value is high),
+    the :class:`CodingTaskRunner` subscribes to the bus's
+    :data:`ultron.bus.events.DialogAppearedEvent` for the lifetime of
+    each task. On dialog appearance during a Claude session (save-as,
+    overwrite-confirm, UAC-adjacent, installer prompt), the runner
+    queues a voice-friendly narration into
+    ``_pending_dialog_narrations`` which the orchestrator drains and
+    speaks on its next poll.
+
+    The narration says "A '<title>' dialog appeared in <process>.
+    Say yes to confirm or no to dismiss." -- the actual click /
+    dismiss happens when the user answers via the
+    WINDOW_CLOSE_CONFIRMATION voice intent (batch E wiring) which
+    routes to the orchestrator's two-phase approval registry.
+
+    Operators who want fully-silent automation can flip enabled=False
+    -- dialogs will still be detected by the poller, but no
+    narration is queued.
+    """
+
+    enabled: bool = True
+
+
 class CodingPreEditSnapshotConfig(_Strict):
     """2026 catalog 08 / SWE-Agent T1 + T14 wiring: pre-edit snapshot.
 
@@ -1961,6 +1987,16 @@ class CodingConfig(_Strict):
     # file-read per write tool-call (~1-5 ms).
     pre_edit_snapshot: "CodingPreEditSnapshotConfig" = Field(
         default_factory=lambda: CodingPreEditSnapshotConfig(),
+    )
+    # 2026 catalog 08 + 09 wiring: dialog auto-handler. When enabled
+    # (default ON), CodingTaskRunner subscribes to the bus's
+    # DialogAppearedEvent for the lifetime of each coding task and
+    # queues a voice-friendly narration on dialog appearance. The
+    # user's spoken yes/no reply routes via WINDOW_CLOSE_CONFIRMATION
+    # to the orchestrator's two-phase approval registry. Operators
+    # who want silent automation can flip enabled=False.
+    dialog_auto_handler: "CodingDialogAutoHandlerConfig" = Field(
+        default_factory=lambda: CodingDialogAutoHandlerConfig(),
     )
     # A4 pre-task confirmation. Default OFF -- the spoken confirmation
     # adds ~0.5 s of TTS playback before every coding task dispatch,

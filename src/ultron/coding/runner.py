@@ -177,6 +177,19 @@ class CodingTaskRunner:
         # prior task don't leak into the next narration.
         self._ast_failures_this_task: List[Tuple[str, str]] = []
         self._ast_lock = threading.Lock()
+        # 2026 catalog 08/09 wiring: per-task dialog narration queue.
+        # The dialog-auto-handler listener subscribes to the bus's
+        # DialogAppearedEvent for the lifetime of the task and pushes
+        # voice-friendly text into this queue. The orchestrator drains
+        # the queue via :meth:`pending_dialog_narration` between bus
+        # turn-completion events, the same way it drains
+        # :meth:`pending_completion`.
+        self._pending_dialog_narrations: List[str] = []
+        self._dialog_lock = threading.Lock()
+        # Unsubscribe callable returned by bus.subscribe; the runner
+        # tears it down when the task COMPLETEs so subsequent dialogs
+        # don't fire for the previous task's listener.
+        self._dialog_unsubscribe: Optional[object] = None
 
     # --- task lifecycle -----------------------------------------------------
 
@@ -293,6 +306,17 @@ class CodingTaskRunner:
         lint_listener = self._make_pre_write_lint_listener(handle)
         if lint_listener is not None:
             handle.add_listener(lint_listener)
+        # 2026 catalog 08 + 09 wiring: dialog auto-handler. Subscribes
+        # to DialogAppearedEvent on the bus for the lifetime of this
+        # task and surfaces dialogs via the runner's
+        # ``_pending_dialog_narrations`` queue (drained by the
+        # orchestrator like ``pending_completion``). On task COMPLETE
+        # the subscription is torn down so subsequent dialogs only
+        # surface to the next task's bridge. Default ON; flip
+        # ``coding.dialog_auto_handler.enabled=False`` to disable.
+        dialog_listener = self._attach_dialog_auto_handler(handle)
+        if dialog_listener is not None:
+            handle.add_listener(dialog_listener)
         # Also log a structured "start" record for offline inspection.
         self._log_record({
             "ts": time.time(),
@@ -894,6 +918,137 @@ class CodingTaskRunner:
             text = self._pending_canonical_abort
             self._pending_canonical_abort = None
         return text
+
+    # --- 2026 catalog 08 + 09 wiring: dialog auto-handler ---------------
+
+    def _attach_dialog_auto_handler(self, handle):
+        """Subscribe to DialogAppearedEvent for the task's lifetime.
+
+        Returns a listener callable that the runner attaches to the
+        task handle so the bus subscription gets torn down at task
+        COMPLETE (otherwise the subscription would survive across
+        tasks and the wrong runner would receive future events).
+
+        Returns ``None`` when:
+
+        * ``coding.dialog_auto_handler.enabled`` is False (operator
+          opt-out), OR
+        * The bus module can't be imported (no event bus -> no
+          subscription possible), OR
+        * The DialogPoller's singleton hasn't been started by the
+          orchestrator (no events would ever fire).
+
+        On a real dialog appearance the handler:
+
+        1. Builds a voice-friendly one-liner ("A 'Save As' dialog
+           appeared in notepad.exe -- shall I confirm?").
+        2. Pushes the line into ``self._pending_dialog_narrations``.
+
+        The orchestrator drains the queue via
+        :meth:`pop_dialog_narration` each voice-loop iteration. No
+        click / type happens at the runner level -- the user-facing
+        narration is the entire UX. Voice routing
+        (WINDOW_CLOSE_CONFIRMATION batch E) handles the actual
+        yes/no when the operator decides to act.
+        """
+        # Config gate. Default ON because the safety + UX value is
+        # high; operators can opt out via config.yaml.
+        try:
+            from ultron.config import get_config
+            cfg = get_config().coding
+            dialog_cfg = getattr(cfg, "dialog_auto_handler", None)
+            if dialog_cfg is not None and not getattr(dialog_cfg, "enabled", True):
+                return None
+        except Exception:  # noqa: BLE001
+            # Missing config means the feature is on by default --
+            # we want safety nets always present in production.
+            pass
+
+        try:
+            from ultron.bus import subscribe
+            from ultron.bus.events import DialogAppearedEvent
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("dialog auto-handler bus unavailable: %s", exc)
+            return None
+
+        def _on_dialog_appeared(envelope):
+            try:
+                props = envelope.properties
+            except Exception:  # noqa: BLE001
+                props = {}
+            try:
+                title = str(props.get("title", "") or "untitled")
+                process = str(props.get("process_name", "") or "an app")
+                matched_by = str(props.get("matched_by", "") or "")
+            except Exception:  # noqa: BLE001
+                title, process, matched_by = "untitled", "an app", ""
+            # Compose voice-friendly narration. Keep under ~25 words
+            # so the TTS clip stays short.
+            if title.lower() in ("", "untitled", "dialog"):
+                line = (
+                    f"A dialog appeared in {process}. "
+                    "Say yes to confirm or no to dismiss."
+                )
+            else:
+                line = (
+                    f'A "{title}" dialog appeared in {process}. '
+                    "Say yes to confirm or no to dismiss."
+                )
+            with self._dialog_lock:
+                self._pending_dialog_narrations.append(line)
+            self._session_audit(
+                "dialog_appeared",
+                title=title,
+                process=process,
+                matched_by=matched_by,
+                hwnd=int(props.get("hwnd", 0) or 0),
+            )
+
+        try:
+            unsubscribe = subscribe(DialogAppearedEvent, _on_dialog_appeared)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("dialog auto-handler subscribe raised: %s", exc)
+            return None
+
+        # Stash the unsubscribe so the COMPLETE listener can tear it
+        # down. On the next task's start_task the previous
+        # subscription is also explicitly cleaned up just in case.
+        self._teardown_previous_dialog_subscription()
+        self._dialog_unsubscribe = unsubscribe
+
+        # Return a TaskEvent listener that fires on the bridge's
+        # COMPLETE event and tears down the subscription.
+        from ultron.coding.bridge import EventKind
+
+        def _teardown_listener(event):
+            try:
+                if event.kind == EventKind.COMPLETE:
+                    self._teardown_previous_dialog_subscription()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("dialog teardown listener raised: %s", exc)
+
+        return _teardown_listener
+
+    def _teardown_previous_dialog_subscription(self) -> None:
+        """Unsubscribe the prior dialog listener (if any)."""
+        unsub = self._dialog_unsubscribe
+        self._dialog_unsubscribe = None
+        if unsub is None:
+            return
+        try:
+            unsub()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("dialog unsubscribe raised: %s", exc)
+
+    def pop_dialog_narration(self) -> Optional[str]:
+        """Voice loop polls this each iteration to surface dialog
+        appearance narration. Returns the OLDEST queued line once,
+        then clears it. Mirrors :meth:`pop_budget_warning` /
+        :meth:`pop_canonical_abort_warning` shape."""
+        with self._dialog_lock:
+            if not self._pending_dialog_narrations:
+                return None
+            return self._pending_dialog_narrations.pop(0)
 
     # --- 2026-05-19 Tracks 1f + 1g: AST syntax verification ---------------
 
