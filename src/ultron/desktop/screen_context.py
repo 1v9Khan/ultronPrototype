@@ -292,10 +292,24 @@ def build_screen_context(
                         for ln in content.links
                     )
                 if content.inputs:
-                    composed.extend(
-                        f"input: {label}: {value}" if value else f"input: {label}"
-                        for (label, value) in content.inputs
-                    )
+                    for inp in content.inputs:
+                        # Tolerate both UIElementInfo dataclass shape
+                        # (production) and (label, value) tuples (test
+                        # fixtures that build BrowserContent directly).
+                        if hasattr(inp, "name"):
+                            label = getattr(inp, "name", "") or ""
+                            value = getattr(inp, "value", "") or ""
+                        else:
+                            try:
+                                label, value = inp
+                            except Exception:  # noqa: BLE001
+                                label, value = str(inp), ""
+                        if value:
+                            composed.append(f"input: {label}: {value}")
+                        else:
+                            composed.append(
+                                f"input: {label or '(unnamed)'}"
+                            )
                 browser_text = tuple(composed[:ui_text_max_elements])
                 # On a non-truncated browser walk the structured
                 # output is strictly better than the generic

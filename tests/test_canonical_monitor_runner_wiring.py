@@ -65,6 +65,18 @@ def _drive_event(handle, event):
 # ---------------------------------------------------------------------------
 
 
+def _has_canonical_monitor_listener(handle) -> bool:
+    """True iff the canonical-path-monitor listener is in the handle's
+    listener list. Resilient to other listeners (safety / dialog /
+    anchor / ast / pre-write-lint) being added or removed -- this
+    test cares ONLY about the canonical_monitor wire."""
+    for fn in handle._listeners:                                     # noqa: SLF001
+        qualname = getattr(fn, "__qualname__", "")
+        if "_make_canonical_monitor_listener" in qualname:
+            return True
+    return False
+
+
 def test_listener_not_attached_when_disabled() -> None:
     from ultron.coding.bridge import TaskRequest
 
@@ -76,12 +88,12 @@ def test_listener_not_attached_when_disabled() -> None:
         )
         runner.start_task(request)
 
-    # When the canonical monitor is disabled the only listener
-    # attached is the 2026-05-12 safety validator FILE_CHANGE
-    # listener (always-on; degrades to no-op if the safety subsystem
-    # is unavailable). Default runner has log_path=None + no bound
-    # session, so no log listener / usage listener attach.
-    assert len(handle._listeners) == 1
+    # When the canonical monitor is disabled, its listener must NOT
+    # be in the list. Other listeners (safety validator, dialog
+    # auto-handler, goal anchors, pre-write lint, AST syntax) may or
+    # may not be present depending on their own config defaults -- we
+    # only assert on the canonical-monitor wire here.
+    assert not _has_canonical_monitor_listener(handle)
 
 
 def test_listener_attached_when_enabled() -> None:
@@ -94,9 +106,9 @@ def test_listener_attached_when_enabled() -> None:
             task_prompt="x", cwd="C:/tmp", model="haiku", label="t",
         )
         runner.start_task(request)
-    # Canonical-monitor listener + safety-validator FILE_CHANGE
-    # listener (always-on as of 2026-05-12 Phase 2).
-    assert len(handle._listeners) == 2
+    # Canonical-monitor listener is attached when the config flag is
+    # on. The count of other listeners is irrelevant to this test.
+    assert _has_canonical_monitor_listener(handle)
 
 
 # ---------------------------------------------------------------------------
