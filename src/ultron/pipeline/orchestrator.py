@@ -381,6 +381,27 @@ class Orchestrator:
                 "safety validator construction failed (%s); call sites "
                 "will see the permissive no-op validator", e,
             )
+        # Catalog 09 batch A wiring: kick off the DialogPoller daemon
+        # thread so DialogAppearedEvent / DialogResolvedEvent actually
+        # fire on the bus during the orchestrator's lifetime. The
+        # coding bridge (batch B) and any other consumer subscribe via
+        # ``ultron.bus.subscribe(DialogAppearedEvent, ...)``. The
+        # poller itself is fail-open: missing pywinauto / off-Windows /
+        # any tick failure logs DEBUG and the daemon stays alive.
+        # Default ON so the wiring shipped this session actually runs;
+        # operators can short-circuit by stopping the singleton at
+        # runtime via :func:`ultron.desktop.dialog_poller.set_dialog_poller(None)`.
+        try:
+            from ultron.desktop.dialog_poller import get_dialog_poller
+            self._dialog_poller = get_dialog_poller()
+            self._dialog_poller.start()
+            logger.info("DialogPoller daemon started")
+        except Exception as e:                                       # noqa: BLE001
+            self._dialog_poller = None
+            logger.warning(
+                "DialogPoller startup skipped (%s); "
+                "dialog auto-handler will not receive events", e,
+            )
         self.wake = WakeWordDetector()
         # 2026-05-12 Smart Turn V3: build the detector BEFORE the VAD so
         # we can wire the fast-path silence baseline into the VAD's
@@ -2231,6 +2252,15 @@ class Orchestrator:
             # lets OpenClaw spawn Ultron's MCP across restarts.
             try:
                 self.openclaw_bridge.shutdown()
+            except Exception:
+                pass
+        # Catalog 09 batch A: stop the DialogPoller daemon thread so
+        # the process can exit cleanly. Best-effort -- the thread is
+        # daemon so it would be reaped on hard exit anyway.
+        poller = getattr(self, "_dialog_poller", None)
+        if poller is not None:
+            try:
+                poller.stop()
             except Exception:
                 pass
 

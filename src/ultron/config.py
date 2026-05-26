@@ -519,10 +519,16 @@ class LLMHistoryCompressionConfig(_Strict):
     # Catalog 09 batch G wiring: pick a condenser per-intent (NoOp for
     # short conversational turns, Recent for factual, LLMSummarizing
     # for long coding contexts) before applying the closed-window /
-    # last-N processors. When ``False`` (default) the legacy fixed
-    # pipeline runs unchanged so the voice-path TTFT baseline is
-    # preserved bit-for-bit.
-    intent_adaptive: bool = False
+    # last-N processors. Default ON -- the conversational + lightweight
+    # quick-probe intents map to NoOp which is a zero-cost passthrough
+    # so the voice-path TTFT baseline is preserved on the common path;
+    # the costlier branches only fire on coding / hybrid intents
+    # where the LLM call dwarfs the condense overhead anyway. Fail-open
+    # at every layer (factory exception / condenser exception /
+    # CondenseResult.error all leave the raw history flowing through
+    # unchanged). Set to ``False`` to revert to the legacy fixed
+    # pipeline.
+    intent_adaptive: bool = True
 
 
 class LLMPersonaConfig(_Strict):
