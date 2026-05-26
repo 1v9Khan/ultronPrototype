@@ -63,8 +63,10 @@ _BROWSER = [
     "open up youtube",
     "open up github",
     "open reddit",
-    "click on the submit button",
-    "click the login link",
+    # Note: "click the X button" / "click the Y link" patterns moved
+    # to SEMANTIC_CLICK in the catalog-09 wiring (uses the gated
+    # InputController instead of the BROWSER_AUTOMATION stub). See
+    # tests/routing/test_catalog_09_intents.py for the new contract.
     "fill in the form with my details",
     "fill out the contact form",
     "take a screenshot of the page",
@@ -579,11 +581,20 @@ def test_classify_routing_window_type():
 
 
 def test_classify_routing_window_click():
+    """Catalog-09 wiring shifted "click the X button" to SEMANTIC_CLICK
+    (which uses the gated InputController via click_element_by_name --
+    a strict safety improvement over the WINDOW_AUTOMATION stub).
+    The window-scope phrasing is preserved in the new intent's
+    window_title field."""
     intent = classify_routing(
         "click the submit button in the form window",
     )
-    assert intent.kind == RoutingIntentKind.WINDOW_AUTOMATION
-    assert intent.window_intent.action == "click"
+    assert intent.kind == RoutingIntentKind.SEMANTIC_CLICK
+    sc = intent.semantic_click_intent
+    assert sc is not None
+    assert "submit" in sc.element_name.lower()
+    assert sc.control_type == "Button"
+    assert "form" in sc.window_title.lower()
 
 
 def test_desktop_window_suppressed_during_pending_clarification():

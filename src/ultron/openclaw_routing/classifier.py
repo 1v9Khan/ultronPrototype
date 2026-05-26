@@ -47,6 +47,7 @@ def _safe_get_config():
     except Exception:
         return None
 from ultron.openclaw_routing.intents import (
+    ActiveWindowQueryIntent,
     AppLaunchIntent,
     BrowserIntent,
     DesktopIntent,
@@ -60,7 +61,9 @@ from ultron.openclaw_routing.intents import (
     RoutingIntent,
     RoutingIntentKind,
     ScreenContextIntent,
+    SemanticClickIntent,
     ShellOpIntent,
+    WindowCloseConfirmationIntent,
     WindowCloseIntent,
     WindowIntent,
     WindowMoveIntent,
@@ -809,6 +812,25 @@ def _classify_routing_impl(
                 ),
             )
 
+    # 1.75) SEMANTIC_CLICK (catalog 09 wiring) -- "click the Submit
+    #       button", "press the OK button", "activate the File menu".
+    #       MUST fire BEFORE WINDOW_AUTOMATION + BROWSER_AUTOMATION
+    #       because the verb "click" overlaps with both branches; our
+    #       pattern requires a specific element name + optional
+    #       control-type noun so generic browser/window verbs don't
+    #       false-positive.
+    if not has_pending_clarification:
+        sc_click = _classify_semantic_click(text)
+        if sc_click is not None:
+            return RoutingIntent(
+                kind=RoutingIntentKind.SEMANTIC_CLICK,
+                raw_text=text,
+                confidence=0.85,
+                source="rule",
+                reason="semantic-click pattern matched",
+                semantic_click_intent=sc_click,
+            )
+
     # 1.8) WINDOW_AUTOMATION (V1-gap C3) — UI Automation primitives.
     #      Fires before BROWSER_AUTOMATION's interact patterns because
     #      window utterances ("focus the chrome window") share verbs
@@ -844,6 +866,45 @@ def _classify_routing_impl(
                 source="rule",
                 reason="screen-context query pattern matched",
                 screen_context_intent=sc,
+            )
+
+    # 1.91) WINDOW_CLOSE_CONFIRMATION (catalog 09 wiring) -- voice yes/no
+    #       reply when the orchestrator has a pending two-phase approval
+    #       (e.g. "Close VS Code? It looks like there are unsaved
+    #       changes."). The pending-approval state lives on the
+    #       orchestrator; we surface the bare yes/no intent and let the
+    #       orchestrator decide whether to consume it as a decision OR
+    #       fall through (when no approval is pending) to the legacy
+    #       CLARIFICATION_RESPONSE path.
+    if not has_pending_clarification:
+        wcc = _classify_window_close_confirmation(text)
+        if wcc is not None:
+            return RoutingIntent(
+                kind=RoutingIntentKind.WINDOW_CLOSE_CONFIRMATION,
+                raw_text=text,
+                confidence=0.85,
+                source="rule",
+                reason="window-close yes/no reply matched",
+                window_close_confirmation_intent=wcc,
+            )
+
+    # 1.92) ACTIVE_WINDOW_QUERY (catalog 09 wiring) -- "what's my active
+    #       window?", "what am I looking at right now?". Lighter than
+    #       SCREEN_CONTEXT_QUERY (no UIA walk, no capture, no VLM).
+    #       Must fire BEFORE SCREEN_CONTEXT_QUERY's broader patterns OR
+    #       AFTER -- here it's just AFTER because SCREEN_CONTEXT_QUERY's
+    #       more specific phrasings ("explain", "what's going on")
+    #       should still win when they match.
+    if not has_pending_clarification:
+        awq = _classify_active_window_query(text)
+        if awq is not None:
+            return RoutingIntent(
+                kind=RoutingIntentKind.ACTIVE_WINDOW_QUERY,
+                raw_text=text,
+                confidence=0.9,
+                source="rule",
+                reason="active-window query pattern matched",
+                active_window_query_intent=awq,
             )
 
     # 1.95) WINDOW_MOVE (2026-05-14) -- "Put Discord on my right monitor".
@@ -1678,6 +1739,199 @@ def _classify_screen_context(text: str) -> Optional[ScreenContextIntent]:
         monitor_index=mon_idx,
         raw_text=text,
     )
+
+
+# ---------------------------------------------------------------------------
+# Catalog 09 wiring: ACTIVE_WINDOW_QUERY / SEMANTIC_CLICK / WINDOW_CLOSE_CONFIRMATION
+# ---------------------------------------------------------------------------
+
+
+# ACTIVE_WINDOW_QUERY: lightweight "what window am I on?" queries.
+# Distinct from SCREEN_CONTEXT_QUERY (which captures + UIA + VLM) --
+# this is a pure foreground-title probe, 1-2 ms with no GPU cost.
+# Patterns deliberately specific to AVOID hijacking the broader
+# screen-context phrasings ("what's on my screen", "explain ...").
+_ACTIVE_WINDOW_QUERY_PATTERNS = re.compile(
+    r"\b("
+    r"what(?:'s|\s+is)?\s+(?:my\s+|the\s+)?(?:active|current|foreground|focused)\s+window"
+    r"|what\s+window\s+(?:am\s+i|is)\s+(?:on|using|in|in front of me|focused|active)"
+    r"|which\s+window\s+(?:am\s+i|is)\s+(?:on|using|in|focused|active)"
+    r"|name\s+(?:my\s+|the\s+)?(?:active|current|foreground)\s+window"
+    r"|(?:tell\s+me\s+)?(?:the\s+)?title\s+of\s+(?:my\s+|the\s+)?(?:active|current|foreground)\s+window"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_active_window_query(text: str) -> Optional[ActiveWindowQueryIntent]:
+    """Match ACTIVE_WINDOW_QUERY patterns. Returns the intent or None."""
+    if not _ACTIVE_WINDOW_QUERY_PATTERNS.search(text or ""):
+        return None
+    return ActiveWindowQueryIntent(raw_text=text)
+
+
+# SEMANTIC_CLICK: "click the X button", "press the OK button",
+# "activate the File menu", "tap on Submit".
+# Pattern shape: VERB + optional ARTICLE + NAME (greedy, up to 5
+# tokens) + optional CONTROL-TYPE NOUN. The trailing control-type
+# noun is detected from the matched name by stripping it off
+# post-match so the regex can stay greedy while the noun gets
+# extracted reliably.
+_SEMANTIC_CLICK_VERB = r"(?:click|press|tap(?:\s+on)?|activate|select|hit|push)"
+_SEMANTIC_CLICK_CONTROL_NOUNS = (
+    "button", "menu", "tab", "item", "link",
+    "checkbox", "option", "control",
+)
+_SEMANTIC_CLICK_ARTICLE = r"(?:the\s+|a\s+|on\s+the\s+|on\s+)?"
+
+# SEMANTIC_CLICK requires an EXPLICIT control-type noun
+# ("button" / "menu" / "tab" / "item" / "link" / "checkbox" / "option" /
+# "control") so we don't hijack existing BROWSER_AUTOMATION /
+# WINDOW_AUTOMATION patterns that share the verb "click" but lack
+# the noun ("click on Save" / "activate the cursor window"). When the
+# user says "click the X button", they want UIA-level element click;
+# when they say "click on Save" or "activate the cursor window", the
+# existing browser / window routes own those phrases.
+_SEMANTIC_CLICK_CONTROL_NOUN_RE = (
+    r"(?:button|menu|tab|item|link|checkbox|option|control)"
+)
+_SEMANTIC_CLICK_PATTERN = re.compile(
+    rf"\b{_SEMANTIC_CLICK_VERB}\s+{_SEMANTIC_CLICK_ARTICLE}"
+    r"(?P<name>[\w-]+(?:\s+[\w-]+){0,4})\s+"
+    rf"(?P<noun>{_SEMANTIC_CLICK_CONTROL_NOUN_RE})"
+    r"(?=\b)",
+    re.IGNORECASE,
+)
+
+
+# Words that should be ignored when parsed as an element name (they're
+# verb articles / generic pronouns that mean "no specific element").
+_SEMANTIC_CLICK_GENERIC_NAMES = frozenset({
+    "it", "this", "that", "there", "here", "yes", "no",
+    "anywhere", "something", "anything", "everywhere",
+})
+
+
+_SEMANTIC_CLICK_WINDOW_PATTERN = re.compile(
+    r"\bin\s+(?:the\s+)?(?P<window>[\w\s\.-]+?)\s+window\b",
+    re.IGNORECASE,
+)
+
+
+_SEMANTIC_CLICK_CONTROL_TYPE_MAP = {
+    "button": "Button",
+    "menu": "MenuItem",
+    "tab": "TabItem",
+    "item": "ListItem",
+    "link": "Hyperlink",
+    "checkbox": "CheckBox",
+    "option": "RadioButton",
+}
+
+
+def _classify_semantic_click(text: str) -> Optional[SemanticClickIntent]:
+    """Match SEMANTIC_CLICK patterns. Returns the intent or None.
+
+    Recognises: ``click the Submit button``, ``press OK``, ``activate
+    the File menu``, ``tap on the Sign In link``, ``hit the Cancel
+    button``, ``Click Save``, ``press the OK button``.
+
+    Rejects: ``click here``, ``click that``, ``click anywhere`` --
+    the element name has to be specific enough to look up via UIA.
+    """
+    if not text:
+        return None
+    m = _SEMANTIC_CLICK_PATTERN.search(text)
+    if m is None:
+        return None
+    raw_name = (m.group("name") or "").strip().strip("\"' ")
+    if not raw_name:
+        return None
+
+    # If the greedy name capture swallowed any control-type tokens
+    # (e.g. "Send Message" + "button" matched as the noun group, but
+    # if there were inline "button"/"menu" inside the name, prune
+    # them). This handles edge cases where the user said something
+    # like "click the OK menu button".
+    tokens = raw_name.split()
+    while (
+        len(tokens) > 1
+        and tokens[-1].lower() in _SEMANTIC_CLICK_CONTROL_NOUNS
+    ):
+        tokens.pop()
+    cleaned_name = " ".join(tokens).strip()
+
+    if not cleaned_name:
+        return None
+    # Reject generic referents -- the UIA lookup needs a real name.
+    if cleaned_name.lower() in _SEMANTIC_CLICK_GENERIC_NAMES:
+        return None
+
+    # Control-type noun is now required by the regex (matched group).
+    noun = (m.group("noun") or "").lower()
+    control_type = _SEMANTIC_CLICK_CONTROL_TYPE_MAP.get(noun, "")
+
+    # Optional window scope from "in the X window" phrasing.
+    window_title = ""
+    window_match = _SEMANTIC_CLICK_WINDOW_PATTERN.search(text)
+    if window_match is not None:
+        window_title = window_match.group("window").strip()
+    return SemanticClickIntent(
+        element_name=cleaned_name,
+        window_title=window_title,
+        control_type=control_type,
+        raw_text=text,
+    )
+
+
+# WINDOW_CLOSE_CONFIRMATION: bare yes/no replies during a pending
+# two-phase approval. The classifier doesn't know whether an approval
+# is actually pending -- the orchestrator looks at its own state and
+# falls through to the legacy clarification-response path when not.
+# Recognised yes tokens: "yes" / "yeah" / "yep" / "yup" / "confirm" /
+# "do it" / "go ahead" / "proceed". Negatives: "no" / "nope" /
+# "nah" / "cancel" / "stop" / "abort". The classifier normalises
+# everything to "yes" or "no".
+_WINDOW_CLOSE_YES_RE = re.compile(
+    r"^\s*("
+    r"yes|yeah|yep|yup|sure|okay|ok|"
+    r"confirm(?:\s+(?:it|that))?|"
+    r"do\s+it|go\s+ahead|proceed|continue|go\s+for\s+it|"
+    r"close\s+(?:it|the\s+window)"
+    r")\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+_WINDOW_CLOSE_NO_RE = re.compile(
+    r"^\s*("
+    r"no|nope|nah|"
+    r"cancel(?:\s+(?:it|that))?|"
+    r"stop|abort|don'?t(?:\s+(?:do\s+(?:it|that)|close.*))?|"
+    r"never\s*mind|nvm|"
+    r"keep\s+(?:it\s+)?open|leave\s+(?:it\s+)?(?:alone|open)"
+    r")\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _classify_window_close_confirmation(
+    text: str,
+) -> Optional[WindowCloseConfirmationIntent]:
+    """Match WINDOW_CLOSE_CONFIRMATION patterns (bare yes/no replies).
+
+    Returns ``WindowCloseConfirmationIntent(decision="yes")`` for
+    affirmative replies, ``("no")`` for negatives. Returns None when
+    the utterance carries any other content (so we don't hijack
+    sentences that happen to start with "yes").
+    """
+    if not text:
+        return None
+    if _WINDOW_CLOSE_YES_RE.match(text):
+        return WindowCloseConfirmationIntent(decision="yes", raw_text=text)
+    if _WINDOW_CLOSE_NO_RE.match(text):
+        return WindowCloseConfirmationIntent(decision="no", raw_text=text)
+    return None
 
 
 def _extract_open_last_source_referent(text: str) -> tuple[Optional[int], str]:

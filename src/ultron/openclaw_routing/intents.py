@@ -107,6 +107,33 @@ class RoutingIntentKind(str, Enum):
     # native app or known URL pattern).
     NAVIGATE_TO_SITE = "navigate_to_site"
 
+    # Active window query (2026 catalog 08/09 wiring) -- "what's my
+    # active window?", "what am I looking at?", "what window am I
+    # using?". Returns the foreground window title via
+    # :func:`ultron.desktop.windows.get_active_window_title`. Lighter
+    # than SCREEN_CONTEXT_QUERY (no UIA walk, no capture, no VLM); a
+    # ~1-2 ms pywin32 probe suitable for quick "where am I?" voice
+    # queries that don't need the full screen context.
+    ACTIVE_WINDOW_QUERY = "active_window_query"
+
+    # Semantic click (2026 catalog 08/09 wiring) -- "click the Submit
+    # button", "activate the File menu", "tap on the OK button", "press
+    # the Cancel button". Routes via
+    # :func:`ultron.desktop.element_click.click_element_by_name` which
+    # walks the foreground UIA tree for the named element and clicks
+    # via the gated :class:`InputController` (click-preview VLM +
+    # foreground security + Cap-3 explicit-intent + rate limit all
+    # apply uniformly).
+    SEMANTIC_CLICK = "semantic_click"
+
+    # Window-close confirmation (2026 catalog 08/09 wiring) -- voice
+    # yes/no reply during a pending two-phase-approval prompt that the
+    # orchestrator opened (e.g. "Close VS Code? It looks like there
+    # are unsaved changes. Say yes or no."). The orchestrator routes
+    # the spoken yes/no to :meth:`safety.two_phase_approval.ApprovalRegistry.record_decision`
+    # via the pending-approval ID it stashed in its own state.
+    WINDOW_CLOSE_CONFIRMATION = "window_close_confirmation"
+
 
 # ---------------------------------------------------------------------------
 # Per-category structured intents (for openclaw-bound ones)
@@ -361,6 +388,73 @@ class OpenLastSourceIntent:
 
 
 @dataclass
+class ActiveWindowQueryIntent:
+    """Voice query for the current foreground window's title.
+
+    Resolves via :func:`ultron.desktop.windows.get_active_window_title`
+    -- a ~1-2 ms pywin32 probe with no UIA walk, capture, or VLM
+    cost. Distinct from SCREEN_CONTEXT_QUERY (which builds a full
+    snapshot for the LLM).
+
+    Attributes:
+        raw_text: original utterance for logging.
+    """
+
+    raw_text: str = ""
+
+
+@dataclass
+class SemanticClickIntent:
+    """Voice command to click a UI element by its accessible name.
+
+    Routes via :func:`ultron.desktop.element_click.click_element_by_name`
+    which walks the foreground UIA tree for the named element and
+    clicks through the gated :class:`InputController` (click-preview
+    VLM + foreground security + Cap-3 explicit-intent + rate limit
+    all apply uniformly).
+
+    Attributes:
+        element_name: the accessible name to look for ("Submit",
+            "File", "OK", "Cancel"). Substring matched; exact match
+            preferred (catalog 08 T3 stable-sort ranking).
+        window_title: optional substring filter to scope the search
+            to a specific window when multiple windows expose
+            elements with the same name (e.g. multiple "OK" buttons
+            across a foreground app + a background dialog).
+        control_type: optional UIA control-type filter ("Button",
+            "MenuItem"). Defaults to the whole 9-entry
+            CLICKABLE_TYPES set when not specified.
+        raw_text: original utterance for logging.
+    """
+
+    element_name: str
+    window_title: str = ""
+    control_type: str = ""
+    raw_text: str = ""
+
+
+@dataclass
+class WindowCloseConfirmationIntent:
+    """Voice yes/no reply during a pending two-phase approval prompt.
+
+    The orchestrator stashes a pending approval ID when it opens a
+    Cap-3 approval (e.g. closing a window with unsaved changes); the
+    spoken yes/no reply routes to this intent which the orchestrator
+    consumes by calling
+    :meth:`safety.two_phase_approval.ApprovalRegistry.record_decision`.
+
+    Attributes:
+        decision: ``"yes"`` / ``"no"`` parsed from the utterance.
+            Other affirmative / negative tokens normalise to one of
+            these two at classification time.
+        raw_text: original utterance for logging.
+    """
+
+    decision: str  # "yes" | "no"
+    raw_text: str = ""
+
+
+@dataclass
 class NavigateToSiteIntent:
     """Navigate the user's browser to a brand-named site.
 
@@ -454,6 +548,9 @@ class RoutingIntent:
     window_close_intent: Optional[WindowCloseIntent] = None   # WINDOW_CLOSE only (2026-05-14)
     open_last_source_intent: Optional[OpenLastSourceIntent] = None  # OPEN_LAST_SOURCE only (2026-05-22)
     navigate_to_site_intent: Optional[NavigateToSiteIntent] = None  # NAVIGATE_TO_SITE only (2026-05-22)
+    active_window_query_intent: Optional[ActiveWindowQueryIntent] = None  # ACTIVE_WINDOW_QUERY only (2026 catalog 08/09 wiring)
+    semantic_click_intent: Optional[SemanticClickIntent] = None  # SEMANTIC_CLICK only (2026 catalog 08/09 wiring)
+    window_close_confirmation_intent: Optional[WindowCloseConfirmationIntent] = None  # WINDOW_CLOSE_CONFIRMATION only (2026 catalog 08/09 wiring)
 
     # Disambiguation: when the rule-based + LLM disambiguator can't decide,
     # the orchestrator asks the user a clarifying question.

@@ -105,13 +105,22 @@ def test_voice_messages_in_ultron_voice(dispatcher):
             )
 
 
-def test_dispatcher_reads_config_at_construction():
+def test_dispatcher_reads_config_at_construction(monkeypatch):
     """Dispatcher caches openclaw.enabled and stub_responses_enabled at
     construction time. Tests that change config afterward don't affect
     an already-built dispatcher (which is fine — operator changes config
-    and restarts)."""
+    and restarts).
+
+    The 2026-05-26 production-wiring pass flipped ``openclaw.enabled``
+    to True by default. Monkeypatch the per-test config to pin the
+    legacy False path (matches test_sweep_workflow binding rule R1:
+    no raw class/module mutation; always monkeypatch).
+    """
+    from ultron.config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(cfg.openclaw, "enabled", False)
     d1 = OpenClawDispatcher()
-    assert d1.enabled is False  # config default
+    assert d1.enabled is False
     assert isinstance(d1.stub_responses_enabled, bool)
 
 

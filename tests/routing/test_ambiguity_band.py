@@ -167,9 +167,18 @@ def test_custom_eligible_set_restricts_clarification() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_should_clarify_from_config_default_is_disabled() -> None:
-    """Default config keeps the feature OFF; the predicate should
-    surface that without raising."""
+def test_should_clarify_from_config_default_is_disabled(monkeypatch) -> None:
+    """When ``routing.ambiguity_band_clarification.enabled`` is False
+    the predicate surfaces that without raising. The 2026-05-22
+    review-feedback pass flipped this flag ON by default, so this
+    test pins the disabled branch via monkeypatch (test-writer
+    binding rule R1).
+    """
+    from ultron.config import get_config
+    cfg = get_config()
+    monkeypatch.setattr(
+        cfg.routing.ambiguity_band_clarification, "enabled", False,
+    )
     intent = _intent(confidence=0.5)
     verdict = should_clarify_from_config(intent)
     assert verdict.should_clarify is False

@@ -1496,6 +1496,181 @@ class CapabilityVoiceController:
         )
         return VoiceResponse(text=result.voice_message, handled=True)
 
+    # --- Catalog 09 wiring -------------------------------------------------
+
+    def _handle_active_window_query(self, routing_intent) -> "VoiceResponse":
+        """ACTIVE_WINDOW_QUERY: report the foreground window's title.
+
+        Lighter than SCREEN_CONTEXT_QUERY -- a single pywin32 probe
+        (1-2 ms). The user gets the title back in voice with no UIA
+        walk, capture, or VLM cost.
+        """
+        from ultron.openclaw_routing import get_routing_log
+
+        try:
+            from ultron.desktop.windows import get_active_window_title
+            title = get_active_window_title()
+        except Exception as e:                                       # noqa: BLE001
+            get_routing_log().record(
+                routing_intent,
+                handler="voice.active_window_query",
+                outcome="failed",
+                extra={"error": str(e)},
+            )
+            return VoiceResponse(
+                text="I couldn't read the active window right now.",
+                handled=True,
+            )
+
+        if not title:
+            get_routing_log().record(
+                routing_intent,
+                handler="voice.active_window_query",
+                outcome="empty",
+            )
+            return VoiceResponse(
+                text="There's no window in the foreground right now.",
+                handled=True,
+            )
+
+        get_routing_log().record(
+            routing_intent,
+            handler="voice.active_window_query",
+            outcome="dispatched",
+            extra={"title": title},
+        )
+        # Quote the title so the TTS engine reads it as one chunk.
+        return VoiceResponse(
+            text=f'Your active window is "{title}".',
+            handled=True,
+        )
+
+    def _handle_semantic_click(self, routing_intent) -> "VoiceResponse":
+        """SEMANTIC_CLICK: click a UI element by its accessible name.
+
+        Routes through :func:`ultron.desktop.element_click.click_element_by_name`
+        which walks the foreground UIA tree and clicks via the gated
+        :class:`InputController` (click-preview VLM + foreground
+        security + Cap-3 explicit-intent + rate limit all apply).
+        """
+        from ultron.openclaw_routing import get_routing_log
+
+        intent = routing_intent.semantic_click_intent
+        if intent is None or not (intent.element_name or "").strip():
+            return VoiceResponse(
+                text="I didn't catch which element to click.",
+                handled=True,
+            )
+
+        # Try the click. The downstream click_element_by_name handles
+        # missing pywinauto / missing elements / disabled targets via
+        # a structured ClickResult; we surface the voice-friendly bits.
+        try:
+            from ultron.desktop.element_click import click_element_by_name
+            result = click_element_by_name(
+                name=intent.element_name,
+                window_title=intent.window_title or None,
+                control_type=intent.control_type or None,
+                user_text=routing_intent.raw_text or "",
+            )
+        except Exception as e:                                       # noqa: BLE001
+            get_routing_log().record(
+                routing_intent,
+                handler="voice.semantic_click",
+                outcome="failed",
+                extra={
+                    "element_name": intent.element_name,
+                    "error": str(e),
+                },
+            )
+            return VoiceResponse(
+                text=(
+                    f'I couldn\'t click "{intent.element_name}" right now.'
+                ),
+                handled=True,
+            )
+
+        outcome = "dispatched" if result.success else "failed"
+        get_routing_log().record(
+            routing_intent,
+            handler="voice.semantic_click",
+            outcome=outcome,
+            extra={
+                "element_name": intent.element_name,
+                "window_title": intent.window_title,
+                "control_type": intent.control_type,
+                "result_method": getattr(result, "method", ""),
+                "candidates": getattr(result, "candidates", 0),
+                "error": getattr(result, "error", None),
+            },
+        )
+
+        if result.success:
+            target_desc = result.element_name or intent.element_name
+            if result.window_title:
+                voice = (
+                    f'I clicked "{target_desc}" in {result.window_title}.'
+                )
+            else:
+                voice = f'I clicked "{target_desc}".'
+            return VoiceResponse(text=voice, handled=True)
+
+        # Failure paths: differentiate "not found" from "safety blocked".
+        err = (result.error or "").lower()
+        if "not found" in err or "no candidate" in err or result.candidates == 0:
+            voice = (
+                f'I couldn\'t find anything called '
+                f'"{intent.element_name}" on screen.'
+            )
+        elif "safety" in err or "preview" in err:
+            voice = (
+                f'I held off on clicking "{intent.element_name}". '
+                f'{result.error or "Something looked off about the target."}'
+            )
+        else:
+            voice = (
+                f'I tried to click "{intent.element_name}" but it didn\'t '
+                f'land. {result.error or ""}'
+            ).strip()
+        return VoiceResponse(text=voice, handled=True)
+
+    def _handle_window_close_confirmation(
+        self,
+        routing_intent,
+    ) -> "VoiceResponse":
+        """WINDOW_CLOSE_CONFIRMATION: bare yes/no reply.
+
+        At the controller level we only acknowledge -- the
+        orchestrator owns the pending-approval registry and consumes
+        the decision via its own intercept. Returning ``handled=True``
+        with a short ack keeps the user-perceptible response under
+        100 ms; the orchestrator's intercept fires before this handler
+        when an approval IS pending.
+        """
+        from ultron.openclaw_routing import get_routing_log
+
+        intent = routing_intent.window_close_confirmation_intent
+        decision = (intent.decision if intent is not None else "").lower()
+
+        get_routing_log().record(
+            routing_intent,
+            handler="voice.window_close_confirmation",
+            outcome="no_pending_approval",
+            extra={"decision": decision},
+        )
+
+        # No approval was pending in the orchestrator's state when this
+        # handler fires (otherwise the orchestrator's pre-dispatch
+        # intercept would have consumed the intent). Surface a neutral
+        # "noted" without taking action.
+        if decision == "yes":
+            voice = "Got it."
+        elif decision == "no":
+            voice = "Okay."
+        else:
+            voice = "Noted."
+        return VoiceResponse(text=voice, handled=True)
+
     # --- Phase 5 capability dispatch ---------------------------------------
 
     def handle_capability_intent(self, routing_intent) -> Optional[VoiceResponse]:
@@ -1580,6 +1755,17 @@ class CapabilityVoiceController:
             return self._handle_window_move(routing_intent)
         if kind == RoutingIntentKind.WINDOW_CLOSE:
             return self._handle_window_close(routing_intent)
+        # Catalog 09 wiring -- light foreground-title probe and the
+        # semantic-click voice command. The window-close confirmation
+        # intent is handled at the orchestrator level (it needs the
+        # pending-approval registry) so we surface it as
+        # ``handled=True`` here so the orchestrator can intercept.
+        if kind == RoutingIntentKind.ACTIVE_WINDOW_QUERY:
+            return self._handle_active_window_query(routing_intent)
+        if kind == RoutingIntentKind.SEMANTIC_CLICK:
+            return self._handle_semantic_click(routing_intent)
+        if kind == RoutingIntentKind.WINDOW_CLOSE_CONFIRMATION:
+            return self._handle_window_close_confirmation(routing_intent)
 
         # Coding kinds — delegate to the existing utterance pipeline.
         coding_kinds = {
