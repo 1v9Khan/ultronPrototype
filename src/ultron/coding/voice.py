@@ -138,6 +138,13 @@ class CapabilityVoiceController:
         # Track which pending clarifications we've already spoken to the
         # user so we don't repeat the same prompt every loop iteration.
         self._announced_clarifications: set[str] = set()
+        # Catalog 09 batch E: pending two-phase approval for a
+        # window-close with suspected_unsaved=True. Carries the
+        # approval_id + window_query + registry handle so the
+        # WINDOW_CLOSE_CONFIRMATION intent can route the user's
+        # spoken yes/no to record_decision. None when no close is
+        # awaiting confirmation.
+        self._pending_close_approval: Optional[dict] = None
 
     # --- public API ---------------------------------------------------------
 
@@ -1461,7 +1468,16 @@ class CapabilityVoiceController:
         return VoiceResponse(text=result.voice_message, handled=True)
 
     def _handle_window_close(self, routing_intent) -> "VoiceResponse":
-        """Native WINDOW_CLOSE: find a window by name and send WM_CLOSE."""
+        """Native WINDOW_CLOSE: find a window by name and send WM_CLOSE.
+
+        Catalog 09 batch E wiring: when the underlying primitive
+        reports ``suspected_unsaved=True`` on the close result, the
+        handler registers a two-phase approval (via
+        :class:`safety.two_phase_approval.ApprovalRegistry`) instead
+        of closing. The orchestrator picks up the voice yes/no reply
+        via :class:`WindowCloseConfirmationIntent` and calls
+        :meth:`_consume_window_close_approval` to decide.
+        """
         from ultron.openclaw_routing import get_routing_log
 
         intent = routing_intent.window_close_intent
@@ -1485,6 +1501,33 @@ class CapabilityVoiceController:
                 handled=True,
             )
 
+        # Catalog 09 batch E: when the graceful close attempt reports
+        # suspected_unsaved=True, the underlying primitive already
+        # surfaced the dialog (editors with unsaved changes show
+        # their save prompt on WM_CLOSE). Instead of force-closing,
+        # ask the user via two-phase approval -- the spoken yes/no
+        # routes through WINDOW_CLOSE_CONFIRMATION back to
+        # :meth:`_consume_window_close_approval`. If we already had
+        # a successful close (no unsaved-changes heuristic fired),
+        # the path is byte-identical to the pre-batch behaviour.
+        suspected_unsaved = bool(getattr(result, "suspected_unsaved", False))
+        if suspected_unsaved and not result.success:
+            approval_voice = self._register_close_approval(
+                window_query=intent.window_query,
+                user_text=routing_intent.raw_text,
+            )
+            if approval_voice is not None:
+                get_routing_log().record(
+                    routing_intent,
+                    handler="voice.window_close",
+                    outcome="approval_pending",
+                    extra={
+                        "window_query": intent.window_query,
+                        "suspected_unsaved": True,
+                    },
+                )
+                return VoiceResponse(text=approval_voice, handled=True)
+
         get_routing_log().record(
             routing_intent,
             handler="voice.window_close",
@@ -1492,9 +1535,193 @@ class CapabilityVoiceController:
             extra={
                 "window_query": intent.window_query,
                 "error": result.error,
+                "suspected_unsaved": suspected_unsaved,
             },
         )
         return VoiceResponse(text=result.voice_message, handled=True)
+
+    def _register_close_approval(
+        self,
+        *,
+        window_query: str,
+        user_text: str,
+    ) -> Optional[str]:
+        """Register a two-phase approval for a suspected-unsaved close.
+
+        Returns the spoken prompt on success, or ``None`` when the
+        approval registry is unavailable (degrades to the legacy
+        synchronous-close path).
+        """
+        try:
+            from ultron.safety.two_phase_approval import (
+                ApprovalRegistry,
+                ApprovalRequest,
+                get_approval_registry,
+            )
+        except Exception as exc:                                  # noqa: BLE001
+            self._logger_safe(
+                "two_phase_approval unavailable: %s", exc,
+            )
+            return None
+        try:
+            registry = get_approval_registry()
+        except Exception as exc:                                  # noqa: BLE001
+            self._logger_safe("approval registry unavailable: %s", exc)
+            return None
+
+        # Clear any prior pending close approval -- if the user fired
+        # a second close before answering the first, the latest one
+        # supersedes (matches the upstream UX where the most-recent
+        # prompt is the live one).
+        self._clear_pending_close_approval()
+
+        request = ApprovalRequest(
+            kind="voice_confirmation",
+            prompt=(
+                f'The "{window_query}" window may have unsaved changes. '
+                'Close it anyway? Say yes or no.'
+            ),
+            actor="voice.window_close",
+            scope_key=str(window_query),
+            metadata={
+                "window_query": window_query,
+                "user_text": user_text,
+                "suspected_unsaved": True,
+            },
+            timeout_seconds=30.0,
+        )
+        try:
+            handle = registry.register(request)
+        except Exception as exc:                                  # noqa: BLE001
+            self._logger_safe("register approval raised: %s", exc)
+            return None
+
+        # Auto-resolution fast path: if the registry's pre-resolver
+        # returned ALLOW / DENY (e.g. an explicit auto-allow rule),
+        # consume immediately instead of asking the user.
+        pre = handle.pre_resolved
+        if pre is not None:
+            self._handle_pre_resolved_close(handle, pre, window_query=window_query)
+            return None
+
+        self._pending_close_approval = {
+            "approval_id": handle.approval_id,
+            "window_query": window_query,
+            "user_text": user_text,
+            "registry": registry,
+        }
+        return request.prompt
+
+    def _clear_pending_close_approval(self) -> None:
+        """Drop any pending close-window approval state."""
+        if getattr(self, "_pending_close_approval", None):
+            self._pending_close_approval = None
+
+    def _handle_pre_resolved_close(
+        self,
+        handle,
+        decision,
+        *,
+        window_query: str,
+    ) -> None:
+        """When the approval registry returned a pre-resolved verdict,
+        execute the corresponding action and queue a narration."""
+        if decision.allowed:
+            self._execute_force_close(window_query)
+        else:
+            with self._lock:
+                self._pending_completion = (
+                    f'Okay, leaving "{window_query}" open.'
+                )
+
+    def consume_window_close_approval(self, decision_text: str) -> Optional[str]:
+        """Public hook for the orchestrator to consume a spoken yes/no.
+
+        The orchestrator's pre-dispatch intercept calls this BEFORE
+        routing a :class:`RoutingIntentKind.WINDOW_CLOSE_CONFIRMATION`
+        intent to its handler. Returns the voice narration on success
+        (caller speaks it), or ``None`` when no approval was pending
+        (caller falls through to the legacy WINDOW_CLOSE_CONFIRMATION
+        handler).
+
+        Args:
+            decision_text: ``"yes"`` or ``"no"`` (normalised by the
+                classifier).
+        """
+        pending = getattr(self, "_pending_close_approval", None)
+        if not pending:
+            return None
+        approval_id = pending.get("approval_id")
+        window_query = pending.get("window_query") or ""
+        registry = pending.get("registry")
+        if not approval_id or registry is None:
+            self._clear_pending_close_approval()
+            return None
+
+        from ultron.safety.two_phase_approval import ApprovalOutcome
+
+        outcome = (
+            ApprovalOutcome.ALLOW
+            if (decision_text or "").lower() == "yes"
+            else ApprovalOutcome.DENY
+        )
+        try:
+            registry.record_decision(
+                approval_id, outcome,
+                reason="voice_confirmation",
+                decider="user_voice",
+            )
+        except Exception as exc:                                  # noqa: BLE001
+            self._logger_safe("record_decision raised: %s", exc)
+        self._clear_pending_close_approval()
+
+        if outcome is ApprovalOutcome.ALLOW:
+            return self._execute_force_close(window_query)
+        return f'Okay, leaving "{window_query}" open.'
+
+    def _execute_force_close(self, window_query: str) -> str:
+        """Force-close the window after voice approval. Returns the
+        voice narration to speak."""
+        try:
+            from ultron.openclaw_routing.intents import WindowCloseIntent
+            from ultron.desktop.voice import handle_window_close
+        except Exception as exc:                                  # noqa: BLE001
+            self._logger_safe("force-close import failed: %s", exc)
+            return f'I couldn\'t close "{window_query}" right now.'
+
+        intent = WindowCloseIntent(
+            window_query=window_query,
+            raw_text=f"close {window_query} (force)",
+        )
+        try:
+            # The desktop.voice handler accepts a ``force`` flag via
+            # the underlying close_window primitive. We construct a
+            # custom intent with force semantics by setting
+            # raw_text=...(force) and reading the result; if the
+            # handler doesn't surface a force kwarg directly, fall
+            # back to invoking close_window via the low-level API.
+            from ultron.desktop.windows import close_window
+            result = close_window(
+                partial_title=window_query,
+                force=True,
+                user_text=f"close {window_query} (approved)",
+            )
+        except Exception as exc:                                  # noqa: BLE001
+            self._logger_safe("force-close raised: %s", exc)
+            return f'I couldn\'t force-close "{window_query}".'
+
+        if getattr(result, "success", False):
+            return f'I closed "{window_query}".'
+        err = getattr(result, "error", None) or ""
+        return f'I tried to close "{window_query}" but it failed. {err}'.strip()
+
+    @staticmethod
+    def _logger_safe(fmt: str, *args) -> None:
+        try:
+            from ultron.utils.logging import get_logger
+            get_logger("coding.voice.window_close").debug(fmt, *args)
+        except Exception:                                         # noqa: BLE001
+            pass
 
     # --- Catalog 09 wiring -------------------------------------------------
 
@@ -1640,17 +1867,28 @@ class CapabilityVoiceController:
     ) -> "VoiceResponse":
         """WINDOW_CLOSE_CONFIRMATION: bare yes/no reply.
 
-        At the controller level we only acknowledge -- the
-        orchestrator owns the pending-approval registry and consumes
-        the decision via its own intercept. Returning ``handled=True``
-        with a short ack keeps the user-perceptible response under
-        100 ms; the orchestrator's intercept fires before this handler
-        when an approval IS pending.
+        Consults the controller's own pending-approval state (set
+        by :meth:`_handle_window_close` when the first attempt
+        reported ``suspected_unsaved=True``) and routes the decision
+        through :meth:`consume_window_close_approval`. When no
+        approval is pending, surfaces a neutral ack.
         """
         from ultron.openclaw_routing import get_routing_log
 
         intent = routing_intent.window_close_confirmation_intent
         decision = (intent.decision if intent is not None else "").lower()
+
+        # Hot path: there's a pending close approval. Consume it and
+        # speak the corresponding narration.
+        narration = self.consume_window_close_approval(decision)
+        if narration is not None:
+            get_routing_log().record(
+                routing_intent,
+                handler="voice.window_close_confirmation",
+                outcome="approval_consumed",
+                extra={"decision": decision},
+            )
+            return VoiceResponse(text=narration, handled=True)
 
         get_routing_log().record(
             routing_intent,
@@ -1659,10 +1897,8 @@ class CapabilityVoiceController:
             extra={"decision": decision},
         )
 
-        # No approval was pending in the orchestrator's state when this
-        # handler fires (otherwise the orchestrator's pre-dispatch
-        # intercept would have consumed the intent). Surface a neutral
-        # "noted" without taking action.
+        # No approval was pending; surface a neutral "noted" without
+        # taking action.
         if decision == "yes":
             voice = "Got it."
         elif decision == "no":
