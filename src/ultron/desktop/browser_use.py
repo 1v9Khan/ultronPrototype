@@ -68,6 +68,12 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from ultron.safety.path_resolver import PathResolver, get_path_resolver
+from ultron.safety.two_phase_approval import (
+    ApprovalHandle,
+    ApprovalRegistry,
+    ApprovalRequest,
+    get_approval_registry,
+)
 from ultron.safety.validator import (
     RuleContext,
     Verdict,
@@ -153,6 +159,191 @@ _SCREENSHOT_DATA_URI_PREFIXES: tuple[str, ...] = (
     "data:image/jpeg;base64,",
     "data:image/jpg;base64,",
 )
+
+
+# ---------------------------------------------------------------------------
+# T3 -- JavaScript eval static analysis
+# ---------------------------------------------------------------------------
+
+
+# Categories used by :func:`analyze_js_script` to bucket risky
+# patterns. Each category triggers two-phase approval -- a category
+# is "risky" iff its presence indicates the script can do something
+# the user's spoken request might not have authorised:
+#
+#   network_egress       -- script can talk to arbitrary URLs from
+#                           the page origin (cookies + headers
+#                           attached automatically).
+#   storage_write        -- script can write to persistent / session
+#                           storage or cookies; reads the user did
+#                           not authorise can be exfiltrated.
+#   navigation           -- script can move the user to a new URL,
+#                           losing the current authenticated context
+#                           or leading to a phishing page.
+#   second_order_eval    -- script can dynamically construct + run
+#                           more code, defeating any allowlist that
+#                           scans the literal text.
+_JS_RISKY_CATEGORIES: tuple[str, ...] = (
+    "network_egress",
+    "storage_write",
+    "navigation",
+    "second_order_eval",
+)
+
+
+# Pattern catalog the analyzer scans. Each entry is
+# (regex, category, short description).
+#
+# Regex shape conventions:
+#   * ``\b`` boundaries to avoid matching identifiers like
+#     ``mySafeFetch`` (would partial-match ``fetch``).
+#   * ``\s*`` between identifier and the trailing ``(`` / ``=`` so
+#     formatting variants don't escape detection.
+#   * ``[^=]`` after ``=`` in assignment patterns so ``==`` / ``===``
+#     comparisons don't false-positive.
+#
+# Mirrors both the catalog 10 T3 baseline list AND the independent
+# Sonnet 4.6 security review's additions (sendBeacon, WebSocket,
+# new Function, eval, import, RTCPeerConnection, navigator.sendBeacon).
+_JS_RISKY_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    (r"\bfetch\s*\(", "network_egress", "fetch() call"),
+    (r"\bXMLHttpRequest\b", "network_egress", "XMLHttpRequest reference"),
+    (
+        r"\bnavigator\.sendBeacon\s*\(",
+        "network_egress",
+        "navigator.sendBeacon()",
+    ),
+    (r"\bWebSocket\s*\(", "network_egress", "WebSocket constructor"),
+    (
+        r"\bRTCPeerConnection\s*\(",
+        "network_egress",
+        "RTCPeerConnection constructor",
+    ),
+    (r"\blocalStorage\.setItem\s*\(", "storage_write", "localStorage.setItem()"),
+    (
+        r"\bsessionStorage\.setItem\s*\(",
+        "storage_write",
+        "sessionStorage.setItem()",
+    ),
+    (r"\bdocument\.cookie\s*=\s*[^=]", "storage_write", "document.cookie assignment"),
+    (r"\bwindow\.location\s*=\s*[^=]", "navigation", "window.location assignment"),
+    (
+        r"\bwindow\.location\.(?:replace|assign|href)\s*\(",
+        "navigation",
+        "window.location.replace/assign/href call",
+    ),
+    (r"\bdocument\.location\s*=\s*[^=]", "navigation", "document.location assignment"),
+    (r"\beval\s*\(", "second_order_eval", "eval() second-order call"),
+    (r"\bnew\s+Function\s*\(", "second_order_eval", "new Function constructor"),
+    (r"\bimport\s*\(", "second_order_eval", "dynamic import()"),
+    (r"\bdocument\.write\s*\(", "second_order_eval", "document.write()"),
+)
+
+
+# Compiled once at import; iterated for every analyse call. Multiline
+# DOTALL is fine -- newlines don't change the meaning of any of the
+# patterns above.
+_JS_RISKY_COMPILED: tuple[
+    tuple[re.Pattern[str], str, str], ...
+] = tuple(
+    (re.compile(pat), cat, desc) for pat, cat, desc in _JS_RISKY_PATTERNS
+)
+
+
+@dataclass(frozen=True)
+class JsScriptAnalysis:
+    """Outcome of a static analysis pass over a JS script body.
+
+    Attributes:
+        script_preview: short, single-line preview of the script
+            (newlines collapsed, capped at 200 chars). Safe to ship
+            into the safety audit log + the two-phase approval prompt.
+        requires_two_phase: True when at least one risky marker
+            matched. The caller MUST route through
+            :class:`ApprovalRegistry` before executing.
+        risky_markers: ordered tuple of short marker labels
+            (``"fetch() call"``, ``"document.cookie assignment"``,
+            etc.) detected in the script. Duplicates within a single
+            script are deduped on description; ordering matches the
+            scan order so the first match in the catalog wins for
+            display purposes.
+        categories: distinct categories that any marker belongs to,
+            in the order :data:`_JS_RISKY_CATEGORIES` defines.
+        char_count: length of the (non-stripped) script.
+    """
+
+    script_preview: str
+    requires_two_phase: bool
+    risky_markers: tuple[str, ...]
+    categories: tuple[str, ...]
+    char_count: int
+
+
+def analyze_js_script(script: str) -> JsScriptAnalysis:
+    """Run the static analysis pass over a JS script body.
+
+    Pure function -- no I/O, no subprocess, no validator. Safe to
+    call from any thread / on any code path including the voice hot
+    path. The analysis runs at every :meth:`BrowserUseTool.eval`
+    entry as a defense-in-depth check; the caller-side voice flow
+    can call it explicitly when deciding whether to even prompt the
+    user for approval.
+
+    Args:
+        script: the JavaScript source the caller plans to evaluate.
+
+    Returns:
+        :class:`JsScriptAnalysis`. ``requires_two_phase`` is True iff
+        any risky pattern matched. When False the caller may proceed
+        through the normal Cap-3 safety validator without the
+        approval round-trip.
+
+    Implementation notes:
+
+    * Returns a "safe" analysis (no markers, requires_two_phase=False)
+      for empty / whitespace-only input. The caller's argument
+      validation will reject empty scripts upstream, but the analyzer
+      doesn't second-guess that boundary.
+    * Detection is intentionally generous: a script that mentions
+      ``fetch`` inside a comment WILL trip the gate. False positives
+      are acceptable; false negatives are not. Authors who need a
+      string-literal ``fetch`` for legitimate reasons can route
+      through the two-phase approval -- the gate's whole purpose is
+      to surface the call to the user.
+    """
+    if not script:
+        return JsScriptAnalysis(
+            script_preview="",
+            requires_two_phase=False,
+            risky_markers=(),
+            categories=(),
+            char_count=0,
+        )
+    preview = _preview(script, cap=200)
+    seen_descriptions: list[str] = []
+    seen_categories: list[str] = []
+    for pattern, category, description in _JS_RISKY_COMPILED:
+        if pattern.search(script):
+            if description not in seen_descriptions:
+                seen_descriptions.append(description)
+            if category not in seen_categories:
+                seen_categories.append(category)
+    return JsScriptAnalysis(
+        script_preview=preview,
+        requires_two_phase=bool(seen_descriptions),
+        risky_markers=tuple(seen_descriptions),
+        categories=tuple(seen_categories),
+        char_count=len(script),
+    )
+
+
+# Canonical approval-request kind for browser-use JS eval. Used by
+# the channel router to pick the right TTS narration template.
+BROWSER_JS_APPROVAL_KIND: str = "browser_use_js_exec"
+
+# Reason-code label that lands in the audit log when a JS eval is
+# blocked OR approved. Mirrors the catalog 06 T3 reason-code namespace.
+BROWSER_JS_REASON_CODE: str = "ultron.suspicious.browser_js_exec_unrestricted"
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +549,60 @@ class BrowserActionResult(BrowserUseResult):
     """
 
     target: str = ""
+    safety_verdict: str = ""
+
+
+@dataclass(frozen=True)
+class BrowserEvalResult(BrowserUseResult):
+    """T3 -- ``eval`` outcome (JavaScript evaluation in the page).
+
+    The eval flow has three terminal states:
+
+    * **Approval required** (``success=False``,
+      ``requires_two_phase=True``, ``approval_request_id`` set, and
+      the subprocess was NOT invoked). The caller routes the
+      approval through the voice / channel router; on grant the
+      caller re-calls :meth:`BrowserUseTool.eval` with
+      ``assume_preapproved=True``.
+    * **Safety denied** (``success=False``, ``safety_verdict`` set
+      to ``BLOCK_HARD`` / ``NEEDS_EXPLICIT_INTENT``). Validator
+      blocked the call after static analysis cleared (or after
+      pre-approval was granted but a separate rule fired).
+    * **Executed** (``success=True``). ``raw_result`` carries the
+      CLI's stdout, ``value`` carries the parsed JSON result when
+      the CLI emitted parseable JSON (the upstream returns JSON for
+      ``Runtime.evaluate(returnByValue: true)``).
+
+    Attributes:
+        raw_result: verbatim CLI stdout (truncated to the standard
+            output cap). Useful when the JS result is a multi-line
+            string that doesn't JSON-decode.
+        value: parsed JSON value when stdout decodes as JSON, else
+            ``None``. JSON shapes are preserved (str / int / float /
+            bool / None / list / dict).
+        requires_two_phase: True iff static analysis found markers
+            requiring the two-phase approval flow AND the caller did
+            not pass ``assume_preapproved=True``.
+        approval_request_id: the registry key the caller routes the
+            approval request through. Empty string when no approval
+            was required.
+        risky_markers: tuple of detected risky-pattern descriptions
+            (audit-log friendly).
+        categories: distinct categories the markers fall into.
+        script_preview: short preview of the script body for the
+            audit log / approval prompt.
+        safety_verdict: validator's verdict label when the safety
+            check ran; blank when the call short-circuited at static
+            analysis OR argument validation.
+    """
+
+    raw_result: str = ""
+    value: Optional[Any] = None
+    requires_two_phase: bool = False
+    approval_request_id: str = ""
+    risky_markers: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    script_preview: str = ""
     safety_verdict: str = ""
 
 
@@ -1583,6 +1828,208 @@ class BrowserUseTool:
             return denial
         return resolved_path
 
+    # -- T3 JavaScript evaluation (YELLOW) -----------------------------
+
+    def eval(
+        self,
+        script: str,
+        *,
+        user_text: str = "",
+        assume_preapproved: bool = False,
+        approval_registry: Optional[ApprovalRegistry] = None,
+        approval_timeout_s: Optional[float] = None,
+        approval_scope_key: str = "",
+        timeout_s: Optional[float] = None,
+    ) -> BrowserEvalResult:
+        """T3 (YELLOW) -- evaluate ``script`` in the active tab's
+        JavaScript context.
+
+        Three-phase pipeline:
+
+        1. **Argument validation** -- blank script rejected at the
+           wrapper boundary; no static analysis, no validator, no
+           approval round-trip.
+        2. **Static analysis** -- :func:`analyze_js_script` scans the
+           body for write / network / navigation / second-order-eval
+           markers. When ANY marker matches AND ``assume_preapproved``
+           is False, an :class:`ApprovalRequest` is registered with
+           the approval registry; the returned result carries
+           ``requires_two_phase=True`` and ``approval_request_id`` so
+           the channel router can ask the user yes/no. The CLI is
+           NOT invoked yet.
+        3. **Cap-3 safety check + subprocess** -- when (no markers)
+           OR (markers + ``assume_preapproved=True``), the wrapper
+           builds a :class:`RuleContext` with the script preview +
+           markers + categories in ``arguments`` and runs the
+           validator. On allow, the script is handed to the CLI
+           verbatim; stdout is parsed as JSON when possible.
+
+        Args:
+            script: JavaScript source to evaluate.
+            user_text: the user utterance that originated the call.
+                Threaded into the validator for explicit-intent
+                matching AND echoed in the approval prompt for voice
+                confirmation.
+            assume_preapproved: set True when the caller has already
+                walked the user through the approval flow AND wants
+                to execute the (still risky) script. The static
+                analysis still runs as a defense-in-depth pass and
+                the result records the markers, but the call proceeds
+                past the approval phase.
+            approval_registry: injectable registry override. Tests
+                use this to verify the registration call. Production
+                defaults to :func:`get_approval_registry`.
+            approval_timeout_s: per-request approval timeout passed
+                to :class:`ApprovalRequest`. ``None`` uses the
+                registry's default.
+            approval_scope_key: caller-supplied session id / scope
+                key for the approval entry. Used by the registry's
+                per-scope listing API.
+            timeout_s: subprocess wall-clock timeout override.
+
+        Returns:
+            :class:`BrowserEvalResult`. Inspect ``requires_two_phase``
+            first: True means the caller must drive the approval
+            flow; False means ``success`` reflects the actual
+            execution outcome.
+        """
+        script = script or ""
+        if not script.strip():
+            return BrowserEvalResult(
+                success=False,
+                action="eval",
+                error="empty script",
+            )
+        analysis = analyze_js_script(script)
+        if analysis.requires_two_phase and not assume_preapproved:
+            registry = (
+                approval_registry
+                if approval_registry is not None
+                else get_approval_registry()
+            )
+            handle = self._register_eval_approval(
+                registry=registry,
+                analysis=analysis,
+                user_text=user_text,
+                approval_timeout_s=approval_timeout_s,
+                scope_key=approval_scope_key,
+            )
+            preapproved_decision = (
+                handle.pre_resolved.outcome.value
+                if handle.pre_resolved is not None
+                else ""
+            )
+            return BrowserEvalResult(
+                success=False,
+                action="eval",
+                error=(
+                    f"two-phase approval required (markers: "
+                    f"{', '.join(analysis.risky_markers)})"
+                ),
+                requires_two_phase=True,
+                approval_request_id=handle.approval_id,
+                risky_markers=analysis.risky_markers,
+                categories=analysis.categories,
+                script_preview=analysis.script_preview,
+                safety_verdict=preapproved_decision,
+            )
+        # Static analysis cleared OR caller is asserting preapproval.
+        # Run the regular Cap-3 safety check before invoking the CLI.
+        denial = self._safety_check(
+            action="eval",
+            arguments={
+                "script_preview": analysis.script_preview,
+                "risky_markers": list(analysis.risky_markers),
+                "categories": list(analysis.categories),
+                "char_count": analysis.char_count,
+                "assume_preapproved": assume_preapproved,
+            },
+            user_text=user_text,
+            result_factory=BrowserEvalResult,
+            extra_result_kwargs={
+                "risky_markers": analysis.risky_markers,
+                "categories": analysis.categories,
+                "script_preview": analysis.script_preview,
+                "requires_two_phase": analysis.requires_two_phase,
+            },
+        )
+        if denial is not None:
+            return denial
+        result = self._invoke(
+            ["eval", script],
+            action="eval",
+            timeout_s=timeout_s,
+        )
+        if not result.success:
+            return BrowserEvalResult(
+                success=False,
+                action="eval",
+                stdout=result.stdout,
+                stderr=result.stderr,
+                error=result.error,
+                elapsed_ms=result.elapsed_ms,
+                exit_code=result.exit_code,
+                requires_two_phase=analysis.requires_two_phase,
+                risky_markers=analysis.risky_markers,
+                categories=analysis.categories,
+                script_preview=analysis.script_preview,
+                safety_verdict="ALLOW",
+            )
+        value, raw_result = _try_parse_eval_payload(result.stdout)
+        return BrowserEvalResult(
+            success=True,
+            action="eval",
+            stdout=result.stdout,
+            stderr=result.stderr,
+            elapsed_ms=result.elapsed_ms,
+            exit_code=result.exit_code,
+            raw_result=raw_result,
+            value=value,
+            requires_two_phase=analysis.requires_two_phase,
+            risky_markers=analysis.risky_markers,
+            categories=analysis.categories,
+            script_preview=analysis.script_preview,
+            safety_verdict="ALLOW",
+        )
+
+    def _register_eval_approval(
+        self,
+        *,
+        registry: ApprovalRegistry,
+        analysis: JsScriptAnalysis,
+        user_text: str,
+        approval_timeout_s: Optional[float],
+        scope_key: str,
+    ) -> ApprovalHandle:
+        """Register a two-phase approval request for a risky eval.
+
+        The prompt is constructed to be safe for TTS: no script
+        body verbatim (the audit log gets the preview separately),
+        just the marker labels and a one-line description so the
+        channel router speaks "this script will <markers>. Proceed?".
+        """
+        request = ApprovalRequest(
+            kind=BROWSER_JS_APPROVAL_KIND,
+            prompt=(
+                "Browser script wants to "
+                + _humanize_categories(analysis.categories)
+                + ". Proceed?"
+            ),
+            actor="desktop_browser_use",
+            scope_key=scope_key or self._session or "",
+            metadata={
+                "script_preview": analysis.script_preview,
+                "risky_markers": list(analysis.risky_markers),
+                "categories": list(analysis.categories),
+                "char_count": analysis.char_count,
+                "user_text": user_text,
+                "reason_code": BROWSER_JS_REASON_CODE,
+            },
+            timeout_seconds=approval_timeout_s,
+            delivery_channel="voice",
+        )
+        return registry.register(request)
+
     # -- safety helper --------------------------------------------------
 
     def _safety_check(
@@ -2052,6 +2499,48 @@ def _short_target_label(arguments: Mapping[str, Any]) -> str:
     return ""
 
 
+def _humanize_categories(categories: tuple[str, ...]) -> str:
+    """Render a category tuple into a short TTS-safe phrase for the
+    approval prompt. Maps the internal labels onto user-readable
+    verbs so the voice prompt doesn't expose internal jargon.
+
+    Multiple categories join with " and "; an empty tuple returns
+    the safe fallback "execute custom code".
+    """
+    if not categories:
+        return "execute custom code"
+    label_map = {
+        "network_egress": "make network requests",
+        "storage_write": "write to storage or cookies",
+        "navigation": "navigate to another page",
+        "second_order_eval": "execute dynamically constructed code",
+    }
+    phrases = [label_map.get(c, c) for c in categories]
+    if len(phrases) == 1:
+        return phrases[0]
+    if len(phrases) == 2:
+        return f"{phrases[0]} and {phrases[1]}"
+    return ", ".join(phrases[:-1]) + ", and " + phrases[-1]
+
+
+def _try_parse_eval_payload(stdout: str) -> tuple[Optional[Any], str]:
+    """Parse the CLI's eval-result stdout.
+
+    The upstream returns whatever ``Runtime.evaluate(returnByValue=True)``
+    emitted -- JSON-encoded when feasible, otherwise raw text.
+    Returns ``(parsed_value_or_None, raw_text)``.
+    """
+    if not stdout:
+        return None, ""
+    raw = stdout.strip()
+    if not raw:
+        return None, ""
+    try:
+        return json.loads(raw), raw
+    except (ValueError, json.JSONDecodeError):
+        return None, raw
+
+
 def _decode_screenshot_payload(
     stdout: str,
 ) -> tuple[Optional[bytes], Optional[str]]:
@@ -2133,12 +2622,15 @@ def _try_parse_tabs(
 
 
 __all__ = [
+    "BROWSER_JS_APPROVAL_KIND",
+    "BROWSER_JS_REASON_CODE",
     "BROWSER_USE_BINARY_CANDIDATES",
     "BrowserActionResult",
     "BrowserAttributesResult",
     "BrowserBbox",
     "BrowserBboxResult",
     "BrowserElement",
+    "BrowserEvalResult",
     "BrowserHtmlResult",
     "BrowserScreenshotResult",
     "BrowserState",
@@ -2152,8 +2644,10 @@ __all__ = [
     "BrowserWaitResult",
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_WAIT_TIMEOUT_MS",
+    "JsScriptAnalysis",
     "SCROLL_DIRECTIONS",
     "WAIT_SELECTOR_STATES",
+    "analyze_js_script",
     "get_browser_use_tool",
     "reset_browser_use_tool_for_testing",
     "set_browser_use_tool",

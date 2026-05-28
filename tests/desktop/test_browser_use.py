@@ -2051,3 +2051,596 @@ class TestDecodeScreenshotPayload:
         assert data is None
         assert err is not None
         assert "too small" in err
+
+
+# ===========================================================================
+# Batch 3 -- T3 YELLOW JS eval (static analysis + two-phase approval)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Static analysis -- analyze_js_script
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeJsScript:
+    def test_empty_is_safe(self) -> None:
+        a = bu.analyze_js_script("")
+        assert a.requires_two_phase is False
+        assert a.risky_markers == ()
+        assert a.categories == ()
+        assert a.char_count == 0
+
+    def test_whitespace_only_is_safe(self) -> None:
+        a = bu.analyze_js_script("   \n  ")
+        assert a.requires_two_phase is False
+        assert a.risky_markers == ()
+
+    def test_read_only_is_safe(self) -> None:
+        a = bu.analyze_js_script("document.title")
+        assert a.requires_two_phase is False
+        assert a.risky_markers == ()
+        assert a.script_preview == "document.title"
+
+    def test_property_read_is_safe(self) -> None:
+        # A read of document.cookie is safe; only the assignment is risky.
+        a = bu.analyze_js_script("console.log(document.cookie)")
+        assert a.requires_two_phase is False
+
+    def test_equality_check_is_safe(self) -> None:
+        # ``==`` / ``===`` comparisons must NOT trigger the
+        # ``document.cookie = ...`` assignment pattern.
+        for body in [
+            "document.cookie === 'foo'",
+            "document.cookie==='bar'",
+            "window.location === 'x'",
+            "if(document.cookie==myVar){return 1}",
+        ]:
+            a = bu.analyze_js_script(body)
+            assert a.requires_two_phase is False, body
+
+    def test_fetch_call_detected(self) -> None:
+        a = bu.analyze_js_script("fetch('/api/data').then(r => r.json())")
+        assert a.requires_two_phase is True
+        assert "fetch() call" in a.risky_markers
+        assert "network_egress" in a.categories
+
+    def test_xmlhttprequest_detected(self) -> None:
+        a = bu.analyze_js_script("const x = new XMLHttpRequest()")
+        assert a.requires_two_phase is True
+        assert "network_egress" in a.categories
+
+    def test_sendbeacon_detected(self) -> None:
+        a = bu.analyze_js_script(
+            "navigator.sendBeacon('https://x.com', payload)"
+        )
+        assert a.requires_two_phase is True
+        assert "network_egress" in a.categories
+
+    def test_websocket_detected(self) -> None:
+        a = bu.analyze_js_script("new WebSocket('wss://attacker.com')")
+        assert a.requires_two_phase is True
+        assert "network_egress" in a.categories
+
+    def test_rtc_peer_connection_detected(self) -> None:
+        a = bu.analyze_js_script("new RTCPeerConnection({iceServers: []})")
+        assert a.requires_two_phase is True
+        assert "network_egress" in a.categories
+
+    def test_localstorage_setitem_detected(self) -> None:
+        a = bu.analyze_js_script("localStorage.setItem('k', 'v')")
+        assert a.requires_two_phase is True
+        assert "storage_write" in a.categories
+
+    def test_sessionstorage_setitem_detected(self) -> None:
+        a = bu.analyze_js_script("sessionStorage.setItem('k', 'v')")
+        assert a.requires_two_phase is True
+        assert "storage_write" in a.categories
+
+    def test_cookie_assignment_detected(self) -> None:
+        for body in [
+            "document.cookie = 'session=abc'",
+            "document.cookie='session=abc'",
+            "document.cookie  =  'foo'",
+        ]:
+            a = bu.analyze_js_script(body)
+            assert a.requires_two_phase is True, body
+            assert "storage_write" in a.categories
+
+    def test_location_assignment_detected(self) -> None:
+        a = bu.analyze_js_script("window.location = 'https://elsewhere.com'")
+        assert a.requires_two_phase is True
+        assert "navigation" in a.categories
+
+    def test_location_replace_detected(self) -> None:
+        a = bu.analyze_js_script(
+            "window.location.replace('https://elsewhere.com')"
+        )
+        assert a.requires_two_phase is True
+        assert "navigation" in a.categories
+
+    def test_location_assign_detected(self) -> None:
+        a = bu.analyze_js_script("window.location.assign('https://x.com')")
+        assert a.requires_two_phase is True
+
+    def test_location_href_detected(self) -> None:
+        a = bu.analyze_js_script("window.location.href('https://x.com')")
+        assert a.requires_two_phase is True
+
+    def test_document_location_detected(self) -> None:
+        a = bu.analyze_js_script("document.location = '/foo'")
+        assert a.requires_two_phase is True
+        assert "navigation" in a.categories
+
+    def test_eval_detected(self) -> None:
+        a = bu.analyze_js_script("eval(decoded)")
+        assert a.requires_two_phase is True
+        assert "second_order_eval" in a.categories
+
+    def test_new_function_detected(self) -> None:
+        a = bu.analyze_js_script("const f = new Function('x', 'return x*2')")
+        assert a.requires_two_phase is True
+        assert "second_order_eval" in a.categories
+
+    def test_dynamic_import_detected(self) -> None:
+        a = bu.analyze_js_script("import('https://x.com/mod.js')")
+        assert a.requires_two_phase is True
+        assert "second_order_eval" in a.categories
+
+    def test_document_write_detected(self) -> None:
+        a = bu.analyze_js_script("document.write('<script>...')")
+        assert a.requires_two_phase is True
+        assert "second_order_eval" in a.categories
+
+    def test_multiple_markers_dedup(self) -> None:
+        script = "fetch('/a'); fetch('/b'); fetch('/c')"
+        a = bu.analyze_js_script(script)
+        # Description deduped: only one "fetch() call" entry.
+        assert a.risky_markers.count("fetch() call") == 1
+
+    def test_multiple_categories_in_order(self) -> None:
+        script = (
+            "fetch('/a'); localStorage.setItem('k','v'); "
+            "window.location = '/x'"
+        )
+        a = bu.analyze_js_script(script)
+        # Categories appear in catalog scan order: network_egress
+        # then storage_write then navigation.
+        assert "network_egress" in a.categories
+        assert "storage_write" in a.categories
+        assert "navigation" in a.categories
+
+    def test_identifier_substring_not_matched(self) -> None:
+        # ``\b`` boundaries -- ``mySafeFetch`` should not trip ``fetch``.
+        a = bu.analyze_js_script("const r = mySafeFetch('/api')")
+        assert a.requires_two_phase is False
+
+    def test_script_preview_is_capped(self) -> None:
+        a = bu.analyze_js_script("a" * 1000)
+        assert len(a.script_preview) <= 201  # cap + ellipsis
+        assert a.char_count == 1000
+
+    def test_script_preview_collapses_newlines(self) -> None:
+        a = bu.analyze_js_script("line1\nline2\n\tline3")
+        assert "\n" not in a.script_preview
+        assert "line1 line2 line3" in a.script_preview
+
+
+# ---------------------------------------------------------------------------
+# Fake approval registry
+# ---------------------------------------------------------------------------
+
+
+class _FakeApprovalRegistry:
+    """Records every register() call and returns scripted handles.
+
+    Default: returns an ApprovalHandle with a deterministic
+    approval_id and no pre_resolved decision.
+    """
+
+    def __init__(self) -> None:
+        from ultron.safety.two_phase_approval import ApprovalHandle
+
+        self.registrations: list = []
+        self._next_id = 0
+        self._pre_resolved: Any = None
+
+    def set_pre_resolved(self, decision: Any) -> None:
+        self._pre_resolved = decision
+
+    def register(self, request: Any) -> Any:
+        from ultron.safety.two_phase_approval import ApprovalHandle
+
+        self.registrations.append(request)
+        self._next_id += 1
+        approval_id = f"test-approval-{self._next_id}"
+        return ApprovalHandle(
+            approval_id=approval_id,
+            expires_at_seconds=999_999.0,
+            request=request,
+            pre_resolved=self._pre_resolved,
+        )
+
+
+# ---------------------------------------------------------------------------
+# BrowserUseTool.eval
+# ---------------------------------------------------------------------------
+
+
+class TestEvalArgumentValidation:
+    def test_empty_script_rejected(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        result = tool.eval("", user_text="eval")
+        assert result.success is False
+        assert result.error == "empty script"
+        assert fake_subprocess.calls == []
+        assert fake_validator.call_count == 0
+
+    def test_whitespace_only_rejected(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        result = tool.eval("   \n\t", user_text="eval")
+        assert result.success is False
+        assert fake_subprocess.calls == []
+
+
+class TestEvalSafeScriptPath:
+    def test_safe_script_executes(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        fake_subprocess.stdout = '"My Page Title"'
+        result = tool.eval(
+            "document.title",
+            user_text="get the title",
+        )
+        assert result.success is True
+        assert result.requires_two_phase is False
+        assert result.value == "My Page Title"
+        assert result.raw_result == '"My Page Title"'
+        cmd = fake_subprocess.calls[0].cmd
+        assert cmd[-2:] == ["eval", "document.title"]
+
+    def test_safe_script_json_array_value(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        fake_subprocess.stdout = "[1, 2, 3]"
+        result = tool.eval(
+            "Array.from(document.images).map(i=>i.width)",
+            user_text="image widths",
+        )
+        assert result.success is True
+        assert result.value == [1, 2, 3]
+
+    def test_safe_script_non_json_value(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        fake_subprocess.stdout = "not json output"
+        result = tool.eval("foo", user_text="eval")
+        assert result.success is True
+        assert result.value is None
+        assert result.raw_result == "not json output"
+
+    def test_safe_script_safety_validator_block(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        fake_validator.block(message="K1 reserved")
+        result = tool.eval("document.title", user_text="eval")
+        assert result.success is False
+        assert result.safety_verdict == "BLOCK_HARD"
+        assert fake_subprocess.calls == []
+
+    def test_safe_script_validator_arguments_carry_analysis(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        tool.eval("document.title", user_text="eval")
+        ctx = fake_validator.contexts[0]
+        assert ctx.tool_name == "desktop.browser_use.eval"
+        assert "script_preview" in ctx.arguments
+        assert ctx.arguments["risky_markers"] == []
+        assert ctx.arguments["categories"] == []
+        assert ctx.arguments["assume_preapproved"] is False
+
+
+class TestEvalRiskyScriptApprovalFlow:
+    def test_risky_script_blocks_at_approval_phase(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        # No registry monkeypatch -> uses default get_approval_registry.
+        # The default registry returns a handle but our pre-resolver
+        # is None so no decision is cached.
+        result = tool.eval(
+            "fetch('/api/data')",
+            user_text="get data",
+        )
+        assert result.success is False
+        assert result.requires_two_phase is True
+        assert "fetch() call" in result.risky_markers
+        assert "network_egress" in result.categories
+        assert result.approval_request_id != ""
+        # Subprocess + validator MUST NOT have been touched.
+        assert fake_subprocess.calls == []
+        assert fake_validator.call_count == 0
+
+    def test_risky_script_uses_injected_registry(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        result = tool.eval(
+            "document.cookie = 'x=1'",
+            user_text="set cookie",
+            approval_registry=registry,
+        )
+        assert result.requires_two_phase is True
+        assert len(registry.registrations) == 1
+        req = registry.registrations[0]
+        assert req.kind == bu.BROWSER_JS_APPROVAL_KIND
+        assert req.actor == "desktop_browser_use"
+        assert req.delivery_channel == "voice"
+        assert req.metadata["reason_code"] == bu.BROWSER_JS_REASON_CODE
+        assert "cookie" in req.prompt.lower() or "storage" in req.prompt.lower()
+        assert result.approval_request_id == "test-approval-1"
+
+    def test_risky_script_prompt_is_speakable(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        tool.eval(
+            "fetch('/a'); localStorage.setItem('k','v')",
+            user_text="dual",
+            approval_registry=registry,
+        )
+        prompt = registry.registrations[0].prompt
+        # No script body in the prompt; only humanised categories.
+        assert "fetch" not in prompt
+        assert "localStorage" not in prompt
+        assert "Proceed?" in prompt
+        assert prompt.startswith("Browser script wants to ")
+
+    def test_risky_script_metadata_carries_analysis(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        tool.eval(
+            "fetch('/a'); document.cookie = 'x=1'",
+            user_text="risky",
+            approval_registry=registry,
+        )
+        meta = registry.registrations[0].metadata
+        assert "fetch() call" in meta["risky_markers"]
+        assert "document.cookie assignment" in meta["risky_markers"]
+        assert "script_preview" in meta
+        assert meta["char_count"] > 0
+        assert meta["user_text"] == "risky"
+
+    def test_risky_script_scope_key_defaults_to_session(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        sess_tool = bu.BrowserUseTool(session="agent-3")
+        sess_tool.eval(
+            "fetch('/x')",
+            user_text="risky",
+            approval_registry=registry,
+        )
+        assert registry.registrations[0].scope_key == "agent-3"
+
+    def test_risky_script_scope_key_explicit_wins(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        sess_tool = bu.BrowserUseTool(session="agent-3")
+        sess_tool.eval(
+            "fetch('/x')",
+            user_text="risky",
+            approval_registry=registry,
+            approval_scope_key="custom-scope",
+        )
+        assert registry.registrations[0].scope_key == "custom-scope"
+
+    def test_risky_script_timeout_forwarded(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        tool.eval(
+            "fetch('/x')",
+            user_text="risky",
+            approval_registry=registry,
+            approval_timeout_s=12.0,
+        )
+        assert registry.registrations[0].timeout_seconds == 12.0
+
+
+class TestEvalPreapprovedPath:
+    def test_preapproved_skips_approval_registry(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        fake_subprocess.stdout = "true"
+        result = tool.eval(
+            "document.cookie = 'x=1'",
+            user_text="approved set cookie",
+            assume_preapproved=True,
+            approval_registry=registry,
+        )
+        # Risky markers still recorded, but registry never consulted.
+        assert result.requires_two_phase is True
+        assert len(registry.registrations) == 0
+        # Subprocess + validator ran.
+        assert len(fake_subprocess.calls) == 1
+        assert fake_validator.call_count == 1
+        assert result.success is True
+
+    def test_preapproved_with_validator_block(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        # Preapproval doesn't override the safety validator -- if
+        # category K (self-protection) or similar fires, the call is
+        # still blocked.
+        fake_validator.block(message="K-protected")
+        result = tool.eval(
+            "fetch('/x')",
+            user_text="approved",
+            assume_preapproved=True,
+        )
+        assert result.success is False
+        assert result.safety_verdict == "BLOCK_HARD"
+        assert fake_subprocess.calls == []
+
+    def test_preapproved_arguments_flagged(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        tool.eval(
+            "fetch('/x')",
+            user_text="approved",
+            assume_preapproved=True,
+        )
+        ctx = fake_validator.contexts[0]
+        assert ctx.arguments["assume_preapproved"] is True
+        assert ctx.arguments["risky_markers"] == ["fetch() call"]
+
+
+class TestEvalSubprocessFailure:
+    def test_subprocess_failure_propagates_with_analysis(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        fake_subprocess.returncode = 1
+        fake_subprocess.stderr = "no browser open"
+        result = tool.eval("document.title", user_text="eval")
+        assert result.success is False
+        assert "no browser open" in (result.error or "")
+        # Analysis fields still populated on failure.
+        assert result.script_preview == "document.title"
+        assert result.requires_two_phase is False
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+class TestHumanizeCategories:
+    def test_empty(self) -> None:
+        assert bu._humanize_categories(()) == "execute custom code"
+
+    def test_single(self) -> None:
+        assert (
+            bu._humanize_categories(("network_egress",))
+            == "make network requests"
+        )
+
+    def test_two(self) -> None:
+        assert (
+            bu._humanize_categories(("network_egress", "storage_write"))
+            == "make network requests and write to storage or cookies"
+        )
+
+    def test_three(self) -> None:
+        out = bu._humanize_categories(
+            ("network_egress", "storage_write", "navigation")
+        )
+        assert "make network requests" in out
+        assert "write to storage or cookies" in out
+        assert "navigate to another page" in out
+        # Oxford comma style for 3+ items.
+        assert ", and " in out
+
+    def test_unknown_category_passes_through(self) -> None:
+        out = bu._humanize_categories(("network_egress", "mystery"))
+        assert "make network requests" in out
+        assert "mystery" in out
+
+
+class TestTryParseEvalPayload:
+    def test_empty(self) -> None:
+        value, raw = bu._try_parse_eval_payload("")
+        assert value is None
+        assert raw == ""
+
+    def test_whitespace_only(self) -> None:
+        value, raw = bu._try_parse_eval_payload("   \n  ")
+        assert value is None
+        assert raw == ""
+
+    def test_json_string(self) -> None:
+        value, raw = bu._try_parse_eval_payload('"hello"')
+        assert value == "hello"
+        assert raw == '"hello"'
+
+    def test_json_number(self) -> None:
+        value, raw = bu._try_parse_eval_payload("42")
+        assert value == 42
+
+    def test_json_boolean(self) -> None:
+        value, _ = bu._try_parse_eval_payload("true")
+        assert value is True
+
+    def test_json_null(self) -> None:
+        value, raw = bu._try_parse_eval_payload("null")
+        assert value is None
+        assert raw == "null"
+
+    def test_json_array(self) -> None:
+        value, _ = bu._try_parse_eval_payload("[1, 2, 3]")
+        assert value == [1, 2, 3]
+
+    def test_json_object(self) -> None:
+        value, _ = bu._try_parse_eval_payload('{"key": "val"}')
+        assert value == {"key": "val"}
+
+    def test_non_json_returns_raw(self) -> None:
+        value, raw = bu._try_parse_eval_payload("not valid json")
+        assert value is None
+        assert raw == "not valid json"
