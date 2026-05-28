@@ -447,3 +447,49 @@ async def test_run_cli_executes_real_subprocess(echo_cli: Path) -> None:
     result = await client._run_cli([str(echo_cli), "health"])
     assert result.returncode == 0
     assert "ok" in result.stdout.lower()
+
+
+async def test_run_cli_timeout_reaps_whole_process_tree(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A CLI invocation that outlives its timeout must have its ENTIRE
+    process tree reaped, not just the immediate child.
+
+    On Windows the openclaw CLI is a ``.cmd`` shim that spawns the real
+    interpreter as a grandchild; killing only the child orphans it and
+    wedges the event loop's subprocess transport at teardown (the
+    'hung full sweep' failure mode). Spy on ``kill_process_tree`` to
+    confirm the timeout path routes through it with the spawned pid, then
+    verify the (really-spawned, really-reaped) process is gone.
+    """
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+
+    client = OpenClawClient.__new__(OpenClawClient)
+    client._cli_path = sys.executable                                       # noqa: SLF001
+    client._default_timeout_s = 0.5                                         # noqa: SLF001
+    client._config_path = Path.home() / ".openclaw" / "openclaw.json"       # noqa: SLF001
+    client._default_agent_id = "ultron-main"                                # noqa: SLF001
+    client._env_overrides = {}                                              # noqa: SLF001
+
+    import ultron.openclaw_bridge.client as client_mod
+    real_kill = client_mod.kill_process_tree
+    captured: dict = {}
+
+    def _spy(pid, **kwargs):
+        captured["pid"] = pid
+        return real_kill(pid, **kwargs)
+
+    monkeypatch.setattr(client_mod, "kill_process_tree", _spy)
+
+    with pytest.raises(OpenClawGatewayError, match="timed out"):
+        await client._run_cli([str(sleeper)], timeout_s=0.5)
+
+    assert captured.get("pid", 0) > 0, "timeout path must reap the process tree"
+
+    import psutil
+    try:
+        still_running = psutil.Process(captured["pid"]).is_running()
+    except psutil.NoSuchProcess:
+        still_running = False
+    assert not still_running, "the timed-out subprocess tree should be dead"

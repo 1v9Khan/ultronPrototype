@@ -147,9 +147,18 @@ def _make_cfg(
 async def test_health_through_real_subprocess(
     stub_cli_wrapper: Path, tmp_path: Path,
 ) -> None:
-    """OpenClawClient → real subprocess → stub CLI → parsed result."""
-    client = OpenClawClient(cli_path=str(stub_cli_wrapper), default_timeout_s=5.0)
-    assert await client.health() is True
+    """OpenClawClient → real subprocess → stub CLI → parsed result.
+
+    The health probe gets a generous 20s timeout (vs the 5s default).
+    Under a loaded full sweep the Windows ``.cmd`` → ``python`` double-hop
+    can take several seconds to cold-start, and a tight budget made this
+    test flaky: it tripped the probe timeout and (before the tree-reap
+    fix in ``OpenClawClient._run_cli``) orphaned the grandchild
+    interpreter, which stalled the whole sweep. 20s clears realistic
+    cold-start latency while staying well under the 30s per-test deadline.
+    """
+    client = OpenClawClient(cli_path=str(stub_cli_wrapper), default_timeout_s=20.0)
+    assert await client.health(timeout_s=20.0) is True
 
 
 async def test_send_message_through_real_subprocess(

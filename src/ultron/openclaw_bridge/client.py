@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ultron.errors import OpenClawAuthError, OpenClawGatewayError, OpenClawToolError
 from ultron.openclaw_bridge.lifecycle import _read_token  # token reader reused
+from ultron.subprocess.kill_tree import kill_process_tree
 from ultron.utils.logging import get_logger
 
 logger = get_logger("openclaw_bridge.client")
@@ -853,15 +854,15 @@ class OpenClawClient:
                 proc.communicate(), timeout=timeout,
             )
         except asyncio.TimeoutError as e:
-            # Best-effort kill; never raise from the cleanup path.
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=2.0)
-            except (asyncio.TimeoutError, ProcessLookupError):
-                pass
+            # The CLI is typically a shim (``openclaw.cmd`` on Windows, an
+            # npm wrapper on POSIX) that spawns the real interpreter as a
+            # GRANDCHILD. ``proc.kill()`` signals only the immediate child,
+            # orphaning that grandchild — which keeps the stdout/stderr
+            # pipes open and wedges the event loop's subprocess transport
+            # at teardown (observed as a hung full test sweep on Windows).
+            # Reap the whole tree so no descendant survives to hold the
+            # pipes. Never raise from the cleanup path.
+            await self._reap_process_tree(proc)
             raise OpenClawGatewayError(
                 f"openclaw CLI timed out after {timeout:.1f}s "
                 f"({' '.join(args[:3])}...)",
@@ -874,6 +875,48 @@ class OpenClawClient:
             stderr=stderr_b.decode("utf-8", errors="replace"),
             duration_s=duration,
         )
+
+    async def _reap_process_tree(
+        self,
+        proc: "asyncio.subprocess.Process",
+    ) -> None:
+        """Terminate ``proc`` and every descendant, then let asyncio reap
+        its transport. Called from the timeout cleanup path; never raises.
+
+        The tree is walked and killed via :func:`kill_process_tree` while
+        the root is still alive — once the root exits, psutil can no longer
+        reach grandchildren (a shim such as ``openclaw.cmd`` spawns the
+        real interpreter as a grandchild, so killing only the root would
+        orphan it). The synchronous kill runs in the default executor so
+        the event loop stays free to drain the now-closing pipes.
+
+        Args:
+            proc: The subprocess whose tree should be reaped.
+        """
+        pid = proc.pid
+        if pid and pid > 0:
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: kill_process_tree(pid, grace_seconds=1.0),
+                )
+            except Exception:  # noqa: BLE001 — cleanup must never raise
+                logger.debug(
+                    "kill_process_tree failed for openclaw CLI pid %s",
+                    pid, exc_info=True,
+                )
+        # asyncio still holds a transport for ``proc``; proc.kill() is now
+        # usually a no-op (already reaped) and proc.wait() lets the
+        # transport close so the pipes are released.
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001 — process already gone is fine
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            pass
 
     def _build_env(self) -> Dict[str, str]:
         """Process env for subprocesses. Inherit from parent then layer
