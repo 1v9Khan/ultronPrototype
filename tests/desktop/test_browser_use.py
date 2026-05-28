@@ -3436,3 +3436,208 @@ class TestParseProfilesJson:
     def test_garbage(self) -> None:
         profiles, err = bu._parse_profiles_json("nope")
         assert profiles == ()
+
+
+# ===========================================================================
+# Batch 7 -- T11 YELLOW raw CDP Python passthrough
+# ===========================================================================
+
+
+class TestAnalyzeCdpStatement:
+    def test_empty_not_blocked(self) -> None:
+        a = bu.analyze_cdp_statement("")
+        assert a.blocked is False
+        assert a.blocked_markers == ()
+
+    def test_safe_statement(self) -> None:
+        a = bu.analyze_cdp_statement(
+            "cdp.cdp_client.send.Runtime.evaluate(params={'expression': 'document.title'})"
+        )
+        assert a.blocked is False
+        assert a.statement_preview != ""
+
+    def test_security_cert_error_blocked(self) -> None:
+        a = bu.analyze_cdp_statement(
+            "cdp.cdp_client.send.Security.setIgnoreCertificateErrors(params={'ignore': True})"
+        )
+        assert a.blocked is True
+        assert "Security.setIgnoreCertificateErrors" in a.blocked_markers
+
+    def test_network_interception_blocked(self) -> None:
+        a = bu.analyze_cdp_statement(
+            "cdp.cdp_client.send.Network.setRequestInterception(params={})"
+        )
+        assert a.blocked is True
+
+    def test_fetch_enable_blocked(self) -> None:
+        a = bu.analyze_cdp_statement("send.Fetch.enable(params={})")
+        assert a.blocked is True
+        assert "Fetch.enable" in a.blocked_markers
+
+    def test_grant_permissions_blocked(self) -> None:
+        a = bu.analyze_cdp_statement("Browser.grantPermissions(params={})")
+        assert a.blocked is True
+
+    def test_bypass_csp_blocked(self) -> None:
+        a = bu.analyze_cdp_statement("Page.setBypassCSP(params={'enabled': True})")
+        assert a.blocked is True
+
+    def test_clear_data_blocked(self) -> None:
+        a = bu.analyze_cdp_statement("Storage.clearDataForOrigin(params={})")
+        assert a.blocked is True
+
+    def test_add_binding_blocked(self) -> None:
+        a = bu.analyze_cdp_statement("Runtime.addBinding(params={'name': 'x'})")
+        assert a.blocked is True
+
+    def test_set_auto_attach_blocked(self) -> None:
+        a = bu.analyze_cdp_statement("Target.setAutoAttach(params={})")
+        assert a.blocked is True
+
+    def test_debugger_domain_wholesale_blocked(self) -> None:
+        for method in [
+            "Debugger.enable()",
+            "Debugger.setBreakpointByUrl(params={})",
+            "Debugger.pause()",
+        ]:
+            a = bu.analyze_cdp_statement(f"cdp.cdp_client.send.{method}")
+            assert a.blocked is True, method
+            assert any("Debugger" in m for m in a.blocked_markers)
+
+    def test_word_boundary_no_false_positive(self) -> None:
+        # ``MyDebugger`` should not trip the ``Debugger`` domain block.
+        a = bu.analyze_cdp_statement("MyDebuggerTool.run()")
+        assert a.blocked is False
+
+    def test_multiple_markers(self) -> None:
+        a = bu.analyze_cdp_statement(
+            "Fetch.enable(); Page.setBypassCSP()"
+        )
+        assert a.blocked is True
+        assert len(a.blocked_markers) == 2
+
+    def test_preview_capped(self) -> None:
+        a = bu.analyze_cdp_statement("x = " + "a" * 1000)
+        assert len(a.statement_preview) <= 201
+        assert a.char_count > 1000
+
+
+class TestCdpPython:
+    def test_empty_rejected(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        result = tool.cdp_python("   ", user_text="cdp")
+        assert result.success is False
+        assert fake_subprocess.calls == []
+
+    def test_blocked_refused_outright(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        result = tool.cdp_python(
+            "Security.setIgnoreCertificateErrors(params={'ignore': True})",
+            user_text="bypass tls",
+            approval_registry=registry,
+        )
+        assert result.success is False
+        assert result.blocked is True
+        assert "Security.setIgnoreCertificateErrors" in result.blocked_markers
+        assert result.safety_verdict == "BLOCK_HARD"
+        # NOT surfaced for approval, NOT executed.
+        assert len(registry.registrations) == 0
+        assert fake_subprocess.calls == []
+        assert fake_validator.call_count == 0
+
+    def test_blocked_even_when_preapproved(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        # assume_preapproved must NOT override the hard blocklist.
+        result = tool.cdp_python(
+            "Debugger.enable()",
+            user_text="debug",
+            assume_preapproved=True,
+        )
+        assert result.success is False
+        assert result.blocked is True
+        assert fake_subprocess.calls == []
+
+    def test_safe_requires_approval(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        registry = _FakeApprovalRegistry()
+        result = tool.cdp_python(
+            "cdp.cdp_client.send.Runtime.evaluate(params={'expression': 'document.title'})",
+            user_text="get title via cdp",
+            approval_registry=registry,
+        )
+        assert result.success is False
+        assert result.blocked is False
+        assert result.requires_two_phase is True
+        assert result.approval_request_id == "test-approval-1"
+        assert fake_subprocess.calls == []
+        req = registry.registrations[0]
+        assert req.kind == bu.BROWSER_CDP_APPROVAL_KIND
+        assert req.metadata["reason_code"] == bu.BROWSER_CDP_REASON_CODE
+        # Full statement kept verbatim in metadata for the audit log.
+        assert "Runtime.evaluate" in req.metadata["statement"]
+
+    def test_preapproved_executes(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        fake_subprocess.stdout = '"Example Page"'
+        result = tool.cdp_python(
+            "result = browser._run(...)",
+            user_text="approved cdp",
+            assume_preapproved=True,
+        )
+        assert result.success is True
+        assert result.value == "Example Page"
+        cmd = fake_subprocess.calls[0].cmd
+        assert cmd[-2] == "python"
+
+    def test_preapproved_safety_block(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        fake_validator.block(message="K-protected")
+        result = tool.cdp_python(
+            "browser._session",
+            user_text="cdp",
+            assume_preapproved=True,
+        )
+        assert result.success is False
+        assert result.safety_verdict == "BLOCK_HARD"
+        assert fake_subprocess.calls == []
+
+    def test_subprocess_failure(
+        self,
+        fake_subprocess: _FakeSubprocess,
+        fake_validator: _FakeValidator,
+        tool: bu.BrowserUseTool,
+    ) -> None:
+        fake_subprocess.returncode = 1
+        fake_subprocess.stderr = "NameError"
+        result = tool.cdp_python(
+            "undefined_var",
+            user_text="cdp",
+            assume_preapproved=True,
+        )
+        assert result.success is False
+        assert result.statement_preview == "undefined_var"

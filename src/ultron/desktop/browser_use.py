@@ -374,6 +374,70 @@ BROWSER_PROFILE_REASON_CODE: str = (
 # so a profile name can never escape into a hostile argument.
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
 
+# T11 CDP passthrough -- approval + reason codes.
+BROWSER_CDP_APPROVAL_KIND: str = "browser_use_cdp_python"
+BROWSER_CDP_REASON_CODE: str = "ultron.suspicious.browser_cdp_exec"
+# Distinct (malicious-tier) reason code for a statement that touched
+# a hard-blocked CDP domain/method -- these are refused outright,
+# never even surfaced for approval.
+BROWSER_CDP_BLOCKED_REASON_CODE: str = (
+    "ultron.malicious.browser_cdp_blocked_domain"
+)
+
+# Fully-qualified CDP ``Domain.method`` strings that are NEVER
+# permitted, even with user approval. Each enables an attack with no
+# legitimate ultron use case:
+#
+#   Security.setIgnoreCertificateErrors -- disables TLS verification
+#       (MITM enabler).
+#   Network.setRequestInterception      -- silently rewrite/inspect
+#       every network request (legacy interception API).
+#   Fetch.enable                         -- the modern interception
+#       API that supersedes the above; blocking one without the other
+#       leaves the blocklist bypassable (security-review addition).
+#   Browser.grantPermissions             -- grant camera / mic /
+#       geolocation / clipboard without a user prompt.
+#   Page.setBypassCSP                    -- disable Content-Security-
+#       Policy, enabling arbitrary script injection (review addition).
+#   Storage.clearDataForOrigin           -- destroy localStorage /
+#       IndexedDB / cache for any origin (review addition).
+#   Runtime.addBinding                   -- inject a callback into
+#       every frame that exfiltrates data from page JS without eval
+#       (review addition).
+#   Target.setAutoAttach                 -- auto-attach the debugger
+#       to every new target; debugger-class risk at session level
+#       (review addition).
+_CDP_BLOCKED_METHODS: frozenset[str] = frozenset(
+    {
+        "Security.setIgnoreCertificateErrors",
+        "Network.setRequestInterception",
+        "Fetch.enable",
+        "Browser.grantPermissions",
+        "Page.setBypassCSP",
+        "Storage.clearDataForOrigin",
+        "Runtime.addBinding",
+        "Target.setAutoAttach",
+    }
+)
+
+# CDP domains blocked WHOLESALE -- any method on these is refused.
+# ``Debugger`` enables pausing + inspecting JS execution (including
+# credential-processing code) via setBreakpointByUrl etc.; the entire
+# domain is debugger-class risk per the catalog + review.
+_CDP_BLOCKED_DOMAINS: frozenset[str] = frozenset({"Debugger"})
+
+# Pre-compiled scanners. A blocked-method match is an exact
+# fully-qualified ``Domain.method`` token; a blocked-domain match is
+# ``Domain.<anything>``. Word boundaries prevent ``MyDebugger`` from
+# tripping the ``Debugger`` domain block.
+_CDP_BLOCKED_METHOD_RES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(r"\b" + re.escape(m) + r"\b"), m) for m in sorted(_CDP_BLOCKED_METHODS)
+)
+_CDP_BLOCKED_DOMAIN_RES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(r"\b" + re.escape(d) + r"\.\w+"), d)
+    for d in sorted(_CDP_BLOCKED_DOMAINS)
+)
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -647,6 +711,95 @@ class BrowserProfilesResult(BrowserUseResult):
     """T10 -- ``profile list`` outcome (Cap-2 read)."""
 
     profiles: tuple[BrowserProfile, ...] = ()
+
+
+@dataclass(frozen=True)
+class CdpStatementAnalysis:
+    """Outcome of scanning a ``cdp_python`` statement for blocked
+    CDP domains / methods.
+
+    Attributes:
+        statement_preview: single-line, length-capped preview safe
+            for the audit log + approval prompt.
+        blocked: True iff the statement references a hard-blocked
+            CDP method (:data:`_CDP_BLOCKED_METHODS`) or a wholesale-
+            blocked domain (:data:`_CDP_BLOCKED_DOMAINS`).
+        blocked_markers: the matched blocked tokens (for the audit
+            log). Empty when ``blocked`` is False.
+        char_count: length of the original statement.
+    """
+
+    statement_preview: str
+    blocked: bool
+    blocked_markers: tuple[str, ...]
+    char_count: int
+
+
+def analyze_cdp_statement(statement: str) -> CdpStatementAnalysis:
+    """Scan a ``cdp_python`` statement for hard-blocked CDP surfaces.
+
+    Pure function. Returns ``blocked=True`` with the matched marker
+    list when the statement references any method in
+    :data:`_CDP_BLOCKED_METHODS` OR any method on a domain in
+    :data:`_CDP_BLOCKED_DOMAINS`. The caller refuses blocked
+    statements outright -- they are NOT surfaced for two-phase
+    approval because they have no legitimate use case.
+
+    Detection is generous (a blocked token in a comment still
+    blocks); false positives are acceptable for a refuse-outright
+    gate, false negatives are not.
+    """
+    if not statement:
+        return CdpStatementAnalysis(
+            statement_preview="",
+            blocked=False,
+            blocked_markers=(),
+            char_count=0,
+        )
+    markers: list[str] = []
+    for pattern, label in _CDP_BLOCKED_METHOD_RES:
+        if pattern.search(statement) and label not in markers:
+            markers.append(label)
+    for pattern, domain in _CDP_BLOCKED_DOMAIN_RES:
+        if pattern.search(statement):
+            label = f"{domain}.* (whole domain)"
+            if label not in markers:
+                markers.append(label)
+    return CdpStatementAnalysis(
+        statement_preview=_preview(statement, cap=200),
+        blocked=bool(markers),
+        blocked_markers=tuple(markers),
+        char_count=len(statement),
+    )
+
+
+@dataclass(frozen=True)
+class BrowserCdpResult(BrowserUseResult):
+    """T11 -- ``cdp_python`` outcome.
+
+    Four terminal states:
+
+    * **Blocked** (``success=False``, ``blocked=True``,
+      ``blocked_markers`` populated). The statement touched a
+      hard-blocked CDP domain / method; NOT surfaced for approval,
+      NOT executed.
+    * **Approval required** (``success=False``,
+      ``requires_two_phase=True``, ``approval_request_id`` set). The
+      statement cleared the blocklist but ALWAYS needs two-phase
+      approval (no auto-pass for raw CDP).
+    * **Safety denied** (``success=False``, ``safety_verdict`` set).
+    * **Executed** (``success=True``). ``raw_result`` carries stdout,
+      ``value`` carries the JSON-parsed result when feasible.
+    """
+
+    raw_result: str = ""
+    value: Optional[Any] = None
+    blocked: bool = False
+    blocked_markers: tuple[str, ...] = ()
+    requires_two_phase: bool = False
+    approval_request_id: str = ""
+    statement_preview: str = ""
+    safety_verdict: str = ""
 
 
 @dataclass(frozen=True)
@@ -2782,6 +2935,162 @@ class BrowserUseTool:
             safety_verdict="ALLOW",
         )
 
+    # -- T11 raw CDP Python passthrough (YELLOW) -----------------------
+
+    def cdp_python(
+        self,
+        statement: str,
+        *,
+        user_text: str = "",
+        assume_preapproved: bool = False,
+        approval_registry: Optional[ApprovalRegistry] = None,
+        approval_timeout_s: Optional[float] = None,
+        approval_scope_key: str = "",
+        timeout_s: Optional[float] = None,
+    ) -> BrowserCdpResult:
+        """T11 (YELLOW) -- execute one Python statement against the
+        browser-use session's internals, the raw CDP escape hatch.
+
+        The most powerful + most security-sensitive browser surface.
+        Pipeline:
+
+        1. **Argument validation** -- blank statement rejected.
+        2. **Hard blocklist** -- :func:`analyze_cdp_statement` scans
+           for blocked CDP domains / methods
+           (:data:`_CDP_BLOCKED_METHODS` + :data:`_CDP_BLOCKED_DOMAINS`).
+           A match is REFUSED OUTRIGHT -- not surfaced for approval,
+           not executed -- because those methods (cert-error bypass,
+           request interception, CSP bypass, debugger attach, etc.)
+           have no legitimate ultron use case.
+        3. **Two-phase approval** -- ALWAYS required for a cleared
+           statement (no auto-pass for raw CDP). The full statement
+           is recorded verbatim in the approval metadata for the
+           audit log. ``assume_preapproved=True`` is the
+           post-voice-confirmation re-entry.
+        4. **Cap-3 safety check + subprocess** -- the validator runs
+           with the statement preview in arguments, then the CLI
+           executes ``python <statement>``; stdout is JSON-parsed.
+
+        SECURITY NOTE: variable state persists across
+        ``browser-use python`` calls in the same session (the upstream
+        contract). This method does not reset that state -- callers
+        chaining multiple cdp_python calls share a namespace. There
+        is no flush short of :meth:`close`.
+        """
+        statement = statement or ""
+        if not statement.strip():
+            return BrowserCdpResult(
+                success=False, action="cdp_python", error="empty statement"
+            )
+        analysis = analyze_cdp_statement(statement)
+        if analysis.blocked:
+            logger.warning(
+                "browser_use.cdp_python refused: blocked CDP markers %s",
+                analysis.blocked_markers,
+            )
+            return BrowserCdpResult(
+                success=False,
+                action="cdp_python",
+                error=(
+                    "refused: statement references hard-blocked CDP "
+                    f"surface ({', '.join(analysis.blocked_markers)})"
+                ),
+                blocked=True,
+                blocked_markers=analysis.blocked_markers,
+                statement_preview=analysis.statement_preview,
+                safety_verdict="BLOCK_HARD",
+            )
+        if not assume_preapproved:
+            registry = (
+                approval_registry
+                if approval_registry is not None
+                else get_approval_registry()
+            )
+            request = ApprovalRequest(
+                kind=BROWSER_CDP_APPROVAL_KIND,
+                prompt=(
+                    "Browser wants to run a raw Chrome DevTools Protocol "
+                    "command. Proceed?"
+                ),
+                actor="desktop_browser_use",
+                scope_key=approval_scope_key or self._session or "",
+                metadata={
+                    # Full statement verbatim for the audit log -- this
+                    # is the one place we keep the un-truncated text so
+                    # a security review can reconstruct exactly what ran.
+                    "statement": statement,
+                    "statement_preview": analysis.statement_preview,
+                    "char_count": analysis.char_count,
+                    "user_text": user_text,
+                    "reason_code": BROWSER_CDP_REASON_CODE,
+                },
+                timeout_seconds=approval_timeout_s,
+                delivery_channel="voice",
+            )
+            handle = registry.register(request)
+            preapproved_decision = (
+                handle.pre_resolved.outcome.value
+                if handle.pre_resolved is not None
+                else ""
+            )
+            return BrowserCdpResult(
+                success=False,
+                action="cdp_python",
+                error="two-phase approval required for raw CDP execution",
+                requires_two_phase=True,
+                approval_request_id=handle.approval_id,
+                statement_preview=analysis.statement_preview,
+                safety_verdict=preapproved_decision,
+            )
+        denial = self._safety_check(
+            action="cdp_python",
+            arguments={
+                "statement_preview": analysis.statement_preview,
+                "char_count": analysis.char_count,
+                "assume_preapproved": True,
+            },
+            user_text=user_text,
+            result_factory=BrowserCdpResult,
+            extra_result_kwargs={
+                "statement_preview": analysis.statement_preview,
+                "requires_two_phase": True,
+            },
+        )
+        if denial is not None:
+            return denial
+        result = self._invoke(
+            ["python", statement],
+            action="cdp_python",
+            timeout_s=timeout_s,
+        )
+        if not result.success:
+            return BrowserCdpResult(
+                success=False,
+                action="cdp_python",
+                stdout=result.stdout,
+                stderr=result.stderr,
+                error=result.error,
+                elapsed_ms=result.elapsed_ms,
+                exit_code=result.exit_code,
+                statement_preview=analysis.statement_preview,
+                requires_two_phase=True,
+                safety_verdict="ALLOW",
+            )
+        value, raw_result = _try_parse_eval_payload(result.stdout)
+        return BrowserCdpResult(
+            success=True,
+            action="cdp_python",
+            stdout=result.stdout,
+            stderr=result.stderr,
+            elapsed_ms=result.elapsed_ms,
+            exit_code=result.exit_code,
+            raw_result=raw_result,
+            value=value,
+            statement_preview=analysis.statement_preview,
+            requires_two_phase=True,
+            safety_verdict="ALLOW",
+        )
+
     def _register_eval_approval(
         self,
         *,
@@ -3550,6 +3859,9 @@ def _try_parse_tabs(
 
 
 __all__ = [
+    "BROWSER_CDP_APPROVAL_KIND",
+    "BROWSER_CDP_BLOCKED_REASON_CODE",
+    "BROWSER_CDP_REASON_CODE",
     "BROWSER_COOKIES_APPROVAL_KIND",
     "BROWSER_COOKIES_REASON_CODE",
     "BROWSER_JS_APPROVAL_KIND",
@@ -3561,6 +3873,7 @@ __all__ = [
     "BrowserAttributesResult",
     "BrowserBbox",
     "BrowserBboxResult",
+    "BrowserCdpResult",
     "BrowserConnectResult",
     "BrowserCookie",
     "BrowserCookiesResult",
@@ -3580,11 +3893,13 @@ __all__ = [
     "BrowserValueResult",
     "BrowserWaitResult",
     "COOKIE_SAME_SITE_VALUES",
+    "CdpStatementAnalysis",
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_WAIT_TIMEOUT_MS",
     "JsScriptAnalysis",
     "SCROLL_DIRECTIONS",
     "WAIT_SELECTOR_STATES",
+    "analyze_cdp_statement",
     "analyze_js_script",
     "get_browser_use_tool",
     "reset_browser_use_tool_for_testing",
