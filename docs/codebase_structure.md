@@ -37,8 +37,20 @@
 >   log. Forensic / defense-in-depth in the single-user in-process
 >   runtime (minter + verifier share a trust boundary), not a hard
 >   gate. Fail-open.
-> * T12 (report queue), T18 (image markdown) wiring in subsequent
->   commits of this pass.
+> * **T12 report queue** (`feedback/report_queue.py` +
+>   NEW `feedback/report_intent.py`) -- a spoken "log a concern /
+>   flag that response / that answer was wrong" is matched by the
+>   strict `match_report_concern` regex (no LLM round-trip; benign
+>   "report on the weather" does NOT trip it) and intercepted in the
+>   orchestrator run loop BEFORE routing (where `_last_response_text`
+>   still holds the prior turn). `_maybe_handle_report_concern` files
+>   a `Report` (target_id = 16-hex digest of the prior response,
+>   reason = verbatim utterance, response preview in extras) to the
+>   hash-chained `data/feedback/reports.jsonl` and speaks an ack.
+>   Triage stays deferred to a future operator pass (the catalog's
+>   YELLOW two-phase-gated triage); filing is the low-risk
+>   append-only half. Fail-open.
+> * T18 (image markdown) wiring in the next commit of this pass.
 >
 > **Validating HEAD:** catalog 10 (clawhub-browser-use) port on
 > `claude/stoic-banach-74402b` (pushed to `origin/main`). Nine-batch

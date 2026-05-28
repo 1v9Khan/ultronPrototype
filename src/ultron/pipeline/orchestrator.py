@@ -651,6 +651,12 @@ class Orchestrator:
         # privacy-by-construction contract is the documented reason this
         # one feature does not default-on.
         self._metrics_store = self._init_telemetry_store()
+        # openclaw-clawhub T12 -- user-initiated report queue. A spoken
+        # "log a concern about that response" files an audit-logged
+        # Report the user (or a future operator pass) can triage later.
+        # Append-only JSONL; fail-open. Constructed unconditionally
+        # (harmless log; default-on per the ship-session-work rule).
+        self._report_queue = self._init_report_queue()
         # 2026-05-24 SWE-Agent batch 7 (T16) -- visual click-preview
         # gate. When ``desktop.click_preview.enabled: true`` AND a VLM
         # is loaded, install a new InputController singleton that
@@ -1030,6 +1036,87 @@ class Orchestrator:
             store.record_event(event)
         except Exception as e:  # noqa: BLE001
             logger.debug("telemetry emit failed: %s", e)
+
+    def _init_report_queue(self):
+        """openclaw-clawhub T12 -- construct the user report queue.
+
+        Returns a :class:`ReportQueue` persisting to
+        ``data/feedback/reports.jsonl`` (or None on failure). The
+        log is append-only with a SHA-256 hash chain (tamper-evident,
+        same shape as the safety audit log).
+        """
+        try:
+            from ultron.config import PROJECT_ROOT
+            from ultron.feedback.report_queue import ReportQueue
+
+            log_path = PROJECT_ROOT / "data" / "feedback" / "reports.jsonl"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            return ReportQueue(audit_log_path=log_path)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("report queue construction skipped: %s", e)
+            return None
+
+    def _maybe_handle_report_concern(self, user_text: str) -> bool:
+        """openclaw-clawhub T12 -- file a Report when the user voices a
+        concern about the assistant's last response.
+
+        Returns True iff the utterance was a report-a-concern command
+        (and was handled: report filed + voice ack spoken). Returns
+        False to let the utterance fall through to normal routing.
+
+        Reads ``self._last_response_text`` (the PRIOR turn's response,
+        still intact at the run-loop interception point) to anchor the
+        report. Fail-open: a queue / filing error still speaks a clear
+        message and returns True so the command isn't silently dropped
+        into the LLM path.
+        """
+        try:
+            from ultron.feedback.report_intent import match_report_concern
+        except Exception as e:  # noqa: BLE001
+            logger.debug("report_intent import failed: %s", e)
+            return False
+        match = match_report_concern(user_text)
+        if match is None:
+            return False
+        queue = getattr(self, "_report_queue", None)
+        if queue is None:
+            # No queue wired -- don't intercept; let the LLM respond so
+            # the user isn't met with silence.
+            return False
+        import hashlib
+
+        prior = (getattr(self, "_last_response_text", "") or "").strip()
+        target_id = (
+            hashlib.sha256(prior.encode("utf-8")).hexdigest()[:16]
+            if prior
+            else "no_prior_turn"
+        )
+        try:
+            queue.file_report(
+                target_kind=match.target_kind,
+                target_id=target_id,
+                reason=match.reason,
+                reporter_voice_session=str(
+                    getattr(getattr(self, "memory", None), "session_id", "") or ""
+                ),
+                extras={"response_preview": prior[:200]},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("report filing failed: %s", e)
+            try:
+                self._speak("I couldn't log that concern just now.")
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        if prior:
+            ack = "Logged. I've filed a concern about the last response for review."
+        else:
+            ack = "Logged your concern, though there's no prior response to attach it to."
+        try:
+            self._speak(ack)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("report ack speak failed: %s", e)
+        return True
 
     def _mint_forensic_token(
         self,
@@ -2797,6 +2884,28 @@ class Orchestrator:
                         has_active_task=has_active,
                         has_pending_clarification=has_pending,
                     )
+                    # openclaw-clawhub T12: intercept "log a concern /
+                    # flag that response" BEFORE the capability path. The
+                    # handler needs _last_response_text (the PRIOR turn's
+                    # response), still intact here, to anchor the filed
+                    # Report. A strict regex matcher gates this so normal
+                    # queries never trip it; on no-match it returns False
+                    # and the turn proceeds to routing as usual.
+                    if self._maybe_handle_report_concern(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="report_concern",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
                     # 2026-05-22 OPEN_LAST_SOURCE: intercept here because
                     # the handler needs orchestrator-local state
                     # (_last_search_payload + _last_response_text) that
