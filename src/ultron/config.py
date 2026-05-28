@@ -1378,6 +1378,38 @@ class DuckDuckGoConfig(_Strict):
     safesearch: Literal["moderate", "strict", "off"] = "moderate"
 
 
+class WebSearchQueryReformulationConfig(_Strict):
+    """Catalog 12 (felo-search T1): pre-search query reformulation.
+
+    Felo returns the reformulated sub-queries it used internally
+    (``query_analysis``); decomposing a complex question into several
+    targeted searches improves recall. Before the provider fan-out the
+    primary query is expanded into up to ``max_variants`` additional
+    queries that :class:`~ultron.web_search.search.WebSearchExecutor`
+    merges into its existing query list (deduped + URL-merged through
+    the same provider chain + cache; a hard
+    :data:`~ultron.web_search.query_rewrite.MAX_TOTAL_QUERIES` ceiling
+    bounds the fan-out).
+
+    ``use_llm=False`` (default) uses ZERO-COST structural rules ("X vs Y"
+    -> two balanced queries; "how to X" -> "X tutorial"/"X guide"; "best
+    X" -> "X review"/"X comparison"; leading temporal qualifier -> bare
+    subject). ``use_llm=True`` adds ONE short in-process Qwen call
+    (~150-250 ms, only on the SEARCH path which already pays a network
+    round-trip) that decomposes the question. Both paths FAIL OPEN to the
+    original query, so the search path is never broken.
+
+    Default ON (rule-based variant is zero-cost + only affects the SEARCH
+    path); the LLM variant is opt-in because of its per-search latency
+    cost (this is the catalog's documented recommendation, not a
+    voice-baseline-preservation default-off).
+    """
+
+    enabled: bool = True
+    use_llm: bool = False
+    max_variants: int = Field(default=2, ge=0, le=4)
+
+
 class WebSearchConfig(_Strict):
     enabled: bool = True
     brave_api_key_env: str = "ULTRON_BRAVE_API_KEY"
@@ -1419,6 +1451,12 @@ class WebSearchConfig(_Strict):
     #   slice to top_n. ~0 ms. Reasonable when SearxNG / Brave already
     #   rank well and you want the absolute fastest path.
     ranker: Literal["cross_encoder", "llm", "none"] = "cross_encoder"
+    # Catalog 12 (felo-search T1): pre-search query reformulation. Default
+    # ON (rule-based, zero-cost); flip ``use_llm`` for in-process-LLM
+    # decomposition on the SEARCH path.
+    query_reformulation: WebSearchQueryReformulationConfig = Field(
+        default_factory=WebSearchQueryReformulationConfig,
+    )
 
 
 class AddressingConfig(_Strict):

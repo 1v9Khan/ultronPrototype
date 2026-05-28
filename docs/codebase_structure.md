@@ -28,22 +28,33 @@
 >   SEARCH instead of escalating to the preflight LLM). Patterns kept tight
 >   (no bare "better"/"best"/"buy"/"cost") to keep the false-positive rate
 >   near zero. No new config knob; zero latency. +21 hermetic tests.
-> * Batch B (T1, GREEN): query reformulation pre-search step — PENDING.
+> * **Batch B (T1, GREEN) — DONE:** pre-search query reformulation. NEW
+>   `web_search/query_rewrite.py` (`reformulate_query` + `expand_query_rules`
+>   zero-cost structural rewrites + opt-in `expand_query_llm` in-process
+>   decomposition + `maybe_reformulate_queries` executor helper, all
+>   fail-open; `MAX_TOTAL_QUERIES=5` ceiling). Wired into
+>   `WebSearchExecutor.run` BEFORE the existing dedup + fan-out (the
+>   per-query URL-dedup + cache absorb the variants transparently). New
+>   `web_search.query_reformulation.{enabled:true, use_llm:false,
+>   max_variants:2}` config (default ON, rule-based; LLM opt-in per the
+>   catalog's latency note). Logs to `logs/search_reformulations.jsonl`.
+>   +40 hermetic tests.
 > * Batch C (T4, GREEN): search-strategy transparency — PENDING.
 > * Batch D (T3, YELLOW): `DeepResearchLoop(AgentLoop)` + `DEEP_RESEARCH`
 >   intent over the free ladder — PENDING.
 > * Batch E: cross-system deep loops (memory / codebase / desktop) — PENDING.
 >
 > Test baseline (main-checkout projection): 8546 (catalog 11) + 21 (Batch A)
-> = **8567 passed / 26 skipped / 0 failed**. The new gating tests are
-> pure-regex + filesystem-independent so they pass identically in main; the
-> canonical absolute count is finalised from a main-checkout sweep at
-> session end. (Worktree sweeps report a lower absolute count because
-> `models/` + some filesystem-parametrized fixtures live only in the main
-> checkout: Batch A worktree sweep = 8545 passed / 27 skipped / 1 deselected
-> [bridge-e2e flake] / 0 failed.) Voice baseline contract intact — gate
-> rules are pure regex on the SEARCH-classification path; no voice hot-path,
-> model, or config-default touch.
+> + 40 (Batch B) = **8607 passed / 26 skipped / 0 failed**. New tests are
+> filesystem-independent (pure-function regex + fake-LLM/fake-config) so
+> they pass identically in main; the canonical absolute count is finalised
+> from a main-checkout sweep at session end. (Worktree sweeps report a lower
+> absolute count because `models/` + some filesystem-parametrized fixtures
+> live only in the main checkout: latest Batch B worktree sweep = 8606
+> passed / 27 skipped / 1 deselected [bridge-e2e flake] / 0 failed.) Voice
+> baseline contract intact — gate rules + rule-based reformulation are pure
+> functions on the SEARCH-classification path; the LLM reformulation variant
+> is opt-in (`use_llm`); no voice hot-path or model-default touch.
 >
 > **Earlier validating HEAD:** catalog 11 (clawhub-browser-agent) port on
 > `origin/main` (worktree branch `claude/eloquent-solomon-fc0df3`; the
@@ -917,7 +928,8 @@ For the current decisions and Foundation phase status see
 │       │   ├── provider_chain.py   ← 2026-05-22 frontier: SearchProviderChain (searxng -> brave -> duckduckgo); first-non-empty-wins cascade; per-provider client construction memoized; forwards categories= only to SearxNG. 2026-05-25 openclaw-clawhub batch 1 (T14): RateLimitTracker integration -- constructor `tracker` kwarg (defaults to process-wide singleton via :func:`get_global_tracker`); `should_skip(pid)` consults the tracker before each provider attempt; `record_provider_outcome(pid, headers, was_429)` is the public hook clients call after each request to keep cooldowns fresh. Purely additive: existing clients unchanged; chain skips known-cooled providers silently.
 │       │   ├── rate_limit.py       ← 2026-05-25 openclaw-clawhub batch 1 (T14): HTTP rate-limit envelope parser + backoff helpers + per-provider tracker. Header constants for the legacy `X-RateLimit-*` family + standard `RateLimit-*` family + `Retry-After`. :func:`parse_retry_after` handles numeric seconds, IMF-fixdate, large-value-as-epoch (>=31_000_000s) heuristic, past-date clamping. :func:`parse_rate_limit_headers` returns frozen :class:`RateLimitState` with preferred-fallback order Retry-After -> RateLimit-Reset -> X-RateLimit-Reset. :class:`BackoffConfig` defaults base=0.3s / cap=5.0s / jitter=0.3s. :func:`compute_backoff` server-hint-or-exponential. :class:`RateLimitTracker` per-provider cooldown + 429 counter + RLock-guarded. Module-level :func:`get_global_tracker` singleton + :func:`reset_global_tracker_for_testing` test hook. Generalised beyond web-search (re-usable for future MCP transport, Jina reader, remote-LLM cascade).
 │       │   ├── reader_chain.py     ← 2026-05-22 frontier: ReaderProviderChain (trafilatura -> jina) for full-text extraction
-│       │   ├── search.py           ← WebSearchExecutor (orchestrates chain + reader chain + ranking); 2026-05-22 categories= param forwarded for news-category SearxNG routing
+│       │   ├── query_rewrite.py    ← 2026 catalog 12 (felo-search T1): pre-search query reformulation. reformulate_query + expand_query_rules (zero-cost "X vs Y"/"how to X"/"best X"/leading-temporal rewrites) + opt-in expand_query_llm (in-process Qwen decomposition) + maybe_reformulate_queries executor helper; QueryReformulation dataclass; MAX_TOTAL_QUERIES=5 fan-out ceiling; fail-open; logs to logs/search_reformulations.jsonl
+│       │   ├── search.py           ← WebSearchExecutor (orchestrates chain + reader chain + ranking); 2026-05-22 categories= param forwarded for news-category SearxNG routing. 2026 catalog 12 (felo-search T1): run() calls maybe_reformulate_queries before _dedupe_queries + fan-out
 │       │   ├── searxng.py          ← 2026-05-22 frontier: SearxNGSearchClient (local Docker JSON API); circuit-breaker protected; X-Forwarded-For header satisfies botdetection; per-call categories override
 │       │   └── trafilatura_reader.py ← 2026-05-22 frontier: TrafilaturaReaderClient (local Python lib; ~32 k char cap)
 │       │
@@ -2496,6 +2508,14 @@ Module is I/O-free. Callers wire their own persistence (Qdrant payload, JSONL au
   - `run(user_query, search_queries?, top_n=3, categories=None) -> SearchPayload` — 2026-05-22: `categories` param forwarded to the chain (only SearxNG accepts; Brave/DDG ignore). Set to `"news"` from the orchestrator when `_NEWS_QUERIES` regex matches.
 - `format_sources_for_prompt(sources)` / `format_sources_for_transcript(sources)` — references list always uses bracket form for monospace clarity.
 
+#### `web_search/query_rewrite.py` (2026 catalog 12, felo-search T1)
+- `class QueryReformulation` — frozen `(original, variants, method)`; `.all_queries` = original + variants deduped case-insensitively, order-preserving.
+- `expand_query_rules(query, *, max_variants)` — zero-cost structural rewrites: `"X vs Y [tail]"` → two balanced queries (tail grafted onto the left subject); `"how to X"` → `"X tutorial"` / `"X guide"`; `"best/top X"` → `"X review"` / `"X comparison"` (skips `"best practices"`); a leading temporal qualifier (`latest`/`recent`/`current`) → the bare subject. Deduped vs original; capped at `max_variants`.
+- `expand_query_llm(query, llm, *, max_variants)` — one short in-process Qwen call (`/no_think` marker; `_parse_queries_json` tolerant of think-blocks / fences / prose); fail-open to `[]`.
+- `reformulate_query(query, *, use_llm, llm, max_variants, enabled)` → `QueryReformulation` — LLM-first when `use_llm` (falls back to rules on empty/error), else rules-only.
+- `maybe_reformulate_queries(user_query, base_queries, *, llm)` → `list[str]` — executor-facing: reads `web_search.query_reformulation` config, merges variants into `base_queries`, deduped + capped at `MAX_TOTAL_QUERIES=5`; logs to `logs/search_reformulations.jsonl`; fail-open (returns base unchanged on disabled / error).
+- **Wired in `WebSearchExecutor.run`** (`search.py`): expands the query list BEFORE `_dedupe_queries` + the per-query fan-out, so the existing URL-dedup + cache absorb variants transparently. Default ON (rule-based, zero-cost); `use_llm` opt-in adds ~150-250 ms on the SEARCH path only. Voice baseline untouched.
+
 ### `src/ultron/tts/`
 
 #### `tts/precomputed_ack.py` (NEW 2026-05-15 latency pass)
@@ -3648,7 +3668,7 @@ Sections:
 - `embeddings` (dense_model, sparse_model, dense_dim)
 - `qdrant` (data_dir="data/qdrant", collections.{conversations, facts, web_results, **projects** [2026-05-22 supervisor stack]})
 - `memory` (enabled, jsonl_legacy_path, recent_turns, rag_top_k, rag_exclude_recent, facts_top_k, write_queue_maxsize, **retrieval.{multi_pass_enabled=false, max_categories_per_query=4, candidates_per_category_multiplier=4}** (V1-gap A2), **ranking.{rrf_weight=1.0, recency_weight=0.2, recency_half_life_days=7.0, surprise_weight=0.15, redundancy_weight=0.3}** (V1-gap A2), **rag_min_relevance=0.6** (NEW 2026-05-09: cosine-similarity floor for RAG candidates; tuned empirically with bge-small INT8 -- off-topic content peaks ~0.55-0.57, truly relevant 0.7-0.95), **history_turns_for_llm=4** (NEW 2026-05-09: cap on recent-turn history fed to LLM per call; prevents topic-bleed when user pivots topics))
-- `web_search` (enabled, brave_api_key_env, brave/jina/cache subsections, **citation.inline_marker_format="bracket"** [V1-gap B3]). 2026-05-09 latency fix tunables: **`jina.timeout_seconds: 6.0`** (was 15.0), **`jina.max_fetch: 2`** (was 3), **`jina.collective_deadline_seconds: 6.0`** (NEW — executor-side cap on parallel fetch wait; 0 disables).
+- `web_search` (enabled, brave_api_key_env, brave/jina/cache subsections, **citation.inline_marker_format="bracket"** [V1-gap B3]). 2026-05-09 latency fix tunables: **`jina.timeout_seconds: 6.0`** (was 15.0), **`jina.max_fetch: 2`** (was 3), **`jina.collective_deadline_seconds: 6.0`** (NEW — executor-side cap on parallel fetch wait; 0 disables). 2026 catalog 12 (felo-search T1): **`query_reformulation.{enabled: true, use_llm: false, max_variants: 2}`** — pre-search query expansion (rule-based default, zero-cost; LLM decomposition opt-in via `use_llm`).
 - `addressing` (follow_up_enabled, **warm_mode_duration_seconds: 30.0** ← user override, NOT 10s; rule_confidence_threshold, **zero_shot_addressed_min_confidence: 0.80** [NEW 2026-05-11: demotes low-confidence zero-shot YES verdicts to NOT_ADDRESSED via default_silent; catches the borderline third-person utterances flan-t5-small saturates on at 0.75. Set to 0.0 for legacy permissive behaviour.], zero_shot_model, log_path)
 - `coding` (enabled, bridge="direct", mcp.{host,port,...}, template_dir, prompt_token_budget, default/escalation models + thresholds, verification.{smoke,test,lint}_timeout, session_audit_dir, **token_budget_per_session=400000** [2026-05-11 bump from 100000 — new-project sessions burn 100k+ on tool exploration alone before writing files; 400k gives headroom while the 80% warning still fires. Paired with the 2026-05-11 narration honesty fix so users get an explicit "no files written" signal when budget is exhausted mid-exploration], claude_cli, sandbox_root, project_registry_path, audit_log_path, task_timeout, skip_permissions, **voice_task_require_testing=false** [NEW 2026-05-11 token-efficiency fix: was implicitly true via voice.py hardcode, which prepended a "MUST write tests, run, fix, re-run" preamble to every voice-dispatched Claude prompt and 3-5x'd the token spend. Default false lets small voice asks land lean. Users who want tests can say "with unit tests" in their voice request or flip this flag], **facts.{top_k=5, min_confidence=0.75, min_score=0.85, max_age_days=null}** [V1-gap A3], **pre_task_confirmation_enabled=false, pre_task_confirmation_max_words=30, pre_task_barge_in_window_seconds=0.5** [V1-gap A4])
 - `projections` (tokenizer, budgets.{clarification,status_delta,adjustment,correction,completion}_context, truncation_warning_threshold, log_truncations)

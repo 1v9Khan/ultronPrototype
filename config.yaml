@@ -719,6 +719,21 @@ web_search:
   citation:
     inline_marker_format: "superscript"
 
+  # Catalog 12 (felo-search T1) -- pre-search query reformulation. Before
+  # the provider fan-out, the primary query is expanded into targeted
+  # variants that merge into the existing query list (deduped + URL-merged
+  # through the same chain + cache; a hard ceiling bounds the fan-out).
+  # Default ON with ZERO-COST structural rules ("X vs Y" -> two balanced
+  # queries; "how to X" -> "X tutorial"/"X guide"; "best X" -> "X
+  # review"/"X comparison"; leading temporal qualifier -> bare subject).
+  # Flip use_llm to add ONE short in-process Qwen decomposition call on the
+  # SEARCH path (~150-250 ms; fires only on SEARCH turns). Both paths fail
+  # open to the original query.
+  query_reformulation:
+    enabled: true
+    use_llm: false
+    max_variants: 2
+
 # ---------------------------------------------------------------------------
 # Addressing (warm/cold mode + classifier)
 # ---------------------------------------------------------------------------

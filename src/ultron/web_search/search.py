@@ -449,6 +449,24 @@ class WebSearchExecutor:
         t0 = time.monotonic()
         notes: List[str] = []
         raw_queries = [q.strip() for q in (search_queries or [user_query]) if q and q.strip()]
+        # Catalog 12 (felo-search T1): expand the primary query into
+        # targeted variants before dedup + fan-out. The executor's existing
+        # per-query fan-out + URL-dedup + cache handle the extra variants
+        # transparently; a hard ceiling bounds the total. Fail-open --
+        # reformulation never breaks the search path (default rule-based is
+        # zero-cost; the opt-in LLM path adds one short call on this
+        # already-network-bound SEARCH turn).
+        try:
+            from ultron.web_search.query_rewrite import maybe_reformulate_queries
+            reformulated = maybe_reformulate_queries(
+                user_query, raw_queries, llm=self.llm,
+            )
+            if reformulated and len(reformulated) != len(raw_queries):
+                notes.append(f"query_reform:{len(raw_queries)}->{len(reformulated)}")
+            if reformulated:
+                raw_queries = reformulated
+        except Exception as e:                                             # noqa: BLE001
+            logger.debug("query reformulation skipped (%s)", e)
         # V1-gap B2: dedupe near-duplicate Brave queries before the
         # fan-out. The pre-flight pass occasionally emits 2-3 queries
         # that share the same canonical-token set ("Tampa weather
