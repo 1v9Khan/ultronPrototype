@@ -942,3 +942,149 @@ def test_browser_inputs_with_values_are_rendered(monkeypatch):
     snap = build_screen_context(capture=False, include_uia=True)
     assert "input: Email: user@x.com" in snap.ui_text
     assert "input: Password" in snap.ui_text
+
+
+# ---------------------------------------------------------------------------
+# Catalog 10 batch 9 -- browser-use CDP fallback tier
+# ---------------------------------------------------------------------------
+
+
+class _FakeBuState:
+    def __init__(self, *, success=True, url="https://x.com", title="X", elements=()):
+        self.success = success
+        self.url = url
+        self.title = title
+        self.elements = elements
+
+
+class _FakeBuElement:
+    def __init__(self, index, label, type_="button"):
+        self.index = index
+        self.label = label
+        self.type = type_
+
+
+class _FakeBuTool:
+    def __init__(self, *, available=True, state=None):
+        self._available = available
+        self._state = state if state is not None else _FakeBuState()
+
+    def is_available(self):
+        return self._available
+
+    def state(self):
+        return self._state
+
+
+def _set_bu_fallback_enabled(monkeypatch, enabled: bool) -> None:
+    import ultron.desktop.screen_context as sc
+
+    class _Cfg:
+        class browser_use:
+            screen_context_fallback_enabled = enabled
+
+    monkeypatch.setattr(sc, "get_config", lambda: _Cfg, raising=False)
+    # screen_context imports get_config lazily inside the helper, so
+    # patch the source module too.
+    import ultron.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "get_config", lambda: _Cfg)
+
+
+class TestBrowserUseFallbackHelper:
+    def test_disabled_returns_empty(self, monkeypatch):
+        from ultron.desktop import screen_context as sc
+        import ultron.desktop.browser_use as bu
+
+        _set_bu_fallback_enabled(monkeypatch, False)
+        monkeypatch.setattr(bu, "get_browser_use_tool", lambda: _FakeBuTool())
+        assert sc._maybe_browser_use_state_text(40) == ()
+
+    def test_no_tool_returns_empty(self, monkeypatch):
+        from ultron.desktop import screen_context as sc
+        import ultron.desktop.browser_use as bu
+
+        _set_bu_fallback_enabled(monkeypatch, True)
+        monkeypatch.setattr(bu, "get_browser_use_tool", lambda: None)
+        assert sc._maybe_browser_use_state_text(40) == ()
+
+    def test_unavailable_tool_returns_empty(self, monkeypatch):
+        from ultron.desktop import screen_context as sc
+        import ultron.desktop.browser_use as bu
+
+        _set_bu_fallback_enabled(monkeypatch, True)
+        monkeypatch.setattr(
+            bu, "get_browser_use_tool",
+            lambda: _FakeBuTool(available=False),
+        )
+        assert sc._maybe_browser_use_state_text(40) == ()
+
+    def test_empty_url_returns_empty(self, monkeypatch):
+        from ultron.desktop import screen_context as sc
+        import ultron.desktop.browser_use as bu
+
+        _set_bu_fallback_enabled(monkeypatch, True)
+        tool = _FakeBuTool(state=_FakeBuState(url=""))
+        monkeypatch.setattr(bu, "get_browser_use_tool", lambda: tool)
+        assert sc._maybe_browser_use_state_text(40) == ()
+
+    def test_failed_state_returns_empty(self, monkeypatch):
+        from ultron.desktop import screen_context as sc
+        import ultron.desktop.browser_use as bu
+
+        _set_bu_fallback_enabled(monkeypatch, True)
+        tool = _FakeBuTool(state=_FakeBuState(success=False))
+        monkeypatch.setattr(bu, "get_browser_use_tool", lambda: tool)
+        assert sc._maybe_browser_use_state_text(40) == ()
+
+    def test_success_folds_labelled_content(self, monkeypatch):
+        from ultron.desktop import screen_context as sc
+        import ultron.desktop.browser_use as bu
+
+        _set_bu_fallback_enabled(monkeypatch, True)
+        state = _FakeBuState(
+            url="https://example.com",
+            title="Example",
+            elements=(
+                _FakeBuElement(0, "Sign in", "button"),
+                _FakeBuElement(1, "", "input"),  # empty label skipped
+            ),
+        )
+        monkeypatch.setattr(
+            bu, "get_browser_use_tool", lambda: _FakeBuTool(state=state)
+        )
+        result = sc._maybe_browser_use_state_text(40)
+        assert any("browser-use page title: Example" in s for s in result)
+        assert any("browser-use url: https://example.com" in s for s in result)
+        assert any("Sign in" in s for s in result)
+        # Every line carries the browser-use prefix so it's distinguishable.
+        assert all(s.startswith("browser-use") for s in result)
+
+    def test_caps_at_max_elements(self, monkeypatch):
+        from ultron.desktop import screen_context as sc
+        import ultron.desktop.browser_use as bu
+
+        _set_bu_fallback_enabled(monkeypatch, True)
+        many = tuple(_FakeBuElement(i, f"el{i}") for i in range(100))
+        monkeypatch.setattr(
+            bu, "get_browser_use_tool",
+            lambda: _FakeBuTool(state=_FakeBuState(elements=many)),
+        )
+        result = sc._maybe_browser_use_state_text(10)
+        assert len(result) <= 10
+
+    def test_tool_exception_fails_open(self, monkeypatch):
+        from ultron.desktop import screen_context as sc
+        import ultron.desktop.browser_use as bu
+
+        _set_bu_fallback_enabled(monkeypatch, True)
+
+        class _Boom:
+            def is_available(self):
+                return True
+
+            def state(self):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(bu, "get_browser_use_tool", lambda: _Boom())
+        assert sc._maybe_browser_use_state_text(40) == ()

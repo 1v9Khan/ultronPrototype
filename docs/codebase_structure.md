@@ -10,7 +10,61 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** `bca58b0` on `claude/priceless-swanson-59e65b`
+> **Validating HEAD:** catalog 10 (clawhub-browser-use) port on
+> `claude/stoic-banach-74402b` (pushed to `origin/main`). Nine-batch
+> port wrapping the external open-source `browser-use` CLI as ultron's
+> CDP-backed browser automation tier -- the second tier above the UIA
+> `extract_browser_content` extractor. The plugin source was
+> documentation-only (a `SKILL.md` + two `references/*.md` recipes +
+> `_meta.json`; no Python source), so `src/ultron/desktop/browser_use.py`
+> is a clean-room subprocess wrapper around the documented public CLI
+> surface -- NOT a vendored copy. Independent zero-RED-confirmation
+> security review via a Sonnet 4.6 Explore agent; T12 (cloud, paid
+> API) + T13 (Cloudflare tunnel) NOT ported (RED). 8 GREEN + 5 YELLOW
+> + 2 RED.
+>
+> | Batch | SHA | Techniques |
+> |---|---|---|
+> | 1 | `35c8469` | T1 state + T2 extraction + T5 wait + T6 tabs (GREEN read foundation) |
+> | 2 | `ad26469` | T7 write primitives + T9 screenshot (GREEN/YELLOW; upload PathResolver-gated) |
+> | 3 | `3311031` | T3 JS eval -- static analysis + two-phase approval (YELLOW) |
+> | 4 | `438a7b2` | T4 cookies get/set/clear/export/import (YELLOW) |
+> | 5 | `fa2b981` | T8 named-session isolation -- `browser_sessions.py` BrowserSessionsManager (YELLOW) |
+> | 6 | `45cd46e` | T10 profile connect + connect_profile + profile_list (YELLOW) |
+> | 7 | `de28c0e` | T11 raw CDP passthrough -- domain blocklist + always-two-phase (YELLOW) |
+> | 8 | `1721b6a` | BrowserSequenceRunner -- `browser_sequence.py` (creative extension, GREEN) |
+> | 9 | (this commit) | orchestrator singleton construction + screen_context fallback tier + THIRD_PARTY_NOTICES |
+>
+> New modules: `src/ultron/desktop/browser_use.py` (the tool),
+> `src/ultron/desktop/browser_sessions.py` (session manager),
+> `src/ultron/desktop/browser_sequence.py` (sequence runner). New
+> top-level `browser_use` config section (8 knobs, all default ON;
+> fail-open covers the missing-binary case). Orchestrator constructs
+> the `BrowserUseTool` + `BrowserSessionsManager` singletons at
+> startup (`_load_browser_use_if_enabled`). `screen_context.py` gains
+> a gated browser-use fallback tier (`_maybe_browser_use_state_text`)
+> that fires only when the UIA browser extraction returned empty AND
+> the tool is live with an active page; content is clearly
+> "browser-use ..."-labelled because the daemon controls its own
+> browser instance (the user's foreground only after connect/connect_profile).
+> Every YELLOW write routes through `safety.validator` + (for the
+> destructive / takeover ops) `safety.two_phase_approval`. The
+> `browser-use` binary is NOT a hard dependency.
+>
+> Tests: **+431 hermetic** across `tests/desktop/test_browser_use.py`
+> (320), `test_browser_sessions.py` (31), `test_browser_sequence.py`
+> (18), + 8 screen_context fallback cases + the prior baseline.
+> Full sweep green with the documented-flaky
+> `test_bridge_e2e.py::test_health_through_real_subprocess` deselected
+> (it passes 0.39s isolated but leaks a subprocess + stalls the sweep
+> to the wall-clock deadline under contention -- a pre-existing
+> environmental flake unrelated to this port; browser_use.py is
+> isolated from the bridge e2e path). Voice baseline contract intact
+> (no SOUL.md / RVC / Piper / vocal WAV / LLM model file / Kokoro
+> fine-tune voicepack touch; orchestrator startup gains only the
+> cheap + lazy + fail-open singleton construction).
+>
+> **Earlier validating HEAD:** `bca58b0` on `claude/priceless-swanson-59e65b`
 > -- handoff-cleanup commit on top of the default-ON sweep (`aa00bb9`)
 > + doc-bump (`169da18`). Fixes two stale-test / sloppy-iteration
 > surfaces revealed once the production-wiring defaults turned more
@@ -24,11 +78,7 @@
 > attach goal-anchors / AST-syntax / pre-write-lint / dialog-auto-handler.
 > Replaced with a qualname-introspecting `_has_canonical_monitor_listener`
 > helper so the test only asserts on the wire it's named after.
->
-> Tests: **8046 passing / 26 skipped / 0 failed in ~107 s**. This is
-> the correct count for HEAD; the prior "7821 passing" report came
-> from a sweep the heartbeat watchdog killed at 400s before all
-> tests were collected.
+> Tests at that HEAD: **8046 passing / 26 skipped / 0 failed in ~107 s**.
 >
 > **Earlier validating HEAD:** `aa00bb9` on `claude/priceless-swanson-59e65b`
 > -- default-ON sweep on top of the catalog 09 production-wiring pass.

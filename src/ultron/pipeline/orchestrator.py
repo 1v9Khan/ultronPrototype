@@ -636,6 +636,12 @@ class Orchestrator:
         # screen_context module can call into it via the registered
         # describe-bridge.
         self._load_desktop_vlm_if_enabled()
+        # 2026 catalog 10 -- construct the browser-use CDP tool +
+        # session manager singletons from config. Cheap + lazy (binary
+        # discovery deferred to first call) + fail-open (no browser-use
+        # binary on PATH leaves every method returning a structured
+        # "binary missing" result). Default ON.
+        self._load_browser_use_if_enabled()
         # 2026-05-24 SWE-Agent batch 7 (T16) -- visual click-preview
         # gate. When ``desktop.click_preview.enabled: true`` AND a VLM
         # is loaded, install a new InputController singleton that
@@ -854,6 +860,72 @@ class Orchestrator:
             logger.warning(
                 "VLM construction skipped (%s) -- screen-context queries "
                 "will fall back to text-only window/UIA context.", e,
+            )
+
+    def _load_browser_use_if_enabled(self) -> None:
+        """2026 catalog 10 -- construct the browser-use CDP tool +
+        session-manager singletons from config.
+
+        Cheap + lazy + fail-open at every layer:
+
+        * Construction does NOT discover the binary or spawn anything
+          (binary discovery is deferred to the first CLI call).
+        * When ``browser_use.enabled`` is False, this is a no-op and
+          the singletons stay unset (callers that read them via
+          :func:`get_browser_use_tool` get None and degrade).
+        * Any construction error logs WARN and leaves the singletons
+          unset. The voice path is never blocked -- the browser tier
+          is opt-in infrastructure, not on the conversational hot path.
+
+        The session manager's cap is wired from ``browser_use.max_sessions``
+        so the config knob drives the runtime limit.
+        """
+        try:
+            from ultron.config import get_config
+
+            cfg = get_config().browser_use
+        except Exception as e:  # noqa: BLE001
+            logger.warning("browser_use: config read failed (%s)", e)
+            return
+        if not getattr(cfg, "enabled", False):
+            return
+        try:
+            from ultron.desktop.browser_use import (
+                BrowserUseTool,
+                set_browser_use_tool,
+            )
+
+            tool = BrowserUseTool(
+                binary_path=cfg.binary_path,
+                session=cfg.default_session,
+                default_timeout_s=cfg.default_timeout_seconds,
+                headed=cfg.headed,
+            )
+            set_browser_use_tool(tool)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "browser_use tool construction skipped (%s) -- browser "
+                "automation tier unavailable this session.", e,
+            )
+            return
+        try:
+            from ultron.desktop.browser_sessions import (
+                BrowserSessionsManager,
+                set_browser_sessions_manager,
+            )
+
+            manager = BrowserSessionsManager(
+                tool_factory=lambda name: tool.with_session(name),
+                max_sessions=cfg.max_sessions,
+            )
+            set_browser_sessions_manager(manager)
+            logger.info(
+                "browser-use tier constructed (binary discovery deferred; "
+                "max_sessions=%d).", cfg.max_sessions,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "browser_use session manager construction skipped (%s).", e,
             )
 
     def _init_intent_recognizer_if_enabled(self):

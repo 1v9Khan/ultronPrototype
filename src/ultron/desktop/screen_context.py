@@ -163,6 +163,65 @@ def get_vlm_describe() -> Optional[VLMDescribeFn]:
     return _vlm_describe
 
 
+def _maybe_browser_use_state_text(max_elements: int) -> tuple[str, ...]:
+    """Catalog 10 batch 9 -- browser-use CDP fallback tier for
+    :func:`build_screen_context`.
+
+    Returns a tuple of labelled content lines from the browser-use
+    tool's current page, OR an empty tuple when the tier is disabled /
+    the tool isn't wired / no binary / no active page / any error.
+
+    Fully gated + fail-open:
+
+    * ``browser_use.screen_context_fallback_enabled`` must be True.
+    * :func:`get_browser_use_tool` must return a tool whose binary is
+      discoverable (:meth:`is_available`).
+    * ``tool.state()`` must succeed AND report a non-empty URL (an
+      empty URL means no page is loaded -- nothing to contribute).
+
+    Every line is prefixed ``browser-use`` so the LLM (and any human
+    reading the rendered context) can tell this content came from the
+    CDP daemon's browser, which is the user's foreground only when a
+    connect/connect_profile attach was done first.
+    """
+    try:
+        from ultron.config import get_config
+
+        if not get_config().browser_use.screen_context_fallback_enabled:
+            return ()
+    except Exception:  # noqa: BLE001 -- fail-open on config read
+        return ()
+    try:
+        from ultron.desktop.browser_use import get_browser_use_tool
+
+        tool = get_browser_use_tool()
+    except Exception:  # noqa: BLE001
+        return ()
+    if tool is None:
+        return ()
+    try:
+        if not tool.is_available():
+            return ()
+        state = tool.state()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("browser-use state fallback failed: %s", e)
+        return ()
+    if not getattr(state, "success", False) or not getattr(state, "url", ""):
+        return ()
+    composed: list[str] = []
+    if state.title:
+        composed.append(f"browser-use page title: {state.title}")
+    composed.append(f"browser-use url: {state.url}")
+    for el in state.elements:
+        label = getattr(el, "label", "")
+        if label:
+            composed.append(
+                f"browser-use element [{el.index}] "
+                f"{getattr(el, 'type', '') or 'element'}: {label}"
+            )
+    return tuple(composed[:max_elements])
+
+
 # ---------------------------------------------------------------------------
 # Main assembly function
 # ---------------------------------------------------------------------------
@@ -320,6 +379,22 @@ def build_screen_context(
                 # if browser_text came back empty for any reason.
                 if browser_text:
                     ui_text = browser_text
+
+        if not ui_text:
+            # Catalog 10 batch 9: browser-use CDP tier fallback. When
+            # the UIA browser extraction returned nothing (Electron
+            # browser / canvas-heavy page / shallow UIA tree) AND the
+            # browser-use tool is live with an active page, fold its
+            # indexed-element labels in. Gated behind
+            # ``browser_use.screen_context_fallback_enabled``, fail-open.
+            # NOTE: the browser-use daemon controls its OWN browser
+            # instance; this reflects the user's foreground only when
+            # the daemon was attached via connect/connect_profile, so
+            # the content is clearly labelled "browser-use ..." and
+            # treated as best-effort supplementary context.
+            bu_text = _maybe_browser_use_state_text(ui_text_max_elements)
+            if bu_text:
+                ui_text = bu_text
 
         if not ui_text:
             try:

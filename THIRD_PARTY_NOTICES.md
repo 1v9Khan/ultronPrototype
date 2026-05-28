@@ -387,3 +387,58 @@ The MIT license text governing the clawhub-desktop-control repository is
 identical in substantive terms to the MIT license already reproduced in
 the SWE-Agent section above. This file satisfies the attribution
 requirement for the components listed in the table above.
+
+
+## browser-use (MIT License)
+
+Project: `browser-use` (the open-source Python browser-automation
+library + its `browser-use` CLI; `github.com/browser-use/browser-use`).
+License: MIT (substantive terms match the SWE-Agent / OpenClaw copy
+reproduced earlier). The ClawHub `clawhub-browser-use` plugin
+(catalog 10) is a documentation-only shell over this CLI -- it ships
+no Python source of its own (a `SKILL.md` + two `references/*.md`
+recipe files + a minimal `_meta.json`). Ultron does NOT vendor or
+import any upstream code: `src/ultron/desktop/browser_use.py` is a
+clean-room subprocess wrapper that invokes the external `browser-use`
+binary via its documented public CLI surface. The binary is NOT a
+hard dependency -- every wrapper method fails open with a structured
+"binary not found" result when `browser-use` is absent from PATH;
+operators install it separately (`pip install browser-use`) to enable
+the CDP tier.
+
+The plugin's `SKILL.md` + `references/cdp-python.md` +
+`references/multi-session.md` were read read-only under the binding
+ClawHub-batch security rules (per
+`feedback_reference_repo_catalog_workflow.md`). Pattern extraction +
+an independent zero-RED-confirmation security review were performed
+via a Sonnet 4.6 Explore agent that returned the CLI command contract,
+the CDP recipe shapes, the session-lifecycle phases, and the security
+gating gaps in prose -- never copying source. The CLI command names /
+flags (`browser-use state`, `--session`, `get html --selector`, etc.)
+are the external library's public API surface, not the plugin's IP.
+
+Tier summary for the port: 8 GREEN + 5 YELLOW + 2 RED. The two RED
+techniques are NOT ported: the cloud-browser API (requires a paid
+`BROWSER_USE_API_KEY`, out under `feedback_no_paid_apis.md`) and the
+Cloudflare-tunnel exposure (inbound attack surface + outbound
+exfiltration vector). The `--cdp-url` external-URL argument, the
+`profile sync --all` cloud upload, and the `BROWSER_USE_SESSION`
+ambient env-var are also deliberately not exposed.
+
+| Ultron component | Inspired by (pattern source) | Notes |
+| --- | --- | --- |
+| `src/ultron/desktop/browser_use.py` (`BrowserUseTool` T1 state / T2 extraction / T5 wait / T6 tabs) | `SKILL.md` documented CLI commands (`state`, `get html/text/value/attributes/bbox`, `wait selector/text`, `tab list/new/switch/close`) | Sync subprocess wrapper. Lazy `shutil.which` binary discovery against `[browser-use, bu, browseruse]`; `CREATE_NO_WINDOW` on Windows; `BROWSER_USE_SESSION` env-var scrub on every call; alphanumeric session-name allowlist. JSON-tolerant parsers fall back to `__raw__` / raw text. `BrowserBbox.center` bridges protocol-level coords into `InputController.click`. Fail-open contract on every method. GREEN. |
+| `src/ultron/desktop/browser_use.py` (T7 write primitives + T9 screenshot) | `SKILL.md` (`click`, `type`, `input`, `select`, `upload`, `hover`, `keys`, `dblclick`, `rightclick`, `screenshot`) | All writes route through `ultron.safety.validator` with `tool_name=desktop.browser_use.<action>` + `capability=desktop_browser_use`; denial short-circuits before the subprocess. `upload` is rated YELLOW (file-read vector per the security review) with `PathResolver.safe_realpath` canonicalisation before the validator runs. `screenshot` path-mode goes through `PathResolver`; base64-mode decodes the CLI payload (data-URI tolerant). GREEN + YELLOW. |
+| `src/ultron/desktop/browser_use.py` (T3 `eval` + `analyze_js_script`) | `SKILL.md` (`eval`) + `references/cdp-python.md` (`Runtime.evaluate`) | JS evaluation with static analysis: 15 risky patterns across 4 categories (network egress / storage write / navigation / second-order eval). The catalog's baseline list plus the security review's additions (`navigator.sendBeacon`, `WebSocket`, `RTCPeerConnection`, `eval`, `new Function`, dynamic `import`). Risky markers route through two-phase approval (`ultron.safety.two_phase_approval`); read-only expressions auto-pass after the Cap-3 validator. YELLOW. |
+| `src/ultron/desktop/browser_use.py` (T4 cookie management) | `SKILL.md` (`cookies get/set/clear/export/import`) | Scoped reads are Cap-2; cross-origin dump + export + import + bulk clear require two-phase approval. Export / import paths go through `PathResolver`. The catalog's `HttpOnly`-via-CDP exfil concern is the reason export is always gated. YELLOW. |
+| `src/ultron/desktop/browser_sessions.py` (entire module: `BrowserSessionsManager` T8) | `references/multi-session.md` (`--session NAME` isolation + the PHASE lifecycle table) | Named-session orchestration: alphanumeric name allowlist, configurable cap (`browser_use.max_sessions`), `ProcessRegistry` lifecycle tracking, `kill_process_tree` on force-close, two-phase approval on `close_all`. The session socket path (`~/.browser-use/{name}.sock`) is Unix-only in the upstream; ultron tracks sessions by name + ProcessRegistry job-id rather than relying on the socket path. `--cdp-url` never emitted. YELLOW. |
+| `src/ultron/desktop/browser_use.py` (T10 `connect` / `connect_profile` / `profile_list`) | `SKILL.md` (`connect`, `--profile`, `profile list`) | `profile_list` is Cap-2 read-only. `connect` + `connect_profile` (full live-Chrome session takeover) require two-phase approval. Profile name validated against `[A-Za-z0-9 ._-]{1,64}`. YELLOW. |
+| `src/ultron/desktop/browser_use.py` (T11 `cdp_python` + `analyze_cdp_statement`) | `references/cdp-python.md` (`browser python` + raw CDP send) | Raw CDP passthrough with the hardest gating in the port: a domain blocklist (`_CDP_BLOCKED_METHODS` + `_CDP_BLOCKED_DOMAINS`) REFUSES outright any statement touching cert-error bypass / request interception (both legacy + modern `Fetch.enable`) / CSP bypass / permission grant / data-clear / `Runtime.addBinding` / `Target.setAutoAttach` / the whole `Debugger` domain -- the catalog's 4 plus the security review's 5 additions. Cleared statements ALWAYS require two-phase approval (no auto-pass) with the full statement kept verbatim in the approval metadata for the audit log. YELLOW. |
+| `src/ultron/desktop/browser_sequence.py` (entire module: `BrowserSequenceRunner`) | (creative extension; mirrors the desktop `DesktopSequenceRunner` for the browser domain) | Multi-step browser sequence runner with before/after screenshot bracketing (via `BrowserUseTool.screenshot` base64 mode -- headless, no display flash) + optional VLM verification + fail-fast + analyze-and-discard. Reuses the `SequenceStatus`/`StepOutcome`/`VlmVerdict` enums from `desktop.sequence` for a single cross-domain taxonomy. GREEN. |
+
+### MIT License (verbatim)
+
+The MIT license text governing the `browser-use` project is identical
+in substantive terms to the MIT license already reproduced in the
+SWE-Agent section above. This file satisfies the attribution
+requirement for the components listed in the table above.
