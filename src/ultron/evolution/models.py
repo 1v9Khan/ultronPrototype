@@ -132,8 +132,13 @@ def new_event_id() -> str:
 
 
 def new_capsule_id() -> str:
-    """Generate a fresh capsule id (``capsule_<epoch-ms>``)."""
-    return f"capsule_{int(time.time() * 1000)}"
+    """Generate a fresh, collision-free capsule id (``capsule_<epoch-ms>_<6 hex>``).
+
+    The random suffix guarantees uniqueness even when many capsules are
+    minted within the same millisecond -- otherwise the content-dedup in
+    the distiller would silently collapse them.
+    """
+    return f"capsule_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
 
 
 def new_mutation_id() -> str:
