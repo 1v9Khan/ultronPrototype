@@ -1056,6 +1056,149 @@ class Orchestrator:
             logger.debug("report queue construction skipped: %s", e)
             return None
 
+    def _maybe_handle_deep_research(self, user_text: str) -> bool:
+        """Catalog 12 (felo-search T3) -- handle an explicit "research X in
+        depth" / "deep dive on X" request via a bounded DeepResearchLoop,
+        then synthesize + speak the answer.
+
+        Returns True iff the utterance was an explicit deep-research command
+        AND was handled here (short-circuits routing). Returns False to let
+        the utterance fall through to normal routing -- on no match, when
+        ``deep_research.enabled`` is off, or when search / the LLM aren't
+        wired (so the user still gets a normal response instead of silence).
+
+        Strict matcher: only "research X in depth" / "deep dive on X" / "dig
+        deeper into X" style utterances trip it; "search X" / "what is X"
+        never do. Fail-open: any failure speaks a clear message and returns
+        True so the recognised command isn't silently dropped.
+        """
+        try:
+            from ultron.web_search.deep_research import (
+                DeepResearchLoop,
+                match_deep_research,
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("deep_research import failed: %s", e)
+            return False
+        match = match_deep_research(user_text)
+        if match is None:
+            return False
+        try:
+            from ultron.config import get_config
+            dr_cfg = get_config().deep_research
+        except Exception:                                            # noqa: BLE001
+            return False
+        if not getattr(dr_cfg, "enabled", False):
+            return False
+        if getattr(self, "web_executor", None) is None or self.llm is None:
+            # Can't research without both the search executor and the LLM;
+            # fall through so the user gets a normal best-effort response.
+            return False
+
+        trace.tlog(logger, "deep_research:start", topic=match.topic[:80])
+        self._interrupt.clear()
+        self._last_search_payload = None
+        self._last_response_text = ""
+        response_buf: list = []
+        watcher: Optional[threading.Thread] = None
+        try:
+            # Immediate spoken ack -- the research itself takes ~10-18 s.
+            self._speak("Researching that in depth. Give me a moment.")
+
+            loop = DeepResearchLoop(
+                executor=self.web_executor,
+                llm=self.llm,
+                max_steps=getattr(dr_cfg, "max_steps", 3),
+                max_sub_queries_per_step=getattr(
+                    dr_cfg, "max_sub_queries_per_step", 3
+                ),
+                top_n_per_query=getattr(dr_cfg, "top_n_per_query", 3),
+                max_accumulated_sources=getattr(
+                    dr_cfg, "max_accumulated_sources", 8
+                ),
+            )
+            result = loop.research(match.topic)
+            payload = result.to_payload()
+            self._last_search_payload = payload
+            trace.tlog(
+                logger, "deep_research:gathered",
+                status=result.loop_status, steps=result.steps,
+                sources=len(payload.sources), sub_queries=len(payload.queries),
+            )
+
+            if not payload.sources:
+                self._speak(
+                    "I dug into that but couldn't surface enough to give you "
+                    "a solid answer."
+                )
+                return True
+
+            sources_block = format_sources_for_prompt(payload.sources)
+            augmented = (
+                f"User question: {match.topic}\n\n"
+                f"Research findings gathered from multiple web searches:\n"
+                f"{sources_block}\n\n"
+                "Synthesize a thorough but focused answer to the user's "
+                "question using ONLY the facts present in the findings "
+                "above. Organize the key points clearly. Attribute a claim "
+                "only to a source whose name actually appears in the "
+                "findings; do not invent specifics that aren't visible. If "
+                "the findings are thin on some aspect, say so briefly rather "
+                "than padding with general knowledge. Stay in character. "
+                "End the response when you have answered."
+            )
+
+            if settings.BARGE_IN_ENABLED:
+                watcher = threading.Thread(
+                    target=self._interrupt_watcher, daemon=True,
+                    name="wake-watcher",
+                )
+                watcher.start()
+
+            print("  ultron: ", end="", flush=True)
+            token_stream = self.llm.generate_stream(
+                augmented,
+                history_user_message=match.topic,
+                rag_query=match.topic,
+                enable_thinking=False,
+            )
+
+            def gated():
+                for token in token_stream:
+                    if self._interrupt.is_set() or self._shutdown.is_set():
+                        self.llm.cancel()
+                        return
+                    print(token, end="", flush=True)
+                    response_buf.append(token)
+                    yield token
+
+            self.tts.speak_stream(gated())
+            print()
+            self._last_response_text = "".join(response_buf)
+
+            # T4: surface the researched sub-questions in the transcript only.
+            try:
+                expose = get_config().web_search.expose_search_strategy
+            except Exception:                                        # noqa: BLE001
+                expose = False
+            strat_qs = payload.queries if expose else None
+            print(
+                f"  {format_sources_for_transcript(payload.sources, strategy_queries=strat_qs)}"
+            )
+            return True
+        except Exception as e:                                       # noqa: BLE001
+            logger.exception("deep research failed: %s", e)
+            try:
+                self._speak("Something went wrong while I was researching that.")
+            except Exception:                                        # noqa: BLE001
+                pass
+            return True
+        finally:
+            self._interrupt.set()  # release the watcher
+            if watcher is not None:
+                watcher.join(timeout=1.0)
+            self._interrupt.clear()
+
     def _maybe_handle_report_concern(self, user_text: str) -> bool:
         """openclaw-clawhub T12 -- file a Report when the user voices a
         concern about the assistant's last response.
@@ -2903,6 +3046,28 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="report_concern",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Catalog 12 (felo-search T3): intercept an explicit
+                    # "research X in depth" / "deep dive on X" request and
+                    # run a bounded DeepResearchLoop, then synthesize +
+                    # speak the answer. Strict matcher -> normal search /
+                    # conversational queries never trip it; on no-match /
+                    # disabled / search-unavailable it returns False and the
+                    # turn proceeds to routing as usual.
+                    if self._maybe_handle_deep_research(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="deep_research",
                             follow_up=bool(follow_up_until),
                         )
                         continue

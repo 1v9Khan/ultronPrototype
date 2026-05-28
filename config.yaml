@@ -1542,6 +1542,22 @@ browser_use:
   screen_context_fallback_enabled: true
 
 # ---------------------------------------------------------------------------
+# Deep research (catalog 12 / felo-search T3) — bounded agentic multi-step
+# research over the FREE local-first search ladder. EXPLICIT voice opt-in
+# ("research X in depth" / "do a deep dive on X"); the normal sub-second
+# search path is untouched. A deep-research turn runs several full searches
+# (~10-18 s), bounded by max_steps (the load-bearing AgentLoop cap). Fails
+# open at every layer; reuses the same provider/reader chains, rate-limit
+# tracker, and web_results cache as normal search.
+# ---------------------------------------------------------------------------
+deep_research:
+  enabled: true
+  max_steps: 3                  # research rounds (decompose, then gap-fill)
+  max_sub_queries_per_step: 3   # sub-questions searched per round
+  top_n_per_query: 3            # ranked sources kept per sub-question
+  max_accumulated_sources: 8    # hard cap on gathered sources (bounds prompt)
+
+# ---------------------------------------------------------------------------
 # Error phrases (Phase 4) — user-facing voice messages for dependency failures
 # ---------------------------------------------------------------------------
 # Each list is a phrase pool. Empty list disables narration for that

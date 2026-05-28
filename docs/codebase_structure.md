@@ -49,18 +49,35 @@
 >   voice orchestrator deliberately does NOT inject it into the LLM prompt,
 >   to protect spoken concision). New `web_search.expose_search_strategy:
 >   true` config. Mirrors felo's "Query Analysis" disclosure. +14 tests.
-> * Batch D (T3, YELLOW): `DeepResearchLoop(AgentLoop)` + `DEEP_RESEARCH`
->   intent over the free ladder — PENDING.
+> * **Batch D (T3, YELLOW) — DONE:** bounded agentic deep-research loop
+>   over the FREE search ladder. NEW `web_search/deep_research.py`:
+>   `DeepResearchLoop(AgentLoop)` (decompose -> search each sub-question via
+>   the SAME `WebSearchExecutor` -> LLM gap analysis -> search gaps, bounded
+>   by the load-bearing `max_steps` cap; fail-open at decompose / gap / each
+>   sub-search; reuses the provider/reader chains + rate-limit tracker +
+>   `web_results` cache) + `match_deep_research` (strict matcher: "research X
+>   in depth" / "deep dive on X" / "dig deeper into X" -> topic; normal
+>   "search X" never trips). No new `RoutingIntentKind` (the 23-value enum is
+>   asserted by many tests) -- instead an ISOLATED orchestrator run-loop
+>   short-circuit `_maybe_handle_deep_research` (precedent:
+>   `_maybe_handle_report_concern`) that acks, runs the loop, and synthesizes
+>   the answer through the SAME LLM->TTS streaming `_respond` uses; the
+>   normal fast search path is byte-unchanged. New top-level `deep_research`
+>   config (enabled:true; max_steps:3 / max_sub_queries_per_step:3 /
+>   top_n_per_query:3 / max_accumulated_sources:8). +29 hermetic tests
+>   (fake executor + fake LLM). First concrete consumer of the catalog-11
+>   `AgentLoop` base.
 > * Batch E: cross-system deep loops (memory / codebase / desktop) — PENDING.
 >
 > Test baseline (main-checkout projection): 8546 (catalog 11) + 21 (Batch A)
-> + 40 (Batch B) + 14 (Batch C) = **8621 passed / 26 skipped / 0 failed**.
+> + 40 (Batch B) + 14 (Batch C) + 29 (Batch D) = **8650 passed / 26 skipped
+> / 0 failed**.
 > New tests are filesystem-independent (pure-function regex + fake-LLM /
 > fake-config) so they pass identically in main; the canonical absolute
 > count is finalised from a main-checkout sweep at session end. (Worktree
 > sweeps report a lower absolute count because `models/` + some
-> filesystem-parametrized fixtures live only in the main checkout. Batch C
-> worktree sweep = 8614 passed / 27 skipped / 0 failed with the WHOLE
+> filesystem-parametrized fixtures live only in the main checkout. Batch D
+> worktree sweep = 8643 passed / 27 skipped / 0 failed with the WHOLE
 > `tests/integration/test_bridge_e2e.py` file `--ignore`d: under the current
 > machine state EVERY real-subprocess bridge-e2e test -- not just the
 > documented `test_health_through_real_subprocess` but its
@@ -948,6 +965,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── rate_limit.py       ← 2026-05-25 openclaw-clawhub batch 1 (T14): HTTP rate-limit envelope parser + backoff helpers + per-provider tracker. Header constants for the legacy `X-RateLimit-*` family + standard `RateLimit-*` family + `Retry-After`. :func:`parse_retry_after` handles numeric seconds, IMF-fixdate, large-value-as-epoch (>=31_000_000s) heuristic, past-date clamping. :func:`parse_rate_limit_headers` returns frozen :class:`RateLimitState` with preferred-fallback order Retry-After -> RateLimit-Reset -> X-RateLimit-Reset. :class:`BackoffConfig` defaults base=0.3s / cap=5.0s / jitter=0.3s. :func:`compute_backoff` server-hint-or-exponential. :class:`RateLimitTracker` per-provider cooldown + 429 counter + RLock-guarded. Module-level :func:`get_global_tracker` singleton + :func:`reset_global_tracker_for_testing` test hook. Generalised beyond web-search (re-usable for future MCP transport, Jina reader, remote-LLM cascade).
 │       │   ├── reader_chain.py     ← 2026-05-22 frontier: ReaderProviderChain (trafilatura -> jina) for full-text extraction
 │       │   ├── query_rewrite.py    ← 2026 catalog 12 (felo-search T1): pre-search query reformulation. reformulate_query + expand_query_rules (zero-cost "X vs Y"/"how to X"/"best X"/leading-temporal rewrites) + opt-in expand_query_llm (in-process Qwen decomposition) + maybe_reformulate_queries executor helper; QueryReformulation dataclass; MAX_TOTAL_QUERIES=5 fan-out ceiling; fail-open; logs to logs/search_reformulations.jsonl
+│       │   ├── deep_research.py     ← 2026 catalog 12 (felo-search T3, YELLOW): DeepResearchLoop(AgentLoop) -- bounded decompose -> search-each-sub-question -> LLM gap-analysis -> search-gaps loop over the FREE ladder (reuses WebSearchExecutor + rate-limit tracker + web_results cache; load-bearing max_steps cap; fail-open at every layer). match_deep_research strict voice-intent matcher ("research X in depth" / "deep dive on X" / "dig deeper into X"). DeepResearchResult.to_payload() -> SearchPayload feeding the orchestrator's existing synthesis path. Wired via Orchestrator._maybe_handle_deep_research run-loop short-circuit (no new RoutingIntentKind). First concrete consumer of the catalog-11 AgentLoop base
 │       │   ├── search.py           ← WebSearchExecutor (orchestrates chain + reader chain + ranking); 2026-05-22 categories= param forwarded for news-category SearxNG routing. 2026 catalog 12 (felo-search T1): run() calls maybe_reformulate_queries before _dedupe_queries + fan-out
 │       │   ├── searxng.py          ← 2026-05-22 frontier: SearxNGSearchClient (local Docker JSON API); circuit-breaker protected; X-Forwarded-For header satisfies botdetection; per-call categories override
 │       │   └── trafilatura_reader.py ← 2026-05-22 frontier: TrafilaturaReaderClient (local Python lib; ~32 k char cap)
@@ -2535,6 +2553,13 @@ Module is I/O-free. Callers wire their own persistence (Qdrant payload, JSONL au
 - `maybe_reformulate_queries(user_query, base_queries, *, llm)` → `list[str]` — executor-facing: reads `web_search.query_reformulation` config, merges variants into `base_queries`, deduped + capped at `MAX_TOTAL_QUERIES=5`; logs to `logs/search_reformulations.jsonl`; fail-open (returns base unchanged on disabled / error).
 - **Wired in `WebSearchExecutor.run`** (`search.py`): expands the query list BEFORE `_dedupe_queries` + the per-query fan-out, so the existing URL-dedup + cache absorb variants transparently. Default ON (rule-based, zero-cost); `use_llm` opt-in adds ~150-250 ms on the SEARCH path only. Voice baseline untouched.
 
+#### `web_search/deep_research.py` (2026 catalog 12, felo-search T3, YELLOW)
+- `class DeepResearchLoop(AgentLoop)` — bounded agentic research over the FREE ladder. `research(question) -> DeepResearchResult`. Overrides: `plan` (step 1 LLM-decomposes the question into sub-questions; later steps run an LLM gap analysis and return new sub-questions or `None` to finish; short-circuits to `None` once `max_accumulated_sources` is hit), `act` (searches each NEW sub-question via the injected `WebSearchExecutor.run` — so T1 reformulation + the provider/reader chains + cross-encoder ranker + `web_results` cache + per-provider rate-limit tracker all apply — accumulating URL-deduped sources up to the cap), `action_succeeded` (a completed search is success even when it finds nothing — overrides the base fail-fast so an empty sub-search never ABORTs), `action_signature` (canonical sub-question set for the base loop detector), `is_done` (accumulation-cap OR zero-new-progress round). The base's `max_steps` is the load-bearing safety cap. Both LLM calls (`_decompose` / `_identify_gaps`) FAIL OPEN — decompose -> search the question verbatim, gap analysis -> finish — so an LLM hiccup can never spin the loop.
+- `class DeepResearchResult` — `question` + `sources` + `sub_queries` (the strategy, T4) + `loop_status` + `steps` + `elapsed_s`; `to_payload()` -> `SearchPayload` so the orchestrator's existing search-augmented synthesis/streaming path consumes it unchanged.
+- `class DeepResearchMatch` + `match_deep_research(text)` — strict regex matcher (requires an explicit deep / thorough / in-depth / deep-dive / dig-deeper marker; extracts the topic). "search X" / "what is X" / "look up X" never match.
+- `_parse_json_list` / `_dedupe_subqueries` — tolerant JSON extraction + dedup helpers.
+- **Wired** in `Orchestrator._maybe_handle_deep_research` (run-loop short-circuit, NO new `RoutingIntentKind`): acks, runs the loop, then synthesizes + streams the answer through the same LLM->TTS path `_respond` uses. Gated by `deep_research.enabled` (default ON; per-turn opt-in via the matcher, so the normal sub-second search path is untouched). Config: top-level `deep_research.{enabled, max_steps, max_sub_queries_per_step, top_n_per_query, max_accumulated_sources}`.
+
 ### `src/ultron/tts/`
 
 #### `tts/precomputed_ack.py` (NEW 2026-05-15 latency pass)
@@ -3700,6 +3725,7 @@ Sections:
 - `desktop` (V1-gap C3) — enabled, default_*_timeout_seconds, plugin_slug, tool_slug_screenshot / tool_slug_list_windows / tool_slug_find_window, **default_monitor_index: Optional[int] = 2** (2026-05-22 user preference: when an APP_LAUNCH / NAVIGATE_TO_SITE / OPEN_LAST_SOURCE utterance gives no explicit monitor cue, place on this 1-based monitor index. Set to `null` to fall back to legacy "main" behaviour. Range [1, 8].)
 - `window_control` (V1-gap C3) — enabled=false, default_action_timeout_seconds, plugin_slug, tool_slug_focus / tool_slug_click / tool_slug_type
 - `browser_use` (2026-05-30 catalog 10) — top-level section for the external `browser-use` CLI browser-automation tier. **8 knobs, all default ON**: `enabled=true`, `binary_path=null` (null = auto-discover `browser-use`/`bu`/`browseruse` on PATH), `default_session=null`, `default_timeout_seconds=30.0`, `default_wait_timeout_ms=30000`, `max_sessions=3` (hard ceiling 16, enforced by `BrowserSessionsManager`), `headed=false`, `screen_context_fallback_enabled=true` (folds a best-effort browser-use page-state line into `screen_context` ONLY when UIA browser extraction is empty AND the tool has an active page). Fail-open: when the binary is absent every method returns a structured "not found" result, so default-ON costs nothing until both the binary is installed AND a browser action is requested.
+- `deep_research` (2026 catalog 12, felo-search T3) — top-level section for the bounded agentic deep-research loop over the FREE search ladder. **5 knobs, default ON**: `enabled=true`, `max_steps=3` (research rounds; the load-bearing AgentLoop cap), `max_sub_queries_per_step=3`, `top_n_per_query=3`, `max_accumulated_sources=8` (hard cap bounding the synthesis prompt). EXPLICIT per-turn opt-in via `match_deep_research` ("research X in depth" / "deep dive on X"); the normal sub-second search path is untouched. A deep-research turn runs several full searches (~10-18 s) and fails open at every layer.
 - `intent` (2026-05-22 semantic intent recognizer) — enabled (default TRUE), model="embeddinggemma-300m", variant="q4", threshold=0.65, phrases: list of `{name, phrase, threshold?}` (25 registered: 12 gaming-mode variants + 2 time/date + 11 "needs fresh data" / freshness intents)
 - `safety` (2026-05-12 Phases 2-5 runtime tool-call validator) — enabled (default TRUE), per-rule toggles via `rules.{rule_id}: bool`, sandbox_roots override, extra_protected_files / extra_protected_dirs, screen_cache_dir, approved_outbound_apis, audit_log_path
 - `coding.supervisor` (2026-05-22 supervisor stack) — eleven knobs:

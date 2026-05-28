@@ -3146,6 +3146,37 @@ class SkillsConfig(_Strict):
     extra_dirs: List[str] = Field(default_factory=list)
 
 
+class DeepResearchConfig(_Strict):
+    """Catalog 12 (felo-search T3): bounded agentic deep-research loop.
+
+    An EXPLICIT-opt-in multi-step research mode over ultron's FREE
+    local-first search ladder. When the user asks to "research X in depth"
+    / "do a deep dive on X" (matched by
+    :func:`ultron.web_search.deep_research.match_deep_research`), the
+    orchestrator runs a
+    :class:`~ultron.web_search.deep_research.DeepResearchLoop` (subclass of
+    the catalog-11 :class:`~ultron.agent_loop.base.AgentLoop`): decompose ->
+    search each sub-question via the normal
+    :class:`~ultron.web_search.search.WebSearchExecutor` -> identify gaps ->
+    search again, bounded by ``max_steps`` (the load-bearing AgentLoop cap),
+    then hand the accumulated sources to the existing search-augmented
+    synthesis path.
+
+    Default ON: the feature only fires on the explicit voice trigger, so a
+    normal sub-second search turn is never affected. A deep-research turn
+    costs ~10-18 s (several full searches), which is why it is opt-in. The
+    loop fails open at every layer (LLM decomposition / gap analysis / each
+    sub-query search); the per-provider rate-limit tracker + the
+    ``web_results`` cache apply throughout because the same executor is used.
+    """
+
+    enabled: bool = True
+    max_steps: int = Field(default=3, ge=1, le=8)
+    max_sub_queries_per_step: int = Field(default=3, ge=1, le=6)
+    top_n_per_query: int = Field(default=3, ge=1, le=10)
+    max_accumulated_sources: int = Field(default=8, ge=1, le=30)
+
+
 class UltronConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -3180,6 +3211,10 @@ class UltronConfig(_Strict):
     # with fail-open contract: every method returns a structured
     # failure when the binary is missing.
     browser_use: BrowserUseConfig = Field(default_factory=BrowserUseConfig)
+    # Catalog 12 (felo-search T3) -- bounded agentic deep-research loop
+    # over the FREE search ladder. Explicit voice opt-in ("research X in
+    # depth"); the normal sub-second search path is untouched.
+    deep_research: DeepResearchConfig = Field(default_factory=DeepResearchConfig)
     # 2026-05-12 Phase 2 -- runtime tool-call validator (paired with the
     # abliterated Josiefied Qwen3-8B default LLM).
     safety: "SafetyConfig" = Field(default_factory=lambda: SafetyConfig())
