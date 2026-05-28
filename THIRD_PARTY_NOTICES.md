@@ -499,3 +499,41 @@ The MIT license text governing the `clawhub-browser-agent` plugin is
 identical in substantive terms to the MIT license already reproduced
 in the SWE-Agent section above. This file satisfies the attribution
 requirement for the components listed in the table above.
+
+## clawhub-felo-search (documentation-only; no license declared)
+
+Project: `clawhub-felo-search` (a ClawHub plugin; slug `felo-search`,
+owner id `kn7d79fmw28v2we1sjpqk7mpfd829g7s`, v1.0.0; catalog 12). The
+plugin is DOCUMENTATION-ONLY -- a `SKILL.md`, a `README.md`, and a
+four-field `_meta.json` (ownerId / slug / version / publishedAt), with no
+Python or other executable source and no license field in the manifest.
+It documents how to call the COMMERCIAL Felo AI search API
+(`https://openapi.felo.ai/v2/chat`, Bearer `FELO_API_KEY`).
+
+**The direct Felo API integration is NOT ported (RED).** Per
+`feedback_no_paid_apis.md` (only the AI coding agent is a paid service),
+calling a paid external search API is out of scope -- ultron's existing
+FREE local-first ladder (SearxNG -> Brave -> DuckDuckGo + Trafilatura ->
+Jina) already covers the same information surface. No `felo.ai` endpoint,
+`FELO_API_KEY`, or any Felo network call exists anywhere in ultron.
+
+Only DOCUMENTATION PATTERNS were extracted, re-implemented clean-room over
+the free ladder; no source code or data was copied verbatim (the plugin
+ships none, and ultron's trigger regexes, reformulation rules, prompts, and
+loop code are original). The three source files were read read-only under
+the binding ClawHub-batch security rules; three independent Sonnet 4.6
+scanners confirmed the files are pure Markdown + a JSON manifest with no
+executable content and no network callout beyond the documented `felo.ai`
+endpoint (zero-RED). This entry is therefore provenance / attribution
+courtesy rather than a code-license obligation.
+
+Tier summary for the port: 3 GREEN + 1 YELLOW + 1 RED (the Felo API itself).
+
+| Ultron component | Inspired by (pattern) | Notes |
+| --- | --- | --- |
+| `web_search/gating.py` (`_COMPARISON_QUERIES` / `_HOWTO_QUERIES` / `_SHOPPING_QUERIES`, T2) | SKILL.md / README.md trigger-word taxonomy | Comparison / how-to / shopping query shapes routed to deterministic SEARCH. Original tight regexes, not a verbatim list copy. GREEN. |
+| `web_search/query_rewrite.py` (T1) | the `query_analysis` reformulated-queries field | Pre-search query reformulation over the free ladder: zero-cost rule-based expansion (default) + opt-in in-process-LLM decomposition; both fail-open. GREEN. |
+| `web_search/search.py` + `pipeline/orchestrator.py` (search-strategy transparency, T4) | the "Query Analysis" disclosure in the response format | Surfaces the reformulated query list to the user (transcript-only, never spoken). GREEN. |
+| `web_search/deep_research.py` (`DeepResearchLoop`, T3) | the server-side decompose/search/synthesize loop evidenced by `query_analysis` | Bounded agentic deep-research over the FREE ladder, on the catalog-11 `AgentLoop` base (load-bearing `max_steps` cap). Wired via an explicit voice opt-in. YELLOW. |
+| `agent_loop/deep_loops.py` (`DeepMemoryLoop` / `DeepExplorationLoop` / `DeepUIDiscoveryLoop`, T3 cross-system extensions) | the same loop pattern, generalised | Cross-system deep-gather loops (memory / codebase / UI), importable primitives. YELLOW. |
+| (NOT PORTED) direct Felo API call | `https://openapi.felo.ai/v2/chat` | RED: paid external search API; excluded per `feedback_no_paid_apis.md`. |

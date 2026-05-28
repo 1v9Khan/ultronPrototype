@@ -10,15 +10,16 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** catalog 12 (clawhub-felo-search) port IN PROGRESS on
-> worktree branch `claude/serene-bose-b88298` (base `0aa228d` = catalog 11
-> on `origin/main`). felo-search is a DOCUMENTATION-ONLY plugin (README +
+> **Validating HEAD:** catalog 12 (clawhub-felo-search) port -- ALL FIVE
+> BATCHES (A-E) COMPLETE -- on worktree branch `claude/serene-bose-b88298`
+> (base `0aa228d` = catalog 11), pushed to `origin/main` with the `main`
+> checkout fast-forwarded. felo-search is a DOCUMENTATION-ONLY plugin (README +
 > SKILL + _meta.json, no Python) that wraps the PAID `felo.ai` search API,
 > so the direct API integration is RED (out of scope per the no-paid-APIs
 > rule); the port implements the transferable PATTERNS over ultron's
 > existing FREE local-first search ladder. Independent zero-RED security
 > confirmation via 3 Sonnet read-only scanners. 3 GREEN + 1 YELLOW + 1 RED.
-> Batches land incrementally on the worktree branch:
+> The five batches (full per-batch detail below):
 > * **Batch A (T2, GREEN) — DONE:** comparison / how-to / shopping trigger
 >   regexes (`_COMPARISON_QUERIES` / `_HOWTO_QUERIES` / `_SHOPPING_QUERIES`)
 >   added to `web_search/gating.py` `classify_by_rules`. Additive to the
