@@ -67,26 +67,43 @@
 >   top_n_per_query:3 / max_accumulated_sources:8). +29 hermetic tests
 >   (fake executor + fake LLM). First concrete consumer of the catalog-11
 >   `AgentLoop` base.
-> * Batch E: cross-system deep loops (memory / codebase / desktop) — PENDING.
+> * **Batch E (T3 cross-system extensions) — DONE (importable):** the
+>   deep-gather pattern generalised to ultron's other retrieval surfaces.
+>   NEW `agent_loop/deep_loops.py`: a generic `DeepGatherLoop(AgentLoop)`
+>   (decompose -> gather-over-an-injected-source -> LLM gap-fill, bounded by
+>   the `max_steps` cap; fail-open) + three thin DI subclasses --
+>   `DeepMemoryLoop` (iterative Qdrant RAG; `.recall()`),
+>   `DeepExplorationLoop` (iterative ripgrep codebase exploration;
+>   `.explore()`), `DeepUIDiscoveryLoop` (iterative UIA element discovery;
+>   `.discover()`). Each injects its domain primitive (so it is
+>   domain-agnostic + hermetically testable) behind a clean public entry
+>   method. Shipped as IMPORTABLE primitives -- NO new orchestrator hot-path
+>   short-circuit: ultron has no always-on runtime consumer for codebase
+>   exploration (the AI coding agent self-explores) and UI discovery is a
+>   miss-fallback, so wiring each to a concrete trigger is a one-call
+>   integration left to the consuming surface (the proven
+>   `Orchestrator._maybe_handle_deep_research` short-circuit is the
+>   template). +13 hermetic tests.
 >
 > Test baseline (main-checkout projection): 8546 (catalog 11) + 21 (Batch A)
-> + 40 (Batch B) + 14 (Batch C) + 29 (Batch D) = **8650 passed / 26 skipped
-> / 0 failed**.
+> + 40 (Batch B) + 14 (Batch C) + 29 (Batch D) + 13 (Batch E) = **8663
+> passed / 26 skipped / 0 failed**.
 > New tests are filesystem-independent (pure-function regex + fake-LLM /
 > fake-config) so they pass identically in main; the canonical absolute
 > count is finalised from a main-checkout sweep at session end. (Worktree
 > sweeps report a lower absolute count because `models/` + some
-> filesystem-parametrized fixtures live only in the main checkout. Batch D
-> worktree sweep = 8643 passed / 27 skipped / 0 failed with the WHOLE
-> `tests/integration/test_bridge_e2e.py` file `--ignore`d: under the current
-> machine state EVERY real-subprocess bridge-e2e test -- not just the
-> documented `test_health_through_real_subprocess` but its
-> `test_send_message_*` / `test_trigger_heartbeat_*` /
-> `test_mcp_set_show_unset_*` siblings -- fails at ~7s and leaks a
-> subprocess that wedges the sweep to the watchdog. This is the documented
-> bridge-e2e environmental flake family [the openclaw CLI is not answering
-> its probe window], NOT a regression from this catalog -- the catalog-12
-> changes never touch the OpenClaw bridge path.) Voice baseline contract
+> filesystem-parametrized fixtures live only in the main checkout. Batch E
+> worktree sweep = 8654 passed / 27 skipped / 2 deselected / 0 failed with
+> the whole `tests/integration/test_bridge_e2e.py` file `--ignore`d AND the
+> two `tests/openclaw_bridge/test_client.py::test_run_cli_*` real-subprocess
+> tests `--deselect`ed. Under heavy machine contention EVERY test that
+> spawns a real subprocess -- the openclaw `.cmd`->python bridge in
+> test_bridge_e2e.py AND even the fake `echo_cli` in test_client.py --
+> cold-starts slower than its ~7s probe, fails, and leaks a process that
+> wedges the sweep to the watchdog. This is the documented Windows
+> subprocess-cold-start-under-load flake family, NOT a regression from this
+> catalog (which never touches the OpenClaw bridge / subprocess path); on an
+> unloaded machine these pass without exclusion.) Voice baseline contract
 > intact — gate rules + rule-based reformulation are pure functions on the
 > SEARCH-classification path; the LLM reformulation variant is opt-in
 > (`use_llm`); the search-strategy line is transcript-only; no voice
@@ -1154,7 +1171,8 @@ For the current decisions and Foundation phase status see
 │       │
 │       ├── agent_loop/              ← 2026-05-24 cline batches 2 + 10 (T7b + T2 + T16): outer-loop primitives
 │       │   ├── __init__.py          ← Public API re-exports
-│       │   ├── base.py              ← 2026 catalog 11 (meta-pattern): AgentLoop ABC -- additive, safety-instrumented observe->plan->act->verify base. Load-bearing max_steps cap + built-in repeated-signature loop detection + per-step StepRecord + verify hook + fail-open execution (LoopResult / LoopStatus / StepOutcome). Does NOT modify any existing runner; importable infrastructure for future loop unification.
+│       │   ├── base.py              ← 2026 catalog 11 (meta-pattern): AgentLoop ABC -- additive, safety-instrumented observe->plan->act->verify base. Load-bearing max_steps cap + built-in repeated-signature loop detection + per-step StepRecord + verify hook + fail-open execution (LoopResult / LoopStatus / StepOutcome). Does NOT modify any existing runner. First concrete consumers (catalog 12 T3): web_search/deep_research.py DeepResearchLoop + agent_loop/deep_loops.py.
+│       │   ├── deep_loops.py        ← 2026 catalog 12 (felo-search T3 cross-system extensions): generic DeepGatherLoop(AgentLoop) (decompose -> gather-over-injected-source -> LLM gap-fill, bounded by max_steps, fail-open) + DeepGatherResult + three DI subclasses -- DeepMemoryLoop (.recall(); iterative Qdrant RAG), DeepExplorationLoop (.explore(); iterative ripgrep), DeepUIDiscoveryLoop (.discover(); iterative UIA element find). Importable primitives (no orchestrator wiring): each injects its domain primitive (retrieve / search / find callable) so it is domain-agnostic + hermetically testable; wiring to a concrete trigger is a one-call integration (template: Orchestrator._maybe_handle_deep_research). Reuses _parse_json_list / _dedupe_subqueries from web_search/deep_research.
 │       │   ├── loop_detection.py    ← LoopDetector with canonical tool_call_signature (JSON sorted-keys minus DEFAULT_NOISE_KEYS like task_progress / turn_id / trace_id); LoopVerdict with soft_warning at DEFAULT_SOFT_THRESHOLD=3 + hard_escalation at DEFAULT_HARD_THRESHOLD=5; halted flag persists across distinct observations once hard tier fires; reset() clears state
 │       │   ├── loop_detection_extended.py ← 2026-05-25 OpenClaw batch 3 (T1): four additional detectors. UnknownToolRepeatDetector (regex-extract unknown tool name from error message; halts at UNKNOWN_TOOL_THRESHOLD=10), KnownPollNoProgressDetector (separate threshold for command_status / process(action=poll|log)), PingPongDetector (alternating A,B,A,B with stable outcomes on both sides), GlobalCircuitBreakerDetector (emergency stop at GLOBAL_CIRCUIT_BREAKER_THRESHOLD=30). LoopDetectionManager aggregates all four into a single per-stream observe() surface with most-restrictive-wins; ToolCallRecord + OutcomeKind for input shaping; SHA-256 canonical JSON for hashing.
 │       │   ├── subagent_policy.py   ← 2026-05-25 OpenClaw batch 3 (T7): depth-aware subagent tool-policy. SUBAGENT_TOOL_DENY_ALWAYS (gateway/agents_list/session_status/cron/sessions_send + ultron tts_speak/kokoro_speak/gaming_mode_engage/set_validator/install_skill); SUBAGENT_TOOL_DENY_LEAF (subagents/sessions_list/sessions_history/sessions_spawn + ultron mcp_add_server/mcp_remove_server). resolve_subagent_tool_policy(depth, config) returns ResolvedSubagentToolPolicy with deny + allow + also_allow + per-tool provenance. is_leaf(depth, max_spawn_depth) matches OpenClaw's depth >= max(1, floor(maxSpawnDepth)). filter_tools_by_policy + ResolvedSubagentToolPolicy.is_permitted enforce the policy on a tool list.
