@@ -33,7 +33,8 @@
 > | 6 | `45cd46e` | T10 profile connect + connect_profile + profile_list (YELLOW) |
 > | 7 | `de28c0e` | T11 raw CDP passthrough -- domain blocklist + always-two-phase (YELLOW) |
 > | 8 | `1721b6a` | BrowserSequenceRunner -- `browser_sequence.py` (creative extension, GREEN) |
-> | 9 | (this commit) | orchestrator singleton construction + screen_context fallback tier + THIRD_PARTY_NOTICES |
+> | 9 | `5451017` | orchestrator singleton construction + screen_context fallback tier + THIRD_PARTY_NOTICES |
+> | 9-bump | (this commit) | validating-HEAD SHA bump |
 >
 > New modules: `src/ultron/desktop/browser_use.py` (the tool),
 > `src/ultron/desktop/browser_sessions.py` (session manager),
