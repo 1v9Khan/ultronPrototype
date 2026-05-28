@@ -1558,6 +1558,22 @@ deep_research:
   max_accumulated_sources: 8    # hard cap on gathered sources (bounds prompt)
 
 # ---------------------------------------------------------------------------
+# Evolution (catalog 13) — bounded autonomous self-improvement.
+# ---------------------------------------------------------------------------
+# Ultron observes its own turns, distills repeated success patterns into
+# live trigger-loaded skills under data/evolution/skills/*.md, every
+# proposal gated by a fail-closed pre-flight + reversible checkpoint +
+# regression guardrails + hash-chained audit. Data-only, zero-network,
+# Tier-3-walled (never rewrites src/ultron/, the safety validator, the
+# audit ledger, or the engine itself). Default ON, fully fail-open.
+evolution:
+  enabled: true
+  max_steps: 3                    # AgentLoop step cap per cycle
+  cycle_check_interval_turns: 25  # recorded turns between autonomous cycle checks
+  pause_on_demote: false          # demote a churny surface to propose-only, don't pause it
+  apply_temperament: true         # prepend the learned concise/detailed tone hint to turns
+
+# ---------------------------------------------------------------------------
 # Error phrases (Phase 4) — user-facing voice messages for dependency failures
 # ---------------------------------------------------------------------------
 # Each list is a phrase pool. Empty list disables narration for that

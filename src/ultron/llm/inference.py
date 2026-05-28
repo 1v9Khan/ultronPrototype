@@ -531,6 +531,13 @@ class LLMEngine:
         # ``llm.condensers.intent_adaptive.enabled`` is True.
         # ``None`` (default) preserves the legacy back-compat path.
         self._current_intent_kind: Optional[str] = None
+        # Catalog 13 (evolution) -- the learned response-temperament hint
+        # for the *next* generation. The orchestrator sets this from the
+        # EvolutionService's PersonalityTuner before generate_stream;
+        # _build_messages appends it to the system prompt for that turn
+        # only. ``""`` (default + balanced temperament) is byte-identical
+        # to the pre-evolution prompt. NEVER touches the voice character.
+        self._temperament_hint: str = ""
 
         if runtime == "in_process":
             self._init_in_process(cfg, model_path, n_ctx, n_gpu_layers)
@@ -931,6 +938,17 @@ class LLMEngine:
         if skills_block:
             system_content = system_content + "\n\n" + skills_block
 
+        # Catalog 13 (evolution): append the learned response-temperament
+        # hint for THIS turn. It is a self-contained ``[Tone: ...]``
+        # directive (or "" when the temperament is balanced) produced by
+        # the EvolutionService's PersonalityTuner from the user's recent
+        # satisfaction signals. Injected here -- not into the user text --
+        # so the web-gate / local-clock detectors see the unmodified
+        # utterance. Fail-open: an empty hint leaves the prompt unchanged.
+        temperament_hint = getattr(self, "_temperament_hint", "")
+        if temperament_hint:
+            system_content = system_content + "\n\n" + temperament_hint
+
         # Keep ``self.system_prompt`` in sync with the resolved value
         # so external readers (tests, debug log dumps) see the live
         # prompt, not the construction-time snapshot.
@@ -1235,6 +1253,25 @@ class LLMEngine:
         Exposed primarily for tests.
         """
         return self._current_intent_kind
+
+    def set_temperament_hint(self, hint: Optional[str]) -> None:
+        """Set the learned response-temperament hint for the *next*
+        generation (catalog 13 / evolution).
+
+        The orchestrator calls this immediately before
+        :meth:`generate_stream` with the EvolutionService's current
+        ``[Tone: ...]`` directive (or ``""`` / ``None`` to clear).
+        :meth:`_build_messages` appends a non-empty hint to the system
+        prompt for that turn only. A balanced temperament yields ``""``,
+        leaving the prompt byte-identical to the pre-evolution path.
+        """
+        self._temperament_hint = hint or ""
+
+    def get_temperament_hint(self) -> str:
+        """Return the temperament hint set by the most recent
+        :meth:`set_temperament_hint` call (``""`` if unset). For tests.
+        """
+        return getattr(self, "_temperament_hint", "")
 
     # --- 4B plan: voice-driven on-the-fly model reload ---------------------
 

@@ -728,6 +728,13 @@ class Orchestrator:
         # (e.g., gaming mode engage/disengage) directly. Default OFF so
         # operators opt in after deciding which phrases to register.
         self._intent_recognizer = self._init_intent_recognizer_if_enabled()
+        # Catalog 13 -- bounded autonomous self-improvement. Construct
+        # BEFORE the skill registry so its proposal directory
+        # (data/evolution/skills) exists for the initial walk; the
+        # registry reloader resolves the registry lazily via the
+        # singleton getter. Fail-open: returns None on any failure, which
+        # makes every per-turn evolution hook a zero-cost no-op.
+        self.evolution = self._load_evolution_if_enabled()
         # 2026-05-23 OpenHands batch 2 (T1) -- trigger-loaded skills.
         # When ``skills.enabled`` is True, walks ``skills/`` (public),
         # ``~/.ultron/skills/`` (user), and ``<project>/.ultron/skills/``
@@ -748,6 +755,11 @@ class Orchestrator:
         self._next_turn_force_search = False
         self._last_response_finished_monotonic: float = 0.0
         self._last_search_payload = None
+        # Catalog 13 (evolution): set at the end of _respond when the just-
+        # finished response was cut off by a barge-in. Consumed by the
+        # evolution turn recorder on the NEXT turn to nudge the response
+        # temperament terser. Fail-open default False.
+        self._last_turn_barged_in: bool = False
         # 2026-05-22 OPEN_LAST_SOURCE: accumulated text of the most
         # recent assistant response. Used to match cited publication
         # names back to the source list when the user says "show me
@@ -1391,10 +1403,22 @@ class Orchestrator:
         try:
             from ultron.skills import build_default_registry, set_skill_registry
 
+            extra_dirs = list(cfg.extra_dirs)
+            # Catalog 13: the evolution subsystem distills new skills into
+            # data/evolution/skills/*.md. Register it as a PROJECT-precedence
+            # source so a kept proposal is matchable on the very next turn
+            # (the EvolutionService's registry_reloader calls reload()
+            # after it writes one). Guarded by evolution.enabled.
+            try:
+                ev_cfg = getattr(get_config(), "evolution", None)
+                if ev_cfg is not None and getattr(ev_cfg, "enabled", False):
+                    extra_dirs.append(PROJECT_ROOT / "data" / "evolution" / "skills")
+            except Exception:                                     # noqa: BLE001
+                pass
             registry = build_default_registry(
                 project_root=PROJECT_ROOT,
                 user_home=None,
-                extra_project_dirs=list(cfg.extra_dirs),
+                extra_project_dirs=extra_dirs,
                 disabled_skills=list(cfg.disabled_skills),
                 always_on_only=cfg.always_on_only,
                 default_min_user_text_chars=cfg.default_min_user_text_chars,
@@ -1415,6 +1439,156 @@ class Orchestrator:
                 "skills registry init failed (%s) -- skill injection "
                 "disabled for this session", e,
             )
+
+    def _load_evolution_if_enabled(self):
+        """Catalog 13 -- construct the autonomous self-improvement service.
+
+        Builds an :class:`~ultron.evolution.service.EvolutionService` from
+        config, wiring a registry reloader so a kept skill proposal is
+        live on the next turn. Returns the service, or ``None`` when
+        ``evolution.enabled`` is False or construction fails.
+
+        Fail-open: any failure logs WARN and returns ``None``, which makes
+        every per-turn evolution hook (record_turn / autonomous cycle /
+        temperament) a zero-cost no-op -- the voice baseline is unchanged.
+        """
+        try:
+            from ultron.config import PROJECT_ROOT, get_config
+
+            cfg = get_config()
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning("evolution: config read failed (%s)", e)
+            return None
+        ev_cfg = getattr(cfg, "evolution", None)
+        if ev_cfg is None or not getattr(ev_cfg, "enabled", False):
+            return None
+        try:
+            from ultron.evolution.service import EvolutionService
+            from ultron.skills import get_skill_registry
+
+            def _reload_skills() -> None:
+                reg = get_skill_registry()
+                if reg is not None:
+                    reg.reload()
+
+            service = EvolutionService.from_config(
+                cfg,
+                project_root=PROJECT_ROOT,
+                registry_reloader=_reload_skills,
+            )
+            if service is not None:
+                logger.info(
+                    "evolution: service ready (autonomous self-improvement "
+                    "active; proposals -> data/evolution/skills)"
+                )
+            return service
+        except Exception as e:                                    # noqa: BLE001
+            logger.warning(
+                "evolution service init failed (%s) -- self-improvement "
+                "disabled for this session", e,
+            )
+            return None
+
+    def _maybe_handle_evolution_command(self, user_text: str) -> bool:
+        """Catalog 13 -- intercept an explicit "evolve now" / "evolution
+        status" voice command and dispatch it directly, skipping routing +
+        the LLM.
+
+        A strict regex matcher
+        (:func:`ultron.evolution.intent.match_evolution_command`) gates
+        this so ordinary conversation never trips it. Returns True when the
+        turn was handled (caller should ``continue``), False otherwise
+        (including when evolution is disabled). Fail-open: any error speaks
+        a graceful message and still returns True so the turn ends cleanly.
+        """
+        if self.evolution is None:
+            return False
+        try:
+            from ultron.evolution.intent import (
+                EvolutionCommandKind,
+                match_evolution_command,
+            )
+        except Exception as e:                                    # noqa: BLE001
+            logger.debug("evolution intent import failed: %s", e)
+            return False
+        command = match_evolution_command(user_text)
+        if command is None:
+            return False
+        from ultron import trace
+
+        if command.kind is EvolutionCommandKind.STATUS:
+            try:
+                message = self.evolution.status_line()
+            except Exception as e:                                # noqa: BLE001
+                logger.debug("evolution status failed: %s", e)
+                message = "Evolution is active."
+            trace.tlog(logger, "evolution:status", preview=message[:120])
+            self._speak(message)
+            return True
+
+        # RUN_CYCLE -- acknowledge, then run one cycle (single-flight) and
+        # report the verdict. run_cycle never raises.
+        trace.tlog(logger, "evolution:run_cycle:start")
+        try:
+            result = self.evolution.run_cycle()
+        except Exception as e:                                    # noqa: BLE001
+            logger.debug("evolution run_cycle failed: %s", e)
+            result = {"status": "error"}
+        status = result.get("status", "error")
+        if status == "kept":
+            message = (
+                f"Evolution cycle complete. I distilled and kept a new "
+                f"skill: {result.get('slug', 'a new capability')}."
+            )
+        elif status == "busy":
+            message = "An evolution cycle is already running."
+        elif status in ("no_proposal", "disabled"):
+            message = "Nothing to evolve yet. I need more experience first."
+        elif status in ("reverted", "blocked", "rejected"):
+            message = (
+                "I attempted a self-improvement but rolled it back when it "
+                "didn't pass my safety and quality checks."
+            )
+        else:
+            message = "The evolution cycle didn't complete cleanly."
+        trace.tlog(logger, "evolution:run_cycle:done", status=status)
+        self._speak(message)
+        return True
+
+    def _record_evolution_turn(self, user_text: str) -> None:
+        """Catalog 13 -- feed one addressed turn to the EvolutionService
+        (opportunity-signal capsule for distillation + temperament
+        feedback), then maybe trigger an autonomous cycle.
+
+        Fail-open + a zero-cost no-op when evolution is disabled. The
+        signal extraction + record are microseconds; the actual cycle (if
+        triggered) runs single-flight on a daemon thread off the hot
+        path."""
+        if self.evolution is None:
+            return
+        try:
+            from ultron.evolution.signals import extract_signals
+
+            signals = extract_signals(user_snippet=user_text)
+        except Exception:                                         # noqa: BLE001
+            signals = ()
+        try:
+            self.evolution.record_turn(
+                user_text=user_text,
+                signals=signals,
+                barged_in=self._consume_last_barge_in(),
+            )
+            self.evolution.maybe_run_autonomous_cycle()
+        except Exception as e:                                    # noqa: BLE001
+            logger.debug("evolution record turn failed: %s", e)
+
+    def _consume_last_barge_in(self) -> bool:
+        """Return whether the PRIOR response was interrupted by a barge-in,
+        clearing the flag. Feeds the evolution temperament tuner (a
+        barge-in nudges responses terser). Fail-open to False."""
+        flag = bool(getattr(self, "_last_turn_barged_in", False))
+        self._last_turn_barged_in = False
+        return flag
 
     def _load_event_store_if_enabled(self) -> None:
         """2026-05-23 OpenHands batch 3 (T2 + T13) -- construct the event store.
@@ -2738,6 +2912,15 @@ class Orchestrator:
                 poller.stop()
             except Exception:
                 pass
+        # Catalog 13: persist the evolution state + learned personality so
+        # the next session resumes the temperament + distillation cooldown.
+        # Best-effort -- the JSONL capsule log is already durable per-turn.
+        evolution = getattr(self, "evolution", None)
+        if evolution is not None:
+            try:
+                evolution.shutdown()
+            except Exception:
+                pass
 
     # --- main loop -----------------------------------------------------------
 
@@ -2998,6 +3181,37 @@ class Orchestrator:
                         via="intent", follow_up=bool(follow_up_until),
                     )
                     continue
+
+                # Catalog 13 (evolution): intercept an explicit "evolve
+                # now" / "evolution status" command BEFORE routing. A
+                # strict matcher gates this so ordinary speech never trips
+                # it; on no-match / disabled it returns False and the turn
+                # proceeds to routing as usual.
+                trace.set_phase("evolution")
+                if self._maybe_handle_evolution_command(user_text):
+                    self._last_response_finished_monotonic = time.monotonic()
+                    if _addr_cfg.follow_up_enabled:
+                        follow_up_until = (
+                            self._last_response_finished_monotonic
+                            + _addr_cfg.warm_mode_duration_seconds
+                        )
+                    else:
+                        follow_up_until = None
+                    trace.tlog(
+                        logger, "loop:iteration_end",
+                        via="evolution_command",
+                        follow_up=bool(follow_up_until),
+                    )
+                    continue
+
+                # Catalog 13 (evolution): record this addressed turn for
+                # the self-improvement subsystem. The opportunity signals
+                # in the utterance feed skill distillation; the prior
+                # response's barge-in (if any) tunes the response
+                # temperament; then maybe trigger an autonomous cycle
+                # (rare, single-flight, on a daemon thread off the hot
+                # path). Fail-open + microsecond cost when nothing fires.
+                self._record_evolution_turn(user_text)
 
                 # Capability routing (Phase 5): classify the utterance into
                 # one of the routing kinds and let CapabilityVoiceController
@@ -4544,6 +4758,17 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             logger.debug("set_current_intent_kind failed: %s", e)
 
+        # Catalog 13 (evolution): apply the learned response-temperament
+        # hint for THIS turn. It is injected into the system prompt by the
+        # LLM engine (NOT into the user text, so the gate / clock detectors
+        # are unaffected). A balanced temperament yields "" -> the prompt
+        # is byte-identical to the pre-evolution path. Fail-open.
+        try:
+            if self.llm is not None and self.evolution is not None:
+                self.llm.set_temperament_hint(self.evolution.temperament_hint())
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("set_temperament_hint failed: %s", e)
+
         try:
             print("  ultron: ", end="", flush=True)
             token_stream = self._build_response_stream(user_text)
@@ -4603,6 +4828,14 @@ class Orchestrator:
             logger.exception("Response pipeline failed: %s", e)
             print(f"\n  [error] {e}")
         finally:
+            # Catalog 13 (evolution): capture whether THIS response was
+            # barged into, BEFORE we set the interrupt to release the
+            # watcher. The next turn's recorder consumes it to nudge the
+            # response temperament terser. Fail-open.
+            try:
+                self._last_turn_barged_in = self._interrupt.is_set()
+            except Exception:                                        # noqa: BLE001
+                pass
             self._interrupt.set()  # release watcher
             if watcher is not None:
                 watcher.join(timeout=1.0)
@@ -4615,6 +4848,14 @@ class Orchestrator:
                     self.llm.set_current_intent_kind(None)
             except Exception as e:                                   # noqa: BLE001
                 logger.debug("set_current_intent_kind(None) failed: %s", e)
+            # Catalog 13 (evolution): clear the per-turn temperament hint
+            # for the same reason -- a direct generate_stream call must not
+            # inherit this turn's tone directive.
+            try:
+                if self.llm is not None:
+                    self.llm.set_temperament_hint("")
+            except Exception as e:                                   # noqa: BLE001
+                logger.debug("set_temperament_hint('') failed: %s", e)
             # openclaw-clawhub T15: emit the aggregate per-turn metric.
             # Fail-private (no-op unless opted in) + fail-open.
             self._emit_turn_telemetry(

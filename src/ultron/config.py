@@ -3177,6 +3177,51 @@ class DeepResearchConfig(_Strict):
     max_accumulated_sources: int = Field(default=8, ge=1, le=30)
 
 
+class EvolutionConfig(_Strict):
+    """Catalog 13 (clawhub-capability-evolver clean-room): bounded autonomous
+    self-improvement.
+
+    Ultron observes its own turns, mints success/failure *capsules*, and --
+    once it has seen a pattern repeat -- distills a new trigger-loaded skill
+    into ``data/evolution/skills/*.md`` (a gitignored, checkpointed, live
+    skills source). Every proposal runs through the bounded
+    :class:`~ultron.evolution.evolution_loop.EvolutionLoop` (a subclass of the
+    catalog-11 :class:`~ultron.agent_loop.base.AgentLoop`): pre-flight gate
+    (fail-closed) -> autonomy tier check -> reversible checkpoint -> write ->
+    blast-radius + constraint check -> regression guardrails -> keep or
+    auto-revert -> hash-chained audit.
+
+    HARD SAFETY CONTRACT (enforced in the engine, surfaced here as knobs):
+    proposals are DATA ONLY (skills markdown / in-range config), NEVER
+    generated code, NEVER ``src/ultron/``, NEVER a Category-K surface; the
+    safety validator / audit ledger / evolution engine itself sit behind a
+    Tier-3 hard wall that is never autonomously rewritten; zero network; the
+    voice baseline (SOUL.md / RVC / Piper / Kokoro) is untouchable.
+
+    Default ON: every layer is fail-open, so a construction or runtime
+    failure degrades to a disabled service, never a crashed voice path. The
+    per-turn hooks are microseconds; the actual cycle runs single-flight on a
+    daemon thread off the hot path.
+    """
+
+    enabled: bool = True
+    # The load-bearing AgentLoop step cap for a single evolution cycle.
+    max_steps: int = Field(default=3, ge=1, le=8)
+    # How many recorded turns must elapse before the autonomous trigger
+    # considers running a background cycle. Keeps cycles rare + off the hot
+    # path; a cycle still only proposes when the distiller's thresholds
+    # (>=10 successes, >=7 of last 10, 24h cooldown) are met.
+    cycle_check_interval_turns: int = Field(default=25, ge=1, le=10000)
+    # When a surface's auto-revert rate crosses the demotion threshold,
+    # whether to PAUSE that surface (require manual re-enable) vs merely
+    # dropping it to propose-only. Conservative default: don't pause.
+    pause_on_demote: bool = False
+    # Whether the learned temperament hint (concise / detailed / warmer)
+    # is prepended to the user turn before LLM generation. Tier-0 trait
+    # tuning only -- never touches SOUL.md or the voicepack.
+    apply_temperament: bool = True
+
+
 class UltronConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -3215,6 +3260,13 @@ class UltronConfig(_Strict):
     # over the FREE search ladder. Explicit voice opt-in ("research X in
     # depth"); the normal sub-second search path is untouched.
     deep_research: DeepResearchConfig = Field(default_factory=DeepResearchConfig)
+    # Catalog 13 (clawhub-capability-evolver clean-room) -- bounded
+    # autonomous self-improvement. Observes turns, distills repeated
+    # success patterns into live trigger-loaded skills under
+    # ``data/evolution/skills/``, every proposal gated by a fail-closed
+    # pre-flight + reversible checkpoint + regression guardrails. Data-only,
+    # zero-network, Tier-3-walled. Default ON, fully fail-open.
+    evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     # 2026-05-12 Phase 2 -- runtime tool-call validator (paired with the
     # abliterated Josiefied Qwen3-8B default LLM).
     safety: "SafetyConfig" = Field(default_factory=lambda: SafetyConfig())
