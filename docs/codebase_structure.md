@@ -4145,7 +4145,18 @@ Two responsibilities:
    touches a process tied to the live Ultron orchestrator (detected
    via the port-19761 listener and its ancestor/descendant chain).
 
-### Default suite (no env gate) — **4240 passed / 16 skipped (GPU-gated)** in ~76 s (2026-05-22 review-feedback pass; +136 from the session-E baseline of 4104)
+### Default suite (no env gate) — per-file snapshot (frozen 2026-05-22)
+
+> **The CANONICAL current pass count lives in the validating-HEAD header at
+> the TOP of this file** (catalog 12: ~8663 passed / 26 skipped / 0 failed,
+> main-checkout projection). The per-file enumeration in THIS section is a
+> historical snapshot frozen at the 2026-05-22 review-feedback pass (4240
+> passed / 16 skipped) and is intentionally NOT re-counted per commit — the
+> top-of-file header is the source of truth for the running total. Always
+> run the sweep via `scripts/run_tests.py` (never bare `pytest` -- see the
+> binding `feedback_test_sweep_workflow.md` + `docs/test_sweep_binding_rules.md`).
+> Original 2026-05-22 snapshot: **4240 passed / 16 skipped (GPU-gated)** in
+> ~76 s (+136 from the session-E baseline of 4104).
 
 **New test files in this pass:**
 - [`tests/resilience/test_fail_open_log.py`](../tests/resilience/test_fail_open_log.py) (+26) — per-session counter: record / accumulate / unknown-category open-ended / fail-safe on broken lock; configure + flush JSONL + previous-session read; render_summary alphabetisation + empty + None handling; KNOWN_CATEGORIES uniqueness + bus_slow_subscriber present.
@@ -4585,8 +4596,10 @@ You MUST update the relevant section of this document when you:
 After your change:
 
 ```powershell
-# 1) Tests pass
-C:\STC\ultronPrototype\.venv\Scripts\python.exe -m pytest tests/ -q --no-header --ignore=tests/coding/test_orchestration_real.py
+# 1) Tests pass -- ALWAYS via the wrapper (never bare pytest; it enforces
+#    the five operator-side safeguards). Under machine contention add the
+#    real-subprocess exclusions from the validating-HEAD header's SWEEP note.
+C:\STC\ultronPrototype\.venv\Scripts\python.exe scripts\run_tests.py --stale-heartbeat=400
 
 # 2) Config still validates
 C:\STC\ultronPrototype\.venv\Scripts\python.exe scripts\validate_config.py
@@ -4611,8 +4624,8 @@ was violated. Treat that as a regression and fix the doc.
 
 To verify the document still matches reality:
 ```powershell
-# Run after any non-trivial change
-pytest tests/ -q
+# Run after any non-trivial change (use the wrapper, NOT bare pytest)
+python scripts/run_tests.py --stale-heartbeat=400
 python scripts/validate_config.py
 # Then re-read this doc and confirm tree + module sections are current
 ```
