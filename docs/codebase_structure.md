@@ -50,7 +50,24 @@
 >   Triage stays deferred to a future operator pass (the catalog's
 >   YELLOW two-phase-gated triage); filing is the low-risk
 >   append-only half. Fail-open.
-> * T18 (image markdown) wiring in the next commit of this pass.
+> * **T18 image markdown** (`llm/image_markdown.py`) -- verified to
+>   have NO real consumer in the current stack, so deliberately left
+>   importable rather than fake-wired. The encoder produces SWE-Agent
+>   `![alt](data:mime;base64,...)` data-URLs for a multimodal LLM
+>   that consumes the OpenAI `[{type:text},{type:image_url}]` content
+>   shape; ultron has no such surface today: the in-process Qwen 4B
+>   is text-only, the coding bridge passes `render_prompt(request)`
+>   as a plain text argv to `claude --print` (the AI coding agent
+>   consumes images via @-file references, NOT inline data-URLs), and
+>   moondream2 takes raw bytes. Embedding base64 data-URLs in the
+>   JSONL audit / events logs would be pure bloat. The module stays
+>   ready for a config-flip + handler-swap when a multimodal LLM
+>   path lands (its own docstring's stated intent). Wiring it now
+>   would be a speculative feature with no user.
+>
+> Net of the wiring pass: T15 + T7 + T12 consumed into hot paths;
+> T18 verified consumer-less + left importable; cline T9 already
+> closed; OpenClaw T17/T19/T20 never ported (catalog-deferred).
 >
 > **Validating HEAD:** catalog 10 (clawhub-browser-use) port on
 > `claude/stoic-banach-74402b` (pushed to `origin/main`). Nine-batch
