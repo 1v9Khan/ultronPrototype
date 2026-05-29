@@ -15,8 +15,10 @@
 > complete the voice-controlled coding engineer end to end, build a real-usage
 > e2e suite, make the system pervasively self-improving, and cut latency +
 > resources. On worktree branch `claude/vigorous-mclaren-56a5a7`, on top of the
-> infra-wiring tip `9d51cec`, **validating code HEAD `983a0fd`**. **~9173 passed /
-> 34 skipped / 0 failed (~118s)** (worktree sweep; the +8 skipped vs earlier are
+> infra-wiring tip `9d51cec`, **validating code HEAD `0a8063d`** (latest: #74 LLM
+> startup warmup `93f3a20`, then #72 deep code-exploration voice intent `0a8063d`).
+> **9156 passed / 35 skipped / 0 failed (~103s)** with the loaded-machine ignore
+> recipe (below); ~9182 no-deselect. The +8 skipped vs earlier are
 > the new GPU-gated voice-e2e suite). Under this session's heavy machine load
 > MULTIPLE real-subprocess files (`tests/integration/test_bridge_e2e.py` AND
 > `tests/openclaw_bridge/test_client.py`) flake + wedge the watchdog -> ignore
