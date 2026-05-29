@@ -872,6 +872,9 @@ coding:
   claude_model: "haiku"
 
   sandbox_root: "data/sandbox"
+  # B3: hard wall-clock timeout for a voice-commanded "run the X program"
+  # (capture mode). Launch mode is detached + unaffected. Range [1, 600].
+  sandbox_run_timeout_seconds: 30.0
   project_registry_path: "data/projects.json"
   audit_log_path: "logs/coding_tasks.jsonl"
   task_timeout_seconds: 1800   # 30 min — outer cap on a single AI coding agent task

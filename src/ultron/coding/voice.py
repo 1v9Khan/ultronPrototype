@@ -142,6 +142,10 @@ class CapabilityVoiceController:
         # orchestrator can deliver it the next time it polls.
         self._was_active = False
         self._pending_completion: Optional[str] = None
+        # B3: background sandbox-run report slot (drained by the orchestrator's
+        # _announce_pending_run_report poll). Set by the run thread spawned in
+        # maybe_handle_run_program so the voice loop never blocks on a run.
+        self._pending_run_report: Optional[str] = None
         # Track which pending clarifications we've already spoken to the
         # user so we don't repeat the same prompt every loop iteration.
         self._announced_clarifications: set[str] = set()
@@ -1043,6 +1047,120 @@ class CapabilityVoiceController:
         with self._lock:
             self._was_active = True
             self._pending_completion = None
+
+    # --- B3: run / launch a finished sandbox program on voice command ------
+
+    def maybe_handle_run_program(self, user_text: str):
+        """Run or launch a finished sandbox program ("run the calculator" /
+        "launch the server"). Returns a :class:`VoiceResponse` when this was a
+        run/launch command that resolved to a sandbox project, else ``None``
+        (the strict matcher + project resolution mean ordinary utterances fall
+        through to normal routing). RUN executes in a background thread and the
+        report is drained on the next voice-loop poll (non-blocking); LAUNCH is
+        instant + detached. Fail-open."""
+        try:
+            from ultron.coding.sandbox_runner import (
+                DEFAULT_RUN_TIMEOUT_S, launch_program, match_run_program,
+                run_program, summarize_run_result,
+            )
+        except Exception:                                            # noqa: BLE001
+            return None
+        match = match_run_program(user_text)
+        if match is None:
+            return None
+        project_path, project_name = self._resolve_runnable_project(match.project_hint)
+        if project_path is None:
+            if match.project_hint:
+                # A name that didn't resolve to a known project: don't hijack
+                # the turn -- fall through (it may be a CODE_TASK like "run a
+                # script that ..."). Empty hint with no recent project asks.
+                return None
+            return VoiceResponse(
+                text="I don't have a recent project to run. Build one first, "
+                     "or tell me which program by name.",
+            )
+        if match.mode == "launch":
+            result = launch_program(
+                project_path, sandbox_root=self.sandbox_root,
+                project_name=project_name, user_text=user_text,
+            )
+            return VoiceResponse(text=summarize_run_result(result))
+        # RUN: non-blocking -- execute in a daemon thread; the orchestrator
+        # speaks _pending_run_report on its next poll.
+        try:
+            from ultron.config import get_config
+            timeout_s = float(get_config().coding.sandbox_run_timeout_seconds)
+        except Exception:                                            # noqa: BLE001
+            timeout_s = DEFAULT_RUN_TIMEOUT_S
+
+        def _run_and_stash() -> None:
+            try:
+                result = run_program(
+                    project_path, sandbox_root=self.sandbox_root,
+                    project_name=project_name, timeout_s=timeout_s,
+                    user_text=user_text,
+                )
+                summary = summarize_run_result(result)
+            except Exception as e:                                   # noqa: BLE001
+                summary = (
+                    f"I tried to run {project_name}, but something went wrong: {e}"
+                )
+            with self._lock:
+                self._pending_run_report = summary
+
+        threading.Thread(
+            target=_run_and_stash, name="sandbox-run", daemon=True,
+        ).start()
+        return VoiceResponse(
+            text=f"Running {project_name} now. I'll tell you how it goes.",
+        )
+
+    def pop_run_report(self) -> Optional[str]:
+        """Return + clear the most recent background sandbox-run report.
+        The orchestrator polls this each voice-loop iteration."""
+        with self._lock:
+            report = self._pending_run_report
+            self._pending_run_report = None
+        return report
+
+    def _resolve_runnable_project(self, hint: str):
+        """Resolve a run/launch hint to ``(project_path, project_name)``.
+
+        Empty hint -> the runner's active project, else the most-recently-
+        accessed registered project. A named hint goes through the resolver,
+        then a direct sandbox-dir slug match. Returns ``(None, "")`` when
+        nothing resolves. Fail-open at every step."""
+        if not hint:
+            try:
+                state = self.runner.active_state()
+            except Exception:                                        # noqa: BLE001
+                state = None
+            if state is not None and getattr(state, "cwd", None):
+                p = Path(state.cwd)
+                return p, p.name
+            try:
+                projects = self.registry.list()
+            except Exception:                                        # noqa: BLE001
+                projects = []
+            if projects:
+                proj = max(projects, key=lambda pr: getattr(pr, "last_accessed", 0.0))
+                return Path(proj.path), proj.name
+            return None, ""
+        try:
+            resolution = self.resolver.resolve(hint)
+            proj = resolution.project
+        except Exception:                                            # noqa: BLE001
+            proj = None
+        if proj is not None:
+            return Path(proj.path), proj.name
+        try:
+            from ultron.coding.projects import slugify_for_path
+            candidate = self.sandbox_root / slugify_for_path(hint)
+            if candidate.is_dir():
+                return candidate, candidate.name
+        except Exception:                                            # noqa: BLE001
+            pass
+        return None, ""
 
     # --- B3: MCP-config wiring for voice-dispatched coding tasks -----------
 

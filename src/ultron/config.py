@@ -2108,6 +2108,9 @@ class CodingConfig(_Strict):
     claude_cli: str = "${USERPROFILE}/AppData/Roaming/npm/claude.cmd"
     claude_model: str = "haiku"
     sandbox_root: str = "data/sandbox"
+    # B3: hard wall-clock timeout for a voice-commanded "run the X program"
+    # sandbox execution (capture mode). Launch mode is detached + unaffected.
+    sandbox_run_timeout_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
     project_registry_path: str = "data/projects.json"
     audit_log_path: str = "logs/coding_tasks.jsonl"
     task_timeout_seconds: int = Field(default=1800, ge=0)

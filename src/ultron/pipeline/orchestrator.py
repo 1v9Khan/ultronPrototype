@@ -1465,6 +1465,25 @@ class Orchestrator:
             logger.debug("history_recall handling failed: %s", e)
             return False
 
+    def _maybe_handle_run_program(self, user_text: str) -> bool:
+        """B3: run / launch a finished sandbox program on voice command
+        ("run the calculator" / "launch the server"). Delegates to the coding
+        controller (which owns the project resolver + sandbox). Returns True
+        iff handled; a strict matcher + project resolution mean ordinary
+        utterances fall through. Fail-open."""
+        cv = getattr(self, "coding_voice", None)
+        if cv is None:
+            return False
+        try:
+            resp = cv.maybe_handle_run_program(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("run_program handling failed: %s", e)
+            return False
+        if resp is None:
+            return False
+        self._speak(resp.text or "")
+        return True
+
     def _maybe_handle_report_concern(self, user_text: str) -> bool:
         """openclaw-clawhub T12 -- file a Report when the user voices a
         concern about the assistant's last response.
@@ -3249,6 +3268,8 @@ class Orchestrator:
                 self._announce_pending_clarifications()
                 # Phase 7: surface token-budget warnings + halt notices.
                 self._announce_pending_budget_warning()
+                # B3: speak the result of a backgrounded sandbox program run.
+                self._announce_pending_run_report()
                 # 4B plan Item 7: surface canonical-path-monitor aborts.
                 self._announce_pending_canonical_abort()
                 # E2 goal-anchor planning: surface anchor lifecycle
@@ -3557,6 +3578,24 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="report_concern",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # B3: "run the calculator" / "launch the server" -- run or
+                    # launch a finished sandbox program. Strict matcher +
+                    # project resolution -> ordinary utterances fall through.
+                    if self._maybe_handle_run_program(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="run_program",
                             follow_up=bool(follow_up_until),
                         )
                         continue
@@ -4545,6 +4584,22 @@ class Orchestrator:
             logger.warning(
                 "clarification notification dispatch failed: %s", e,
             )
+
+    def _announce_pending_run_report(self) -> None:
+        """B3: speak the result of a backgrounded sandbox program run
+        ("run the calculator") once it finishes. Drained each voice-loop
+        iteration; fail-open + no-op when coding is disabled or nothing is
+        pending."""
+        cv = getattr(self, "coding_voice", None)
+        if cv is None:
+            return
+        try:
+            report = cv.pop_run_report()
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("run-report drain failed: %s", e)
+            return
+        if report:
+            self._speak(report)
 
     def _announce_pending_budget_warning(self) -> None:
         """Phase 7: surface token-budget warnings (80%) and halt notices

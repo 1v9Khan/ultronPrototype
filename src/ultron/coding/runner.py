@@ -638,6 +638,15 @@ class CodingTaskRunner:
             project_name = ""
         if project_name:
             parts.append(f"Saved under {project_name}.")
+        # B3: when the task produced files, surface that the user can run it
+        # by voice (ties the completion report to the run/launch feature).
+        if state.success and not no_file_activity and project_name:
+            try:
+                from ultron.coding.sandbox_runner import resolve_entry_point
+                if resolve_entry_point(path) is not None:
+                    parts.append(f"Say run {project_name} to try it.")
+            except Exception:                                        # noqa: BLE001
+                pass
         if state.error and not state.success:
             parts.append(f"Error: {state.error}.")
         elif state.final_summary and not no_file_activity:
