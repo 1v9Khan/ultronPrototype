@@ -3070,6 +3070,13 @@ class SafetyConfig(_Strict):
     )
     # Audit log path. Relative to PROJECT_ROOT.
     audit_log_path: str = "logs/safety_audit.jsonl"
+    # Explicit-intent conditional unblock. When True (default), a
+    # NEEDS_EXPLICIT_INTENT verdict is upgraded to ALLOW iff the user's CURRENT
+    # utterance explicitly names the action (verb + object) -- the conservative
+    # matcher in ultron.safety.intent. It NEVER overrides a BLOCK_HARD and only
+    # consults the current turn's text, so it can't open anything the user
+    # didn't ask for this turn. Set False to keep NEI a flat block.
+    explicit_intent_matching_enabled: bool = True
     # SWE-Agent batch 4 (T11) -- Category IT (Interactive Tools)
     # blocklist. Mirrors `ToolFilterConfig` from SWE-Agent.
     interactive_tools: "InteractiveToolsBlockConfig" = Field(

@@ -236,6 +236,7 @@ class ToolCallValidator:
         rules: list,  # list[Rule] but avoid circular import at type level
         audit_log: Optional[AuditLog] = None,
         path_resolver: Optional[PathResolver] = None,
+        explicit_intent_matching: bool = True,
     ) -> None:
         self.policy = policy
         self.rules: list = list(rules)
@@ -243,6 +244,10 @@ class ToolCallValidator:
         self.path_resolver = (
             path_resolver if path_resolver is not None else get_path_resolver()
         )
+        # When True, a NEEDS_EXPLICIT_INTENT verdict is conditionally upgraded
+        # to ALLOW when the user's current utterance explicitly names the
+        # action. Never overrides BLOCK_HARD. See check().
+        self._explicit_intent_enabled = bool(explicit_intent_matching)
 
     def check(self, ctx: RuleContext) -> ValidatorVerdict:
         """Run every enabled rule against ``ctx`` and aggregate.
@@ -316,6 +321,53 @@ class ToolCallValidator:
 
         # Find the most-restrictive verdict and the rule that produced it.
         dominant = max(results, key=lambda r: r.verdict.severity)
+
+        # Conditional unblock: upgrade NEEDS_EXPLICIT_INTENT -> LOG_ONLY (an
+        # audited allow) iff the user's CURRENT utterance explicitly names the
+        # action (verb + object). Critically this NEVER overrides a BLOCK_HARD
+        # (we only rewrite NEI results, then recompute the dominant -- so any
+        # hard block still wins) and only consults ctx.user_text, so it cannot
+        # open anything the user didn't ask for this turn. The matcher is
+        # conservative (prefers false-negatives). Gated by
+        # safety.explicit_intent_matching_enabled.
+        if (
+            self._explicit_intent_enabled
+            and dominant.verdict == Verdict.NEEDS_EXPLICIT_INTENT
+            and getattr(ctx, "user_text", "")
+        ):
+            try:
+                from ultron.safety.intent import matches_explicit_intent
+                hints = tuple(
+                    Path(str(p)).name for p in ctx.paths if str(p)
+                )
+                im = matches_explicit_intent(
+                    ctx.user_text, tool_name=ctx.tool_name, object_hints=hints,
+                )
+            except Exception as e:  # noqa: BLE001
+                im = None
+                logger.debug("explicit-intent matcher raised (%s); NEI stands", e)
+            if im is not None and im.matched:
+                upgraded: list[RuleResult] = []
+                for r in results:
+                    if r.verdict == Verdict.NEEDS_EXPLICIT_INTENT:
+                        upgraded.append(RuleResult(
+                            rule_id=r.rule_id,
+                            verdict=Verdict.LOG_ONLY,
+                            reason=(
+                                f"explicit intent granted ({r.rule_id}): "
+                                f"verb={im.verb!r} object={im.object_token!r}"
+                            ),
+                            context={
+                                "original_verdict": "NEEDS_EXPLICIT_INTENT",
+                                "matched_verb": im.verb,
+                                "matched_object": im.object_token,
+                            },
+                        ))
+                    else:
+                        upgraded.append(r)
+                results = upgraded
+                # Recompute: any BLOCK_HARD from another rule still dominates.
+                dominant = max(results, key=lambda r: r.verdict.severity)
 
         # Audit any non-ALLOW outcome.
         if dominant.verdict != Verdict.ALLOW:
@@ -570,6 +622,9 @@ def build_validator_from_config() -> ToolCallValidator:
             policy=policy,
             rules=rules,
             audit_log=audit_log,
+            explicit_intent_matching=bool(
+                getattr(safety_cfg, "explicit_intent_matching_enabled", True)
+            ),
         )
     except Exception as e:
         logger.warning(
