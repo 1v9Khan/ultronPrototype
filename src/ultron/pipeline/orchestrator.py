@@ -500,6 +500,15 @@ class Orchestrator:
                 warmup()
         except Exception as e:                                          # noqa: BLE001
             logger.debug("STT warmup skipped (%s)", e)
+        # Latency hygiene: bump the host process to Above-Normal so background
+        # scheduling can't starve the voice loop mid-turn (~50-200 ms of jitter
+        # eliminated under load). Fail-open: no psutil / no permission -> the
+        # helper logs DEBUG and returns without raising.
+        try:
+            from ultron.latency_hygiene import raise_process_priority
+            raise_process_priority()
+        except Exception as e:                                          # noqa: BLE001
+            logger.debug("process-priority raise skipped (%s)", e)
         self.memory = self._load_memory_if_enabled()
         # 2026-05-22 perf: warm the cross-encoder reranker shared
         # singleton at startup. Without this, the first turn that
