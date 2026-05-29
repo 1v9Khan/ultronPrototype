@@ -3306,6 +3306,51 @@ class HooksConfig(_Strict):
     enabled: bool = True
 
 
+class McpServerSpec(_Strict):
+    """One external MCP server the operator wants Ultron to manage (T22).
+
+    ``transport`` selects the shape: ``stdio`` (spawn ``command``+``args`` and
+    speak JSON-RPC over its pipes) or ``http`` / ``sse`` / ``streamable_http``
+    (connect to ``url``). Dangerous env vars + sensitive headers are dropped
+    by default; opt specific ones back in via ``allow_env`` / ``allow_headers``.
+    """
+
+    id: str
+    transport: str = "stdio"  # stdio | http | sse | streamable_http
+    # stdio transport:
+    command: str = ""
+    args: List[str] = Field(default_factory=list)
+    cwd: Optional[str] = None
+    env: dict[str, str] = Field(default_factory=dict)
+    allow_env: List[str] = Field(default_factory=list)
+    # http / sse / streamable_http transport:
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+    allow_headers: List[str] = Field(default_factory=list)
+    scope_key: str = ""
+    connection_timeout_seconds: float = Field(default=30.0, gt=0.0)
+
+
+class McpConfig(_Strict):
+    """T22 MCP client -- a sandboxed external-MCP-server lifecycle manager.
+
+    Default OFF (``enabled=False``): a fully-functional MCP server registry
+    (register + sanitise transport + spawn with a filtered env + track in the
+    T12 process registry + reap the process tree on shutdown), gated behind a
+    single flag. The actual JSON-RPC tool discovery/invocation is provided by
+    the optional ``mcp`` Python SDK adapter; the managed servers are reachable
+    by the coding subprocess via its ``--mcp-config``. ``autostart`` (also off
+    by default) additionally spawns stdio servers at boot -- left off because a
+    stdio server with no in-process JSON-RPC client just idles, so spawning is
+    opt-in until a consumer (the coding mcp_config bridge or a future voice
+    tool-loop) connects.
+    """
+
+    enabled: bool = False
+    autostart: bool = False
+    servers: List[McpServerSpec] = Field(default_factory=list)
+
+
 class UltronConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -3375,6 +3420,12 @@ class UltronConfig(_Strict):
     # TaskComplete fire user scripts under ~/.ultron/hooks/. Zero-cost when no
     # scripts are installed (cached discovery + empty-result fast path).
     hooks: HooksConfig = Field(default_factory=HooksConfig)
+    # T22 MCP client. Default OFF: a sandboxed external-MCP-server lifecycle
+    # manager (register + env-filtered spawn + process-registry tracking +
+    # reap-on-shutdown). Managed servers are reachable by the coding
+    # subprocess via --mcp-config; JSON-RPC tool invocation is the optional
+    # mcp-SDK adapter's job. Nothing runs unless enabled.
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
 
 # ---------------------------------------------------------------------------

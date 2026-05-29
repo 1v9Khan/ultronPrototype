@@ -416,6 +416,28 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             self._zombie_killer = None
             logger.warning("ZombieKiller startup skipped (%s)", e)
+        # T22 MCP client (default OFF). When ``mcp.enabled``, build the registry
+        # from config -- every server registered with its transport env/header-
+        # sanitised + the real spawn (process-registry + zombie-killer tracked)
+        # and kill_process_tree reaper wired. When ``mcp.autostart``, also spawn
+        # stdio servers now (off by default: a stdio server with no in-process
+        # JSON-RPC client just idles). Nothing runs unless enabled. Fail-open.
+        self._mcp_registry = None
+        try:
+            from ultron.config import get_config as _gc
+            _mcp_cfg = getattr(_gc(), "mcp", None)
+            if _mcp_cfg is not None and getattr(_mcp_cfg, "enabled", False):
+                from ultron.mcp.builder import build_mcp_server_registry
+                self._mcp_registry = build_mcp_server_registry(_mcp_cfg)
+                if self._mcp_registry is not None:
+                    refs = self._mcp_registry.list_registered()
+                    logger.info("MCP client: %d server(s) registered", len(refs))
+                    if getattr(_mcp_cfg, "autostart", False):
+                        for ref in refs:
+                            self._mcp_registry.start(ref.server_id)
+        except Exception as e:                                       # noqa: BLE001
+            self._mcp_registry = None
+            logger.warning("MCP client startup skipped (%s)", e)
         self.wake = WakeWordDetector()
         # 2026-05-12 Smart Turn V3: build the detector BEFORE the VAD so
         # we can wire the fast-path silence baseline into the VAD's
@@ -3156,6 +3178,13 @@ class Orchestrator:
         if killer is not None:
             try:
                 killer.shutdown()
+            except Exception:
+                pass
+        # T22: stop any MCP servers we started (reap their process trees).
+        mcp_registry = getattr(self, "_mcp_registry", None)
+        if mcp_registry is not None:
+            try:
+                mcp_registry.stop_all()
             except Exception:
                 pass
         # Catalog 13: persist the evolution state + learned personality so
