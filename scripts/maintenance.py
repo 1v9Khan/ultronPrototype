@@ -45,6 +45,12 @@ Tasks:
       Delete web_results older than per-point freshness (24 h volatile,
       30 d stable).
 
+  resolve_observation_outcomes
+      Offline pass over ``data/observations.jsonl``: resolve actions whose
+      outcome was left ``unknown_yet`` at emit time by scanning the
+      resolution window for follow-up rows, and emit the resolved outcome.
+      Needs neither the LLM nor Qdrant -- pure log processing. Idempotent.
+
 Most tasks need the main LLM. They share the same on-disk model file as the
 live Ultron, so VRAM contention is real -- prefer running maintenance when
 the live system isn't active.
@@ -714,6 +720,21 @@ def run_cleanup_web_cache(client) -> int:
 # ---------------------------------------------------------------------------
 
 
+def run_resolve_observation_outcomes() -> int:
+    """Resolve pending observation outcomes in ``data/observations.jsonl``.
+
+    Offline pass over the canonical observation log: for each action whose
+    outcome was emitted as ``unknown_yet``, scan the resolution window for the
+    correlated follow-up rows and emit a resolved outcome. Needs neither the
+    LLM nor Qdrant -- pure log processing. Idempotent (already-resolved rows
+    are skipped). Returns the count resolved this run."""
+    from ultron.observations import resolve_outcomes
+
+    summary = resolve_outcomes()
+    print(f"  observations resolved: {summary.as_dict()}")
+    return summary.resolved_now
+
+
 _TASKS = [
     "backfill_metadata",
     "extract_facts",
@@ -721,6 +742,7 @@ _TASKS = [
     "daily_summary",
     "decay_stale_facts",
     "cleanup_web_cache",
+    "resolve_observation_outcomes",
 ]
 
 
@@ -806,6 +828,8 @@ def main() -> int:
                 summary[task] = run_decay_stale_facts(client)
             elif task == "cleanup_web_cache":
                 summary[task] = run_cleanup_web_cache(client)
+            elif task == "resolve_observation_outcomes":
+                summary[task] = run_resolve_observation_outcomes()
         except Exception as e:
             print(f"  TASK FAILED: {task}: {e}")
             summary[task] = -1
