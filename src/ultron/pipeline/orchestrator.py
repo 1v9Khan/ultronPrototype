@@ -3139,6 +3139,11 @@ class Orchestrator:
                 # coding runner observed into the EvolutionService (repair
                 # distillation). Zero-cost no-op when nothing failed.
                 self._drain_evolution_command_failures()
+                # 2026 catalog 08/09: speak any dialog-appearance narration
+                # the coding runner's dialog auto-handler queued (default ON).
+                # Time-sensitive (a native dialog is blocking the task), so
+                # drain it before the informational loop-alert. No-op when none.
+                self._drain_coding_dialog_narrations()
                 # 2026 catalog wiring (T1): speak any loop-detection heads-up
                 # the coding runner queued when a task's tool-call stream
                 # tripped a hard escalation. Zero-cost no-op when none.
@@ -4276,6 +4281,31 @@ class Orchestrator:
                 self.evolution.record_command_failure(command, output, exit_code=exit_code)
         except Exception as e:  # noqa: BLE001
             logger.debug("evolution command-failure drain failed: %s", e)
+
+    def _drain_coding_dialog_narrations(self) -> None:
+        """Speak any dialog-appearance narration the coding runner's dialog
+        auto-handler queued (catalog 08/09, default ON). The handler detects a
+        native dialog mid-task and queues a voice-friendly line (e.g. "A 'Save
+        As' dialog appeared in notepad.exe -- shall I confirm?"); this drains +
+        speaks it so the user can respond (their spoken yes/no then routes via
+        WINDOW_CLOSE_CONFIRMATION). Without this drain the auto-handler's
+        narrations were queued but never surfaced. Fail-open + a zero-cost
+        no-op when coding is disabled."""
+        if self.coding_voice is None:
+            return
+        try:
+            runner = getattr(self.coding_voice, "runner", None)
+            pop = getattr(runner, "pop_dialog_narration", None)
+            if pop is None:
+                return
+            while True:
+                line = pop()
+                if not line:
+                    break
+                self._speak(line)
+                self._last_response_finished_monotonic = time.monotonic()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("coding dialog-narration drain failed: %s", e)
 
     def _drain_coding_loop_alerts(self) -> None:
         """T1: speak any loop-detection heads-up the coding runner queued when
