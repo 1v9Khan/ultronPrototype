@@ -780,6 +780,17 @@ class Orchestrator:
         # that article".
         self._last_response_text: str = ""
 
+        # In-memory dual-history store for verbatim conversation-recall
+        # ("what did I say earlier about X?"). I/O-free + always available
+        # (works even when ConversationMemory/Qdrant is disabled); each
+        # addressed user utterance + each LLM response is appended. Capped so
+        # a long session can't grow it without bound. Fail-open construction.
+        try:
+            from ultron.memory.dual_history import DualHistoryStore
+            self._dual_history = DualHistoryStore(verbatim_cap=300)
+        except Exception:                                            # noqa: BLE001
+            self._dual_history = None
+
         # 2026-05-19 Tracks 1c-1e voice-loop integration. The
         # BackgroundSummarizer fires when ``memory.background_summary.enabled``
         # is True; otherwise the loader returns None and the hot-path
@@ -1355,6 +1366,82 @@ class Orchestrator:
             self._interrupt.set()  # release the watcher
             if watcher is not None:
                 watcher.join(timeout=1.0)
+
+    def _record_dialogue_turn(self, role: str, text: str) -> None:
+        """Append a verbatim conversation turn to the in-memory dual-history
+        store for "what did I say earlier?" recall. Fail-open + a no-op when
+        the store is absent or the text is blank."""
+        store = getattr(self, "_dual_history", None)
+        if store is None or not text or not text.strip():
+            return
+        try:
+            store.record(role, text.strip(), timestamp=time.time())
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("dual-history record failed: %s", e)
+
+    def _maybe_handle_history_recall(self, user_text: str) -> bool:
+        """Handle an explicit verbatim conversation-recall question ("what did
+        I say earlier about X?", "what did you tell me about Y?") by speaking
+        the matching turn from the in-memory dual-history store.
+
+        Returns True iff the utterance was such a question AND was handled here
+        (short-circuits routing). Strict matcher -> normal questions fall
+        through (returns False). Needs no LLM/Qdrant, so it works even when
+        memory is disabled. Fail-open: any failure returns False so the turn
+        proceeds to normal routing rather than being dropped.
+        """
+        store = getattr(self, "_dual_history", None)
+        if store is None:
+            return False
+        try:
+            from ultron.config import get_config
+            if not getattr(get_config().memory, "history_recall_enabled", True):
+                return False
+        except Exception:                                            # noqa: BLE001
+            pass
+        try:
+            from ultron.memory.history_recall import match_history_recall
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("history_recall import failed: %s", e)
+            return False
+        match = match_history_recall(user_text)
+        if match is None:
+            return False
+        try:
+            current = user_text.strip().lower()
+            if match.topic:
+                hits = store.find_verbatim_by_substring(match.topic, limit=8)
+            else:
+                hits = store.recent_verbatim(20)
+            # Same-role turns, excluding the current query turn (just recorded).
+            cands = [
+                t for t in hits
+                if t.role == match.role and t.text.strip().lower() != current
+            ]
+            if not cands:
+                if match.topic:
+                    who = "you" if match.role == "user" else "I"
+                    self._speak(
+                        f"I don't have a record of {who} mentioning {match.topic}."
+                    )
+                else:
+                    self._speak(
+                        "I don't have anything recorded from earlier in our "
+                        "conversation."
+                    )
+                return True
+            # find_verbatim_by_substring is newest-first; recent_verbatim is
+            # oldest-first -- pick the newest matching turn either way.
+            chosen = cands[0] if match.topic else cands[-1]
+            said = chosen.text.strip().replace("\n", " ")
+            if len(said) > 240:
+                said = said[:240].rstrip() + "..."
+            lead = "you said" if match.role == "user" else "I said"
+            self._speak(f"Earlier {lead}: {said}")
+            return True
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("history_recall handling failed: %s", e)
+            return False
             self._interrupt.clear()
 
     def _maybe_handle_report_concern(self, user_text: str) -> bool:
@@ -3329,6 +3416,12 @@ class Orchestrator:
                         text=user_text[:160],
                     )
 
+                # Record the addressed user utterance into the dual-history
+                # store BEFORE any short-circuit so "what did I say earlier?"
+                # recall sees every turn. The recall handler excludes the
+                # current query turn so it never matches itself.
+                self._record_dialogue_turn("user", user_text)
+
                 # 2026-05-22 -- intent recognizer short-circuit. Runs
                 # AFTER addressing but BEFORE routing/LLM. Matched
                 # registered phrases (gaming mode commands, etc.) get
@@ -3476,6 +3569,26 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="deep_recall",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Conversation-history recall: "what did I say earlier
+                    # about X?" / "what did you tell me about Y?" answered from
+                    # the in-memory dual-history store (the verbatim turn is
+                    # spoken back). Strict matcher -> normal questions fall
+                    # through to routing. Needs no LLM/Qdrant.
+                    if self._maybe_handle_history_recall(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="history_recall",
                             follow_up=bool(follow_up_until),
                         )
                         continue
@@ -5045,6 +5158,9 @@ class Orchestrator:
             self.tts.speak_stream(gated())
             print()  # newline after streamed response
             self._last_response_text = "".join(response_buf)
+            # Record the assistant response for "what did you say earlier?"
+            # verbatim recall. Fail-open + a no-op when the store is absent.
+            self._record_dialogue_turn("assistant", self._last_response_text)
 
             # 2026-05-22: enable_thinking=False is the active voice-path
             # default (saves 5-10 s TTFT on factual / math turns via the

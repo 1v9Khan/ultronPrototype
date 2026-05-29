@@ -1132,6 +1132,14 @@ class MemoryConfig(_Strict):
     # questions are unaffected (they stay on the fast path). Set False to
     # disable the deep-recall short-circuit entirely.
     deep_recall_enabled: bool = True
+    # Conversation-history recall: when True (default), an explicit verbatim-
+    # recall question about THIS conversation ("what did I say earlier about
+    # X", "what did you tell me about Y", "remind me what I asked") is answered
+    # from the in-memory dual-history store -- speaking back the exact turn --
+    # instead of routing to the LLM. A strict matcher gates it (normal
+    # questions are unaffected); it needs no LLM/Qdrant so it works even when
+    # memory is disabled. Set False to disable the short-circuit.
+    history_recall_enabled: bool = True
     # V1-gap A2.
     retrieval: MemoryRetrievalConfig = Field(default_factory=MemoryRetrievalConfig)
     ranking: MemoryRankingConfig = Field(default_factory=MemoryRankingConfig)
