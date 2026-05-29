@@ -3289,6 +3289,23 @@ class EvolutionConfig(_Strict):
     recurrence_threshold: int = Field(default=3, ge=2, le=20)
 
 
+class HooksConfig(_Strict):
+    """Out-of-process lifecycle hooks (cline-derived; see THIRD_PARTY_NOTICES).
+
+    When enabled (default), the coding-task lifecycle fires user-provided hook
+    scripts discovered under ``~/.ultron/hooks/<HookName>`` (global) and
+    ``<project>/.ultron/hooks/<HookName>`` (project): a ``TaskStart`` hook may
+    CANCEL a task (returns ``cancel: true``), and ``TaskComplete`` hooks
+    observe completion. Discovery is cached and the fan-out returns
+    immediately when no scripts are installed, so the default (no hooks) adds
+    no measurable latency. Voice-hot-path lifecycle points are intentionally
+    NOT auto-fired, to preserve the voice baseline; flip ``enabled=False`` to
+    disable the coding-lifecycle hooks too.
+    """
+
+    enabled: bool = True
+
+
 class UltronConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -3354,6 +3371,10 @@ class UltronConfig(_Strict):
     # the bus so every published event becomes a persisted row.
     # Default OFF so the voice baseline + bus latency are unchanged.
     events: "EventsConfig" = Field(default_factory=lambda: EventsConfig())
+    # Out-of-process lifecycle hooks. Coding TaskStart (cancel-capable) +
+    # TaskComplete fire user scripts under ~/.ultron/hooks/. Zero-cost when no
+    # scripts are installed (cached discovery + empty-result fast path).
+    hooks: HooksConfig = Field(default_factory=HooksConfig)
 
 
 # ---------------------------------------------------------------------------

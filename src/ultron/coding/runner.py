@@ -252,6 +252,10 @@ class CodingTaskRunner:
                 "Coding session has hit its token budget. "
                 "Cannot start another task without user approval."
             )
+        # Hooks lifecycle: fire TaskStart; a user hook may cancel the task
+        # (raises RuntimeError, surfaced like any other start-task refusal).
+        # Fail-open + a zero-cost no-op when hooks are disabled / none installed.
+        self._fire_task_start_hook(request)
         with self._handle_lock:
             if self._handle is not None and self._handle.is_running():
                 raise RuntimeError(
@@ -344,6 +348,12 @@ class CodingTaskRunner:
         loop_listener = self._make_loop_detection_listener(handle)
         if loop_listener is not None:
             handle.add_listener(loop_listener)
+        # Hooks lifecycle: fire TaskComplete when the task finishes
+        # (observability; a finished task can't be cancelled). Gated +
+        # fail-open + a no-op when hooks are disabled / none installed.
+        hook_listener = self._make_hook_lifecycle_listener(handle)
+        if hook_listener is not None:
+            handle.add_listener(hook_listener)
         # Also log a structured "start" record for offline inspection.
         self._log_record({
             "ts": time.time(),
@@ -1104,6 +1114,82 @@ class CodingTaskRunner:
             if not self._pending_loop_alerts:
                 return None
             return self._pending_loop_alerts.pop(0)
+
+    # --- hooks lifecycle (out-of-process user hook scripts) -------------
+
+    def _fire_task_start_hook(self, request) -> None:
+        """Fire the TaskStart lifecycle hook fan-out.
+
+        A user hook may CANCEL the task (returns ``cancel: true``) -- we raise
+        :class:`RuntimeError` with the hook's message so ``start_task``'s
+        caller surfaces it like any other start-task refusal. Fail-open: an
+        import / discovery / execution error never blocks a task; ONLY an
+        explicit cancel does. A zero-cost no-op when hooks are disabled or no
+        scripts are installed (cached discovery returns an empty fan-out)."""
+        try:
+            from ultron.config import get_config
+            if not getattr(get_config().hooks, "enabled", True):
+                return
+            from ultron.hooks import HookKind, HookPayload, get_hook_registry
+        except Exception as e:  # noqa: BLE001
+            logger.debug("hooks unavailable (%s); skipping TaskStart", e)
+            return
+        try:
+            registry = get_hook_registry()
+            payload = HookPayload(
+                kind=HookKind.TASK_START,
+                session_id=str(self._bound_session_id or ""),
+                actor="coding",
+                extra={"prompt": (getattr(request, "prompt", "") or "")[:200]},
+            )
+            result = registry.fire(HookKind.TASK_START, payload)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("TaskStart hook fire failed (%s); proceeding", e)
+            return
+        if result.cancelled:
+            msg = ""
+            for r in result.per_hook_results:
+                if r.outcome.cancel and r.outcome.error_message:
+                    msg = r.outcome.error_message
+                    break
+            raise RuntimeError(
+                msg or "A TaskStart hook cancelled this coding task."
+            )
+
+    def _make_hook_lifecycle_listener(self, handle):
+        """Build a fail-open ``TaskEvent`` listener that fires the TaskComplete
+        lifecycle hook fan-out when the task COMPLETEs (observability -- a
+        finished task can't be cancelled). Returns ``None`` (a zero-cost no-op)
+        when hooks are disabled or the hooks package can't be imported."""
+        try:
+            from ultron.config import get_config
+            if not getattr(get_config().hooks, "enabled", True):
+                return None
+            from ultron.coding.bridge import EventKind
+            from ultron.hooks import HookKind, HookPayload, get_hook_registry
+        except Exception as e:  # noqa: BLE001
+            logger.debug("hooks unavailable (%s); skipping TaskComplete listener", e)
+            return None
+
+        def _listener(event) -> None:
+            try:
+                if getattr(event, "kind", None) is not EventKind.COMPLETE:
+                    return
+                registry = get_hook_registry()
+                payload = HookPayload(
+                    kind=HookKind.TASK_COMPLETE,
+                    session_id=str(self._bound_session_id or ""),
+                    actor="coding",
+                    extra={
+                        "exit_status": getattr(event, "exit_status", None),
+                        "summary": (getattr(event, "summary", "") or "")[:200],
+                    },
+                )
+                registry.fire(HookKind.TASK_COMPLETE, payload)
+            except Exception as e:  # noqa: BLE001 -- never raise into the bridge
+                logger.debug("TaskComplete hook listener error: %s", e)
+
+        return _listener
 
     # --- 2026 catalog 08 + 09 wiring: dialog auto-handler ---------------
 
