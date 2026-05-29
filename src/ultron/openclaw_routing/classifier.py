@@ -705,14 +705,11 @@ def _classify_routing_impl(
         has_active_task=has_active_coding_task,
         has_pending_clarification=has_pending_clarification,
     )
-    if coding.kind in (
-        # In-flight commands: never override these with a routing rule.
-        # They fire only when has_active_task / has_pending_clarification
-        # is set, so by definition there's a task to act on.
-        # CodingIntentKind enum values:
-        # PROGRESS_QUERY, CANCEL, MID_SESSION_ADJUSTMENT, CLARIFICATION_RESPONSE
-    ):
-        pass  # placeholder for clarity
+    # In-flight commands: never override these with a routing rule.
+    # They fire only when has_active_task / has_pending_clarification
+    # is set, so by definition there's a task to act on.
+    # CodingIntentKind enum values:
+    # PROGRESS_QUERY, CANCEL, MID_SESSION_ADJUSTMENT, CLARIFICATION_RESPONSE
     if coding.kind.value in (
         "progress_query", "cancel",
         "mid_session_adjustment", "clarification_response",

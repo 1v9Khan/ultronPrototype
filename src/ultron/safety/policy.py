@@ -33,7 +33,7 @@ logger = logging.getLogger("ultron.safety.policy")
 
 @dataclass(frozen=True)
 class Policy:
-    """Loaded validator policy. Frozen so rules can't mutate it at runtime.
+    r"""Loaded validator policy. Frozen so rules can't mutate it at runtime.
 
     Attributes:
         enabled: Master switch. False = validator is a permissive

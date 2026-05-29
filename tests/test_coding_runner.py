@@ -165,6 +165,53 @@ def test_runner_blocks_concurrent_tasks(tmp_path: Path):
         runner.start_task(TaskRequest(task_prompt="t2", cwd=tmp_path, label="task2"))
 
 
+def test_safety_listener_blocks_file_change_on_protected_path(tmp_path, monkeypatch):
+    """Regression (campaign #6): the FILE_CHANGE safety listener must read
+    ``event.file_path`` / ``event.file_change_kind`` -- NOT the nonexistent
+    ``event.path`` / ``event.change_kind``. Before the fix it silently no-op'd
+    on every real TaskEvent, disabling all file-write safety validation on the
+    coding bridge."""
+    import ultron.safety as safety_mod
+
+    seen: dict = {}
+
+    class _BlockVerdict:
+        is_allowed = False
+        triggered_rule_id = "A1"
+        reason = "wrote to a protected path."
+
+    class _FakeValidator:
+        def check(self, ctx):
+            seen["ctx"] = ctx
+            return _BlockVerdict()
+
+    monkeypatch.setattr(safety_mod, "get_validator", lambda: _FakeValidator())
+
+    bridge = _FakeBridge()
+    runner = CodingTaskRunner(bridge=bridge, log_path=tmp_path / "log.jsonl")
+    runner.start_task(TaskRequest(task_prompt="t", cwd=tmp_path, label="task"))
+    h = bridge.last_handle
+    assert h is not None
+
+    protected = tmp_path / "secret.dll"
+    protected.write_text("x")
+    h.fire(TaskEvent(
+        kind=EventKind.FILE_CHANGE,
+        file_path=protected,
+        file_change_kind=FileChangeKind.MODIFIED,
+    ))
+
+    # The validator was consulted with the REAL path + change kind (proves the
+    # listener reads file_path / file_change_kind, not the missing attrs).
+    assert "ctx" in seen, "safety validator never ran on the FILE_CHANGE event"
+    assert "secret.dll" in str(seen["ctx"].arguments.get("path", ""))
+    assert seen["ctx"].arguments.get("change_kind") == FileChangeKind.MODIFIED.value
+    # A block verdict cancels the task and queues the abort narration.
+    assert h._cancelled is True
+    warning = runner.pop_canonical_abort_warning()
+    assert warning is not None and "stopping that task" in warning
+
+
 def test_progress_narration_shows_current_step_and_deltas(tmp_path: Path):
     bridge = _FakeBridge()
     runner = CodingTaskRunner(bridge=bridge, log_path=tmp_path / "log.jsonl")

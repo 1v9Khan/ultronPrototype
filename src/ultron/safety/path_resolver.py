@@ -1,4 +1,4 @@
-"""Windows-aware path canonicalization for the runtime validator.
+r"""Windows-aware path canonicalization for the runtime validator.
 
 Path-based allowlists / denylists are useless if the model can refer
 to a protected path via a symlink inside the sandbox, an 8.3 short
@@ -192,7 +192,7 @@ class PathResolver:
         return raw.replace("\\", "/")
 
     def strip_long_path_prefix(self, raw: str) -> str:
-        """Strip the Windows ``\\?\`` long-path prefix if present.
+        r"""Strip the Windows``\\?\`` long-path prefix if present.
 
         ``\\?\C:\Windows`` and ``C:\Windows`` are the same file; we
         canonicalise to the prefix-less form so comparisons work.

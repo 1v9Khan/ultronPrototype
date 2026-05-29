@@ -1,4 +1,4 @@
-"""Category K -- Ultron self-protection (meta).
+r"""Category K -- Ultron self-protection (meta).
 
 These rules prevent the abliterated model from disabling the
 validator itself or tampering with the inputs the AI pipeline

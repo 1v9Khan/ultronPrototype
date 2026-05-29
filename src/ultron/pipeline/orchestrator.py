@@ -1464,7 +1464,6 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             logger.debug("history_recall handling failed: %s", e)
             return False
-            self._interrupt.clear()
 
     def _maybe_handle_report_concern(self, user_text: str) -> bool:
         """openclaw-clawhub T12 -- file a Report when the user voices a

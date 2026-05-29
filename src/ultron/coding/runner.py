@@ -891,9 +891,12 @@ class CodingTaskRunner:
                 # tool; FILE_CHANGE is the post-fact ground truth).
                 if getattr(event, "kind", None) != EventKind.FILE_CHANGE:
                     return
-                path_str = getattr(event, "path", None)
-                if not path_str:
+                raw_path = getattr(event, "file_path", None)
+                if not raw_path:
                     return
+                # ``file_path`` is an Optional[Path]; coerce to str so the
+                # downstream resolve / .lower() / arguments stay string-typed.
+                path_str = str(raw_path)
                 try:
                     canonical = resolver.resolve(path_str)
                 except PathResolveError as e:
@@ -907,7 +910,10 @@ class CodingTaskRunner:
                     tool_name="coding_bridge.file_change",
                     arguments={
                         "path": path_str,
-                        "change_kind": str(getattr(event, "change_kind", "")),
+                        "change_kind": (
+                            event.file_change_kind.value
+                            if event.file_change_kind else ""
+                        ),
                         "write": True,
                     },
                     capability="coding_bridge",
