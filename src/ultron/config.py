@@ -3142,6 +3142,13 @@ class SkillsConfig(_Strict):
     """
 
     enabled: bool = False
+    # Security: scan skills from UNTRUSTED sources (USER / PROJECT / OTHER --
+    # ~/.ultron/skills, a project .ultron/skills, the autonomous
+    # data/evolution/skills dir) for prompt-injection / instruction-override
+    # content before loading; quarantine + log on a hit. PUBLIC
+    # (ultron-shipped) skills are trusted and never scanned. Fail-open.
+    # Default ON.
+    scan_untrusted_skills: bool = True
     always_on_only: bool = False
     disabled_skills: List[str] = Field(default_factory=list)
     default_min_user_text_chars: int = Field(default=8, ge=0, le=64)

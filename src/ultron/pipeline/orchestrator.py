@@ -1569,6 +1569,7 @@ class Orchestrator:
                 always_on_only=cfg.always_on_only,
                 default_min_user_text_chars=cfg.default_min_user_text_chars,
                 max_matches_per_turn=cfg.max_matches_per_turn,
+                scan_untrusted=getattr(cfg, "scan_untrusted_skills", True),
             )
             # Eager-load so the first user turn doesn't pay the walk
             # cost on the voice hot path. The walk is ~5-30 ms.

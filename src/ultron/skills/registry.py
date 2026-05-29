@@ -102,12 +102,14 @@ class SkillRegistry:
         default_min_user_text_chars: int = DEFAULT_KEYWORD_MIN_USER_TEXT_CHARS,
         always_on_only: bool = False,
         max_matches_per_turn: int = 6,
+        scan_untrusted: bool = True,
     ) -> None:
         self._sources: list[_SourceSpec] = list(sources or [])
         self._disabled_skills: set[str] = {s.lower() for s in (disabled_skills or [])}
         self._default_min_user_text_chars = default_min_user_text_chars
         self._always_on_only = always_on_only
         self._max_matches_per_turn = max(0, max_matches_per_turn)
+        self._scan_untrusted = bool(scan_untrusted)
 
         self._lock = threading.RLock()
         self._cache: dict[str, Skill] = {}
@@ -174,6 +176,7 @@ class SkillRegistry:
                     spec.directory,
                     source=spec.source,
                     default_min_user_text_chars=self._default_min_user_text_chars,
+                    scan_untrusted=self._scan_untrusted,
                 )
                 stats_list.append(stats)
                 new_fingerprints[spec.directory] = _directory_mtime_fingerprint(spec.directory)
@@ -592,6 +595,7 @@ def build_default_registry(
     always_on_only: bool = False,
     default_min_user_text_chars: int = DEFAULT_KEYWORD_MIN_USER_TEXT_CHARS,
     max_matches_per_turn: int = 6,
+    scan_untrusted: bool = True,
 ) -> SkillRegistry:
     """Construct a :class:`SkillRegistry` wired to the three default sources.
 
@@ -634,4 +638,5 @@ def build_default_registry(
         default_min_user_text_chars=default_min_user_text_chars,
         always_on_only=always_on_only,
         max_matches_per_turn=max_matches_per_turn,
+        scan_untrusted=scan_untrusted,
     )

@@ -37,6 +37,7 @@ class SkillLoadStats:
     skills_loaded: int = 0
     skipped_no_name: int = 0
     skipped_parse_error: int = 0
+    skipped_quarantined: int = 0
     files_scanned: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -214,11 +215,20 @@ def load_skills_from_directory(
     default_min_user_text_chars: int = 0,
     skip_directories: Iterable[str] | None = None,
     skip_filenames: Iterable[str] | None = None,
+    scan_untrusted: bool = True,
 ) -> tuple[list[Skill], SkillLoadStats]:
     """Walk ``directory`` and return a list of :class:`Skill` + load stats.
 
     Per-file failures are logged at WARN and recorded in
     :attr:`SkillLoadStats.errors`; they never raise.
+
+    When ``scan_untrusted`` is True (default) AND ``source`` is not
+    :attr:`SkillSource.PUBLIC`, each built skill is run through
+    :func:`ultron.skills.scan.scan_skill` and QUARANTINED (skipped, counted
+    in :attr:`SkillLoadStats.skipped_quarantined`, logged at WARN) on any
+    prompt-injection / instruction-override detection. PUBLIC (ultron-
+    shipped) skills are trusted and never scanned. Fail-open: a scanner
+    error degrades to "clean" so the catalog is never silently emptied.
     """
 
     root = Path(directory)
@@ -253,6 +263,32 @@ def load_skills_from_directory(
             if result.error:
                 stats.errors.append(f"{result.path}: {result.error}")
             continue
+
+        # Trust gate: scan skills from untrusted sources (USER / PROJECT /
+        # OTHER -- e.g. ~/.ultron/skills, a project .ultron/skills, or the
+        # autonomous data/evolution/skills dir) for prompt-injection content
+        # BEFORE they can be injected into the system prompt. PUBLIC
+        # (ultron-shipped) skills are trusted. Fail-open.
+        if scan_untrusted and source != SkillSource.PUBLIC:
+            try:
+                from ultron.skills.scan import scan_skill
+
+                scan_result = scan_skill(skill)
+            except Exception as exc:  # noqa: BLE001 -- never drop on scanner bug
+                scan_result = None
+                logger.debug(
+                    "skill scan errored for %s (treating as clean): %r",
+                    skill.name, exc,
+                )
+            if scan_result is not None and not scan_result.ok:
+                stats.skipped_quarantined += 1
+                reasons = "; ".join(scan_result.reasons)
+                stats.errors.append(f"{result.path}: quarantined ({reasons})")
+                logger.warning(
+                    "Quarantined untrusted skill %r from %s: %s",
+                    skill.name, result.path, reasons,
+                )
+                continue
 
         skills.append(skill)
         stats.skills_loaded += 1
