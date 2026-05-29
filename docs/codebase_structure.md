@@ -12,8 +12,9 @@
 >
 > **Validating HEAD:** catalog 13 (clawhub-capability-evolver clean-room)
 > port -- bounded autonomous self-improvement -- on worktree branch
-> `claude/elated-vaughan-b90f7e` (base `6334b41` = catalog 12), pushed to
-> `origin/main` with the `main` checkout fast-forwarded. **The source plugin
+> `claude/elated-vaughan-b90f7e`, **HEAD `5fde223`** (12 commits `0d10fb8`
+> … `5fde223`; base `6334b41` = catalog 12), pushed to `origin/main` with
+> the `main` checkout fast-forwarded + in sync. **The source plugin
 > was QUARANTINED and NEVER read / imported / executed / deobfuscated** (it
 > is treated as high-risk for malicious code); the `src/ultron/evolution/`
 > package was built clean-room from the catalog entry + eight independent
