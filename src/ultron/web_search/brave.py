@@ -265,3 +265,140 @@ class BraveSearchClient:
                 logger.debug("Brave rate-limit sleep: %.2fs", wait)
                 time.sleep(wait)
             self._last_call = time.monotonic()
+
+
+# --- T6 auth-profile rotation (multi-key Brave) -----------------------------
+
+
+def resolve_brave_api_keys(cfg=None) -> List[str]:
+    """Resolve the ordered, de-duplicated list of non-empty Brave API keys.
+
+    Reads the primary ``web_search.brave_api_key_env`` first, then each name
+    in ``web_search.brave_additional_api_key_envs``. The search chain uses the
+    count to decide between the single-client path (0-1 keys) and multi-key
+    rotation (2+ keys) (T6).
+
+    Args:
+        cfg: optional ``web_search`` config section; pulled from the global
+            config when omitted.
+
+    Returns:
+        Non-empty API keys in priority order, duplicates removed.
+    """
+    if cfg is None:
+        cfg = get_config().web_search
+    env_names: List[str] = [getattr(cfg, "brave_api_key_env", "ULTRON_BRAVE_API_KEY")]
+    env_names.extend(getattr(cfg, "brave_additional_api_key_envs", []) or [])
+    keys: List[str] = []
+    seen = set()
+    for name in env_names:
+        if not name:
+            continue
+        val = os.getenv(name, "").strip()
+        if val and val not in seen:
+            seen.add(val)
+            keys.append(val)
+    return keys
+
+
+class RotatingBraveClient:
+    """Multi-key Brave client that rotates across API keys (T6).
+
+    Built by the search chain only when two or more Brave keys are
+    configured. Each key becomes an :class:`~ultron.providers.AuthProfile`
+    under provider ``"brave_search"``; :meth:`search` runs the request through
+    :func:`~ultron.providers.execute_with_rotation`, so a rate-limited (429)
+    key is cooled down and the next key is tried before the request gives up.
+    A key returning auth errors (401/403) is disabled for the session.
+
+    Unlike :class:`BraveSearchClient`, the per-key requests bypass the shared
+    ``_BRAVE_BREAKER`` -- the auth-profile store's per-key cooldown + auto-
+    disable provide the equivalent protection at key granularity (the shared
+    breaker would otherwise open for ALL keys on the first key's failures,
+    defeating rotation). Fail-open: any rotation-layer error returns ``[]`` so
+    the chain falls through to the next provider. Exposes the same
+    ``search(query, count)`` surface as :class:`BraveSearchClient` so the
+    chain treats them interchangeably.
+    """
+
+    def __init__(
+        self,
+        keys: List[str],
+        *,
+        on_response: Optional[Callable[[Optional[Mapping[str, object]], bool], None]] = None,
+        store=None,
+        provider: str = "brave_search",
+    ) -> None:
+        if not keys:
+            raise ValueError("RotatingBraveClient requires at least one API key")
+        from ultron.providers.auth_profiles import AuthProfile, get_profile_store
+
+        self._provider = provider
+        self._store = store or get_profile_store()
+        self._clients: dict = {}
+        for i, key in enumerate(keys):
+            profile_id = f"{provider}:{i}"
+            self._store.register(
+                AuthProfile(
+                    profile_id=profile_id,
+                    provider=provider,
+                    priority=i,
+                    metadata={"api_key_index": i},
+                )
+            )
+            self._clients[profile_id] = BraveSearchClient(
+                api_key=key, on_response=on_response,
+            )
+
+    def search(
+        self,
+        query: str,
+        count: Optional[int] = None,
+    ) -> List[BraveResult]:
+        """Run a Brave search across the configured keys in rotation.
+
+        Returns the first key's non-empty results, or ``[]`` when every key
+        is rate-limited / disabled / returns nothing (chain falls through).
+        """
+        query = query.strip()
+        if not query:
+            return []
+        if count is None:
+            count = get_config().web_search.brave.count
+
+        try:
+            from ultron.providers.rotation import (
+                RotationOutcome,
+                execute_with_rotation,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("brave rotation unavailable (%s); single-key attempt", e)
+            first = next(iter(self._clients.values()), None)
+            return first.search(query, count) if first is not None else []
+
+        def _operation(profile):
+            client = self._clients.get(profile.profile_id)
+            if client is None:
+                raise BraveAPIError(
+                    "no client for profile",
+                    context={"profile": profile.profile_id},
+                )
+            # Bypass the shared breaker; rotation handles per-key failure.
+            return client._do_search(query, count)  # noqa: SLF001
+
+        try:
+            result = execute_with_rotation(
+                provider=self._provider,
+                operation=_operation,
+                store=self._store,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("brave rotation raised (%s); returning empty", e)
+            return []
+        if result.outcome == RotationOutcome.SUCCESS:
+            return result.value or []
+        logger.info(
+            "Brave rotation exhausted (outcome=%s); chain falls through",
+            getattr(result.outcome, "value", result.outcome),
+        )
+        return []

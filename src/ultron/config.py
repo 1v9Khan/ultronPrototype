@@ -1420,6 +1420,16 @@ class WebSearchQueryReformulationConfig(_Strict):
 class WebSearchConfig(_Strict):
     enabled: bool = True
     brave_api_key_env: str = "ULTRON_BRAVE_API_KEY"
+    # T6 auth-profile rotation: optional ADDITIONAL Brave API-key env-var
+    # names. When two or more keys resolve to non-empty values (the primary
+    # ``brave_api_key_env`` plus these), the search chain rotates across them
+    # via the auth-profile store -- a rate-limited (429) key is cooled down
+    # and the next key is tried before the chain falls through to DuckDuckGo;
+    # a key returning auth errors (401/403) is disabled for the session. With
+    # a single key (the default) the legacy single-client + circuit-breaker
+    # path is used unchanged. Local/no-auth providers (SearxNG, DuckDuckGo,
+    # Jina reader, trafilatura, playwright) need no rotation and ignore this.
+    brave_additional_api_key_envs: List[str] = Field(default_factory=list)
     brave: BraveConfig = Field(default_factory=BraveConfig)
     jina: JinaConfig = Field(default_factory=JinaConfig)
     cache: WebCacheConfig = Field(default_factory=WebCacheConfig)

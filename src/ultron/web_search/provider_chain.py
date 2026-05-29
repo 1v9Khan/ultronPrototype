@@ -283,7 +283,21 @@ def _make_searxng(recorder: ProviderRecorder):
 
 
 def _make_brave(recorder: ProviderRecorder):
-    from ultron.web_search.brave import BraveSearchClient
+    # T6 auth-profile rotation: when 2+ Brave API keys are configured, hand
+    # the chain a RotatingBraveClient that rotates across them (rate-limited
+    # key -> cooled down -> next key) before falling through to DuckDuckGo.
+    # With 0-1 keys the legacy single-client + circuit-breaker path is used
+    # unchanged (0 keys -> ValueError, caught by the chain -> provider skipped).
+    from ultron.web_search.brave import (
+        BraveSearchClient,
+        RotatingBraveClient,
+        resolve_brave_api_keys,
+    )
+
+    keys = resolve_brave_api_keys()
+    if len(keys) >= 2:
+        logger.info("Brave: %d API keys configured; using key rotation", len(keys))
+        return RotatingBraveClient(keys, on_response=recorder)
     return BraveSearchClient(on_response=recorder)
 
 
