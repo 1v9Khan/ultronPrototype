@@ -10,7 +10,58 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** **infrastructure-wiring campaign (2026-05-29)** -- a
+> **Validating HEAD:** **production-hardening campaign (2026-05-29, IN PROGRESS)**
+> -- a campaign to wire every recent catalog port into one cohesive unit,
+> complete the voice-controlled coding engineer end to end, build a real-usage
+> e2e suite, make the system pervasively self-improving, and cut latency +
+> resources. On worktree branch `claude/vigorous-mclaren-56a5a7`, on top of the
+> infra-wiring tip `9d51cec`, **validating code HEAD `c17a2c9`**. **9163 passed /
+> 26 skipped / 0 failed (~109s)** (worktree sweep, no deselect). Voice baseline
+> contract intact throughout (no SOUL.md / RVC / Piper / LLM-GGUF / voicepack
+> touch; all changes are on the coding + fail-open seams). **Coding-engineer
+> commits landed so far** (the campaign's first phase -- a fully capable
+> voice-controlled coding engineer):
+> * **`a8e6ef6`** -- B1 cohesion/security pass: the coding bridge's safety
+>   FILE_CHANGE listener read the wrong `TaskEvent` attributes
+>   (`event.path`/`change_kind` instead of `event.file_path` /
+>   `file_change_kind.value`), so file-write validation never actually ran on
+>   coding edits; fixed + removed dead code + `r`-prefixed three regex docstrings.
+> * **`8651b07`** -- B3-loop: voice-dispatched coding tasks now write a
+>   per-project `.mcp.json` pointing at the live in-process MCP server + bind a
+>   `ProjectSession`, so the spawned coding subprocess can reach
+>   request_clarification / report_progress / declare_complete -- the
+>   clarify/verify/complete loop is actually connected for voice tasks (it was
+>   dispatched bridge-only before). Added `UltronMCPServer.is_running()`.
+> * **`9cf6f45`** -- B3-runlaunch: NEW `src/ultron/coding/sandbox_runner.py` +
+>   the "run the calculator" / "launch the server" voice commands. Runs are
+>   sandbox-confined (hard `_is_within` root check) + safety-validator-gated +
+>   non-blocking (background thread -> a pending run report the orchestrator
+>   drains); launches detach. The completion report appends "say run X to try
+>   it." New `coding.sandbox_run_timeout_seconds` knob (default 30s).
+> * **`c43dfd7`** -- B3-quality-a: an always-on ~60-token code-quality preamble
+>   (type hints, concise docstrings, no bare except, `pyproject.toml` for new
+>   Python projects, stay in the working dir) is prepended to every coding prompt
+>   -- so voice-dispatched tasks (`require_testing=False`) still get best-
+>   practices guidance, not just the testing-discipline path.
+> * **`c17a2c9`** -- B3-loop-2: keep the per-project `.mcp.json` across follow-ups.
+>   The earlier cleanup-on-COMPLETE deleted it, but `send_followup` (RESUME + the
+>   verifier's corrective re-prompt) reuses the runner's stored `mcp_config_path`
+>   AFTER the task completes -- so the cleanup was stripping MCP tools from every
+>   follow-up + correction, breaking the loop B3-loop had just connected. Also
+>   re-attaches the digest + voice-lock-review listeners to the fresh handle
+>   `send_followup` spawns on RESUME_FORWARD.
+>
+> The architect-plan TTS narration (`_build_architect_narrator` ->
+> `ArchitectNarrator`, gated on `coding.architect.narrate_enabled`) and the
+> architect plan-provider were verified ALREADY fully wired into
+> `_build_supervisor_stack` -- no gap there. Remaining campaign work (breadth +
+> the other phases) is tracked in
+> `memory/project_ultron_2026_05_29_production_hardening_campaign.md`:
+> routing/bridge/safety/infra/desktop reachability wiring, evolution pervasive
+> reach (with an approval gate before any `src/` edit), the unified synthetic-
+> audio e2e suite, and latency/resource optimization.
+>
+> **Earlier validating HEAD:** **infrastructure-wiring campaign (2026-05-29)** -- a
 > sweep wiring dormant imported-but-unconsumed infrastructure across catalogs
 > 1-14 to production polish, on worktree branch `claude/frosty-murdock-ba8981`,
 > **validating code HEAD `296e1f6`** (this doc-bump is the trailing tip),
@@ -920,6 +971,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-05-29 | `c17a2c9` (campaign, in progress) | **Production-hardening campaign — coding-engineer phase** (first 5 commits `a8e6ef6`…`c17a2c9`, on the infra-wiring tip `9d51cec`). Wiring the recent catalog ports into one cohesive unit + completing the voice-controlled coding engineer end to end. **B1** (`a8e6ef6`) fixed a real security/cohesion bug — the coding bridge's safety FILE_CHANGE listener read the wrong `TaskEvent` attributes, so file-write validation never ran on coding edits — plus dead-code + regex-docstring cleanup. **B3-loop** (`8651b07`) connected the clarify/verify/complete loop for voice-dispatched tasks: a per-project `.mcp.json` pointing at the live in-process MCP server + a bound `ProjectSession` (was bridge-only before); added `UltronMCPServer.is_running()`. **B3-runlaunch** (`9cf6f45`) added NEW `coding/sandbox_runner.py` + the "run / launch the program" voice commands (sandbox-confined + validator-gated + non-blocking) + a "say run X to try it" completion hint + the `coding.sandbox_run_timeout_seconds` knob. **B3-quality-a** (`c43dfd7`) prepends an always-on code-quality preamble (type hints, docstrings, `pyproject.toml` for new projects) to every coding prompt. **B3-loop-2** (`c17a2c9`) stopped deleting the `.mcp.json` on COMPLETE (`send_followup` reuses it for RESUME + the verifier's corrective re-prompt, so the cleanup had been stripping MCP from every follow-up) + re-attaches the digest + voice-lock-review listeners to the follow-up handle. The architect plan-provider + TTS narration were verified already fully wired. Voice baseline contract intact. Remaining: routing/bridge/safety/infra/desktop reachability, evolution pervasive reach, the synthetic-audio e2e suite, latency/resource optimization. | 9163 | [project_ultron_2026_05_29_production_hardening_campaign.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_29_production_hardening_campaign.md) |
 | 2026-05-29 | `6692866` (code `296e1f6`) | **Infrastructure-wiring campaign** (builds on catalog 14 `c8f4ce3`; 16 commits `b74c8ab`…`6692866`). Wired 14 dormant imported-but-unconsumed subsystems to production + DOCUMENTED 4 as architecturally-inactive. **WIRED** (all fail-open; default-ON unless noted): process discipline (T12 process-registry/zombie-killer at every daemon + coding spawn) + a latent `_maybe_handle_deep_research` `trace` NameError crash fix; deep-memory recall (`memory/deep_recall.py` + `_maybe_handle_deep_recall`); skill trust-gate (`skills/scan.py`, T5/T9, `scan_untrusted_skills` ON); decomposer requery (`HybridTaskDecomposer._requery_decomposition`, T14); generalised two-phase voice approval (`request_voice_confirmation`/`consume_voice_approval` on `CapabilityVoiceController`, T2 -- validator stays fail-closed); coding loop detection (T1 `LoopDetectionManager` over the TOOL_RESULT stream, narrate-only / never-cancel, `coding.loop_detection_enabled` ON); a dialog-narration surfacing FIX (`_drain_coding_dialog_narrations` -- the catalog-08/09 `pop_dialog_narration` had no caller); multi-key Brave rotation (T6 `RotatingBraveClient` + `resolve_brave_api_keys` + `web_search.brave_additional_api_key_envs`); dual-history "what did I say earlier?" recall (`memory/history_recall.py` + `DualHistoryStore` wired into the orchestrator + `_maybe_handle_history_recall`, `memory.history_recall_enabled` ON, Qdrant-independent); hooks lifecycle (coding TaskStart cancel-capable + TaskComplete, `hooks.enabled` ON, zero-cost when no scripts installed); the offline observation outcome-resolver `resolve_observation_outcomes` maintenance task; the gated-OFF MCP server lifecycle client (T22 `mcp/builder.py` + `McpConfig` -- env-filtered spawn + process-registry tracking + `kill_process_tree` reap, `mcp.enabled`/`mcp.autostart` default-OFF); the `.ultronignore` safety rule (Category U `UltronIgnoreRule` -- secrets path/command block, default-safe no-op, `safety.rules.U1`); and the explicit-intent NEEDS_EXPLICIT_INTENT unblock (`safety.intent` wired into the validator -- audited-allow only on the user's own verb+object, NEVER overrides BLOCK_HARD, `safety.explicit_intent_matching_enabled` ON). **DOCUMENTED-INACTIVE** (Ultron's single-threaded run loop + delegate-to-`claude --print` design has no consumer window; force-wiring would add hot-path latency/risk for a window that doesn't exist): `dual_history.truncate_*` "undo that" (needs `DualHistoryStore` promoted to the unified context source), `lifecycle/pending_message_queue` (no cold-start/swap capture window), coding edit auto-revert (breaks claude's black-box state mid-task), `auto_approval` session-warming (left for focused security review). Voice baseline contract intact; every commit independently green. | 9117 | [project_ultron_2026_05_29_infrastructure_wiring_campaign.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_05_29_infrastructure_wiring_campaign.md) |
 | 2026-06-03 | (catalog 14) | **clawhub-self-improving-agent catalog 14 -- FOUR bounded extensions to the EXISTING `evolution/` package (NOT a new subsystem).** Benign plugin (0 RED / 1 YELLOW); built clean-room from the catalog + the two `_self_improving_scan` reports -- the quarantine source was NOT read. Adds QUALITATIVE conversation-event learning atop catalog 13's quantitative loop. **T1 (GREEN):** `CorrectionCapsule` / `KnowledgeGapCapsule` / `CommandFailureSignal` (`models.py`) + detectors (`signals.py`): `extract_correction` (gated on a non-empty prior response; strong-phrase fires always, weak opener suppressed when the turn reads as positive acknowledgement), `extract_knowledge_gap`, `extract_command_failure` (17-token in-process analogue of the upstream's RED PostToolUse bash hook), `extract_feature_request`. Corrections / gaps / command-failures feed the EXISTING repair-distillation path via `to_failure_record`; `EvolutionLoop._propose` now falls back to `auto_distill_from_failures` over a new `failures_provider` when success distillation is empty. Wired in `_record_evolution_turn` (`prior_response=self._last_response_text`) + a coding-runner command-failure `TaskEvent` listener drained by `Orchestrator._drain_evolution_command_failures`. **T2 (GREEN):** `FeatureRequestCapsule` -> `data/evolution/feature_requests.jsonl`, NEVER distilled, surfaced in `EvolutionService.digest()`. **T3 (YELLOW):** a <=50-token `[Evolution: ...]` pre-turn nudge via `EvolutionService.pre_turn_system_hint()` through the SAME `set_temperament_hint` SYSTEM-prompt seam (never user text); token-capped, default-ON, `""` when idle. **T4 (GREEN):** `pattern_key`/`recurrence_count`/`first_seen`/`last_seen` on `Capsule` + the new types; `derive_pattern_key` + `merge_capsules_by_pattern_key` + `RECURRENCE_PROMOTE_THRESHOLD=3` make the distiller's recurrence gate explicit + auditable (row-count; empty key = byte-identical legacy grouping). New default-ON `EvolutionConfig` knobs (correction_detection / feature_request_capture / command_failure_capture / pre_turn_nudge_enabled / pre_turn_nudge_max_chars / recurrence_threshold). New ledgers `data/evolution/{corrections,knowledge_gaps,command_failures,feature_requests}.jsonl`. Voice baseline contract intact (microsecond regex passes on the hot path). +~53 hermetic tests (`tests/evolution/test_catalog14_*.py` + orchestrator wiring). | 8999 | [project_ultron_2026_06_03_clawhub_self_improving_agent.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_06_03_clawhub_self_improving_agent.md) |
 | 2026-06-02 | (catalog 13) | **clawhub-capability-evolver catalog 13 port -- bounded autonomous self-improvement (NEW `src/ultron/evolution/` subsystem).** A QUARANTINED, high-risk plugin: the source was **NEVER read / imported / executed / deobfuscated**; the 10-module package was built clean-room from the catalog entry + eight static scan reports ONLY (no source code, constant, or string ever in context to copy). ultron observes its own turns, mints success/failure *capsules*, and -- once a pattern recurs (>=10 successes, >=7 of last 10, 24h cooldown) -- distills a new trigger-loaded skill into `data/evolution/skills/*.md` (a gitignored, checkpointed, revertible live skills source). Every proposal runs the bounded `EvolutionLoop(AgentLoop)`: pre-flight (fail-closed) -> autonomy-tier gate -> reversible checkpoint -> write -> blast-radius + constraint check -> 4 regression guardrails -> keep or auto-revert -> hash-chained audit, bounded by `max_steps`. **HARD SAFETY CONTRACT (the upstream's self-rewriting / network / shell core excluded BY CONSTRUCTION):** proposals are DATA ONLY (skills markdown / in-range config), NEVER generated code, NEVER `src/ultron/`, NEVER a Category-K surface; the safety validator / audit ledger / engine itself sit behind a Tier-3 hard wall (`blast_radius.CRITICAL_PROTECTED_PREFIXES` includes `src/`); zero network / shell / eval; `EnvFingerprint` omits the upstream device id. Modules: `models.py` (GEP data model), `signals.py` (local opportunity-signal extraction, no LLM/Hub layer), `blast_radius.py` (policy spine + protected-path wall), `skill_distiller.py` (capsule->skill distillation), `guardrails.py` (latency/quality/error/resource detectors + rollback audit), `autonomy.py` (`TieredAutonomyController` + trust graduation), `personality.py` (Tier-0 `[Tone: ...]` temperament tune), `evolution_loop.py` (the bounded loop), `service.py`+`intent.py` (JSONL runtime + voice commands). Wired default-ON + fail-open: `EvolutionConfig`; `_load_evolution_if_enabled` at startup (before the skill registry, whose extra dirs gain `data/evolution/skills`); run-loop short-circuit `_maybe_handle_evolution_command` ("evolve now" / "evolution status"); per-turn `_record_evolution_turn` (opportunity capsule + barge-in -> temperament + autonomous-cycle trigger); `LLMEngine.set_temperament_hint` injecting the tone directive into the SYSTEM prompt only (the web-gate / local-clock detectors see the raw utterance); shutdown persistence. Tier summary: 7 GREEN + 2 YELLOW + (self-rewriting/network/shell core) RED, excluded. Voice baseline contract intact (no SOUL.md / RVC / Piper / Kokoro touch; hot path gains only microsecond setter + signal-extraction calls; the cycle runs single-flight on a daemon thread off the hot path). `THIRD_PARTY_NOTICES.md` extended with the quarantined-source provenance record + per-component table. +286 tests (265 evolution package + 21 llm/orchestrator wiring). | 8949 | [project_ultron_2026_06_02_clawhub_capability_evolver.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_2026_06_02_clawhub_capability_evolver.md) |
@@ -1265,6 +1317,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── projections.py      ← Phase C / Foundation Part 2: 5 bounded projections
 │       │   ├── projects.py         ← ProjectRegistry, ProjectResolver, new_sandbox_project
 │       │   ├── runner.py           ← CodingTaskRunner (one in-flight task; bridge owner); listener registration surface used by supervisor digest listener
+│       │   ├── sandbox_runner.py   ← NEW 2026-05-29 B3-runlaunch: voice "run / launch the program" -- match_run_program + resolve_entry_point + run_program (sandbox-confined + validator-gated + timeout) + launch_program (detached); _is_within confinement guard
 │       │   ├── session.py          ← ProjectSession state model + SessionStore
 │       │   ├── supervisor_dispatch.py ← 2026-05-22 supervisor Phases D + E: SupervisorDispatchController owns narration (Phase D barge-in) + enriched-context TaskRequest builder (Phase E digest + file-tree + file-hints prepended to Claude's prompt); build_digest() wrapper for COMPLETE listener; _speakable() strips backslashes/drive-letters
 │       │   ├── templates.py        ← TemplateRenderer (Jinja2 prompts + budget enforcement)
@@ -3307,7 +3360,8 @@ implementation).
       `declare_complete()`, `abandon_task()`, `record_file_change()`
   - `set_clarification_responder(fn)` / `set_declare_complete_handler(fn)` — coordinator hooks
   - `start()` / `stop()` — manage SSE server
-- `write_mcp_config(project_root, sse_url)` / `remove_mcp_config(project_root)`
+  - `is_running() -> bool` — True when the SSE worker thread is alive AND the started event is set (2026-05-29 B3-loop); lets the voice layer decide whether to write a per-project `.mcp.json`.
+- `write_mcp_config(project_root, sse_url)` — writes a `.mcp.json` pointing at the live SSE server so a spawned coding subprocess can reach the in-process MCP tools. `remove_mcp_config(project_root)` — available but **no longer called on task COMPLETE** (B3-loop-2: `send_followup` reuses the file for follow-ups + corrections; it is a tiny gitignored sandbox artefact overwritten on the next dispatch).
 
 #### `coding/voice.py`
 - `class VoiceResponse` — dataclass: text, handled, cancelled, **pre_task_confirmation, deferred_dispatch, pre_task_label** (V1-gap A4 — when populated, the orchestrator speaks the confirmation with barge-in detection before running the deferred dispatch closure).
@@ -3332,10 +3386,51 @@ implementation).
       `project_index.upsert(...)`; gated on `coding.supervisor.digests_enabled`.
     - `_current_project_name()` / `_current_session_id_or_label()` —
       best-effort runner state introspection.
+  - **2026-05-29 production-hardening (B3) methods (internal):**
+    - `_maybe_write_mcp_config(project_path) -> Optional[Path]` — when a live
+      MCP server `is_running()`, writes the per-project `.mcp.json` (via
+      `write_mcp_config`) so the spawned subprocess reaches the
+      clarify/verify/complete loop; fail-open `None` otherwise. Called from
+      `_submit` + `_dispatch_supervisor_task`, which also set `request.mcp_config_path`.
+    - `_create_and_bind_session(project_path, user_intent, *, is_new)` — creates
+      a `ProjectSession` in the coordinator store + `runner.bind_session(sid)` so
+      the MCP server resolves `_claude_active_session` on callback; fail-open
+      no-op without a coordinator.
+    - `_attach_resume_followup_listeners(handle, user_goal_hint)` (B3-loop-2) —
+      re-attaches the digest + voice-lock-review listeners to the fresh handle
+      `send_followup` spawns on RESUME_FORWARD (the original handle's listeners
+      do not carry over to the follow-up subprocess); re-derives the project
+      from `runner.active_state()`.
+    - `maybe_handle_run_program(text) -> Optional[VoiceResponse]` /
+      `pop_run_report() -> Optional[str]` (B3-runlaunch) — "run the calculator"
+      starts a sandbox-confined, validator-gated run on a background thread (->
+      a pending run report the orchestrator drains via `pop_run_report`); "launch
+      the server" detaches. Unresolved project hint -> `None` fall-through to
+      legacy handling. Delegates to `coding/sandbox_runner.py`.
 - **Module-level helper:** `_build_supervisor_llm_call(llm_engine, sup_cfg)
   -> Optional[LLMCallable]` — wraps `LLMEngine.generate` for the digest
   call (kwargs-fallback for variant signatures; returns None when
   llm_engine is missing).
+
+#### `coding/sandbox_runner.py` (NEW 2026-05-29 production-hardening B3-runlaunch)
+- Voice-driven "run / launch a finished sandbox program" surface. Every run is
+  confined to the coding sandbox root + gated through the safety validator.
+- `match_run_program(text) -> RunProgramMatch` — strict matcher returning `mode`
+  (`"run"` = backgrounded with captured output, `"launch"` = detached) + an
+  optional `project_hint`; non-matches return a falsy match.
+- `resolve_entry_point(project_path) -> EntryPoint` — picks the runnable entry
+  point (e.g. `main.py`, a `[project.scripts]` console script, an `app` module)
+  + interpreter/argv; used both to run and to enrich the completion report.
+- `run_program(project_path, *, timeout_s, run_fn=None, validator=None)` — runs
+  the entry point behind a hard `_is_within(path, root)` sandbox-confinement
+  check + a validator gate + a timeout; `run_fn` is injectable for tests.
+  Summarised by `summarize_run_result(result)`.
+- `launch_program(project_path, *, spawn_fn=None, validator=None)` — detached
+  launch (injectable `spawn_fn`); used for "start it up for me".
+- `_is_within` / `_validator_blocks` — the load-bearing confinement + fail-open
+  audit helpers. Consumed by `coding/voice.py::maybe_handle_run_program` and the
+  orchestrator's `_maybe_handle_run_program` run-loop short-circuit (with
+  `_announce_pending_run_report` draining the async run summary).
 
 ### `src/ultron/openclaw_routing/` (Phase 5)
 
