@@ -274,6 +274,15 @@ class CodingBridge(ABC):
 # ---------------------------------------------------------------------------
 
 
+_QUALITY_PREAMBLE = (
+    "Follow Python best practices: add type hints to function signatures "
+    "and concise docstrings to public functions, and never use a bare "
+    "`except`. If you are creating a new Python project, include a "
+    "`pyproject.toml` with the project's metadata and dependencies. Keep "
+    "all work inside the project directory you were started in.\n\n"
+)
+
+
 _DISCIPLINE_PREAMBLE = """\
 You are working on a self-contained coding task. You MUST:
 
@@ -296,11 +305,20 @@ Task:
 
 
 def render_prompt(request: TaskRequest) -> str:
-    """Combine the discipline preamble (if requested) with the user's
-    task prompt into the final string sent to the backend."""
-    if not request.require_testing:
-        return request.task_prompt.strip()
-    return _DISCIPLINE_PREAMBLE + request.task_prompt.strip()
+    """Combine the always-on code-quality preamble + (when requested) the
+    testing-discipline preamble with the user's task prompt into the final
+    string sent to the backend.
+
+    The code-quality preamble is cheap (~60 tokens) and applies to EVERY
+    coding task, including voice-dispatched ones (``require_testing=False``),
+    so voice-built programs still follow Python best practices (docstrings,
+    type hints, a pyproject.toml for new projects). The heavier
+    testing-discipline preamble is added only when ``require_testing`` is set.
+    """
+    body = request.task_prompt.strip()
+    if request.require_testing:
+        return _QUALITY_PREAMBLE + _DISCIPLINE_PREAMBLE + body
+    return _QUALITY_PREAMBLE + body
 
 
 # ---------------------------------------------------------------------------

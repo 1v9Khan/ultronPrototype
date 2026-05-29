@@ -252,7 +252,11 @@ def test_render_prompt_omits_discipline_preamble_without_testing():
     )
     lean = render_prompt(request_lean)
     heavy = render_prompt(request_heavy)
-    assert lean == "write a hello world"
+    # require_testing=False omits the ~270-token testing mandate (the token-
+    # efficiency win); only the light always-on quality preamble + the
+    # verbatim body remain.
+    assert lean.endswith("write a hello world")
+    assert "Write tests for each component" not in lean
     # Heavy preamble starts with "You are working on" and contains
     # the testing mandate items.
     assert lean != heavy

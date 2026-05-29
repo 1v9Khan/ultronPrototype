@@ -103,14 +103,29 @@ def test_render_prompt_skips_preamble_when_disabled(tmp_path: Path):
         require_testing=False,
     )
     out = render_prompt(req)
+    # No testing-discipline preamble when require_testing=False...
     assert "Write tests for each component" not in out
-    assert out == "Add a hello world script."
+    # ...but the always-on code-quality preamble + the body are still present.
+    assert "best practices" in out and "pyproject.toml" in out
+    assert out.endswith("Add a hello world script.")
 
 
 def test_render_prompt_strips_outer_whitespace(tmp_path: Path):
     req = TaskRequest(task_prompt="\n  hello task  \n", cwd=tmp_path,
                        require_testing=False)
-    assert render_prompt(req) == "hello task"
+    out = render_prompt(req)
+    assert out.endswith("hello task") and "  hello task  " not in out
+
+
+def test_render_prompt_always_includes_quality_preamble(tmp_path: Path):
+    """The code-quality preamble (type hints + docstrings + pyproject for new
+    projects) is prepended regardless of require_testing -- so voice-dispatched
+    tasks (require_testing=False) still get best-practices guidance."""
+    for rt in (True, False):
+        req = TaskRequest(task_prompt="build a thing", cwd=tmp_path, require_testing=rt)
+        out = render_prompt(req)
+        assert "type hints" in out and "pyproject.toml" in out
+        assert out.endswith("build a thing")
 
 
 # ---------------------------------------------------------------------------
