@@ -15,8 +15,8 @@
 > complete the voice-controlled coding engineer end to end, build a real-usage
 > e2e suite, make the system pervasively self-improving, and cut latency +
 > resources. On worktree branch `claude/vigorous-mclaren-56a5a7`, on top of the
-> infra-wiring tip `9d51cec`, **validating code HEAD `c17a2c9`**. **9163 passed /
-> 26 skipped / 0 failed (~109s)** (worktree sweep, no deselect). Voice baseline
+> infra-wiring tip `9d51cec`, **validating code HEAD `6d23bb9`**. **9168 passed /
+> 26 skipped / 0 failed (~110s)** (worktree sweep, no deselect). Voice baseline
 > contract intact throughout (no SOUL.md / RVC / Piper / LLM-GGUF / voicepack
 > touch; all changes are on the coding + fail-open seams). **Coding-engineer
 > commits landed so far** (the campaign's first phase -- a fully capable
@@ -60,6 +60,28 @@
 > routing/bridge/safety/infra/desktop reachability wiring, evolution pervasive
 > reach (with an approval gate before any `src/` edit), the unified synthetic-
 > audio e2e suite, and latency/resource optimization.
+>
+> **Breadth phase -- routing batch (B4) resolved (`6d23bb9`):** verify-first
+> showed most triage "stubs" here are non-gaps. **#24 (real, fixed):** the
+> `HybridTaskDecomposer` was built but never called -- HYBRID_TASK returned a
+> stale "gateway isn't connected" stub. Wired via `_handle_hybrid_task` +
+> `_dispatch_automation_subtask` (automation-before-coding runs inline; the
+> first coding subtask dispatches; post-coding steps are surfaced as a deferred
+> plan -- the single-in-flight-task model can't auto-run a long-coding-then-
+> automation sequence in one synchronous turn). **Verified non-gaps (documented,
+> NOT changed):** #23 desktop/window classifier gate is a no-op in the default
+> config (`openclaw.enabled: true` so they're already classified;
+> `handle_desktop_automation` already guards `client is None`; the dispatcher
+> path is bridge-based, not the native UIA tier the triage assumed). #94/#95
+> `IntentDisambiguator` / `should_clarify_from_config` would be dormant -- the
+> classifier emits a flat 0.85 confidence and never sets
+> `needs_user_clarification`, so nothing reaches the ambiguity band; useful only
+> after the classifier learns to emit ambiguity signals. #25 FILE/SHELL live
+> paths + #9 `stub_responses_enabled` -- the OpenClaw bridge exposes NO exec/file
+> tool, the stub messages are honest (not stale), and a native subprocess path
+> would be a net-new high-risk capability (voice-triggered filesystem/shell exec)
+> requiring explicit user opt-in + a dedicated safety design, NOT a casual
+> stub-completion. Per the security constraint these stay stubbed.
 >
 > **Earlier validating HEAD:** **infrastructure-wiring campaign (2026-05-29)** -- a
 > sweep wiring dormant imported-but-unconsumed infrastructure across catalogs
