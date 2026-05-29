@@ -239,3 +239,57 @@ def test_match_deep_research_positive(text, topic):
 ])
 def test_match_deep_research_negative(text):
     assert match_deep_research(text) is None
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator handler regression: _maybe_handle_deep_research references the
+# lazy-imported ``trace`` module (NOT a module global), so the handler needs
+# its own ``from ultron import trace`` -- without it, trace.tlog raised
+# NameError before the try-block and crashed every deep-research command.
+# The loop tests above never exercised the handler, so this locks the fix.
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_deep_research_handler_runs_without_trace_nameerror(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    from ultron.pipeline import orchestrator as orch_mod
+    from ultron.pipeline.orchestrator import Orchestrator
+    import ultron.web_search.deep_research as dr_mod
+
+    monkeypatch.setattr(orch_mod.settings, "BARGE_IN_ENABLED", False, raising=False)
+
+    class _FakeResult:
+        loop_status = "completed"
+        steps = 1
+
+        def to_payload(self):
+            return SimpleNamespace(sources=[], queries=[])
+
+    class _FakeLoop:
+        def __init__(self, **_kwargs):
+            pass
+
+        def research(self, _topic):
+            return _FakeResult()
+
+    # The handler imports DeepResearchLoop by name inside the method, so
+    # patching the module attribute is picked up on the next call.
+    monkeypatch.setattr(dr_mod, "DeepResearchLoop", _FakeLoop)
+
+    spoken = []
+    o = Orchestrator.__new__(Orchestrator)
+    o.web_executor = object()  # non-None
+    o.llm = object()           # non-None
+    o._interrupt = threading.Event()
+    o._shutdown = threading.Event()
+    o._last_search_payload = None
+    o._last_response_text = ""
+    o._speak = lambda text: spoken.append(text)
+
+    # Must reach + complete the handler (both trace.tlog calls run) without
+    # NameError, and take the empty-sources branch.
+    handled = o._maybe_handle_deep_research("research quantum computing in depth")
+    assert handled is True
+    assert any("couldn't surface" in s for s in spoken)

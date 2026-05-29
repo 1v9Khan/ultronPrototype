@@ -1125,6 +1125,13 @@ class MemoryConfig(_Strict):
     # 0.567), while genuinely relevant matches score 0.7-0.95.
     # Set 0.0 to disable filtering (pre-2026-05-09 legacy behaviour).
     rag_min_relevance: float = Field(default=0.6, ge=0.0, le=1.0)
+    # Deep-memory recall: when True (default), an explicit exhaustive-recall
+    # voice command ("recall everything we discussed about X" / "dig deep into
+    # your memory about X") runs a bounded multi-pass DeepMemoryLoop instead of
+    # the single-pass RAG answer. A strict matcher gates it, so normal recall
+    # questions are unaffected (they stay on the fast path). Set False to
+    # disable the deep-recall short-circuit entirely.
+    deep_recall_enabled: bool = True
     # V1-gap A2.
     retrieval: MemoryRetrievalConfig = Field(default_factory=MemoryRetrievalConfig)
     ranking: MemoryRankingConfig = Field(default_factory=MemoryRankingConfig)

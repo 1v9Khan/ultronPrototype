@@ -1121,6 +1121,11 @@ class Orchestrator:
             # fall through so the user gets a normal best-effort response.
             return False
 
+        # NOTE: ``trace`` is lazy-imported per-method in this module (it is
+        # NOT a module global), so the import below is REQUIRED -- without it
+        # the trace.tlog calls in this handler raise NameError before the
+        # try-block, crashing the deep-research command. (Latent bug fixed.)
+        from ultron import trace
         trace.tlog(logger, "deep_research:start", topic=match.topic[:80])
         self._interrupt.clear()
         self._last_search_payload = None
@@ -1216,6 +1221,133 @@ class Orchestrator:
             logger.exception("deep research failed: %s", e)
             try:
                 self._speak("Something went wrong while I was researching that.")
+            except Exception:                                        # noqa: BLE001
+                pass
+            return True
+        finally:
+            self._interrupt.set()  # release the watcher
+            if watcher is not None:
+                watcher.join(timeout=1.0)
+            self._interrupt.clear()
+
+    def _maybe_handle_deep_recall(self, user_text: str) -> bool:
+        """Handle an explicit exhaustive-recall command ("recall everything
+        we discussed about X", "dig deep into your memory about X") via a
+        bounded DeepMemoryLoop (iterative RAG: decompose -> retrieve ->
+        gap-fill -> retrieve, capped by max_steps), then synthesize + speak
+        the answer from the recalled turns.
+
+        Returns True iff the utterance was an explicit deep-recall command
+        AND was handled here (short-circuits routing). Strict matcher ->
+        normal recall questions stay on the fast single-pass RAG path inside
+        ``_respond``. Returns False on no-match / memory or LLM unavailable /
+        disabled so the turn proceeds to normal routing. Fail-open: any
+        failure speaks a clear message and returns True so the recognised
+        command isn't silently dropped.
+        """
+        try:
+            from ultron.agent_loop.deep_loops import DeepMemoryLoop
+            from ultron.memory.deep_recall import match_deep_recall
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("deep_recall import failed: %s", e)
+            return False
+        match = match_deep_recall(user_text)
+        if match is None:
+            return False
+        if getattr(self, "memory", None) is None or self.llm is None:
+            # Can't recall without the memory store + the LLM; fall through
+            # so the user still gets a normal best-effort response.
+            return False
+        try:
+            from ultron.config import get_config
+            enabled = bool(getattr(get_config().memory, "deep_recall_enabled", True))
+        except Exception:                                            # noqa: BLE001
+            enabled = True
+        if not enabled:
+            return False
+
+        logger.debug("deep_recall:start topic=%s", match.topic[:80])
+        self._interrupt.clear()
+        self._last_response_text = ""
+        response_buf: list = []
+        watcher: Optional[threading.Thread] = None
+
+        def _retrieve(query: str, k: int):
+            try:
+                return self.memory.retrieve(query, k=k) or []
+            except Exception as e:                                   # noqa: BLE001
+                logger.debug("deep_recall retrieve %r failed: %s", query, e)
+                return []
+
+        try:
+            # Immediate spoken ack -- the iterative recall takes a few seconds.
+            self._speak("Let me dig through what I remember about that.")
+
+            loop = DeepMemoryLoop(retrieve=_retrieve, llm=self.llm)
+            result = loop.recall(match.topic)
+            turns = result.items
+            logger.debug(
+                "deep_recall:gathered status=%s steps=%s turns=%d sub_queries=%d",
+                result.loop_status, result.steps, len(turns), len(result.sub_queries),
+            )
+
+            if not turns:
+                self._speak("I don't have anything in my memory about that.")
+                return True
+
+            recall_lines: list = []
+            for t in turns[:8]:
+                role = getattr(t, "role", "") or ""
+                content = (getattr(t, "content", "") or "").strip().replace("\n", " ")
+                if len(content) > 240:
+                    content = content[:240] + "..."
+                if content:
+                    recall_lines.append(f"- {role}: {content}")
+            recall_block = "\n".join(recall_lines)
+            augmented = (
+                f"User question: {match.topic}\n\n"
+                f"Relevant excerpts recalled from your conversation memory "
+                f"with this user:\n{recall_block}\n\n"
+                "Answer the user's question using ONLY the facts present in "
+                "the recalled excerpts above. Summarize what was actually "
+                "said, decided, or mentioned; do not invent details that "
+                "aren't in the excerpts. If the excerpts don't cover some "
+                "aspect, say so briefly rather than padding. Stay in "
+                "character. End the response when you have answered."
+            )
+
+            if settings.BARGE_IN_ENABLED:
+                watcher = threading.Thread(
+                    target=self._interrupt_watcher, daemon=True,
+                    name="wake-watcher",
+                )
+                watcher.start()
+
+            print("  ultron: ", end="", flush=True)
+            token_stream = self.llm.generate_stream(
+                augmented,
+                history_user_message=match.raw_text,
+                rag_query=match.topic,
+                enable_thinking=False,
+            )
+
+            def gated():
+                for token in token_stream:
+                    if self._interrupt.is_set() or self._shutdown.is_set():
+                        self.llm.cancel()
+                        return
+                    print(token, end="", flush=True)
+                    response_buf.append(token)
+                    yield token
+
+            self.tts.speak_stream(gated())
+            print()
+            self._last_response_text = "".join(response_buf)
+            return True
+        except Exception as e:                                       # noqa: BLE001
+            logger.exception("deep recall failed: %s", e)
+            try:
+                self._speak("Something went wrong while I was searching my memory.")
             except Exception:                                        # noqa: BLE001
                 pass
             return True
@@ -3312,6 +3444,28 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="deep_research",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Deep-memory recall: intercept an explicit "recall
+                    # everything we discussed about X" / "dig deep into your
+                    # memory about X" request and run a bounded DeepMemoryLoop
+                    # (iterative RAG), then synthesize + speak. Strict matcher
+                    # -> normal recall questions stay on the fast RAG path; on
+                    # no-match / memory-unavailable it returns False and the
+                    # turn proceeds to routing as usual.
+                    if self._maybe_handle_deep_recall(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="deep_recall",
                             follow_up=bool(follow_up_until),
                         )
                         continue
