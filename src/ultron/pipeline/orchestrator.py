@@ -1324,6 +1324,95 @@ class Orchestrator:
                 watcher.join(timeout=1.0)
             self._interrupt.clear()
 
+    def _maybe_handle_code_exploration(self, user_text: str) -> bool:
+        """Handle an explicit code-search command ("search the codebase for X",
+        "where is the safety validator defined") via a bounded
+        :class:`DeepExplorationLoop` (iterative ripgrep over the project source),
+        then speak WHERE the matches are.
+
+        Strict matcher -> coding tasks ("build X") + web / memory requests fall
+        through (return False). Fail-open: any failure speaks a clear message
+        and returns True so the recognised command isn't silently dropped. The
+        search root is the project root (the user's ultron repo); read-only.
+        """
+        try:
+            from ultron.agent_loop.deep_loops import DeepExplorationLoop
+            from ultron.search.code_exploration import match_code_exploration
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("code_exploration import failed: %s", e)
+            return False
+        match = match_code_exploration(user_text)
+        if match is None:
+            return False
+        if self.llm is None:
+            return False
+        try:
+            from ultron.config import get_config
+            enabled = bool(getattr(
+                get_config().coding, "deep_exploration_enabled", True,
+            ))
+        except Exception:                                            # noqa: BLE001
+            enabled = True
+        if not enabled:
+            return False
+
+        logger.debug("code_exploration:start topic=%s", match.topic[:80])
+        self._interrupt.clear()
+        self._last_response_text = ""
+
+        try:
+            import os
+            from ultron.config import PROJECT_ROOT
+            from ultron.search.ripgrep import regex_search_files
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("code_exploration deps unavailable: %s", e)
+            return False
+
+        root = str(PROJECT_ROOT)
+
+        def _search(pattern: str):
+            try:
+                return regex_search_files(root, root, pattern, context_lines=1) or []
+            except Exception as e:                                   # noqa: BLE001
+                logger.debug("code_exploration search %r failed: %s", pattern, e)
+                return []
+
+        try:
+            self._speak("Let me search the codebase for that.")
+            loop = DeepExplorationLoop(search=_search, llm=self.llm)
+            result = loop.explore(match.topic)
+            items = getattr(result, "items", None) or []
+            files: list = []
+            for it in items:
+                fp = getattr(it, "file_path", None) or getattr(it, "path", None)
+                if not fp:
+                    continue
+                try:
+                    rel = os.path.relpath(str(fp), root)
+                except Exception:                                    # noqa: BLE001
+                    rel = str(fp)
+                if rel not in files:
+                    files.append(rel)
+            if not files:
+                answer = (
+                    f"I searched the codebase for {match.topic} but found no "
+                    "matches."
+                )
+            else:
+                shown = files[:6]
+                more = len(files) - len(shown)
+                tail = f", and {more} more" if more > 0 else ""
+                answer = (
+                    f"Found {len(items)} matches across {len(files)} files: "
+                    f"{', '.join(shown)}{tail}."
+                )
+            self._last_response_text = answer
+            self._speak(answer)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("code_exploration failed: %s", e)
+            self._speak("I hit a problem searching the codebase.")
+        return True
+
     def _maybe_handle_deep_recall(self, user_text: str) -> bool:
         """Handle an explicit exhaustive-recall command ("recall everything
         we discussed about X", "dig deep into your memory about X") via a
@@ -3720,6 +3809,26 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="deep_recall",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Deep code exploration: "search the codebase for X" /
+                    # "where is Y defined" -> bounded DeepExplorationLoop
+                    # (iterative ripgrep over the project source), then speak
+                    # where the matches are. Strict matcher -> coding tasks +
+                    # web / memory requests fall through.
+                    if self._maybe_handle_code_exploration(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="code_exploration",
                             follow_up=bool(follow_up_until),
                         )
                         continue

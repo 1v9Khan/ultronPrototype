@@ -2005,6 +2005,10 @@ class CodingSupervisorConfig(_Strict):
 
 class CodingConfig(_Strict):
     enabled: bool = True
+    # Voice "search the codebase for X" / "where is Y defined" -> a bounded
+    # DeepExplorationLoop (iterative ripgrep over the project source). Strict
+    # matcher + read-only; default-ON. Flip False to disable the short-circuit.
+    deep_exploration_enabled: bool = True
     bridge: str = "direct"
     mcp: CodingMCPConfig = Field(default_factory=CodingMCPConfig)
     template_dir: str = "prompts/coding"
