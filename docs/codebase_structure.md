@@ -15,8 +15,8 @@
 > complete the voice-controlled coding engineer end to end, build a real-usage
 > e2e suite, make the system pervasively self-improving, and cut latency +
 > resources. On worktree branch `claude/vigorous-mclaren-56a5a7`, on top of the
-> infra-wiring tip `9d51cec`, **validating code HEAD `6d23bb9`**. **9168 passed /
-> 26 skipped / 0 failed (~110s)** (worktree sweep, no deselect). Voice baseline
+> infra-wiring tip `9d51cec`, **validating code HEAD `8b43517`**. **9171 passed /
+> 26 skipped / 0 failed (~118s)** (worktree sweep, no deselect). Voice baseline
 > contract intact throughout (no SOUL.md / RVC / Piper / LLM-GGUF / voicepack
 > touch; all changes are on the coding + fail-open seams). **Coding-engineer
 > commits landed so far** (the campaign's first phase -- a fully capable
@@ -82,6 +82,39 @@
 > would be a net-new high-risk capability (voice-triggered filesystem/shell exec)
 > requiring explicit user opt-in + a dedicated safety design, NOT a casual
 > stub-completion. Per the security constraint these stay stubbed.
+>
+> **Breadth phase -- parallel verification pass (`4a0af5b`, `8b43517`):** four
+> parallel Sonnet 4.6 read-only agents verified ~40 triage findings (voice
+> hot-path, safety wiring, config drift, bridge/desktop reachability) into
+> real-safe-wireable vs non-gap. **FIXED (all fail-open):** **#1/#30** -- a real
+> bug: `DesktopTool.{screenshot,list_windows,find_window}` read a non-existent
+> `result.payload` field (the real `ToolInvocationResult` carries structured
+> data on `.raw`), so every OpenClaw-proxied desktop call returned empty; the
+> bug hid because the test stubs defined a fake `payload` field (now aligned to
+> `.raw` + a regression test uses the real type). **#28** -- `UltronIgnoreRule`
+> built the ignore controller with no `workspace_root`, so only
+> `~/.ultron/.ultronignore` was consulted and the project/workspace layers were
+> silently skipped; now forwards `resolver.project_root`. **#100** -- the
+> tamper-evident audit chain is now verified at orchestrator startup (read-only
+> WARN, never blocks boot). **#59** -- the click-preview VLM safety gate
+> captured a hardcoded monitor index 1, so on a single-monitor machine it
+> silently degraded to "allow every click"; now captures the foreground
+> window's monitor (fail-open to 0). **VERIFIED NON-GAP (documented, not
+> changed):** #31/#91/#107/#108 (false positives -- SYSTEM_STATUS is wired in
+> voice.py; native intents DO log; telegram staging is intentional; lifecycle
+> uses the configured gateway URL, not the module-default port), #136/#137/#138
+> (STT dual-load + Moonshine-CPU are documented-intentional), #27/#96/#97/#98/#99
+> (dormant-by-design or false-positive-block risk -- e.g. a curl `--data-binary`
+> rule would block legitimate coding uploads), #119/#157 (no real drift).
+> **DEFERRED with rationale:** #76/#135/#139 (voice-pipeline latency tweaks ->
+> Phase 5 measured pass), #51/#52b/#82 (intentional default-OFF: architect 3-5s
+> latency, lint/repo_map/pre_task UX cost, background_summary blocked on #83's
+> Qdrant writer), #26 (empty policy chain = no value until a concrete policy
+> exists). **QUEUED verified-safe (next):** config-default alignment
+> (#49 token_budget 100k->400k, #50 intent threshold, #53 ambiguity/IRMA,
+> #54 LLM compression/self-consistency, #140 inference.py fallback, #156
+> provider/reader fallback literals) + #121 desktop exports + #124 clipboard
+> singleton.
 >
 > **Earlier validating HEAD:** **infrastructure-wiring campaign (2026-05-29)** -- a
 > sweep wiring dormant imported-but-unconsumed infrastructure across catalogs
