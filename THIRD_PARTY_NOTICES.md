@@ -614,3 +614,40 @@ This file satisfies the provenance / attribution record for the
 `src/ultron/evolution/` package. Because the source was never read and no
 license was observed, no license text is reproduced; the package is
 original work whose *approach* is informed by the catalog description.
+
+## clawhub-self-improving-agent (catalog 14; built from catalog + scan reports -- source not read)
+
+Project: `clawhub-self-improving-agent` (a ClawHub plugin; catalog 14, the
+final plugin of the ClawHub batch). The plugin is a lightweight
+conversational self-reflection convention -- append-only `ERRORS.md` /
+`LEARNINGS.md` / `FEATURE_REQUESTS.md` ledgers, a session-start reminder
+hook, and a PostToolUse error-detector shell hook.
+
+**Provenance.** Per the binding ClawHub-batch security posture, the
+quarantined plugin source under `F:\reference_repos\quarantine\` was NOT
+read, imported, or executed by this implementation. ultron's catalog-14
+extensions were built clean-room from TWO non-executable inputs only: the
+human-authored catalog entry (`14_clawhub-self-improving-agent.md`) and the
+two independent read-only scan reports
+(`_self_improving_scan/agent_code_security.md` + `agent_design_spec.md`). The
+independent scan verdict was BENIGN (0 RED / 1 YELLOW -- the single YELLOW
+being the bootstrap prompt-injection mechanism, irrelevant to a clean-room
+port). No source code, constant, or string was copied verbatim. No license
+text was observed (the manifest was not read).
+
+**What was ported -- FOUR extensions to the EXISTING `src/ultron/evolution/`
+package (NOT a new subsystem).** This plugin's qualitative,
+conversation-content-driven learning is complementary to catalog 13's
+quantitative metric loop:
+
+| Ultron component | Inspired by (technique) | Tier / notes |
+| --- | --- | --- |
+| `evolution/models.py` -- `CorrectionCapsule` / `KnowledgeGapCapsule` / `CommandFailureSignal` | correction / knowledge-gap / command-failure as named capture events | GREEN. Structured, PII-redacted (`redact_fragment`) records; `to_failure_record` feeds the existing repair distillation. |
+| `evolution/signals.py` -- `extract_correction` / `extract_knowledge_gap` / `extract_command_failure` / `extract_feature_request` | the four signal categories + the PostToolUse error detector | GREEN. Pure in-process regex/keyword detectors. The upstream's BASH-hook mechanism (`activator.sh` / `error-detector.sh`) is RED (shell); only the detect-the-event-in-text behaviour is ported. Correction detection is gated on a non-empty prior response. |
+| `evolution/models.py` -- `FeatureRequestCapsule` (+ `evolution/service.py` digest) | the `FEATURE_REQUESTS.md` backlog | GREEN. A forward-looking backlog at `data/evolution/feature_requests.jsonl`; NEVER distilled into a skill; surfaced in the periodic digest. |
+| `evolution/service.py` -- `pre_turn_system_hint()` nudge | the `UserPromptSubmit` activator | YELLOW (bounded). A <=50-token `[Evolution: ...]` notice injected through the EXISTING `LLMEngine.set_temperament_hint` system-prompt seam (never the user text); token-capped, fail-open. |
+| `evolution/models.py` + `skill_distiller.py` -- `pattern_key` / recurrence + `merge_capsules_by_pattern_key` + `RECURRENCE_PROMOTE_THRESHOLD` | the ledger's `Pattern-Key` / `Recurrence-Count` fields | GREEN. Makes the distiller's recurrence gate explicit + auditable; the durable dedup fix for the catalog-13 recurrence-counting hazard. |
+| (NOT PORTED) cross-session broadcast (`sessions_send` / `sessions_spawn`) + the bash hook scripts + direct writes to CLAUDE.md / AGENTS.md | the upstream's OpenClaw multi-agent + shell-hook mechanism | RED: ultron's zero-network / zero-shell constraint + the Tier-3 wall exclude these by construction. |
+
+The catalog-14 additions are original work whose *approach* is informed by
+the catalog + scan-report descriptions; no license text is reproduced.
