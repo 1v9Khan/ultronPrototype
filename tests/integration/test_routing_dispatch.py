@@ -69,18 +69,21 @@ def test_shell_operation_dispatches_stub(cap_stack, routing_log, read_routing):
     assert rec["outcome"] == "stub"
 
 
-def test_hybrid_task_dispatches_stub(cap_stack, routing_log, read_routing):
+def test_hybrid_task_decomposes_and_dispatches(cap_stack, routing_log, read_routing):
+    """HYBRID_TASK now runs through the HybridTaskDecomposer instead of a
+    stale "gateway isn't connected" stub. With no real LLM in the fixture the
+    decomposer falls back to a coding-only plan, which dispatches through the
+    coding pipeline; the routing log records handler=HybridTaskDecomposer and
+    outcome=decomposed."""
     response = dispatch_utterance(
         cap_stack, "set up a development environment for this project",
     )
     assert response is not None
-    assert (
-        "coding" in response.text.lower() or "automation" in response.text.lower()
-        or "gateway" in response.text.lower()
-    )
+    assert response.handled is True
     rec = read_routing()[-1]
     assert rec["intent"] == "hybrid_task"
-    assert rec["outcome"] == "stub"
+    assert rec["handler"] == "HybridTaskDecomposer"
+    assert rec["outcome"] == "decomposed"
 
 
 def test_hybrid_excel_workflow_dispatches_stub(cap_stack, routing_log, read_routing):

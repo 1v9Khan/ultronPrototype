@@ -2308,6 +2308,114 @@ class CapabilityVoiceController:
 
     # --- Phase 5 capability dispatch ---------------------------------------
 
+    def _handle_hybrid_task(self, routing_intent) -> "VoiceResponse":
+        """Decompose a HYBRID_TASK utterance and dispatch its subtasks.
+
+        Wiring for the fully-built but previously-unconsumed
+        :class:`HybridTaskDecomposer`. ultron holds ONE in-flight coding task
+        and the voice turn is synchronous, so it cannot block the turn for a
+        minutes-long coding subtask and then run automation "after". The
+        bounded-but-honest contract:
+
+          * Automation subtasks that come BEFORE any coding subtask run inline
+            (the common "read this file / open this page, THEN build X" shape).
+          * The first coding subtask is dispatched through the normal coding
+            pipeline (async; returns a "working on it" ack).
+          * Any subtask AFTER the coding dispatch (a second coding subtask, or
+            automation that must follow the code) is surfaced as a spoken
+            follow-up plan rather than fired out of order.
+
+        Fail-open: a disabled flag / decomposition failure / empty plan falls
+        back to dispatching the raw utterance as a coding task.
+        """
+        import asyncio
+        from ultron.openclaw_routing import HybridTaskDecomposer, get_routing_log
+
+        raw_text = getattr(routing_intent, "raw_text", "") or ""
+        try:
+            result = asyncio.run(
+                HybridTaskDecomposer(self.llm_engine).decompose(raw_text)
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "hybrid decompose failed (%s); coding-only fallback", e,
+            )
+            result = None
+
+        subtasks = sorted(
+            list(getattr(result, "subtasks", None) or []),
+            key=lambda s: getattr(s, "order", 0),
+        )
+        if not subtasks:
+            get_routing_log().record(
+                routing_intent, handler="HybridTaskDecomposer",
+                outcome="coding_fallback",
+            )
+            return self.handle_utterance(raw_text) or VoiceResponse(
+                text="I'll take that as a coding task.", handled=True,
+            )
+
+        parts: list = []
+        deferred: list = []
+        coding_started = False
+        for st in subtasks:
+            st_type = (getattr(st, "type", "") or "").lower()
+            desc = (getattr(st, "description", "") or "").strip()
+            if not desc:
+                continue
+            if st_type == "coding":
+                if coding_started:
+                    deferred.append(desc)
+                    continue
+                resp = self.handle_utterance(desc)
+                coding_started = True
+                parts.append(
+                    resp.text if (resp is not None and resp.text)
+                    else f"Starting the coding work: {desc}."
+                )
+            else:  # automation
+                if coding_started:
+                    deferred.append(desc)
+                    continue
+                auto_text = self._dispatch_automation_subtask(desc)
+                if auto_text:
+                    parts.append(auto_text)
+
+        if deferred:
+            plan = "; ".join(deferred)
+            parts.append(f"Once that's done, say continue and I'll: {plan}.")
+
+        get_routing_log().record(
+            routing_intent, handler="HybridTaskDecomposer", outcome="decomposed",
+            extra={
+                "subtask_count": len(subtasks),
+                "fallback_used": bool(getattr(result, "fallback_used", False)),
+                "deferred": len(deferred),
+            },
+        )
+        voice = " ".join(p for p in parts if p).strip() or (
+            "I split that into steps but couldn't act on any of them yet."
+        )
+        return VoiceResponse(text=voice, handled=True)
+
+    def _dispatch_automation_subtask(self, description: str) -> str:
+        """Classify + dispatch a single automation subtask; return its spoken
+        text. Guards against re-classifying the subtask as HYBRID/CONVERSATIONAL
+        (no recursion); such subtasks are surfaced as text instead of run."""
+        from ultron.openclaw_routing.intents import RoutingIntentKind
+        try:
+            from ultron.openclaw_routing.classifier import classify_routing
+            sub_intent = classify_routing(description)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("automation subtask classify failed: %s", e)
+            return f"(Noted an automation step: {description}.)"
+        kind = getattr(sub_intent, "kind", None)
+        if kind in (None, RoutingIntentKind.CONVERSATIONAL,
+                    RoutingIntentKind.HYBRID_TASK):
+            return f"(Noted an automation step: {description}.)"
+        resp = self._dispatch_via_automation_runner(sub_intent)
+        return resp.text if (resp is not None and resp.text) else ""
+
     def handle_capability_intent(self, routing_intent) -> Optional[VoiceResponse]:
         """Dispatch a top-level :class:`RoutingIntent`.
 
@@ -2431,21 +2539,11 @@ class CapabilityVoiceController:
         }:
             return self._dispatch_via_automation_runner(routing_intent)
 
-        # Hybrid — without a wired-up decomposer + Anthropic, we can only
-        # tell the user we recognized it but can't run it yet.
+        # Hybrid — decompose into ordered coding/automation subtasks via the
+        # (previously-unconsumed) HybridTaskDecomposer and dispatch what the
+        # single-in-flight-task model can run this turn; surface the rest.
         if kind == RoutingIntentKind.HYBRID_TASK:
-            voice = (
-                "I can see that's a mix of coding and automation. "
-                "I'd split it up and run both, but the gateway isn't "
-                "connected yet."
-            )
-            get_routing_log().record(
-                routing_intent,
-                handler="HybridTaskDecomposer",
-                outcome="stub",
-                extra={"stub_reason": "OpenClaw integration not yet complete"},
-            )
-            return VoiceResponse(text=voice, handled=True)
+            return self._handle_hybrid_task(routing_intent)
 
         # Unknown kind — log and fall through.
         get_routing_log().record(
