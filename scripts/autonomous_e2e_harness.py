@@ -264,6 +264,12 @@ def phase_llm() -> List[Scenario]:
             preview = sc.outputs["response"][:100].replace("\n", " ")
             print(f"  -> {preview!r}")
 
+    # Release the Qdrant local-mode file lock so a later phase (memory) can open
+    # the same path -- local Qdrant allows only one client per path at a time.
+    try:
+        memory.close()
+    except Exception:
+        pass
     return scenarios
 
 
@@ -403,6 +409,10 @@ def phase_memory() -> List[Scenario]:
             sc.err(f"exception: {e}")
         scenarios.append(sc)
         print(sc.summary())
+    try:
+        memory.close()
+    except Exception:
+        pass
     return scenarios
 
 

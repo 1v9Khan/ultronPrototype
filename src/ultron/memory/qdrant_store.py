@@ -210,6 +210,22 @@ class ConversationMemory:
             len(self._recent), self.session_id, self.path,
         )
 
+    def close(self) -> None:
+        """Release the underlying Qdrant client.
+
+        In local (file-backed) mode Qdrant holds an EXCLUSIVE OS lock on
+        ``<path>/.lock`` for the lifetime of the client, so only one
+        :class:`ConversationMemory` can be open against a given path at once.
+        Closing frees that lock (and the file handles) -- useful for clean
+        shutdown and for any harness/tooling that opens a second instance
+        against the same path. Best-effort + fail-open; the background writer
+        is a daemon thread that exits with the process.
+        """
+        try:
+            self._client.close()
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("ConversationMemory.close failed: %s", e)
+
     # --- collection bootstrap -----------------------------------------------
 
     def _ensure_collections(self) -> None:
