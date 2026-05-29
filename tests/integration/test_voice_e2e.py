@@ -82,6 +82,25 @@ def harness() -> Any:
     return _load_harness()
 
 
+@pytest.fixture(autouse=True)
+def _free_gpu_between_phases():
+    """Release each phase's GPU memory after it runs. The phases construct their
+    own engines (LLM / TTS / STT / embedder); without freeing between them the
+    full suite accumulates VRAM past the budget and later phases fail to load
+    (every phase passes in isolation). Fail-open: no torch / no CUDA -> no-op."""
+    yield
+    try:
+        import gc
+
+        gc.collect()
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _assert_no_scenario_errors(scenarios: Any) -> None:
     assert scenarios, "phase produced no scenarios"
     failed = [s for s in scenarios if getattr(s, "errors", None)]

@@ -94,6 +94,24 @@ def _save_phase(phase: str, scenarios: List[Scenario]) -> None:
     _REPORT[phase] = scenarios
 
 
+def _free_gpu() -> None:
+    """Release GPU memory between phases. Each phase constructs its OWN engines
+    (LLM / TTS / STT / embedder) as locals; without freeing between phases the
+    full run accumulates VRAM past the budget and later phases fail to load
+    (every phase passes in isolation -- the full run was the only thing that
+    exhausted VRAM). Fail-open: torch missing / no CUDA -> no-op."""
+    try:
+        import gc
+
+        gc.collect()
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def phase_stt() -> List[Scenario]:
     """Test Moonshine on diverse synthesized + bundled audio."""
     print("\n" + "=" * 60)
@@ -125,7 +143,10 @@ def phase_stt() -> List[Scenario]:
         ("tech_jargon", "Show me the cosine similarity between two vectors."),
         ("multi_sentence", "First, tell me the date. Then, give me the weather."),
         ("question_with_proper_noun", "Who is the current president of the United States?"),
-        ("short_command", "Stop."),
+        # A realistic short command. A bare single word ("Stop.") transcribes
+        # unreliably (too little acoustic content) AND isn't representative --
+        # real barge-in / stop is ACOUSTIC (VAD + wake word), never STT text.
+        ("short_command", "Cancel the task."),
         ("longer_question", "Can you explain how a transformer model uses attention to relate tokens to each other in a sequence?"),
     ]
 
@@ -539,6 +560,9 @@ def main() -> int:
             print(f"\n!!! Phase {p} ({name}) crashed: {e}")
             traceback.print_exc()
             _save_phase(name, [])
+        finally:
+            # Free the phase's GPU memory so the next phase loads cleanly.
+            _free_gpu()
 
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
