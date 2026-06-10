@@ -65,10 +65,13 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 def resolve_path(value: str | Path) -> Path:
     """Resolve a config-file path relative to PROJECT_ROOT.
 
-    Absolute paths pass through unchanged. Relative paths are resolved
-    against PROJECT_ROOT. Always returns an absolute Path.
+    A leading ``~`` is expanded to the user's home directory FIRST (so
+    config values like ``~/.ultron/sandbox`` work -- previously a
+    tilde path was mis-resolved underneath PROJECT_ROOT). Absolute
+    paths pass through unchanged. Relative paths are resolved against
+    PROJECT_ROOT. Always returns an absolute Path.
     """
-    p = Path(value)
+    p = Path(value).expanduser()
     if p.is_absolute():
         return p.resolve()
     return (PROJECT_ROOT / p).resolve()
@@ -2111,7 +2114,18 @@ class CodingConfig(_Strict):
     # override via config.yaml or the ULTRON_CLAUDE_CLI env var.
     claude_cli: str = "${USERPROFILE}/AppData/Roaming/npm/claude.cmd"
     claude_model: str = "haiku"
-    sandbox_root: str = "data/sandbox"
+    # Production-hardening (phase-11 e2e finding): the sandbox MUST live
+    # OUTSIDE the ultron repo tree. The coding CLI walks UP from the task
+    # cwd loading ancestor project context; with the old in-repo
+    # ``data/sandbox`` default, EVERY voice coding task silently loaded
+    # the repo's multi-thousand-token local orientation file -- a hidden
+    # per-task token/latency tax that occasionally hijacked small tasks
+    # outright (empirically verified: in-repo dirs see the context even
+    # when git-initialised; outside dirs are clean). ``~/.ultron/`` is
+    # the project's established user-dir convention. The safety policy
+    # keeps BOTH this root and the legacy in-repo root as allowed
+    # sandboxes so pre-existing projects remain editable/runnable.
+    sandbox_root: str = "~/.ultron/sandbox"
     # B3: hard wall-clock timeout for a voice-commanded "run the X program"
     # sandbox execution (capture mode). Launch mode is detached + unaffected.
     sandbox_run_timeout_seconds: float = Field(default=30.0, ge=1.0, le=600.0)

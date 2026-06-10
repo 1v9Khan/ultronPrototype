@@ -871,7 +871,14 @@ coding:
   claude_cli: "${USERPROFILE}/AppData/Roaming/npm/claude.cmd"
   claude_model: "haiku"
 
-  sandbox_root: "data/sandbox"
+  # Production-hardening: the sandbox lives OUTSIDE the repo tree -- the
+  # coding CLI walks up from the task cwd loading ancestor project
+  # context, and the old in-repo data/sandbox default silently loaded the
+  # repo's large local orientation file into every voice coding task
+  # (empirically verified; git-init does NOT block the walk). The legacy
+  # in-repo location stays an allowed safety sandbox so old projects
+  # keep working.
+  sandbox_root: "~/.ultron/sandbox"
   # B3: hard wall-clock timeout for a voice-commanded "run the X program"
   # (capture mode). Launch mode is detached + unaffected. Range [1, 600].
   sandbox_run_timeout_seconds: 30.0

@@ -149,6 +149,7 @@ class DirectClaudeCodeBridge(CodingBridge):
             log_path=self._log_path,
             claude_session_id=claude_session_id,
             is_new_session=is_new_session,
+            rendered_prompt=render_prompt(request),
         )
 
     def _build_argv(
@@ -186,7 +187,16 @@ class DirectClaudeCodeBridge(CodingBridge):
             argv.extend(request.disallowed_tools)
         if request.mcp_config_path is not None:
             argv.extend(["--mcp-config", str(request.mcp_config_path)])
-        argv.append(render_prompt(request))
+        # The PROMPT IS DELIBERATELY NOT AN ARGV ARGUMENT. On Windows the
+        # claude CLI is a ``.cmd`` shim, and cmd.exe TRUNCATES an argument
+        # at its first newline -- so any multiline prompt (the quality
+        # preamble + task, the supervisor's enriched digest context, the
+        # multiline correction/adjustment templates) silently lost
+        # everything after line one and the model replied with a generic
+        # greeting instead of acting (production-hardening phase-11 e2e
+        # finding, verified empirically). The rendered prompt is piped to
+        # the subprocess's STDIN instead -- see ``_launch`` -- which
+        # preserves arbitrary content (newlines, quotes, percent signs).
         return argv
 
 
@@ -227,11 +237,20 @@ class DirectTaskHandle(TaskHandle):
         log_path: Optional[Path],
         claude_session_id: Optional[str] = None,
         is_new_session: bool = True,
+        rendered_prompt: Optional[str] = None,
     ) -> None:
         self._task_id = uuid.uuid4().hex[:12]
         self._argv = argv
         self._cwd = cwd
         self._request = request
+        # The full rendered prompt, delivered via STDIN (never argv -- the
+        # Windows .cmd shim truncates argv arguments at the first newline).
+        # ``None`` falls back to rendering from the request so direct
+        # constructions keep working.
+        self._rendered_prompt = (
+            rendered_prompt if rendered_prompt is not None
+            else render_prompt(request)
+        )
         self._log_path = log_path
         self.claude_session_id = claude_session_id
         self.is_new_session = is_new_session
@@ -313,7 +332,7 @@ class DirectTaskHandle(TaskHandle):
                 self._argv,
                 cwd=str(self._cwd),
                 env=env,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -323,6 +342,30 @@ class DirectTaskHandle(TaskHandle):
                 creationflags=(subprocess.CREATE_NO_WINDOW
                                 if hasattr(subprocess, "CREATE_NO_WINDOW") else 0),
             )
+            # Feed the rendered prompt via STDIN (see _build_argv for why
+            # argv delivery is forbidden). A small daemon thread so a
+            # pipe-buffer stall on a very large prompt can never block
+            # the launch path; write failures (e.g. the process exited
+            # before reading) are logged + swallowed -- the wait/timeout
+            # machinery surfaces the real outcome.
+            proc = self._proc
+
+            def _feed_stdin() -> None:
+                try:
+                    if proc.stdin is not None:
+                        proc.stdin.write(self._rendered_prompt)
+                        proc.stdin.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "claude stdin feed failed (task %s): %s",
+                        self._task_id, exc,
+                    )
+
+            threading.Thread(
+                target=_feed_stdin,
+                name=f"claude-stdin-{self._task_id}",
+                daemon=True,
+            ).start()
         except Exception as e:
             logger.error("Failed to launch claude: %s", e)
             get_error_log().record(

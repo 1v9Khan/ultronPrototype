@@ -254,7 +254,11 @@ def test_new_sandbox_project_handles_collisions(tmp_path: Path):
     # the directory-naming code should still pick a unique slug if the
     # caller dropped the duplicate-name check (which a legitimate caller
     # might do if they removed the prior project but left the folder).
-    Path(p1.path).rmdir()  # so we have a fresh slot
+    # rmtree (not rmdir): a fresh sandbox project is no longer empty --
+    # it is git-initialised for context isolation.
+    import shutil
+
+    shutil.rmtree(p1.path)  # so we have a fresh slot
     r.remove("Alpha")
     p2 = new_sandbox_project(
         r, name="Alpha",

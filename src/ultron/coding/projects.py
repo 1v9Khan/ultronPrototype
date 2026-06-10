@@ -24,6 +24,7 @@ resolution output so the voice layer can ask "did you mean X or Y?".
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -380,6 +381,62 @@ def slugify_for_path(name: str) -> str:
     return slug or f"project_{uuid.uuid4().hex[:6]}"
 
 
+def ensure_sandbox_isolation(
+    project_dir: Path,
+    *,
+    sandbox_root: Optional[Path] = None,
+    run_fn=None,
+) -> bool:
+    """Make a sandbox project its own git root so the coding subprocess
+    treats IT as the project boundary.
+
+    Production-hardening finding (the phase-11 voice-coding e2e): the
+    sandbox lives at ``data/sandbox/<project>`` INSIDE the ultron repo,
+    so the spawned coding CLI walked UP from the task cwd, discovered
+    the ultron repo root, and loaded the repo's (very large) local
+    orientation context into every voice coding task -- a hidden
+    multi-thousand-token tax per task, and occasionally an outright
+    hijack (the model responded to the orientation file instead of the
+    task). A ``.git`` directory in the project makes the project dir
+    its own root, stopping the upward walk -- and enables the coding
+    CLI's own checkpointing as a bonus.
+
+    Only acts on directories UNDER ``sandbox_root`` (never a user's own
+    project folder), is idempotent (an existing ``.git`` short-circuits),
+    and is fail-open at every layer (missing git binary / timeout / any
+    error -> False, the task proceeds as before). Returns True iff the
+    directory ends up git-initialised.
+    """
+    try:
+        root = Path(sandbox_root) if sandbox_root is not None else Path(
+            settings.CODING_SANDBOX_PATH
+        )
+        project_dir = Path(project_dir)
+        try:
+            project_dir.resolve().relative_to(root.resolve())
+        except (ValueError, OSError):
+            return False  # outside the sandbox -- never touch it
+        if (project_dir / ".git").exists():
+            return True
+        if not project_dir.is_dir():
+            return False
+        import subprocess as _subprocess
+
+        kwargs: dict = {
+            "cwd": str(project_dir),
+            "capture_output": True,
+            "timeout": 10.0,
+        }
+        if os.name == "nt":  # pragma: no cover -- platform flag
+            kwargs["creationflags"] = _subprocess.CREATE_NO_WINDOW
+        runner = run_fn or _subprocess.run
+        proc = runner(["git", "init", "-q", "."], **kwargs)
+        return getattr(proc, "returncode", 1) == 0
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sandbox isolation skipped for %s: %s", project_dir, exc)
+        return False
+
+
 def new_sandbox_project(
     registry: ProjectRegistry,
     *,
@@ -405,6 +462,9 @@ def new_sandbox_project(
         suffix += 1
     if create_dir:
         target.mkdir(parents=True, exist_ok=False)
+        # Stop the coding CLI's upward project-context walk at the
+        # project boundary (see ensure_sandbox_isolation). Fail-open.
+        ensure_sandbox_isolation(target, sandbox_root=Path(sandbox_root))
     project = Project(
         name=name,
         path=str(target.resolve()),

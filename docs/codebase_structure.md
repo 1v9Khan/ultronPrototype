@@ -106,6 +106,49 @@
 > dry-run of the matrix caught + fixed 3 unreachable phrasings before GPU
 > time (messaging/shell/hybrid now use genuinely-supported phrasings).
 > GPU phases still run from the MAIN checkout.
+> **Then: TWO CRITICAL production bugs the new e2e phases caught + fixed.**
+> **(1) Sandbox context contamination:** the coding CLI walks UP from the
+> task cwd loading ancestor project context, and the in-repo
+> ``data/sandbox`` default meant EVERY voice coding task silently loaded the
+> repo's multi-thousand-token local orientation file -- a hidden per-task
+> token/latency tax that sometimes hijacked small tasks outright (the model
+> recited orientation material instead of acting). Empirically verified:
+> in-repo dirs see the context even when git-initialised; outside dirs are
+> clean. FIX: ``coding.sandbox_root`` now defaults to ``~/.ultron/sandbox``
+> (outside any repo; the established ``~/.ultron/`` convention);
+> ``config.resolve_path`` learned ``~`` expansion; the safety policy's
+> default sandbox set is now derived from the CONFIGURED coding root PLUS
+> the legacy in-repo root (pre-existing projects stay editable/runnable);
+> NEW ``coding/projects.py::ensure_sandbox_isolation`` git-inits sandbox
+> projects (defense-in-depth + enables the CLI's own checkpointing; called
+> from ``new_sandbox_project`` + ``CodingTaskRunner.start_task``,
+> sandbox-scoped + idempotent + fail-open). Phase-11 create-task time
+> dropped 17s -> 8.2s with the contamination gone.
+> **(2) The .cmd argv newline truncation:** on Windows the claude CLI is a
+> ``.cmd`` shim and cmd.exe TRUNCATES an argv argument at its first
+> newline -- so since the quality-preamble commit (`c43dfd7`), EVERY
+> multiline bridge prompt (preamble + task, the supervisor's enriched
+> digest context, the multiline correction/adjustment templates) silently
+> lost everything after line one; the model replied with a generic
+> greeting instead of acting. Empirically reproduced + verified. FIX:
+> ``DirectClaudeCodeBridge`` no longer passes the prompt as an argv
+> argument -- the rendered prompt is piped to the subprocess STDIN
+> (``DirectTaskHandle(rendered_prompt=...)`` + a fail-open daemon feeder
+> thread), which preserves arbitrary content. ``_build_argv`` documents
+> the prohibition. ALSO: the spoken-command matrix surfaced a real
+> classifier coverage gap -- "show me the files in my downloads folder"
+> fell to CONVERSATIONAL (``_FILE_PATTERNS`` supported "list the files
+> in" but required the literal word directory/folder immediately after
+> "in" for the show-me form); fixed with a mirror pattern. The harness's
+> ``_spoken_transcript`` also gained production-realistic padding (0.5s
+> lead pre-roll + 0.8s trailing silence, matching the VAD-bounded
+> capture) after the bare synthetic clips truncated final words
+> ("Cancel the task." -> "Cancel the time."). Validated from MAIN:
+> phase 8 = 26/27 -> 27/27 after fixes, phase 9 = 10/10, phase 10 = 3/3
+> (warm TTFT 171ms matches the 172ms locked baseline; remember->recall
+> verified; live search turn green), phase 11 = 2/2 with REAL tokens
+> (create -> narration -> sandbox run exact-stdout -> edit follow-up ->
+> re-run).
 > Earlier sweep state: **9156 passed / 35 skipped / 0 failed (~103s)** with the
 > loaded-machine ignore recipe (below); ~9182 no-deselect (now 9199 on an idle
 > machine, no deselect, 2026-06-10 baseline). The +8 skipped vs earlier are
@@ -1500,7 +1543,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── canonical_monitor.py ← 4B plan Item 7: per-session tool-call canonical-path monitor (default OFF)
 │       │   ├── voice_lock.py       ← 2026-05-18 E5: voice-character-lock pre-dispatch scanner + FILE_CHANGE helper
 │       │   ├── coordinator.py      ← ConversationCoordinator (clarification + correction loops)
-│       │   ├── direct_bridge.py    ← DirectClaudeCodeBridge (claude --print --stream-json)
+│       │   ├── direct_bridge.py    ← DirectClaudeCodeBridge (claude --print --stream-json). 2026 production-hardening CRITICAL FIX: the rendered prompt is piped to the subprocess STDIN, never argv -- the Windows .cmd shim truncates argv arguments at the first newline, which had been silently cutting every multiline prompt (preamble+task / enriched context / correction templates) to its first line
 │       │   ├── intent.py           ← Coding-pipeline intent classifier (CODE_TASK etc.) + _ADJUSTMENT_PATTERNS regex used by ProjectSupervisor
 │       │   ├── mcp_server.py       ← UltronMCPServer (in-process tools + SSE worker tools)
 │       │   ├── architect_narrator.py ← 2026-05-22 batch 14 (T5 Phase 2): ArchitectNarrator speaks plan sentence-by-sentence with should_stop barge-in callback; NarrationResult telemetry; split_into_sentences with decimal + initial guards; narrate_plan() one-shot wrapper
@@ -1526,7 +1569,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── project_introspect.py ← 2026-05-22 supervisor Phase B (non-LLM): snapshot(project_path) -> ProjectSnapshot; depth-limited walk + language detect + entry-point find + per-file AST via ast_metadata; SKIP_DIRECTORIES skip-list (node_modules / .venv / __pycache__ / etc); render_tree_summary for prompt embedding; per-path TTL cache
 │       │   ├── project_supervisor.py ← 2026-05-22 supervisor Phase C: ProjectSupervisor.decide(SupervisorInputs) -> SupervisorDecision; RESUME/EDIT/CLARIFY/NEW algorithm with cosine thresholds (default 0.75 / 0.55); merges semantic (ProjectIndex) + lexical (ProjectResolver) candidates; logs every decision to logs/supervisor_decisions.jsonl; publishes SupervisorDecidedEvent
 │       │   ├── projections.py      ← Phase C / Foundation Part 2: 5 bounded projections
-│       │   ├── projects.py         ← ProjectRegistry, ProjectResolver, new_sandbox_project
+│       │   ├── projects.py         ← ProjectRegistry, ProjectResolver, new_sandbox_project. 2026 production-hardening: ensure_sandbox_isolation(project_dir) -- git-inits a sandbox project (sandbox-scoped + idempotent + fail-open; defense-in-depth for the coding CLI's project boundary + enables its checkpointing); called from new_sandbox_project + CodingTaskRunner.start_task
 │       │   ├── runner.py           ← CodingTaskRunner (one in-flight task; bridge owner); listener registration surface used by supervisor digest listener. 2026 production-hardening (#66): `_make_evolution_success_listener(handle, label)` queues `(label, summary)` on a clean COMPLETE (exit 0; once per task) into `_pending_task_successes`, drained by `drain_task_successes()` -- the orchestrator feeds each to the EvolutionService as a `coding_task_success` opportunity capsule. The runner never imports the evolution package.
 │       │   ├── sandbox_runner.py   ← NEW 2026-05-29 B3-runlaunch: voice "run / launch the program" -- match_run_program + resolve_entry_point + run_program (sandbox-confined + validator-gated + timeout) + launch_program (detached); _is_within confinement guard
 │       │   ├── scrap.py            ← NEW 2026 production-hardening #4: voice "scrap it" cancel + revert. match_scrap_command strict matcher (scrap/trash/throw-away/revert-everything ONLY; bare "cancel" + "undo that" deliberately excluded) + revert_session_edits (repeated FileHistory.undo_last per tracked path -> ORIGINAL pre-task content restored, created files deleted, clear_all prevents double-revert; bounded by MAX_UNDO_STEPS_PER_FILE) + summarize_scrap TTS line. Consumed by coding/voice.py::maybe_handle_scrap_command + the orchestrator _maybe_handle_scrap_command short-circuit. Safe by construction: the revert only runs AFTER the cancel (no live agent state to desynchronise).

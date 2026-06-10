@@ -222,8 +222,23 @@ def load_policy(
             for rel in sandbox_roots
         ]
     else:
-        # Default sandbox: the coding-task scratch area.
-        sandboxes = [(project_root / "data" / "sandbox").resolve(strict=False)]
+        # Default sandboxes: the CONFIGURED coding-task scratch area
+        # (production-hardening: now ``~/.ultron/sandbox``, outside the
+        # repo so the coding CLI stops loading the repo's orientation
+        # context into every task) PLUS the legacy in-repo location so
+        # pre-existing sandbox projects remain editable/runnable.
+        # Fail-open to the legacy literal when config is unavailable.
+        legacy = (project_root / "data" / "sandbox").resolve(strict=False)
+        sandboxes = []
+        try:
+            from ultron.config import get_config, resolve_path
+
+            configured = resolve_path(get_config().coding.sandbox_root)
+            sandboxes.append(configured)
+        except Exception:  # noqa: BLE001
+            pass
+        if legacy not in sandboxes:
+            sandboxes.append(legacy)
 
     return Policy(
         enabled=bool(enabled),

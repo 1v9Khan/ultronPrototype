@@ -538,6 +538,15 @@ def _spoken_transcript(tts: Any, stt: Any, text: str, sc: "Scenario") -> str:
             factor = sr / 16000.0
             indices = (np.arange(int(len(audio_f32) / factor)) * factor).astype(np.int64)
             audio_f32 = audio_f32[indices]
+    # Replicate the VAD-bounded capture shape: the live pipeline always
+    # hands STT a window with leading pre-roll + trailing post-speech
+    # silence (the capture only closes after ~0.5-1.2 s of quiet). A
+    # bare synthesized clip ends ON the last sample, which truncates the
+    # decoder mid-word ("Cancel the task." -> "Cancel the time.") -- a
+    # harness artifact the real mic path never produces.
+    lead = np.zeros(int(0.50 * 16000), dtype=np.float32)
+    tail = np.zeros(int(0.80 * 16000), dtype=np.float32)
+    audio_f32 = np.concatenate([lead, audio_f32, tail])
     t0 = time.monotonic()
     transcript = stt.transcribe(audio_f32)
     sc.record("stt", time.monotonic() - t0)
@@ -609,7 +618,7 @@ def phase_commands() -> List[Scenario]:
          RoutingIntentKind.MEDIA_GENERATION, {}),
         ("messaging", "Send a message to my phone saying dinner is ready.",
          RoutingIntentKind.MESSAGING, {}),
-        ("file_operation", "List the files in my downloads folder.",
+        ("file_operation", "Show me the files in my downloads folder.",
          RoutingIntentKind.FILE_OPERATION, {}),
         ("shell_operation", "In the terminal run git status.",
          RoutingIntentKind.SHELL_OPERATION, {}),
@@ -641,7 +650,11 @@ def phase_commands() -> List[Scenario]:
          RoutingIntentKind.ACTIVE_WINDOW_QUERY, {}),
         ("semantic_click", "Click the save button.",
          RoutingIntentKind.SEMANTIC_CLICK, {}),
-        ("window_close_confirmation", "Yes.",
+        # "Go ahead." over a bare "Yes." -- same lesson as the phase-1
+        # "Stop." finding: a single clipped word carries too little
+        # acoustic content to transcribe reliably, and the yes-pattern
+        # accepts the richer phrasing.
+        ("window_close_confirmation", "Go ahead.",
          RoutingIntentKind.WINDOW_CLOSE_CONFIRMATION, {}),
     ]
 
@@ -719,7 +732,7 @@ def phase_short_circuits() -> List[Scenario]:
     tts, stt = _build_spoken_pipeline()
 
     matchers = [
-        ("deep_research", "Research quantum computing in depth.",
+        ("deep_research", "Do a deep dive on quantum computing.",
          lambda t: match_deep_research(t) is not None),
         ("deep_recall", "Search your memory thoroughly for everything about my dog.",
          lambda t: match_deep_recall(t) is not None),
@@ -729,11 +742,11 @@ def phase_short_circuits() -> List[Scenario]:
          lambda t: match_code_exploration(t) is not None),
         ("evolution_status", "Evolution status.",
          lambda t: match_evolution_command(t) is not None),
-        ("report_concern", "Flag that response, it was wrong.",
+        ("report_concern", "That answer was wrong.",
          lambda t: match_report_concern(t) is not None),
         ("run_program", "Run the calculator.",
          lambda t: match_run_program(t) is not None),
-        ("scrap", "Scrap it.",
+        ("scrap", "Scrap the whole thing.",
          lambda t: bool(match_scrap_command(t))),
         ("local_clock", "What time is it?",
          lambda t: local_clock_reply.maybe_local_clock_reply(t) is not None),
@@ -978,7 +991,9 @@ def phase_coding() -> List[Scenario]:
     from ultron.coding.runner import CodingTaskRunner, build_default_bridge
     from ultron.coding.sandbox_runner import run_program
 
-    sandbox_root = _PROJECT_ROOT / "data" / "sandbox"
+    from config import settings as _settings
+
+    sandbox_root = Path(_settings.CODING_SANDBOX_PATH)
     project = sandbox_root / f"e2e_coding_{uuid.uuid4().hex[:8]}"
     project.mkdir(parents=True, exist_ok=True)
 

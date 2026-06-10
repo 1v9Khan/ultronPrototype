@@ -251,6 +251,18 @@ class CodingTaskRunner:
             logger.debug("session audit write failed: %s", e)
 
     def start_task(self, request: TaskRequest) -> TaskHandle:
+        # Production-hardening: a sandbox project must be its own git
+        # root so the spawned coding CLI treats IT as the project
+        # boundary instead of walking up into the ultron repo and
+        # loading the (very large) repo orientation context into every
+        # task. Idempotent + sandbox-scoped + fail-open; a user's own
+        # project directory outside the sandbox is never touched.
+        try:
+            from ultron.coding.projects import ensure_sandbox_isolation
+
+            ensure_sandbox_isolation(request.cwd)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("sandbox isolation pre-spawn skipped: %s", e)
         # Budget check: refuse to start a new task if the bound session's
         # budget is exhausted. The voice layer surfaces the same warning
         # via :meth:`pop_budget_warning`; this is a hard backstop.

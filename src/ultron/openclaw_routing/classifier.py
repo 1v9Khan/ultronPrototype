@@ -578,6 +578,12 @@ _FILE_PATTERNS = re.compile(
     r"delete\s+(?:the\s+)?file\s+at\s+|"
     r"remove\s+(?:the\s+)?file\s+at\s+|"
     r"list\s+(?:the\s+)?files\s+in\s+|"
+    # "show me the files in my downloads folder" -- mirror of the
+    # list-files form. The production-hardening spoken-command e2e
+    # found this natural phrasing fell through to CONVERSATIONAL (the
+    # older pattern below required the literal word directory/folder
+    # IMMEDIATELY after "in").
+    r"show\s+(?:me\s+)?(?:the\s+)?files\s+in\s+|"
     r"show\s+(?:me\s+)?(?:the\s+)?files\s+in\s+(?:the\s+)?(?:directory|folder)\s+|"
     r"what(?:'s|\s+is)\s+in\s+(?:the\s+)?(?:directory|folder)\s+"
     r")",
