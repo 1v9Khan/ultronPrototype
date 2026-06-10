@@ -2889,6 +2889,12 @@ class DesktopConfig(_Strict):
     default_monitor_index: Optional[int] = Field(default=2, ge=1, le=8)
     # 2026-05-24 SWE-Agent batch 7 (T16): click-preview gate.
     click_preview: ClickPreviewConfig = Field(default_factory=ClickPreviewConfig)
+    # Production-hardening #72b: when a SEMANTIC_CLICK name lookup misses,
+    # run a bounded DeepUIDiscoveryLoop (the LLM decomposes the spoken
+    # description into alternative accessible-name queries; iterative UIA
+    # find) and retry the gated click on the best candidate. Miss-path
+    # only -- the direct-hit path never pays for it. Fail-open.
+    deep_ui_discovery_enabled: bool = True
 
 
 class WindowControlConfig(_Strict):

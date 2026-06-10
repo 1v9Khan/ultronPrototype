@@ -1471,6 +1471,11 @@ desktop:
   tool_slug_screenshot: "desktop_screenshot"
   tool_slug_list_windows: "desktop_list_windows"
   tool_slug_find_window: "desktop_find_window"
+  # Production-hardening #72b: on a SEMANTIC_CLICK name-lookup miss, run a
+  # bounded DeepUIDiscoveryLoop (LLM-suggested alternative queries over the
+  # gated UIA find) and retry the click on the best candidate. Miss-path
+  # only; the direct-hit path never pays for it. Fail-open.
+  deep_ui_discovery_enabled: true
   # 2026-05-26 (production-wiring pass) -- click-preview gate ON.
   # Every click on a previously-unseen region runs through a VLM
   # round-trip (Moondream2) to confirm what's under the cursor. First

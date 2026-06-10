@@ -52,6 +52,35 @@
 > >=12-char utterances feeds `record_turn(re_asked=...)`). +43 hermetic tests
 > (`tests/evolution/test_reach_signals.py` + taxonomy pins updated 17->18);
 > evolution/safety/error-log subset **443 passed / 0 failed**.
+> **Then: the #4 + #72b re-adjudication.** **#4 "scrap it" (NEW
+> `coding/scrap.py`):** a USER-initiated cancel + revert -- strict matcher
+> (`match_scrap_command`: scrap/trash/throw-away/revert-everything phrasings
+> ONLY; bare "cancel" keeps its no-revert semantics; "undo that" stays
+> dual-history territory) + `revert_session_edits` (repeated
+> `FileHistory.undo_last` per tracked path lands on the ORIGINAL pre-task
+> content; created files are deleted; `clear_all` prevents double-revert) +
+> `summarize_scrap` TTS line. Voice controller
+> `maybe_handle_scrap_command` (cancels first, then reverts under BOTH
+> session keys -- claude_session_id + cwd-hash -- matching the batch-F
+> pre-edit hook's keying) + orchestrator `_maybe_handle_scrap_command`
+> run-loop short-circuit. ARCHITECTURALLY SAFE where mid-task auto-revert
+> was not: the revert only runs AFTER the cancel, so no live coding agent
+> desynchronises -- this ACTIVATES the previously-inactive edit-revert
+> machinery on its one clean path. **#72b deep UI discovery
+> (`coding/voice.py::_deep_discover_click_retry` +
+> `desktop.deep_ui_discovery_enabled`, default ON):** on a SEMANTIC_CLICK
+> name-lookup miss, a bounded catalog-12 `DeepUIDiscoveryLoop` (LLM
+> alternative-query expansion over the scoped UIA find) retries the click on
+> the best candidate through the SAME fully-gated `click_element_by_name`
+> path (click-preview VLM + foreground security + validator + rate limit all
+> still apply); miss-path only. **Dormant-module re-verification:** the
+> single-threaded run loop + delegate-to-`claude --print` design is
+> unchanged, so the documented-inactive set (dual_history "undo that",
+> pending_message_queue, mid-task edit auto-revert, auto_approval
+> session-warming, #17/#70/#71/#79/#112/#127/#143/#155) stays
+> keep-plus-documented -- except the edit-revert machinery now live via
+> scrap-it above. +29 hermetic tests (`tests/coding/test_scrap.py` +
+> `test_deep_click_fallback.py`).
 > Earlier sweep state: **9156 passed / 35 skipped / 0 failed (~103s)** with the
 > loaded-machine ignore recipe (below); ~9182 no-deselect (now 9199 on an idle
 > machine, no deselect, 2026-06-10 baseline). The +8 skipped vs earlier are
@@ -1475,6 +1504,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── projects.py         ← ProjectRegistry, ProjectResolver, new_sandbox_project
 │       │   ├── runner.py           ← CodingTaskRunner (one in-flight task; bridge owner); listener registration surface used by supervisor digest listener. 2026 production-hardening (#66): `_make_evolution_success_listener(handle, label)` queues `(label, summary)` on a clean COMPLETE (exit 0; once per task) into `_pending_task_successes`, drained by `drain_task_successes()` -- the orchestrator feeds each to the EvolutionService as a `coding_task_success` opportunity capsule. The runner never imports the evolution package.
 │       │   ├── sandbox_runner.py   ← NEW 2026-05-29 B3-runlaunch: voice "run / launch the program" -- match_run_program + resolve_entry_point + run_program (sandbox-confined + validator-gated + timeout) + launch_program (detached); _is_within confinement guard
+│       │   ├── scrap.py            ← NEW 2026 production-hardening #4: voice "scrap it" cancel + revert. match_scrap_command strict matcher (scrap/trash/throw-away/revert-everything ONLY; bare "cancel" + "undo that" deliberately excluded) + revert_session_edits (repeated FileHistory.undo_last per tracked path -> ORIGINAL pre-task content restored, created files deleted, clear_all prevents double-revert; bounded by MAX_UNDO_STEPS_PER_FILE) + summarize_scrap TTS line. Consumed by coding/voice.py::maybe_handle_scrap_command + the orchestrator _maybe_handle_scrap_command short-circuit. Safe by construction: the revert only runs AFTER the cancel (no live agent state to desynchronise).
 │       │   ├── session.py          ← ProjectSession state model + SessionStore
 │       │   ├── supervisor_dispatch.py ← 2026-05-22 supervisor Phases D + E: SupervisorDispatchController owns narration (Phase D barge-in) + enriched-context TaskRequest builder (Phase E digest + file-tree + file-hints prepended to Claude's prompt); build_digest() wrapper for COMPLETE listener; _speakable() strips backslashes/drive-letters
 │       │   ├── templates.py        ← TemplateRenderer (Jinja2 prompts + budget enforcement)
@@ -4239,7 +4269,7 @@ Sections:
 - `routing` (llm_disambiguation_enabled, hybrid_task_decomposition_enabled, disambiguation_question_template, routing_log_path, classifier subsection, stub_responses_enabled)
 - `openclaw` (enabled=false [stub], gateway_url, auth_token_env, health_check_*_seconds, fail_open, required_agent_id)
 - `gaming_mode` (V1-gap A1) — enabled (2026-05-22 default TRUE), plugins_to_disable=[desktop-control, windows-control], toggle_docker=false, docker_executable_path, docker_process_name, log_path, **kokoro_engage_device="cpu" / kokoro_disengage_device="cuda"** (2026-05-22), **vlm_unload_on_engage=true** (2026-05-22), **llm_preset="llama-3.2-3b-abliterated"** (2026-05-22 gaming-mode swap target)
-- `desktop` (V1-gap C3) — enabled, default_*_timeout_seconds, plugin_slug, tool_slug_screenshot / tool_slug_list_windows / tool_slug_find_window, **default_monitor_index: Optional[int] = 2** (2026-05-22 user preference: when an APP_LAUNCH / NAVIGATE_TO_SITE / OPEN_LAST_SOURCE utterance gives no explicit monitor cue, place on this 1-based monitor index. Set to `null` to fall back to legacy "main" behaviour. Range [1, 8].)
+- `desktop` (V1-gap C3) — enabled, default_*_timeout_seconds, plugin_slug, tool_slug_screenshot / tool_slug_list_windows / tool_slug_find_window, **default_monitor_index: Optional[int] = 2** (2026-05-22 user preference: when an APP_LAUNCH / NAVIGATE_TO_SITE / OPEN_LAST_SOURCE utterance gives no explicit monitor cue, place on this 1-based monitor index. Set to `null` to fall back to legacy "main" behaviour. Range [1, 8].) **deep_ui_discovery_enabled: true** (production-hardening #72b: bounded DeepUIDiscoveryLoop retry on a SEMANTIC_CLICK name-lookup miss; miss-path only; fail-open.)
 - `window_control` (V1-gap C3) — enabled=false, default_action_timeout_seconds, plugin_slug, tool_slug_focus / tool_slug_click / tool_slug_type
 - `browser_use` (2026-05-30 catalog 10) — top-level section for the external `browser-use` CLI browser-automation tier. **8 knobs, all default ON**: `enabled=true`, `binary_path=null` (null = auto-discover `browser-use`/`bu`/`browseruse` on PATH), `default_session=null`, `default_timeout_seconds=30.0`, `default_wait_timeout_ms=30000`, `max_sessions=3` (hard ceiling 16, enforced by `BrowserSessionsManager`), `headed=false`, `screen_context_fallback_enabled=true` (folds a best-effort browser-use page-state line into `screen_context` ONLY when UIA browser extraction is empty AND the tool has an active page). Fail-open: when the binary is absent every method returns a structured "not found" result, so default-ON costs nothing until both the binary is installed AND a browser action is requested.
 - `deep_research` (2026 catalog 12, felo-search T3) — top-level section for the bounded agentic deep-research loop over the FREE search ladder. **5 knobs, default ON**: `enabled=true`, `max_steps=3` (research rounds; the load-bearing AgentLoop cap), `max_sub_queries_per_step=3`, `top_n_per_query=3`, `max_accumulated_sources=8` (hard cap bounding the synthesis prompt). EXPLICIT per-turn opt-in via `match_deep_research` ("research X in depth" / "deep dive on X"); the normal sub-second search path is untouched. A deep-research turn runs several full searches (~10-18 s) and fails open at every layer.

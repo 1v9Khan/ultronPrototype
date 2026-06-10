@@ -1645,6 +1645,27 @@ class Orchestrator:
         self._speak(resp.text or "")
         return True
 
+    def _maybe_handle_scrap_command(self, user_text: str) -> bool:
+        """Production-hardening #4: "scrap it" / "throw that away" /
+        "undo everything you just did" -- cancel any running coding task
+        AND revert its recorded edits to their pre-task content (the
+        batch-F pre-edit snapshots make this exact). Delegates to the
+        coding controller. Returns True iff handled; the strict matcher
+        means ordinary utterances -- including bare "cancel", which keeps
+        its no-revert semantics -- fall through. Fail-open."""
+        cv = getattr(self, "coding_voice", None)
+        if cv is None:
+            return False
+        try:
+            resp = cv.maybe_handle_scrap_command(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("scrap handling failed: %s", e)
+            return False
+        if resp is None:
+            return False
+        self._speak(resp.text or "")
+        return True
+
     def _maybe_handle_report_concern(self, user_text: str) -> bool:
         """openclaw-clawhub T12 -- file a Report when the user voices a
         concern about the assistant's last response.
@@ -3959,6 +3980,25 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="run_program",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Production-hardening #4: "scrap it" -- cancel the
+                    # running coding task AND revert its recorded edits.
+                    # Strict matcher -> ordinary utterances (and bare
+                    # "cancel") fall through.
+                    if self._maybe_handle_scrap_command(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="scrap",
                             follow_up=bool(follow_up_until),
                         )
                         continue

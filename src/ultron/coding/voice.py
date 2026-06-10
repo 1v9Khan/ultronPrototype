@@ -1131,6 +1131,79 @@ class CapabilityVoiceController:
             self._pending_run_report = None
         return report
 
+    def maybe_handle_scrap_command(self, user_text: str):
+        """Production-hardening #4: "scrap it" -- cancel + revert.
+
+        An explicit scrap/trash/revert-everything command cancels any
+        running coding task and rolls every recorded edit back to its
+        pre-task content via the catalog-09 batch-F pre-edit snapshots
+        (:class:`~ultron.coding.file_history.FileHistory`); files the
+        task created are deleted. Returns a :class:`VoiceResponse` when
+        the strict matcher fired (including the honest "nothing to
+        scrap" case), else ``None`` so ordinary utterances -- and bare
+        "cancel", which keeps its no-revert semantics -- fall through.
+        Safe by construction: the revert only runs AFTER the cancel, so
+        no live coding agent's state can desynchronise. Fail-open.
+        """
+        try:
+            from ultron.coding.scrap import (
+                ScrapRevertResult,
+                match_scrap_command,
+                revert_session_edits,
+                summarize_scrap,
+            )
+        except Exception:                                            # noqa: BLE001
+            return None
+        if not match_scrap_command(user_text):
+            return None
+        runner = self.runner
+        try:
+            state = runner.active_state()
+        except Exception:                                            # noqa: BLE001
+            state = None
+        if state is None:
+            return VoiceResponse(
+                text="There's no recent coding task to scrap.",
+            )
+        cancelled = False
+        try:
+            if runner.has_active_task():
+                runner.cancel_active()
+                cancelled = True
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("scrap cancel failed: %s", e)
+        # The pre-edit hook keys FileHistory on the bridge's
+        # claude_session_id when present, else the cwd-hash -- try both
+        # (deduped) so the revert finds the snapshots either way.
+        session_ids: list[str] = []
+        handle = getattr(runner, "_handle", None)
+        sid = getattr(handle, "claude_session_id", None)
+        if sid:
+            session_ids.append(str(sid))
+        cwd = getattr(state, "cwd", None)
+        if cwd is not None:
+            cwd_key = f"cwd-{abs(hash(str(cwd))):x}"
+            if cwd_key not in session_ids:
+                session_ids.append(cwd_key)
+        restored = deleted = errors = 0
+        had_history = False
+        for session_id in session_ids:
+            r = revert_session_edits(session_id)
+            restored += r.files_restored
+            deleted += r.files_deleted
+            errors += r.errors
+            had_history = had_history or r.had_history
+        combined = ScrapRevertResult(
+            files_restored=restored,
+            files_deleted=deleted,
+            errors=errors,
+            had_history=had_history,
+        )
+        return VoiceResponse(
+            text=summarize_scrap(cancelled=cancelled, result=combined),
+            cancelled=cancelled,
+        )
+
     def _resolve_runnable_project(self, hint: str):
         """Resolve a run/launch hint to ``(project_path, project_name)``.
 
@@ -2231,6 +2304,14 @@ class CapabilityVoiceController:
         # Failure paths: differentiate "not found" from "safety blocked".
         err = (result.error or "").lower()
         if "not found" in err or "no candidate" in err or result.candidates == 0:
+            # Production-hardening #72b: before giving up, run a bounded
+            # DeepUIDiscoveryLoop -- the LLM decomposes the spoken
+            # description into alternative accessible-name queries and the
+            # gated click is retried on the best candidate. Miss-path
+            # only; fail-open to the honest "couldn't find" message.
+            deep = self._deep_discover_click_retry(intent, routing_intent)
+            if deep is not None:
+                return deep
             voice = (
                 f'I couldn\'t find anything called '
                 f'"{intent.element_name}" on screen.'
@@ -2246,6 +2327,98 @@ class CapabilityVoiceController:
                 f'land. {result.error or ""}'
             ).strip()
         return VoiceResponse(text=voice, handled=True)
+
+    def _deep_discover_click_retry(
+        self, intent, routing_intent
+    ) -> Optional["VoiceResponse"]:
+        """Production-hardening #72b: deep UI discovery on a click miss.
+
+        Runs the catalog-12 :class:`DeepUIDiscoveryLoop` (bounded,
+        LLM-driven alternative-query expansion over the gated UIA find)
+        when the direct accessible-name lookup found nothing, then
+        retries the click on the first discovered candidate -- through
+        the SAME fully-gated :func:`click_element_by_name` path, so
+        click-preview VLM + foreground security + safety validator +
+        rate limit all still apply. Gated on
+        ``desktop.deep_ui_discovery_enabled`` (default ON) + a wired
+        LLM engine. Returns a spoken :class:`VoiceResponse` on a
+        successful deep click, else ``None`` (caller speaks the honest
+        "couldn't find" message). Fail-open at every layer.
+        """
+        llm = getattr(self, "llm_engine", None)
+        if llm is None:
+            return None
+        try:
+            from ultron.config import get_config
+
+            if not bool(
+                getattr(get_config().desktop, "deep_ui_discovery_enabled", True)
+            ):
+                return None
+        except Exception:                                            # noqa: BLE001
+            pass
+        try:
+            from ultron.agent_loop.deep_loops import DeepUIDiscoveryLoop
+            from ultron.desktop.element_click import (
+                click_element_by_name,
+                find_elements_by_name,
+            )
+            from ultron.openclaw_routing import get_routing_log
+        except Exception:                                            # noqa: BLE001
+            return None
+        window_title = intent.window_title or None
+
+        def _find(query: str):
+            try:
+                return find_elements_by_name(
+                    (query or "").strip(), window_title=window_title
+                )
+            except Exception:                                        # noqa: BLE001
+                return []
+
+        try:
+            loop = DeepUIDiscoveryLoop(find=_find, llm=llm, max_steps=2)
+            discovery = loop.discover(intent.element_name)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("deep UI discovery failed: %s", e)
+            return None
+        for candidate in discovery.items[:3]:
+            name = str(getattr(candidate, "name", "") or "").strip()
+            if not name:
+                continue
+            try:
+                retry = click_element_by_name(
+                    name=name,
+                    window_title=window_title,
+                    user_text=routing_intent.raw_text or "",
+                )
+            except Exception:                                        # noqa: BLE001
+                continue
+            if retry.success:
+                try:
+                    get_routing_log().record(
+                        routing_intent,
+                        handler="voice.semantic_click",
+                        outcome="dispatched_deep",
+                        extra={
+                            "requested": intent.element_name,
+                            "clicked": name,
+                            "sub_queries": list(discovery.sub_queries)[:6],
+                        },
+                    )
+                except Exception:                                    # noqa: BLE001
+                    pass
+                where = (
+                    f" in {retry.window_title}" if retry.window_title else ""
+                )
+                return VoiceResponse(
+                    text=(
+                        f'I couldn\'t find "{intent.element_name}" directly, '
+                        f'so I looked deeper and clicked "{name}"{where}.'
+                    ),
+                    handled=True,
+                )
+        return None
 
     def _handle_window_close_confirmation(
         self,
