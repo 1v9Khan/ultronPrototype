@@ -41,6 +41,7 @@ from typing import Optional
 from ultron.desktop.monitors import Monitor
 from ultron.desktop.placement import (
     PlacementResult,
+    focus_window,
     move_window_to_monitor,
 )
 from ultron.desktop.windows import enumerate_windows
@@ -75,6 +76,11 @@ class LaunchResult:
         error: failure reason. Present iff ``success=False`` OR when
             ``success=True`` and follow-up steps (window-wait, placement)
             partially failed.
+        window_appeared: None when no window wait was requested; True
+            when the launched window was detected within the timeout;
+            False when the wait timed out (placement and focus are
+            skipped -- callers should voice this honestly instead of
+            claiming the window is "on monitor N").
     """
 
     success: bool
@@ -85,6 +91,7 @@ class LaunchResult:
     monitor_index: Optional[int] = None
     placement: Optional[PlacementResult] = None
     error: Optional[str] = None
+    window_appeared: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -593,7 +600,7 @@ class AppLauncher:
         if not wait_for_window:
             return LaunchResult(
                 success=True, app_name=app_entry.name, exe_path=exe,
-                pid=pid,
+                pid=pid, window_appeared=None,
             )
 
         new_hwnd = self._wait_for_new_window(
@@ -604,24 +611,49 @@ class AppLauncher:
                 success=True, app_name=app_entry.name, exe_path=exe,
                 pid=pid,
                 error="window did not appear within timeout",
+                window_appeared=False,
             )
 
         if monitor is None:
+            self._focus_fail_open(new_hwnd)
             return LaunchResult(
                 success=True, app_name=app_entry.name, exe_path=exe,
-                pid=pid, hwnd=new_hwnd,
+                pid=pid, hwnd=new_hwnd, window_appeared=True,
             )
 
         placement = move_window_to_monitor(
             new_hwnd, monitor,
             fullscreen=fullscreen, maximize=maximize, size=window_size,
         )
+        # 2026-06-12 bring-to-front fix: MoveWindow/ShowWindow do not
+        # change Z-order, so a window opened by an already-running
+        # process (the Chrome relay pattern) stayed BEHIND the current
+        # foreground window. Focus regardless of placement success --
+        # bringing the window forward is still desirable when only the
+        # move failed.
+        self._focus_fail_open(new_hwnd)
         return LaunchResult(
             success=True, app_name=app_entry.name, exe_path=exe,
             pid=pid, hwnd=new_hwnd,
             monitor_index=monitor.index,
             placement=placement,
+            window_appeared=True,
         )
+
+    def _focus_fail_open(self, hwnd: int) -> None:
+        """Best-effort bring-to-front after launch/placement.
+
+        Windows foreground-lock rules mean SetForegroundWindow from a
+        background process may be refused; ``focus_window`` already
+        falls back to BringWindowToTop. Never raises -- a focus
+        failure (or an anticheat engage mid-launch raising
+        AnticheatBlockedError inside focus_window's own guard) must
+        not fail a successful launch.
+        """
+        try:
+            focus_window(hwnd)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("post-launch focus skipped hwnd=%d: %s", hwnd, e)
 
     def _wait_for_new_window(
         self,

@@ -49,6 +49,10 @@ class AppLaunchVoiceResult:
         app_name: registry name of the launched app.
         monitor_index: monitor the window landed on, when applicable.
         hwnd: window handle on successful placement.
+        window_appeared: None when no window wait ran; True when the
+            window was detected in time; False when the wait timed out
+            (the voice line says so honestly instead of claiming the
+            window is on a monitor).
     """
 
     success: bool
@@ -57,6 +61,7 @@ class AppLaunchVoiceResult:
     monitor_index: Optional[int] = None
     hwnd: Optional[int] = None
     error: Optional[str] = None
+    window_appeared: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -249,6 +254,39 @@ def handle_app_launch(intent) -> AppLaunchVoiceResult:
             error=result.error,
         )
 
+    # 2026-06-12 honesty fix: when the window wait timed out, the old
+    # mon_phrase fallback claimed "Opening that on monitor N." while
+    # no window ever appeared and placement was (correctly) skipped.
+    # Say what actually happened instead.
+    window_appeared = getattr(result, "window_appeared", None)
+    if window_appeared is False:
+        name_phrase = result.app_name or app_name
+        if monitor is not None:
+            msg = (
+                f"I launched {name_phrase}, but its window didn't "
+                f"appear in time, so I couldn't place it on monitor "
+                f"{monitor.index + 1}."
+            )
+        else:
+            msg = (
+                f"I launched {name_phrase}, but its window didn't "
+                "appear in time."
+            )
+        _record_preference_safe(
+            user_phrase=user_text, app_name=name_phrase,
+            monitor_index=result.monitor_index, fullscreen=fullscreen,
+            maximize=maximize, url=url, success=True,
+        )
+        return AppLaunchVoiceResult(
+            success=True,
+            voice_message=msg,
+            app_name=name_phrase,
+            monitor_index=None,
+            hwnd=None,
+            error=result.error,
+            window_appeared=False,
+        )
+
     # Voice message shape: short, in-character.
     mon_phrase = ""
     if result.monitor_index is not None:
@@ -278,6 +316,7 @@ def handle_app_launch(intent) -> AppLaunchVoiceResult:
         app_name=result.app_name or app_name,
         monitor_index=result.monitor_index,
         hwnd=result.hwnd,
+        window_appeared=window_appeared,
     )
 
 

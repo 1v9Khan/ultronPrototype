@@ -207,6 +207,7 @@ def test_launch_app_success_no_window_wait(tmp_path, monkeypatch):
     assert r.pid == 12345
     assert r.app_name == "fake"
     assert r.exe_path == real
+    assert r.window_appeared is None  # no window wait requested
 
 
 def test_launch_app_window_appears_and_moves_to_monitor(tmp_path, monkeypatch):
@@ -252,6 +253,11 @@ def test_launch_app_window_appears_and_moves_to_monitor(tmp_path, monkeypatch):
         or __import__("ultron.desktop.placement", fromlist=["PlacementResult"])
             .PlacementResult(success=True, hwnd=hwnd, monitor_index=monitor.index),
     )
+    focused = []
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.focus_window",
+        lambda hwnd: focused.append(hwnd),
+    )
 
     r = launcher.launch_app(
         "fake", monitor=_mon(idx=1), wait_for_window=True, fullscreen=True,
@@ -259,9 +265,12 @@ def test_launch_app_window_appears_and_moves_to_monitor(tmp_path, monkeypatch):
     assert r.success is True
     assert r.hwnd == 42
     assert r.monitor_index == 1
+    assert r.window_appeared is True
     assert len(placement_called) == 1
     assert placement_called[0][0] == 42
     assert placement_called[0][2]["fullscreen"] is True
+    # 2026-06-12 bring-to-front fix: placement is followed by a focus.
+    assert focused == [42]
 
 
 def test_launch_app_window_doesnt_appear_within_timeout(tmp_path, monkeypatch):
@@ -281,10 +290,162 @@ def test_launch_app_window_doesnt_appear_within_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "ultron.desktop.launcher.enumerate_windows", lambda **kw: [],
     )
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.focus_window",
+        lambda hwnd: pytest.fail("focus must not run on window timeout"),
+    )
     r = launcher.launch_app("fake", monitor=_mon(), wait_for_window=True)
     assert r.success is True  # process spawned
     assert r.hwnd is None
+    assert r.window_appeared is False
     assert "window did not appear" in (r.error or "")
+
+
+def test_launch_app_focuses_unplaced_window(tmp_path, monkeypatch):
+    real = tmp_path / "harmless.exe"
+    real.write_text("")
+    launcher = AppLauncher(
+        registry=[AppEntry(
+            name="fake", candidate_paths=[real], process_name="harmless.exe",
+        )],
+        window_wait_seconds=1.0, poll_interval_seconds=0.01,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.launcher._validate_launch",
+        lambda *a, **kw: _allow_all_validator(),
+    )
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=7))
+
+    from ultron.desktop.windows import WindowInfo
+    calls = {"n": 0}
+
+    def fake_enum_windows(**kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 1:
+            return []
+        return [WindowInfo(
+            hwnd=77, title="Harmless App", class_name="Cls",
+            process_name="harmless.exe", pid=7, rect=(0, 0, 800, 600),
+            monitor_index=0, is_minimized=False, is_foreground=False,
+        )]
+
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.enumerate_windows", fake_enum_windows,
+    )
+    focused = []
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.focus_window",
+        lambda hwnd: focused.append(hwnd),
+    )
+    r = launcher.launch_app("fake", monitor=None, wait_for_window=True)
+    assert r.success is True
+    assert r.window_appeared is True
+    assert r.monitor_index is None
+    assert focused == [77]
+
+
+def test_launch_app_focus_failure_is_fail_open(tmp_path, monkeypatch):
+    real = tmp_path / "harmless.exe"
+    real.write_text("")
+    launcher = AppLauncher(
+        registry=[AppEntry(
+            name="fake", candidate_paths=[real], process_name="harmless.exe",
+        )],
+        window_wait_seconds=1.0, poll_interval_seconds=0.01,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.launcher._validate_launch",
+        lambda *a, **kw: _allow_all_validator(),
+    )
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=7))
+
+    from ultron.desktop.windows import WindowInfo
+    calls = {"n": 0}
+
+    def fake_enum_windows(**kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 1:
+            return []  # pre-spawn snapshot: no windows yet
+        return [WindowInfo(
+            hwnd=88, title="App", class_name="Cls",
+            process_name="harmless.exe", pid=7, rect=(0, 0, 800, 600),
+            monitor_index=0, is_minimized=False, is_foreground=False,
+        )]
+
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.enumerate_windows", fake_enum_windows,
+    )
+
+    def boom_focus(hwnd):
+        raise RuntimeError("anticheat engaged mid-launch")
+
+    monkeypatch.setattr("ultron.desktop.launcher.focus_window", boom_focus)
+    placement_mod = __import__(
+        "ultron.desktop.placement", fromlist=["PlacementResult"]
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.move_window_to_monitor",
+        lambda hwnd, monitor, **kw: placement_mod.PlacementResult(
+            success=True, hwnd=hwnd, monitor_index=monitor.index,
+        ),
+    )
+    r = launcher.launch_app("fake", monitor=_mon(), wait_for_window=True)
+    # Focus failure never degrades a successful launch.
+    assert r.success is True
+    assert r.hwnd == 88
+    assert r.window_appeared is True
+
+
+def test_launch_app_focus_called_even_when_placement_fails(
+    tmp_path, monkeypatch
+):
+    real = tmp_path / "harmless.exe"
+    real.write_text("")
+    launcher = AppLauncher(
+        registry=[AppEntry(
+            name="fake", candidate_paths=[real], process_name="harmless.exe",
+        )],
+        window_wait_seconds=1.0, poll_interval_seconds=0.01,
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.launcher._validate_launch",
+        lambda *a, **kw: _allow_all_validator(),
+    )
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=7))
+
+    from ultron.desktop.windows import WindowInfo
+    calls = {"n": 0}
+
+    def fake_enum_windows(**kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 1:
+            return []  # pre-spawn snapshot: no windows yet
+        return [WindowInfo(
+            hwnd=99, title="App", class_name="Cls",
+            process_name="harmless.exe", pid=7, rect=(0, 0, 800, 600),
+            monitor_index=0, is_minimized=False, is_foreground=False,
+        )]
+
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.enumerate_windows", fake_enum_windows,
+    )
+    placement_mod = __import__(
+        "ultron.desktop.placement", fromlist=["PlacementResult"]
+    )
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.move_window_to_monitor",
+        lambda hwnd, monitor, **kw: placement_mod.PlacementResult(
+            success=False, hwnd=hwnd, error="move failed",
+        ),
+    )
+    focused = []
+    monkeypatch.setattr(
+        "ultron.desktop.launcher.focus_window",
+        lambda hwnd: focused.append(hwnd),
+    )
+    r = launcher.launch_app("fake", monitor=_mon(), wait_for_window=True)
+    assert r.success is True
+    assert focused == [99]
 
 
 # ---------------------------------------------------------------------------

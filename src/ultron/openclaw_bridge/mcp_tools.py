@@ -672,6 +672,7 @@ def launch_app_impl(
         "pid": result.pid,
         "hwnd": result.hwnd,
         "monitor_index": result.monitor_index,
+        "window_appeared": getattr(result, "window_appeared", None),
         "error": result.error,
     }
 
@@ -711,6 +712,7 @@ def launch_chrome_url_impl(
         "pid": result.pid,
         "hwnd": result.hwnd,
         "monitor_index": result.monitor_index,
+        "window_appeared": getattr(result, "window_appeared", None),
         "error": result.error,
     }
 
@@ -741,6 +743,7 @@ def open_image_search_impl(
         "pid": result.pid,
         "hwnd": result.hwnd,
         "monitor_index": result.monitor_index,
+        "window_appeared": getattr(result, "window_appeared", None),
         "error": result.error,
     }
 

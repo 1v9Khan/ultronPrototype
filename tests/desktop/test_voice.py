@@ -159,6 +159,70 @@ def test_handle_app_launch_launcher_failure(monkeypatch):
     assert "Chrome not installed" in result.voice_message
 
 
+def test_handle_app_launch_window_timeout_voice_is_honest(monkeypatch):
+    # 2026-06-12 honesty fix: pre-fix the timeout path spoke "Opening
+    # that on monitor 2." while no window ever appeared.
+    _patch_monitors(monkeypatch, [_mon(0), _mon(1)])
+    _patch_launcher(
+        monkeypatch,
+        result=LaunchResult(
+            success=True, app_name="chrome",
+            exe_path=Path("C:/ghost.exe"), pid=1, hwnd=None,
+            monitor_index=None,
+            error="window did not appear within timeout",
+            window_appeared=False,
+        ),
+    )
+    intent = AppLaunchIntent(
+        app_name="chrome", url="https://x.com", monitor_index=1,
+    )
+    result = handle_app_launch(intent)
+    assert result.success is True  # the spawn itself succeeded
+    assert result.window_appeared is False
+    assert "didn't appear" in result.voice_message
+    assert "Opening" not in result.voice_message
+    assert "monitor 2" in result.voice_message
+
+
+def test_handle_app_launch_window_timeout_no_monitor_phrase_lie(monkeypatch):
+    # Out-of-range monitor index resolves to None -> the honest line
+    # must not mention any monitor at all.
+    _patch_monitors(monkeypatch, [_mon()])
+    _patch_launcher(
+        monkeypatch,
+        result=LaunchResult(
+            success=True, app_name="cursor",
+            exe_path=Path("C:/ghost.exe"), pid=1, hwnd=None,
+            monitor_index=None,
+            error="window did not appear within timeout",
+            window_appeared=False,
+        ),
+    )
+    intent = AppLaunchIntent(app_name="cursor", monitor_index=99)
+    result = handle_app_launch(intent)
+    assert result.success is True
+    assert result.window_appeared is False
+    assert "didn't appear" in result.voice_message
+    assert "monitor" not in result.voice_message
+
+
+def test_handle_app_launch_threads_window_appeared_true(monkeypatch):
+    _patch_monitors(monkeypatch, [_mon()])
+    _patch_launcher(
+        monkeypatch,
+        result=LaunchResult(
+            success=True, app_name="cursor",
+            exe_path=Path("C:/ghost.exe"), pid=1, hwnd=42,
+            monitor_index=0, window_appeared=True,
+        ),
+    )
+    intent = AppLaunchIntent(app_name="cursor")
+    result = handle_app_launch(intent)
+    assert result.success is True
+    assert result.window_appeared is True
+    assert "Opening" in result.voice_message
+
+
 def test_handle_app_launch_voice_message_mentions_monitor(monkeypatch):
     _patch_monitors(monkeypatch, [_mon(0), _mon(1)])
     _patch_launcher(

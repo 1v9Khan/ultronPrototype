@@ -378,6 +378,7 @@ def _mk_launch_result(success=True, app_name="chrome", error=None):
         hwnd=678 if success else None,
         monitor_index=1 if success else None,
         error=error,
+        window_appeared=True if success else None,
     )
 
 
@@ -416,6 +417,7 @@ def test_launch_app_happy_path(monkeypatch):
     assert out["success"] is True
     assert out["app_name"] == "chrome"
     assert out["pid"] == 12345
+    assert out["window_appeared"] is True
     fake.launch_app.assert_called_once()
     kwargs = fake.launch_app.call_args.kwargs
     assert kwargs["app_name"] == "chrome"
