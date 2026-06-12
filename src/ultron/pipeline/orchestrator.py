@@ -553,6 +553,29 @@ class Orchestrator:
             raise_process_priority()
         except Exception as e:                                          # noqa: BLE001
             logger.debug("process-priority raise skipped (%s)", e)
+        # 2026-06-11: SearxNG (default first search provider) runs in a
+        # Docker container -- if Docker is down at boot every search
+        # silently falls through to Brave. Probe once and launch Docker
+        # Desktop in the background if it's unreachable. Fully fail-open;
+        # gated by web_search.searxng.autostart_docker_on_boot.
+        try:
+            from ultron.config import get_config
+            from ultron.lifecycle.docker_startup import ensure_docker_running
+
+            _cfg = get_config()
+            _sx = _cfg.web_search.searxng
+            if _cfg.web_search.enabled and getattr(
+                _sx, "autostart_docker_on_boot", False,
+            ):
+                ensure_docker_running(
+                    base_url=_sx.base_url,
+                    enabled=True,
+                    docker_executable_path=getattr(
+                        _cfg.gaming_mode, "docker_executable_path", None,
+                    ),
+                )
+        except Exception as e:                                          # noqa: BLE001
+            logger.debug("docker autostart skipped (%s)", e)
         self.memory = self._load_memory_if_enabled()
         # 2026-05-22 perf: warm the cross-encoder reranker shared
         # singleton at startup. Without this, the first turn that

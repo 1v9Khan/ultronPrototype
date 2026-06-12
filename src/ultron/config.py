@@ -1378,6 +1378,14 @@ class SearxNGConfig(_Strict):
     # Comma-separated engine constraint ("google,duckduckgo,wikipedia").
     # Empty uses SearxNG's full engine set.
     engines: str = ""
+    # 2026-06-11: SearxNG is the default first provider, but it runs in
+    # a Docker container -- if Docker Desktop is down, every search
+    # silently falls through to Brave. When True, the orchestrator
+    # probes SearxNG at startup and, if unreachable, launches Docker
+    # Desktop (background daemon thread; the Docker exe path comes from
+    # gaming_mode.docker_executable_path). Fail-open: a missing Docker /
+    # probe error just leaves the provider chain to fall through.
+    autostart_docker_on_boot: bool = True
 
 
 class DuckDuckGoConfig(_Strict):

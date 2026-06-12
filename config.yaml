@@ -707,6 +707,17 @@ web_search:
     collective_deadline_seconds: 6.0
     max_bytes: 200000          # truncate giant pages so they don't blow the prompt
 
+  # SearxNG is the DEFAULT first provider (providers: searxng, brave,
+  # duckduckgo). It runs in a Docker container; if Docker is down at
+  # boot, every search silently falls through to Brave. autostart:
+  # Ultron probes SearxNG at startup and launches Docker Desktop in the
+  # background if it's unreachable (fail-open; the container auto-
+  # restarts with the daemon). Docker exe path comes from
+  # gaming_mode.docker_executable_path.
+  searxng:
+    base_url: "http://localhost:8888"
+    autostart_docker_on_boot: true
+
   cache:
     ttl_volatile_seconds: 86400      # 24 h — sports, weather, stocks
     ttl_stable_seconds: 2592000      # 30 d — historical, definitional facts

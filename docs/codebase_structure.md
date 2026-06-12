@@ -260,6 +260,14 @@
 > `I:\Ultron Archive\2026-06-11\`, ~40 GB reclaimed; the live
 > `kokoro_finetune` compat path + all preset GGUFs + locked voice
 > assets verified-referenced and untouched).
+> THEN: startup Docker autostart for SearxNG (NEW
+> `lifecycle/docker_startup.py`): SearxNG is the default first search
+> provider but runs in a Docker container — if Docker is down at boot
+> every search silently falls through to Brave. The orchestrator now
+> probes SearxNG at startup (`ensure_docker_running`, daemon thread)
+> and launches Docker Desktop if unreachable (exe path from
+> `gaming_mode.docker_executable_path`; fail-open; gated by
+> `web_search.searxng.autostart_docker_on_boot`, default ON). +10 tests.
 > THEN: the user-audible "blip after the sentence" FIXED at the source.
 > The blip watcher's live measurements (isolated ~70 ms burst ~440 ms
 > after the speech body, deterministic on the ack clips) exposed a real
