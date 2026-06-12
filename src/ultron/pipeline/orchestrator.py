@@ -1677,6 +1677,66 @@ class Orchestrator:
         self._speak(resp.text or "")
         return True
 
+    def _maybe_handle_relay_speech(self, user_text: str) -> bool:
+        """Voice relay -- "tell my teammates X" speaks a rephrased line on
+        the configured secondary output device (a VoiceMeeter virtual
+        input routed to the mic B-bus) so the user's game voice chat
+        hears Ultron deliver the message directly. Strict matcher ->
+        ordinary utterances (including "tell me ...") fall through.
+        Fail-open: once MATCHED, the turn is always consumed -- a
+        device / synth / rephrase failure speaks a short error on the
+        NORMAL output instead of letting the command fall into the
+        conversational LLM path and get role-played."""
+        try:
+            from ultron.audio.relay_speech import (
+                build_relay_line,
+                match_relay_command,
+                play_to_device,
+                resolve_relay_device,
+            )
+            from ultron.config import get_config
+
+            cfg = get_config().relay_speech
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("relay_speech unavailable: %s", e)
+            return False
+        if not getattr(cfg, "enabled", False):
+            return False
+        command = match_relay_command(user_text)
+        if command is None:
+            return False
+        line = build_relay_line(
+            command,
+            getattr(self, "llm", None),
+            rephrase=bool(getattr(cfg, "rephrase", True)),
+            max_chars=int(getattr(cfg, "max_line_chars", 280)),
+        )
+        synthesize = getattr(getattr(self, "tts", None), "_synthesize", None)
+        if synthesize is None:
+            self._speak("I can't reach the voice channel right now.")
+            return True
+        device = resolve_relay_device(getattr(cfg, "output_device", None))
+        if device is None:
+            self._speak(
+                "I couldn't find the relay audio device, so I can't talk "
+                "to your team right now."
+            )
+            return True
+        try:
+            pcm, sr = synthesize(line)
+            seconds = play_to_device(pcm, sr, device)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("relay playback failed: %s", e)
+            self._speak("The relay to your team failed.")
+            return True
+        logger.info(
+            "relay:spoken | device=%d | seconds=%.2f | chars=%d | line=%r",
+            device, seconds, len(line), line[:120],
+        )
+        if getattr(cfg, "echo_to_user", False):
+            self._speak(line)
+        return True
+
     def _maybe_handle_report_concern(self, user_text: str) -> bool:
         """openclaw-clawhub T12 -- file a Report when the user voices a
         concern about the assistant's last response.
@@ -4010,6 +4070,27 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="scrap",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Voice relay: "tell my teammates X" -- rephrase to a
+                    # direct second-person line and speak it on the
+                    # configured secondary output device (VoiceMeeter
+                    # strip -> mic bus) so the game voice chat hears
+                    # Ultron. Strict matcher -> "tell me ..." and normal
+                    # utterances fall through.
+                    if self._maybe_handle_relay_speech(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="relay_speech",
                             follow_up=bool(follow_up_until),
                         )
                         continue

@@ -3407,6 +3407,44 @@ class McpConfig(_Strict):
     servers: List[McpServerSpec] = Field(default_factory=list)
 
 
+class RelaySpeechConfig(_Strict):
+    """Voice relay -- speak a message to OTHER PEOPLE on a second output.
+
+    "Ultron, tell my teammates to smoke mid" is an instruction to DELIVER
+    a spoken line into the game voice chat, not a conversational prompt.
+    When enabled, a strict matcher
+    (:func:`ultron.audio.relay_speech.match_relay_command`) intercepts the
+    turn, a small LLM rephrase converts the reported speech into a direct
+    second-person line, the session Kokoro engine synthesizes it, and the
+    clip plays on ``output_device`` -- typically a VoiceMeeter virtual
+    input ("Voicemeeter Aux Input") whose strip is routed to the same
+    B-bus as the user's microphone, so teammates hear Ultron through the
+    mic channel.
+
+    Default ON: the strict matcher means ordinary utterances (including
+    "tell me ...") never trip it, and a missing/unresolvable device
+    degrades to a spoken error on the NORMAL output (fail-open) rather
+    than affecting the turn loop.
+    """
+
+    enabled: bool = True
+    # Name substring (case-insensitive) or PortAudio index of the output
+    # device the relay line plays on. The default targets VoiceMeeter's
+    # second virtual strip; route that strip to the mic B-bus (e.g. B2)
+    # in VoiceMeeter so the game transmits it.
+    output_device: str = "Voicemeeter Aux Input"
+    # Convert reported speech ("tell them they should rotate") into a
+    # direct second-person line via the LLM. When False, the relay
+    # speaks a deterministic "Team: <payload>" line instead.
+    rephrase: bool = True
+    # Hard cap on the final spoken line (one breath of voice chat).
+    max_line_chars: int = Field(default=280, ge=40, le=600)
+    # Also play the relay line on the user's normal output so they hear
+    # what was transmitted (VoiceMeeter monitoring usually covers this,
+    # so default off).
+    echo_to_user: bool = False
+
+
 class UltronConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -3445,6 +3483,10 @@ class UltronConfig(_Strict):
     # over the FREE search ladder. Explicit voice opt-in ("research X in
     # depth"); the normal sub-second search path is untouched.
     deep_research: DeepResearchConfig = Field(default_factory=DeepResearchConfig)
+    # Voice relay -- "tell my teammates X" speaks a rephrased line on a
+    # secondary output device (VoiceMeeter strip -> mic bus) so people in
+    # the user's voice chat hear Ultron. Strict matcher; fail-open.
+    relay_speech: RelaySpeechConfig = Field(default_factory=RelaySpeechConfig)
     # Catalog 13 (clawhub-capability-evolver clean-room) -- bounded
     # autonomous self-improvement. Observes turns, distills repeated
     # success patterns into live trigger-loaded skills under

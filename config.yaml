@@ -1573,6 +1573,24 @@ deep_research:
   max_accumulated_sources: 8    # hard cap on gathered sources (bounds prompt)
 
 # ---------------------------------------------------------------------------
+# Voice relay — "tell my teammates X" speaks INTO the game voice chat.
+# ---------------------------------------------------------------------------
+# A strict matcher intercepts "tell my teammates / say X to my team / ask
+# the team ..." utterances, the LLM rephrases the reported speech into a
+# direct second-person line, Kokoro synthesizes it, and the clip plays on
+# output_device — a VoiceMeeter virtual input. Route that strip to the
+# same B-bus as your microphone (e.g. B2) in VoiceMeeter and set the
+# game's input device to that bus: teammates then hear Ultron through
+# the mic channel. Fail-open: a missing device speaks a short error on
+# the normal output instead.
+relay_speech:
+  enabled: true
+  output_device: "Voicemeeter Aux Input"  # name substring or PortAudio index
+  rephrase: true              # LLM converts reported speech -> direct address
+  max_line_chars: 280         # one breath of voice chat
+  echo_to_user: false         # also play the line on the normal output
+
+# ---------------------------------------------------------------------------
 # Evolution (catalog 13) — bounded autonomous self-improvement.
 # ---------------------------------------------------------------------------
 # Ultron observes its own turns, distills repeated success patterns into

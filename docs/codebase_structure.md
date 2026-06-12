@@ -200,6 +200,27 @@
 > incl. live SearxNG / memory / routing / gate / commands /
 > short_circuits / full_loop incl. a live search turn / coding with REAL
 > CLI tasks) green in one run.
+> **Then (2026-06-11): live dogfood session + the teammate voice relay.**
+> A monitored live run of the full stack surfaced real findings (see the
+> session notes): the supervisor's ProjectIndex fails at startup because
+> ConversationMemory already holds the local-mode Qdrant lock
+> (registry-only fallback every run); "what time is it in Paris" web-
+> searches instead of doing zoneinfo arithmetic; search queries go to
+> providers as the RAW utterance (no query distillation) and the
+> search-augmented prompt refuses instead of falling back to parametric
+> knowledge on bad snippets; a follow-up command was dropped at
+> addressing conf 0.75 vs the 0.80 threshold; follow-up captures pay a
+> ~700 ms synchronous Moonshine re-transcribe (streaming cache miss);
+> image-search APP_LAUNCH windows open BEHIND the foreground (no
+> bring-to-front after placement), still use the deprecated `tbm=isch`
+> URL, don't resolve pronoun subjects ("a picture of *it*"), and the
+> launcher returns success=True even when the window never appeared.
+> SHIPPED from the session: NEW `audio/relay_speech.py` (see the module
+> section) -- "tell my teammates X" now rephrases to a direct second-
+> person line and speaks it on a configurable secondary output device
+> (VoiceMeeter strip -> mic B-bus) so the game voice chat hears Ultron;
+> `relay_speech` config (default ON) + `_maybe_handle_relay_speech`
+> orchestrator short-circuit + 39 hermetic tests.
 > Earlier sweep state: **9156 passed / 35 skipped / 0 failed (~103s)** with the
 > loaded-machine ignore recipe (below); ~9182 no-deselect (now 9199 on an idle
 > machine, no deselect, 2026-06-10 baseline). The +8 skipped vs earlier are
@@ -1520,6 +1541,7 @@ For the current decisions and Foundation phase status see
 │       ├── audio/                  ← Audio capture, VAD, wake-word
 │       │   ├── capture.py          ← AudioCapture (sounddevice callback thread)
 │       │   ├── devices.py          ← Device-resolution helpers (resolve_device, describe_device)
+│       │   ├── relay_speech.py     ← Voice relay: "tell my teammates X" matcher + LLM rephrase + playback on a secondary output device (VoiceMeeter strip → mic bus)
 │       │   ├── ring_buffer.py      ← Pre-speech audio buffer
 │       │   ├── smart_turn.py       ← Smart Turn V3 ONNX wrapper (NEW 2026-05-12; CPU-only end-of-turn confirmation)
 │       │   ├── vad.py              ← Silero-VAD wrapper
@@ -2887,6 +2909,46 @@ User-preference persistence so "open YouTube" picks up "monitor 2 + maximize" th
 - `class AudioDeviceError(ValueError)`
 - `resolve_device(configured, kind) -> Optional[int]` — substring match on device name
 - `describe_device(device, kind) -> str`
+
+#### `audio/relay_speech.py` (NEW 2026-06-11 — teammate voice relay)
+
+Speak a message to OTHER PEOPLE through a secondary output device.
+"Ultron, tell my teammates they should be smoking mid window" is an
+instruction to DELIVER a spoken line into the game voice chat, not a
+conversational prompt (previously it fell through to the LLM and got
+role-played). Driven by `relay_speech` config (default ON).
+
+- `match_relay_command(text) -> Optional[RelayCommand]` — STRICT matcher
+  (run/scrap philosophy): "tell my/the teammate(s)/team/squad/lobby/party
+  X", "say X to my team", "ask the team to/for/if X", "tell them X".
+  "tell me ..." can never match; payloads under two words are rejected
+  (clipped transcripts); a leading "One," STT artifact is stripped only
+  when followed by a relay verb.
+- `build_relay_line(command, llm, *, rephrase, max_chars, generate_fn)` —
+  converts reported speech into the line Ultron speaks DIRECTLY to the
+  teammates (second person, ≤2 short sentences) via a small
+  `generate_stream(record_history=False, enable_thinking=False)` rephrase.
+  Fail-open: any LLM problem returns the deterministic "Team: <payload>"
+  line. Output is quote/newline-stripped and capped at `max_line_chars`.
+- `resolve_relay_device(configured) -> Optional[int]` — delegates to
+  `audio.devices.resolve_device(..., "output")`, fail-open to None.
+- `play_to_device(pcm, sr, device_index, *, stream_factory)` — synchronous
+  mono playback on the given PortAudio device (int16; float32 converted);
+  injectable stream factory for hermetic tests; guaranteed stop/close.
+- Orchestrator: `_maybe_handle_relay_speech` short-circuit (after scrap,
+  before deep-research; `via="relay_speech"`). Once MATCHED the turn is
+  always consumed — device/synth failures speak a short error on the
+  NORMAL output instead of letting the command fall into the LLM path.
+  Synthesis uses the session's existing Kokoro engine (`tts._synthesize`);
+  only the playback target differs, so the locked TTS hot path is
+  untouched.
+- Typical wiring: `output_device: "Voicemeeter Aux Input"`; in VoiceMeeter
+  route that strip to the same B-bus as the microphone (e.g. B2) and set
+  the game's input to that bus — teammates hear Ultron through the mic
+  channel.
+- Tests: `tests/audio/test_relay_speech.py` (39 — matcher matrix, rephrase
+  fallbacks, fake-stream playback incl. float32 conversion + teardown-on-
+  error, device fail-open, orchestrator wiring via `Orchestrator.__new__`).
 
 #### `audio/ring_buffer.py`
 - `class RingBuffer` — fixed-duration audio backlog (pre-speech window)
