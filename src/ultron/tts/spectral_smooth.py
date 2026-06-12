@@ -213,9 +213,47 @@ def trim_and_fade(
     if len(speech_frames) == 0:
         return audio_f32
 
+    # 2026-06-11 live fix (user-audible "blip after the sentence"):
+    # the partial fine-tune emits an isolated noise burst well AFTER
+    # speech ends (watcher-measured live: a ~70 ms burst ~440 ms past
+    # the body). A loud burst counts as a "speech frame" above the
+    # threshold, so ``speech_frames[-1]`` used to point at the BURST --
+    # the trim kept the dead air + blip and faded the blip's tail
+    # instead of the speech's. Group loud frames into runs and discard
+    # edge runs that are SHORT (<= burst_max) and ISOLATED from the
+    # body by a large gap (>= burst_gap): real words are longer than
+    # 120 ms, and intra-sentence pauses at a clip edge rarely exceed
+    # 200 ms of sub-threshold silence, so speech is never clipped.
+    burst_max_frames = max(1, int(np.ceil(120.0 / frame_ms)))
+    burst_gap_frames = max(1, int(np.ceil(200.0 / frame_ms)))
+    runs: list[tuple[int, int]] = []
+    run_start = prev = int(speech_frames[0])
+    for f in speech_frames[1:]:
+        f = int(f)
+        if f == prev + 1:
+            prev = f
+            continue
+        runs.append((run_start, prev))
+        run_start = prev = f
+    runs.append((run_start, prev))
+    while len(runs) > 1:
+        s, e = runs[-1]
+        gap = s - runs[-2][1] - 1
+        if (e - s + 1) <= burst_max_frames and gap >= burst_gap_frames:
+            runs.pop()                      # trailing isolated burst
+        else:
+            break
+    while len(runs) > 1:
+        s, e = runs[0]
+        gap = runs[1][0] - e - 1
+        if (e - s + 1) <= burst_max_frames and gap >= burst_gap_frames:
+            runs.pop(0)                     # leading isolated burst
+        else:
+            break
+
     pad_frames = max(0, int(np.ceil(pad_ms / frame_ms)))
-    first_frame = max(0, speech_frames[0] - pad_frames)
-    last_frame = min(n_frames - 1, speech_frames[-1] + pad_frames)
+    first_frame = max(0, runs[0][0] - pad_frames)
+    last_frame = min(n_frames - 1, runs[-1][1] + pad_frames)
 
     start = first_frame * frame_samples
     end = min(len(audio_f32), (last_frame + 1) * frame_samples)

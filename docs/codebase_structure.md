@@ -260,6 +260,18 @@
 > `I:\Ultron Archive\2026-06-11\`, ~40 GB reclaimed; the live
 > `kokoro_finetune` compat path + all preset GGUFs + locked voice
 > assets verified-referenced and untouched).
+> THEN: the user-audible "blip after the sentence" FIXED at the source.
+> The blip watcher's live measurements (isolated ~70 ms burst ~440 ms
+> after the speech body, deterministic on the ack clips) exposed a real
+> `trim_and_fade` bug: a loud post-speech burst counts as a "speech
+> frame" above the −40 dB threshold, so `speech_frames[-1]` pointed at
+> the BURST — the trim kept the dead air + blip and faded the blip's
+> tail instead of the speech's. Fix: loud frames are grouped into runs
+> and edge runs that are short (≤120 ms) and isolated (≥200 ms gap)
+> are discarded before the trim window is chosen — real words are
+> longer than the cap, so speech is never clipped (test-pinned). New
+> tests replicate the watcher-measured geometry and cross-validate
+> with `analyze_clip` (no `trailing_burst`/`hard_tail` after the trim).
 > THEN (post-unload log review — the user flagged bad live responses):
 > **the relay spoke conversation history into game chat** ("Clove, the
 > program is still in development… / no_think") — root causes fixed:

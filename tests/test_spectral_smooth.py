@@ -351,3 +351,85 @@ def test_performance_under_50ms_for_one_second_clip():
         spectral_smooth(audio, sr=24000)
     avg_ms = (time.monotonic() - t0) / 3 * 1000.0
     assert avg_ms < 50.0, f"smoothing too slow: {avg_ms:.1f} ms / sec audio"
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-11 live fix: isolated edge bursts (the audible "blip after
+# the sentence"). Geometry replicated from the blip watcher's live
+# measurements: speech body, ~440 ms of dead air, a ~70 ms noise burst.
+# The old trim treated the burst as the last speech frame and KEPT it.
+# ---------------------------------------------------------------------------
+
+
+def _speech(seconds: float, sr: int = 24000, amp: float = 0.4):
+    t = np.arange(int(sr * seconds), dtype=np.float32) / sr
+    x = (amp * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    n = int(sr * 0.02)
+    ramp = np.linspace(0, 1, n, dtype=np.float32)
+    x[:n] *= ramp
+    x[-n:] *= ramp[::-1]
+    return x
+
+
+def _silence(seconds: float, sr: int = 24000):
+    return np.zeros(int(sr * seconds), dtype=np.float32)
+
+
+def _burst(seconds: float = 0.07, sr: int = 24000, amp: float = 0.3):
+    rng = np.random.default_rng(11)
+    return (amp * rng.standard_normal(int(sr * seconds))).astype(np.float32)
+
+
+def test_trailing_isolated_burst_removed():
+    sr = 24000
+    clip = np.concatenate([
+        _speech(1.4, sr), _silence(0.44, sr), _burst(0.07, sr),
+        _silence(0.1, sr),
+    ])
+    out = trim_and_fade(clip, sr)
+    # Everything past the speech body (dead air + blip) is gone:
+    # output ~= speech + pads, far shorter than the input.
+    assert len(out) < int(sr * 1.6)
+    # Cross-validate with the independent blip detector.
+    from ultron.audio.output_quality import analyze_clip
+
+    report = analyze_clip(out, sr)
+    kinds = {f.kind for f in report.findings}
+    assert "trailing_burst" not in kinds
+    assert "hard_tail" not in kinds
+
+
+def test_leading_isolated_burst_removed():
+    sr = 24000
+    clip = np.concatenate([
+        _silence(0.05, sr), _burst(0.07, sr), _silence(0.4, sr),
+        _speech(1.0, sr),
+    ])
+    out = trim_and_fade(clip, sr)
+    from ultron.audio.output_quality import analyze_clip
+
+    report = analyze_clip(out, sr)
+    kinds = {f.kind for f in report.findings}
+    assert "leading_burst" not in kinds
+    assert "hard_onset" not in kinds
+
+
+def test_two_trailing_bursts_both_removed():
+    sr = 24000
+    clip = np.concatenate([
+        _speech(1.0, sr), _silence(0.3, sr), _burst(0.05, sr),
+        _silence(0.25, sr), _burst(0.06, sr),
+    ])
+    out = trim_and_fade(clip, sr)
+    assert len(out) < int(sr * 1.2)
+
+
+def test_real_final_word_after_pause_is_preserved():
+    """A genuine short word (300 ms) after a 250 ms pause is ABOVE the
+    120 ms burst cap -- never clipped."""
+    sr = 24000
+    word = _speech(0.3, sr)
+    clip = np.concatenate([_speech(1.0, sr), _silence(0.25, sr), word])
+    out = trim_and_fade(clip, sr)
+    # The trimmed clip still contains the full final word's duration.
+    assert len(out) >= int(sr * (1.0 + 0.25 + 0.3) * 0.95)
