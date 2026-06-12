@@ -204,6 +204,12 @@ data/.run_tests.lock
 # 2026-06-12 single-instance guard (held OS file lock + holder PID
 # metadata) -- see src/kenning/lifecycle/single_instance.py.
 data/.kenning_instance.lock
+# 2026-06-12 install-coherence lock holder dirs at the repo root
+# (lock.json). Pure per-machine runtime; the legacy .ultron/ copy is
+# kept for the rename's legacy-marker check. Anchored so `git add -A`
+# can never stage the lock files.
+/.kenning/
+/.ultron/
 # 2026-05-22 catalog batch 2 repo-map cache (mtime-keyed SQLite).
 data/.kenning_repomap_cache*/
 # 2026-05-23 SWE-Agent batch 1 SessionRegistry (T15) per-session JSON state
