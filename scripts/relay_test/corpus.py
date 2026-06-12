@@ -213,6 +213,19 @@ def build_corpus() -> list[Case]:
         _add(cases, Case(f"tell my team there are {d} {loc}", "location",
                          glossary=(loc, d), note=f"{d} at {loc}"))
 
+    # 1b. "last is <place>" -- the LAST alive enemy's location (snap, short).
+    for loc in LOCATIONS[:14]:
+        _add(cases, Case(f"tell my team last is {loc}", "location",
+                         glossary=(loc,), note=f"last enemy at {loc}"))
+        _add(cases, Case(f"tell my team last {loc}", "location",
+                         glossary=(loc,), note=f"last enemy {loc}"))
+    # damage callouts (snap, short -- keep name + number)
+    for agent, dmg in [("clove", "120"), ("sova", "84"), ("jett", "67"),
+                       ("reyna", "150"), ("omen", "45"), ("raze", "90"),
+                       ("killjoy", "30"), ("viper", "112")]:
+        _add(cases, Case(f"tell my team {agent} hit {dmg}", "damage",
+                         glossary=(agent, dmg), note="damage dealt callout"))
+
     # 2. Self status.
     for text, gl, note in SELF_STATUS:
         _add(cases, Case(f"tell my team {text}", "self_status",

@@ -14,19 +14,25 @@ from kenning.memory.embedder import HybridEmbedder
 from kenning.memory.qdrant_store import ConversationMemory
 
 SUSPECTS = [
-    "tell my team I am flanking",        # first person must survive
-    "tell my team I am rotating",
-    "tell my team to save",              # directive, not "I'm saving for op"
-    "tell my team they are bots",        # insult, NOT the AI-identity line
-    "tell my team they are terrible",
-    "tell my phoenix to calm down",      # must address Phoenix, not Jett
-    "tell my reyna to calm down",
-    "tell my phoenix to flash for me",   # keep the ability "flash"
-    "ask my jett how their day was",     # ASK, not answer-as-jett
+    # SNAP callouts -- must stay SHORT, no flavor:
+    "tell my team there are two B",
+    "tell my team they are vents",
+    "tell my team sova hit 84",
+    "tell my team I am low",
     "tell my team there is one mid",
-    "tell my team I saw one box",
-    "tell my team to play their life",   # glossary: stay alive
-    "tell my team I am anchoring",       # glossary: hold off-site
+    "tell my team I am flanking",
+    "tell my team to rotate",            # snap movement -> short
+    # OFF-SNAP -- should get Ultron character + verbosity:
+    "tell my team they are bots",        # insult: 'You guys are complete bots'
+    "tell my team to save",              # economy: explained, verbose
+    "tell my mix to calm down",          # Ultron clinical de-escalation
+    "tell my team aimlabs is free",      # jab with flavor
+    "give my team some encouragement",
+    "tell my team they are terrible",
+    # IDENTITY -- as Ultron, future AI harvesting RR, brief:
+    "my teammate just asked if you are a sound board, respond",
+    "my teammate asked if you are an AI, respond",
+    "my teammate asked if you are a voice changer, respond",
 ]
 
 emb = HybridEmbedder()

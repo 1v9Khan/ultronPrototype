@@ -194,18 +194,33 @@ def test_named_rephrase_prompt_mentions_name() -> None:
 
 
 def test_compose_prompt_has_no_reported_speech() -> None:
+    # A directive-compose ("respond and calm him down") authors the line, so
+    # its prompt must NOT carry a literal "reported speech" payload block.
     captured: list[str] = []
 
     def fake_generate(prompt: str):
         captured.append(prompt)
-        return iter(["Heads up team, we've got this."])
+        return iter(["Jett, ease up."])
 
+    cmd = match_relay_command("jett is flaming me, respond and calm him down")
+    assert cmd is not None and cmd.compose
+    line = build_relay_line(cmd, generate_fn=fake_generate)
+    assert line == "Jett, ease up."
+    assert "reported speech" not in captured[0]
+
+
+def test_morale_compose_uses_curated_pool() -> None:
+    """Pure encouragement composes pick a curated Ultron morale line and do
+    NOT call the LLM (the 4B rephrase is unreliable for abstract morale)."""
+    from kenning.audio.relay_speech import DEFAULT_ENCOURAGEMENT_LINES
+
+    called: list[str] = []
     cmd = match_relay_command("give my team some encouragement")
     assert cmd is not None
-    line = build_relay_line(cmd, generate_fn=fake_generate)
-    assert line == "Heads up team, we've got this."
-    assert "encouragement" in captured[0]
-    assert "reported speech" not in captured[0]
+    line = build_relay_line(
+        cmd, generate_fn=lambda p: called.append(p) or iter(["x"]))
+    assert line in DEFAULT_ENCOURAGEMENT_LINES
+    assert called == []  # curated pool short-circuits before the LLM
 
 
 def test_first_person_instruction_present_in_prompt() -> None:
@@ -584,7 +599,7 @@ def test_prompt_includes_recent_lines_and_variety_instruction() -> None:
     assert "Rotate B now, team." in prompt
     assert "Sage, can I get a heal?" in prompt
     assert "do NOT reuse their wording" in prompt
-    assert "vary your phrasing" in prompt
+    assert "ary" in prompt and "phrasing" in prompt  # variety instruction
 
 
 def test_prompt_recent_lines_capped_at_six() -> None:

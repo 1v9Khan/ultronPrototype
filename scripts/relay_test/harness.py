@@ -135,23 +135,41 @@ def content_words(text: str) -> set[str]:
 
 
 def score_asr(intended_line: str, heard: str) -> list[str]:
-    """Flag output audio whose ASR reconstruction drops the line's content
-    words -- a proxy for garbled / non-word audio. Lenient: requires only a
-    majority of content words to survive (TTS+ASR round-trip is imperfect)."""
+    """Verify the OUTPUT audio reconstructs to actual WORDS (not blips/noise),
+    referenced against what Kenning was supposed to say.
+
+    Purpose is to catch NON-WORD audio (silence, bursts, garble) -- NOT to
+    grade TTS+ASR fidelity. Valorant callouts are 1-3 words and Kenning's
+    voice carries a heavy reverb/filter character, so ASR routinely mis-hears
+    a clean short clip ('Smoke A' -> 'Smoky'); that is still intelligible
+    SPEECH and must NOT be flagged. So:
+
+      * if ASR returns intelligible speech (any alphabetic word), the clip is
+        word-audio -> pass (signal-level bursts are caught by analyze_clip).
+      * flag only when ASR returns NOTHING word-like for a line that clearly
+        had words -> the audio produced no recoverable speech.
+      * for LONGER lines (>=5 content words, reliable for ASR) also flag a
+        GROSS reconstruction miss (<35% of content words survive), which
+        would indicate large dropped/garbled spans.
+    """
     want = content_words(intended_line)
     if not want:
         return []
+    heard_words = re.findall(r"[a-z']+", heard.lower())
+    if not heard_words:
+        # No word-like output at all for a line that had words: the audio is
+        # silent or non-speech noise.
+        return [f"no intelligible speech reconstructed (heard={heard!r})"]
+    if len(want) < 5:
+        return []  # short callout + speech present -> rely on analyze_clip
     got = content_words(heard)
-    missing = want - got
-    # also fold digit<->word
     norm_got = {_W2D.get(w, w) for w in got}
-    missing = {w for w in missing if _W2D.get(w, w) not in norm_got}
+    missing = {w for w in want if w not in got and _W2D.get(w, w) not in norm_got}
     coverage = 1.0 - (len(missing) / len(want))
-    fails = []
-    if coverage < 0.6:
-        fails.append(f"asr coverage {coverage:.0%} missing={sorted(missing)} "
-                     f"heard={heard!r}")
-    return fails
+    if coverage < 0.35:
+        return [f"gross reconstruction miss: coverage {coverage:.0%} "
+                f"missing={sorted(missing)} heard={heard!r}"]
+    return []
 
 
 # --- stages -----------------------------------------------------------------

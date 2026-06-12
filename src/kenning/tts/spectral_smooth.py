@@ -243,6 +243,31 @@ def trim_and_fade(
             runs.pop()                      # trailing isolated burst
         else:
             break
+    # 2026-06-12: a second, tighter tier for the VERY SHORT tail blips the
+    # fine-tune emits right after speech (watcher-measured live: 20-50 ms
+    # bursts only ~60-90 ms past the body) that the 200 ms-gap rule above
+    # misses. A run this short (<= ~55 ms) is shorter than any real spoken
+    # syllable, so an isolated one at the very tail is a decoder blip, not a
+    # word -- discard it even on a smaller (>= 40 ms) gap. A substantial
+    # speech run (>= 90 ms) must remain so a clip is never emptied and a
+    # genuine short final callout ('B', 'A', 'mid' -- all >> 55 ms when
+    # spoken) is never clipped.
+    # Thresholds chosen to be UNAMBIGUOUSLY safe against word-final stop
+    # releases (the 't' in 'site/plant/default', 'd' in 'mid'): a stop
+    # release follows its closure by <= ~50-60 ms, so a >= 70 ms gap means
+    # the short run is NOT a stop release but a detached decoder blip.
+    short_burst_max = max(1, int(np.ceil(45.0 / frame_ms)))
+    short_burst_gap = max(1, int(np.ceil(70.0 / frame_ms)))
+    speech_run_min = max(1, int(np.ceil(100.0 / frame_ms)))
+    while len(runs) > 1:
+        s, e = runs[-1]
+        prev_s, prev_e = runs[-2]
+        gap = s - prev_e - 1
+        if ((e - s + 1) <= short_burst_max and gap >= short_burst_gap
+                and (prev_e - prev_s + 1) >= speech_run_min):
+            runs.pop()                      # short trailing blip
+        else:
+            break
     while len(runs) > 1:
         s, e = runs[0]
         gap = runs[1][0] - e - 1
