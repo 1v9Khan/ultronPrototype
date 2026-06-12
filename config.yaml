@@ -230,7 +230,14 @@ wake_word:
   name: "kenning"
   model_path: "models/openwakeword/kenning.onnx"
   fallback_model: "ultron"       # custom ultron.onnx; used if kenning.onnx is missing
-  threshold: 0.5
+  # 0.40 is calibrated for the shipped kenning model (v8): ~88% recall on
+  # synthesized clips at ~1.6% adversarial false-accept. "kenning" is
+  # acoustically confusable (kennel/canning/kenneth) so it can't reach
+  # ultron's recall at this FAR; 0.40 favors recall (the wake word must fire
+  # reliably). ultron at 0.40 is ~100% recall, so the shared threshold also
+  # suits the dropdown's ultron option. NOTE: an env override
+  # KENNING_WAKE_WORD_THRESHOLD wins over this -- keep them in sync.
+  threshold: 0.4
   cooldown_seconds: 1.5         # debounce repeated triggers
 
 # ---------------------------------------------------------------------------

@@ -53,12 +53,20 @@ batch_n_per_class:
 model_type: "dnn"
 layer_size: 32
 
-# Training. 30k steps strikes a balance between time (~15 min on 4070 Ti) and
-# convergence; bump to 50k+ if recall stays low.
-steps: 30000
+# Training. The SHIPPED kenning model (v8) used 50k steps -- more
+# checkpoint-merge candidates above the 90th percentile gave a meaningfully
+# better recall-at-low-FAR operating point than 30k. (Validated against the
+# full v1-v11 sweep via compare_wake_models.py; v8 = ~88% recall @ ~1.6%
+# adversarial FAR, the best balance found.)
+steps: 50000
 
-# Auto-train tuning: reasonable defaults from the openWakeWord README.
+# Auto-train tuning. The shipped model relaxed the FP target from 0.2 -> 0.5
+# (still well under ultron's measured 0.62/hr) and raised target_recall
+# 0.5 -> 0.7 so checkpoint selection favors recall -- "kenning" is acoustically
+# confusable, so a strict 0.2 FP target forced an over-conservative threshold
+# that capped recall. Bigger layers (64) + harder negative weight (2500) were
+# tried (v10/v11) and did WORSE; 32 + 1500 is the winner.
 max_negative_weight: 1500
-target_false_positives_per_hour: 0.2
+target_false_positives_per_hour: 0.5
 target_accuracy: 0.7
-target_recall: 0.5
+target_recall: 0.7
