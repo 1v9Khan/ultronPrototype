@@ -10,12 +10,28 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD:** **production-hardening campaign (2026-05-29, CLOSED OUT
-> 2026-06-11: consolidated e2e suite 12/12 green from main; unit sweep green)**
-> **+ the 2026-06-11 live-dogfood session layer** (monitored live run ->
-> findings list; teammate voice relay grown into a conversational game-chat
-> agent; TTS output-quality watcher; voice-launched settings control panel
-> with config hot-reload; sweep **9435 passed / 39 skipped / 0 failed**).
+> **Validating HEAD: `e19094a`** (origin/main = main checkout; pushed).
+> **Production-hardening campaign (2026-05-29, CLOSED OUT 2026-06-11:
+> consolidated e2e suite 12/12 green from main; unit sweep green)
+> + the 2026-06-11/12 live-dogfood session layer** (13 commits
+> `a296699..e19094a`; sweep **9653 passed / 39 skipped / 0 failed**).
+> The live-dogfood layer, in order: teammate voice relay into the game
+> chat (`audio/relay_speech.py`) -> grown into a conversational game-chat
+> agent (named agent callouts, compose mode, variety ring, no-wake-word
+> window, mute toggle, stream-safe matching); TTS output-quality blip
+> watcher (`audio/output_quality.py`) + waveform pane; voice-launched
+> settings control panel (`settings_gui/`) with config hot-reload, an
+> action channel (gaming/preset/device), and ALL-hot knobs; anticheat-
+> safe mode (`safety/anticheat.py`: 51 module guards + validator
+> BLOCK_HARD + full surface UNLOAD hooks + forbidden-API scanner), now
+> 100% TIED to gaming mode (on iff gaming on; never defaults on); gaming
+> mode frees Docker/WSL + the panel; SearxNG Docker auto-start at boot
+> (`lifecycle/`); the per-response VRAM leak fixed (Kokoro generator
+> close + idle reclaim); addressing fragment-guard + RAG stale-memory
+> fixes; the post-sentence audio blip fixed at the trimmer; relay
+> history-bleed + spoken-artifact (`tts/text_hygiene.py`) fixes; and
+> Spotify voice playback control (`spotify/` -- gitignored creds, OAuth,
+> Web API; live-authorized).
 > -- a campaign to wire every recent catalog port into one cohesive unit,
 > complete the voice-controlled coding engineer end to end, build a real-usage
 > e2e suite, make the system pervasively self-improving, and cut latency +
