@@ -64,8 +64,46 @@ def test_bind_failure_raises_mcp_server_error_and_logs(
         assert rec["dependency"] == "mcp_server"
         assert rec["context"]["port"] == port
         assert "bind succeeds" in rec["recovery"]
+
+        # 2026-06-12 "Task was destroyed" fix: the failed server's
+        # _wait_for_started task must be cancelled + awaited BEFORE the
+        # loop closes (pre-fix, GC of the still-pending task emitted
+        # the asyncio "Task was destroyed but it is pending!" line).
+        # done()/is_closed() are the deterministic equivalents of the
+        # GC-timing-dependent stderr message.
+        if second._server_thread is not None:
+            second._server_thread.join(timeout=3.0)
+        assert second._stopped.is_set()
+        assert second._waiter_task is not None
+        assert second._waiter_task.done()
+        assert second._loop is not None and second._loop.is_closed()
     finally:
         first.stop(timeout_s=3.0)
+
+
+def test_serve_failure_cancels_waiter_task(monkeypatch, tmp_path, errors_log):
+    """Socket-free variant: uvicorn's serve() raising before the
+    listening socket binds must leave NO pending task behind when the
+    private loop closes."""
+
+    async def fake_serve(self):
+        raise SystemExit(1)
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+    server = UltronMCPServer(
+        host="127.0.0.1", port=_free_port(), sse_path="/sse",
+        log_path=tmp_path / "audit.jsonl",
+        clarification_timeout_s=2.0,
+    )
+    with pytest.raises(MCPServerError, match="bind failed"):
+        server.start(ready_timeout_s=2.0)
+    if server._server_thread is not None:
+        server._server_thread.join(timeout=2.0)
+    assert server._waiter_task is not None
+    assert server._waiter_task.done()
+    assert server._loop is not None and server._loop.is_closed()
 
 
 # ---------------------------------------------------------------------------

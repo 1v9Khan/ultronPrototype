@@ -219,6 +219,12 @@ class UltronMCPServer:
         self._server_thread: Optional[threading.Thread] = None
         self._uvicorn_server = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Handle to the started-watcher task so the _run finally block
+        # can cancel it (and tests can introspect it). Pre-fix, a bind
+        # failure left it pending when the loop closed, producing the
+        # benign-but-noisy asyncio "Task was destroyed but it is
+        # pending!" stderr line at startup.
+        self._waiter_task: Optional["asyncio.Task"] = None
         self._started = threading.Event()
         self._stopped = threading.Event()
 
@@ -796,15 +802,50 @@ class UltronMCPServer:
                             return
                         await asyncio.sleep(0.05)
                     self._started.set()
-                self._loop.create_task(_wait_for_started())
+                self._waiter_task = self._loop.create_task(
+                    _wait_for_started()
+                )
                 self._loop.run_until_complete(self._uvicorn_server.serve())
             except BaseException as e:  # noqa: BLE001 -- propagate to start()
                 bind_error.append(e)
                 self._started.set()
             finally:
                 self._stopped.set()
-                if self._loop is not None and not self._loop.is_closed():
-                    self._loop.close()
+                # Snapshot: stop() can null self._loop concurrently
+                # when its join times out mid-cleanup.
+                loop = self._loop
+                if loop is not None and not loop.is_closed():
+                    # 2026-06-12: cancel + await any pending tasks
+                    # BEFORE closing the loop. When serve() raises
+                    # before the listening socket binds (port already
+                    # taken: SystemExit via uvicorn), _wait_for_started
+                    # is still pending; closing the loop around it made
+                    # asyncio's Task.__del__ emit "Task was destroyed
+                    # but it is pending!" to stderr. Sweeps uvicorn-
+                    # internal stragglers too. Happy path is unchanged
+                    # (the waiter completes; pending is empty).
+                    try:
+                        pending = [
+                            t for t in asyncio.all_tasks(loop)
+                            if not t.done()
+                        ]
+                        for t in pending:
+                            t.cancel()
+                        if pending:
+                            loop.run_until_complete(
+                                asyncio.gather(
+                                    *pending, return_exceptions=True,
+                                )
+                            )
+                    except BaseException:  # noqa: BLE001
+                        # Fail-open: cleanup must never mask the
+                        # original bind error (which itself travels as
+                        # a BaseException -- uvicorn raises SystemExit).
+                        pass
+                    try:
+                        loop.close()
+                    except Exception:  # noqa: BLE001
+                        pass
 
         self._server_thread = threading.Thread(
             target=_run, daemon=True, name="ultron-mcp-server",
