@@ -35,6 +35,7 @@ from ultron.settings_gui.spec import (
     SECTIONS,
     Knob,
     apply_updates,
+    write_action,
     read_value,
     render_value,
     write_reload_signal,
@@ -262,9 +263,18 @@ class ControlPanel:
         # -- bottom bar --------------------------------------------------
         bottom = ttk.Frame(self.root, style="Bg.TFrame")
         bottom.pack(fill="x", padx=14, pady=(4, 12))
+        # Gaming-mode live toggle (engages/disengages immediately; this
+        # also drives anticheat, which is 100% tied to gaming mode).
+        self._gaming_on = False
+        ttk.Label(bottom, text="GAMING + ANTICHEAT:",
+                  style="Status.TLabel").pack(side="left")
+        self._gaming_btn = ttk.Button(
+            bottom, text="OFF — click to ENGAGE", style="Ghost.TButton",
+            width=22, command=self._toggle_gaming)
+        self._gaming_btn.pack(side="left", padx=8)
         self._status = ttk.Label(bottom, text="No pending changes.",
                                  style="Status.TLabel")
-        self._status.pack(side="left")
+        self._status.pack(side="left", padx=16)
         ttk.Button(bottom, text="CLOSE", style="Ghost.TButton",
                    command=self.close).pack(side="right")
         self._apply_btn = ttk.Button(
@@ -272,6 +282,25 @@ class ControlPanel:
             command=self._apply)
         self._apply_btn.pack(side="right", padx=8)
         self._tick_clock()
+
+    def _toggle_gaming(self) -> None:
+        """Engage/disengage gaming mode (and therefore anticheat) live."""
+        self._gaming_on = not self._gaming_on
+        try:
+            write_action(self._data_dir, "gaming_mode", self._gaming_on)
+        except Exception as e:  # noqa: BLE001
+            self._status.configure(text=f"Gaming toggle failed: {e}",
+                                   foreground=ERR)
+            self._gaming_on = not self._gaming_on
+            return
+        if self._gaming_on:
+            self._gaming_btn.configure(text="ON — click to DISENGAGE")
+            self._status.configure(
+                text="Gaming mode + anticheat ENGAGING…", foreground=ACCENT)
+        else:
+            self._gaming_btn.configure(text="OFF — click to ENGAGE")
+            self._status.configure(
+                text="Gaming mode + anticheat disengaging…", foreground=DIM)
 
     def _build_card(self, parent: tk.Frame, section: Any, row: int,
                     col: int) -> None:
@@ -365,15 +394,22 @@ class ControlPanel:
                 return
             apply_updates(self._config_path, updates)
             write_reload_signal(self._data_dir)
-            restart_needed = any(
-                self._knobs[p].restart for p in updates)
+            # Fire runtime actions for knobs that aren't read call-time
+            # (LLM preset swap, Kokoro device move) so they take effect
+            # live, not on next restart. The config patch above also
+            # persists them.
+            actions = 0
+            for path in updates:
+                act = self._knobs[path].action
+                if act:
+                    write_action(self._data_dir, act, self._vars[path].get())
+                    actions += 1
             for path in updates:
                 self._initial[path] = str(self._vars[path].get())
             msg = f"Applied {len(updates)} change" \
-                  f"{'s' if len(updates) != 1 else ''} ✓ — live knobs " \
-                  f"hot-reloaded."
-            if restart_needed:
-                msg += "  ↻ marked knobs apply on next start."
+                  f"{'s' if len(updates) != 1 else ''} ✓ — hot-reloaded live."
+            if actions:
+                msg += f"  {actions} applied at next idle moment."
             self._status.configure(text=msg, foreground=OK)
         except Exception as e:  # noqa: BLE001 - surface, never crash
             self._status.configure(text=f"Apply failed: {e}", foreground=ERR)

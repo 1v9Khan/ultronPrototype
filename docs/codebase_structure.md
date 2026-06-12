@@ -260,6 +260,28 @@
 > `I:\Ultron Archive\2026-06-11\`, ~40 GB reclaimed; the live
 > `kokoro_finetune` compat path + all preset GGUFs + locked voice
 > assets verified-referenced and untouched).
+> THEN: the per-response VRAM creep ROOT-CAUSED + FIXED (zero latency).
+> A 5-agent read-only audit + a controlled reproduction harness
+> (embedder / Kokoro / LLM measured in isolation over 40 iters) proved
+> there is NO unbounded leak: the embedder is FastEmbed/ONNX off the
+> torch heap (flat), the llama-cpp LLM has a fixed preallocated KV cache
+> (flat), and Kokoro plateaus after warming. The real creep is the torch
+> caching allocator's RESERVED high-water mark ratcheting to the largest
+> synth on the CUDA-Kokoro path (the user's `kokoro.device: cuda`),
+> compounded by the KPipeline generator never being explicitly closed
+> (retained GPU refs lingered until GC). Two conservative fixes, neither
+> touching the hot path with a sync: (1) `KokoroSpeech._synthesize` now
+> closes the generator in a `finally` (drops refs immediately; no CUDA
+> sync); (2) NEW `Orchestrator._reclaim_idle_vram` calls
+> `torch.cuda.empty_cache()` at the IDLE transition (after the reply is
+> spoken, before the wake-word wait -- off the latency-critical span),
+> gated on `llm.idle_vram_reclaim.min_slack_mb` (192MB default) so it
+> only syncs when there's real reserved bloat. Config
+> `llm.idle_vram_reclaim` (default ON). The audit confirmed every other
+> GPU consumer (embedder / reranker / VLM) is correctly CPU-resident and
+> must STAY there -- moving any GPU-resident model (Kokoro weights, LLM
+> layers, Whisper) to CPU would cost latency, so none were moved (the
+> user's zero-latency-impact constraint). +6 reclaim tests.
 > THEN: startup Docker autostart for SearxNG (NEW
 > `lifecycle/docker_startup.py`): SearxNG is the default first search
 > provider but runs in a Docker container — if Docker is down at boot
@@ -3102,9 +3124,12 @@ process).
   game detector needs them; same API the taskbar uses).
 - Activation: voice toggle ("enable/disable anticheat mode", also
   "tournament mode" — `match_anticheat_toggle` +
-  `Orchestrator._maybe_handle_anticheat_toggle`); automatic with
-  gaming mode (`gaming_mode.anticheat_with_gaming_mode`, default ON —
-  `GamingModeManager._set_anticheat` in engage/disengage `finally`);
+  `Orchestrator._maybe_handle_anticheat_toggle`); HARD-TIED to gaming
+  mode — `GamingModeManager._set_anticheat` makes engage ALWAYS enable
+  anticheat (UNCONDITIONAL + fail-safe even if config is unreadable, so
+  a kernel-anticheat game never launches unprotected);
+  `gaming_mode.anticheat_with_gaming_mode` (default ON) governs only the
+  RELEASE direction (whether disengage auto-turns-off);
   pinned via `gaming_mode.anticheat_safe_mode`. Config errors fail
   OPEN for the probe but the runtime flag always wins, so a broken
   config can never silently disable an explicit toggle.
@@ -3160,11 +3185,21 @@ byte-for-byte restored when it closes — zero residual resources.
   CLOSE. Update = comment-preserving patch + reload signal; ↻-marked
   knobs note "applies on next start".
 - Orchestrator: `_maybe_handle_settings_gui` short-circuit (after the
-  relay branch; `via="settings_gui"`) + `_maybe_reload_config` at the
-  top of every loop iteration (one `os.stat`; a NEWER signal mtime →
-  `reload_config()` swaps the singleton so every call-time
-  `get_config()` read hot-applies, then speaks "Settings updated.";
-  a pre-existing signal at first sight is recorded, never fired).
+  relay branch; `via="settings_gui"`) + `_maybe_reload_config` +
+  `_drain_gui_actions` polled in the IDLE wake-word loop (every ≤0.5 s
+  while the LLM/TTS are guaranteed not mid-turn). A NEWER reload-signal
+  mtime → `reload_config()` swaps the singleton so every call-time
+  `get_config()` read hot-applies; the action channel
+  (`data/gui_action.jsonl`, byte-offset tracked) carries the few knobs
+  that aren't read call-time — `gaming_mode` (engage/disengage, which
+  also drives anticheat), `llm_preset` (`reload_for_preset`),
+  `kokoro_device` (`move_to_device`) — applied at the same safe idle
+  point. **Every exposed knob is hot** (call-time or action; no knob
+  sets `restart`). The genuinely-unsafe-to-hot-swap selectors (TTS/STT
+  engine, mic device, voicepack) were removed from the panel rather
+  than marked restart, so nothing in the GUI needs a restart. The
+  bottom bar has a live **GAMING + ANTICHEAT** toggle that writes the
+  gaming action immediately (engage/disengage within one idle tick).
 - Tests: `tests/settings_gui/test_spec_and_launch.py` (46 — patcher
   matrix incl. comment/blank-block edges, render/read, TWO drift
   guards against the REAL config.yaml (every knob path exists; every

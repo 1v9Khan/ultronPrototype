@@ -421,24 +421,35 @@ def test_gaming_mode_tie_in(monkeypatch: pytest.MonkeyPatch) -> None:
     assert anticheat_active() is False
 
 
-def test_gaming_mode_tie_in_respects_opt_out(
+def test_gaming_mode_drives_anticheat_both_directions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Anticheat is 100% tied: engage -> ON, disengage -> OFF,
+    unconditionally. It is purely a function of gaming-mode state."""
+    from ultron.openclaw_routing.gaming_mode import GamingModeManager
+
+    mgr = GamingModeManager.__new__(GamingModeManager)
+    assert anticheat_active() is False          # off by default
+    mgr._set_anticheat(True)
+    assert anticheat_active() is True           # gaming on -> anticheat on
+    mgr._set_anticheat(False)
+    assert anticheat_active() is False          # gaming off -> anticheat off
+
+
+def test_gaming_mode_engage_enables_even_when_config_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-safe: a broken config can never leave a game unprotected."""
     import ultron.config as config_mod
     from ultron.openclaw_routing.gaming_mode import GamingModeManager
 
-    monkeypatch.setattr(
-        config_mod, "get_config",
-        lambda: SimpleNamespace(
-            gaming_mode=SimpleNamespace(
-                anticheat_with_gaming_mode=False,
-                anticheat_safe_mode=False,
-            ),
-        ),
-    )
+    def boom():
+        raise RuntimeError("config broken")
+
+    monkeypatch.setattr(config_mod, "get_config", boom)
     mgr = GamingModeManager.__new__(GamingModeManager)
     mgr._set_anticheat(True)
-    assert anticheat_active() is False  # opt-out honored
+    assert anticheat_active() is True
 
 
 def test_gaming_mode_config_defaults() -> None:

@@ -182,15 +182,15 @@ class GamingModeManager:
             return self._status
 
     def _set_anticheat(self, active: bool) -> None:
-        """Tie anticheat-safe mode to gaming mode (config-gated, fail-open)."""
-        try:
-            from ultron.config import get_config
+        """Anticheat-safe mode is 100% TIED to gaming mode.
 
-            if not bool(getattr(
-                getattr(get_config(), "gaming_mode", None),
-                "anticheat_with_gaming_mode", True,
-            )):
-                return
+        Engaging gaming mode turns anticheat ON; disengaging turns it
+        OFF. BOTH directions are unconditional -- anticheat is purely a
+        function of gaming-mode state: it never defaults on and never
+        turns on unless gaming mode is on, and it never lingers after
+        gaming mode goes off. The enable direction is fail-safe (a
+        kernel-anticheat game must never launch unprotected)."""
+        try:
             from ultron.safety.anticheat import set_anticheat_active
 
             set_anticheat_active(

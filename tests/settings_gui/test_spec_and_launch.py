@@ -375,3 +375,114 @@ def test_maybe_reload_config_triggers_on_new_signal(
     # Same mtime again -> no double fire.
     o._maybe_reload_config()
     assert reloads == [1]
+
+
+# ---------------------------------------------------------------------------
+# Runtime-action channel (hot toggles: gaming mode / preset / device)
+# ---------------------------------------------------------------------------
+
+
+def test_write_action_appends_jsonl(tmp_path: Path) -> None:
+    import json as _json
+
+    from ultron.settings_gui.spec import ACTION_RELPATH, write_action
+
+    write_action(tmp_path, "gaming_mode", True)
+    write_action(tmp_path, "llm_preset", "qwen3.5-4b")
+    path = tmp_path / ACTION_RELPATH
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    r0, r1 = _json.loads(lines[0]), _json.loads(lines[1])
+    assert r0["action"] == "gaming_mode" and r0["value"] is True
+    assert r1["action"] == "llm_preset" and r1["value"] == "qwen3.5-4b"
+
+
+def test_every_action_knob_has_known_action() -> None:
+    """Action knobs must use an action the orchestrator dispatches."""
+    known = {"gaming_mode", "llm_preset", "kokoro_device"}
+    for section in SECTIONS:
+        for knob in section.knobs:
+            if knob.action is not None:
+                assert knob.action in known, knob.path
+
+
+def test_no_knob_requires_restart() -> None:
+    """The user contract: every exposed knob is hot (call-time or action)."""
+    for section in SECTIONS:
+        for knob in section.knobs:
+            assert knob.restart is False, f"{knob.path} still marked restart"
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator drain of the action channel
+# ---------------------------------------------------------------------------
+
+
+def _orch():
+    o = Orchestrator.__new__(Orchestrator)
+    o._spoken = []
+    o._speak = lambda t: o._spoken.append(t)  # type: ignore[attr-defined]
+    return o
+
+
+def test_drain_gui_actions_dispatches(monkeypatch, tmp_path) -> None:
+    import ultron.config as config_mod
+    from ultron.settings_gui.spec import write_action
+
+    monkeypatch.setattr(config_mod, "PROJECT_ROOT", tmp_path)
+    data = tmp_path / "data"
+    o = _orch()
+
+    applied: list = []
+    o._apply_gui_action = lambda a, v: applied.append((a, v))  # type: ignore
+
+    # First sight of an existing file: skip history, fire nothing.
+    write_action(data, "gaming_mode", True)
+    o._drain_gui_actions()
+    assert applied == []
+
+    # New lines after the offset fire once each.
+    write_action(data, "llm_preset", "qwen3.5-4b")
+    write_action(data, "kokoro_device", "cpu")
+    o._drain_gui_actions()
+    assert applied == [("llm_preset", "qwen3.5-4b"), ("kokoro_device", "cpu")]
+
+    # Re-drain with no new lines: nothing fires again.
+    o._drain_gui_actions()
+    assert len(applied) == 2
+
+
+def test_apply_gui_action_gaming_mode(monkeypatch) -> None:
+    o = _orch()
+    calls: list = []
+
+    class _Mgr:
+        async def engage(self):
+            calls.append("engage")
+
+        async def disengage(self):
+            calls.append("disengage")
+
+    o._resolve_gaming_mode_manager = lambda: _Mgr()  # type: ignore
+    o._apply_gui_action("gaming_mode", True)
+    o._apply_gui_action("gaming_mode", False)
+    assert calls == ["engage", "disengage"]
+    assert any("engaged" in s.lower() for s in o._spoken)
+    assert any("off" in s.lower() for s in o._spoken)
+
+
+def test_apply_gui_action_llm_preset() -> None:
+    o = _orch()
+    swaps: list = []
+    o.llm = SimpleNamespace(
+        reload_for_preset=lambda p: (swaps.append(p) or (True, "ok")))
+    o._apply_gui_action("llm_preset", "qwen3.5-9b")
+    assert swaps == ["qwen3.5-9b"]
+
+
+def test_apply_gui_action_kokoro_device() -> None:
+    o = _orch()
+    moves: list = []
+    o.tts = SimpleNamespace(move_to_device=moves.append)
+    o._apply_gui_action("kokoro_device", "cpu")
+    assert moves == ["cpu"]

@@ -787,17 +787,31 @@ class KokoroSpeech:
             # audio_tensor) tuples per sentence; we concatenate.
             audio_chunks: list[np.ndarray] = []
             generator = self._model(text, voice=self.voice, speed=self.speed)
-            for _gs, _ps, audio in generator:
-                if audio is None:
-                    continue
-                # ``audio`` is a torch Tensor (cpu or cuda). Convert
-                # to numpy float32 [-1, 1].
+            try:
+                for _gs, _ps, audio in generator:
+                    if audio is None:
+                        continue
+                    # ``audio`` is a torch Tensor (cpu or cuda). Convert
+                    # to numpy float32 [-1, 1].
+                    try:
+                        arr = audio.detach().cpu().numpy().astype(np.float32)
+                    except AttributeError:
+                        # Already a numpy array.
+                        arr = np.asarray(audio, dtype=np.float32)
+                    audio_chunks.append(arr)
+            finally:
+                # 2026-06-11 VRAM hygiene: explicitly close the KPipeline
+                # generator so its retained intermediate-tensor refs are
+                # dropped NOW rather than whenever the GC happens to run.
+                # On the CUDA Kokoro path (the user's config) those refs
+                # otherwise linger on the GPU between turns, which is the
+                # per-response VRAM creep. close() just triggers
+                # GeneratorExit on an already-exhausted generator -- no
+                # CUDA sync, zero hot-path latency. Fail-open.
                 try:
-                    arr = audio.detach().cpu().numpy().astype(np.float32)
-                except AttributeError:
-                    # Already a numpy array.
-                    arr = np.asarray(audio, dtype=np.float32)
-                audio_chunks.append(arr)
+                    generator.close()
+                except Exception:                             # noqa: BLE001
+                    pass
         except Exception as e:                                # noqa: BLE001
             raise KokoroSynthError(f"Kokoro inference failed: {e}") from e
 

@@ -396,6 +396,14 @@ stt:
 
 llm:
   provider: "llama_cpp"        # in-process llama-cpp-python; never ollama for this model
+  # Idle-time VRAM reclaim: empty the torch CUDA caching allocator's
+  # reserved-but-unused blocks at the IDLE transition (after the reply is
+  # spoken, before the wake-word wait) -- caps the per-response reserved
+  # high-water-mark ratchet from CUDA Kokoro. Runs off the hot path =
+  # zero TTFT impact; only fires when slack exceeds min_slack_mb.
+  idle_vram_reclaim:
+    enabled: true
+    min_slack_mb: 192.0
   # Model preset is the single switch. Editing this one line flips
   # model_path + n_ctx + draft_model_path together (resolved from
   # src/ultron/config.py:LLM_PRESETS). Override individual keys below
@@ -1484,12 +1492,13 @@ gaming_mode:
   # never touch another process. nvidia-smi VRAM probes and Ultron's
   # self-scoped process management (own children only) are analyzed-safe
   # and unaffected. Voice toggle: "enable/disable anticheat mode".
-  # 2026-06-11: PINNED ON at the user's request (Valorant sessions).
-  # Survives restarts. Unpin any time: say "disable anticheat mode"
-  # (runtime, until next restart) or flip this knob in the control
-  # panel ("pull up your settings" -> Gaming / Anticheat) and APPLY.
-  anticheat_safe_mode: true            # true = pinned permanently on
-  anticheat_with_gaming_mode: true     # auto-engage with "gaming mode"
+  # Anticheat-safe mode is 100% TIED to gaming mode (2026-06-11): it is
+  # ON exactly when gaming mode is engaged, and OFF otherwise. It never
+  # defaults on and never turns on unless gaming mode is on. Leave
+  # anticheat_safe_mode FALSE -- setting it true is a manual always-on
+  # override (independent of gaming mode) and is NOT the normal path.
+  anticheat_safe_mode: false           # manual override only; normally false
+  anticheat_with_gaming_mode: true     # (retained for back-compat; tie is unconditional)
   plugins_to_disable:
     - desktop-control
     - windows-control

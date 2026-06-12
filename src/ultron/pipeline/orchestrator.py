@@ -1783,6 +1783,88 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             logger.warning("config hot-reload failed: %s", e)
 
+    def _drain_gui_actions(self) -> None:
+        """Apply runtime actions the settings panel requested (gaming-mode
+        toggle, LLM preset swap, Kokoro device move).
+
+        Called ONLY from the idle wake-word poll loop, where the LLM /
+        TTS are guaranteed not to be mid-turn -- so a model swap or
+        device move is safe and concurrency-free. Tracks a byte offset
+        into ``data/gui_action.jsonl`` so each line fires once. Fully
+        fail-open; one bad line never blocks the rest."""
+        try:
+            import json
+            import os
+
+            from ultron.config import PROJECT_ROOT
+
+            path = os.path.join(str(PROJECT_ROOT), "data", "gui_action.jsonl")
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                return
+            offset = getattr(self, "_gui_action_offset", None)
+            if offset is None:
+                # First sight: skip existing history, only act on NEW
+                # lines (a stale file from a prior session never fires).
+                self._gui_action_offset = size
+                return
+            if size <= offset:
+                return
+            with open(path, "r", encoding="utf-8") as fh:
+                fh.seek(offset)
+                new = fh.read()
+                self._gui_action_offset = fh.tell()
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("gui action read failed: %s", e)
+            return
+        for line in new.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                self._apply_gui_action(
+                    str(rec.get("action", "")), rec.get("value"),
+                )
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning("gui action apply failed: %s", e)
+
+    def _apply_gui_action(self, action: str, value) -> None:
+        """Dispatch one settings-panel runtime action (idle context)."""
+        if action == "gaming_mode":
+            manager = self._resolve_gaming_mode_manager()
+            if manager is None:
+                return
+            import asyncio
+
+            if bool(value):
+                # Close the panel-spawned console-less process? No -- the
+                # panel stays; just engage. Mirrors the voice intent.
+                asyncio.run(manager.engage())
+                self._speak("Gaming mode engaged.")
+            else:
+                asyncio.run(manager.disengage())
+                self._speak("Gaming mode off.")
+            logger.info("gui action: gaming_mode -> %s", bool(value))
+        elif action == "llm_preset":
+            preset = str(value or "").strip()
+            llm = getattr(self, "llm", None)
+            if preset and llm is not None and hasattr(llm, "reload_for_preset"):
+                ok, msg = llm.reload_for_preset(preset)
+                logger.info("gui action: llm_preset -> %s (%s)", preset, ok)
+                self._speak(
+                    f"Switched to {preset}." if ok else
+                    f"Could not switch model: {msg}"
+                )
+        elif action == "kokoro_device":
+            device = str(value or "").strip().lower()
+            tts = getattr(self, "tts", None)
+            if device in {"cpu", "cuda"} and tts is not None \
+                    and hasattr(tts, "move_to_device"):
+                tts.move_to_device(device)
+                logger.info("gui action: kokoro_device -> %s", device)
+
     def _maybe_handle_settings_gui(self, user_text: str) -> bool:
         """Voice-launched control panel: "pull up your settings" spawns
         the detached settings GUI process; "close the settings" kills
@@ -1815,6 +1897,42 @@ class Orchestrator:
         self._settings_gui_pid = None
         self._speak("Closed." if closed else "The panel isn't open.")
         return True
+
+    def _reclaim_idle_vram(self) -> None:
+        """Release torch's reserved-but-unused CUDA blocks during idle.
+
+        Runs at the IDLE transition (after the response is spoken, before
+        blocking on the wake word) so it never costs turn latency. The
+        per-response VRAM creep is the torch caching allocator ratcheting
+        its reserved high-water mark to the largest synth (CUDA Kokoro);
+        ``empty_cache`` returns the unused slack to the driver. Gated on
+        a meaningful slack threshold so it only syncs when there's real
+        bloat to reclaim (an idle no-op otherwise). Config-flagged;
+        fully fail-open (no torch / no CUDA / disabled -> no-op)."""
+        try:
+            from ultron.config import get_config
+
+            cfg = getattr(get_config().llm, "idle_vram_reclaim", None)
+            if cfg is None or not getattr(cfg, "enabled", False):
+                return
+            import torch
+
+            if not torch.cuda.is_available():
+                return
+            reserved = torch.cuda.memory_reserved()
+            allocated = torch.cuda.memory_allocated()
+            slack_mb = (reserved - allocated) / 1e6
+            threshold_mb = float(getattr(cfg, "min_slack_mb", 192.0))
+            if slack_mb < threshold_mb:
+                return
+            torch.cuda.empty_cache()
+            logger.info(
+                "idle VRAM reclaim: released ~%.0fMB reserved slack "
+                "(reserved=%.0fMB allocated=%.0fMB)",
+                slack_mb, reserved / 1e6, allocated / 1e6,
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("idle VRAM reclaim skipped: %s", e)
 
     def _is_relay_command(self, user_text: str) -> bool:
         """True iff ``user_text`` is a strict relay command (or a relay
@@ -4088,6 +4206,16 @@ class Orchestrator:
                 else:
                     self._state = State.IDLE
                     follow_up_until = None
+                    # 2026-06-11 VRAM hygiene: reclaim the torch caching-
+                    # allocator's reserved-but-unused blocks now that the
+                    # turn is fully done (response spoken). This runs in
+                    # the mic-IDLE window right before blocking on the
+                    # wake word -- OFF the latency-critical span -- so it
+                    # has zero TTFT impact while capping the per-response
+                    # reserved high-water-mark ratchet (the CUDA-Kokoro
+                    # creep). Gated on meaningful slack so it only fires
+                    # when there's real bloat to release.
+                    self._reclaim_idle_vram()
                     trace.tlog(
                         logger, "loop:waiting_for_wake_word",
                         state=self._state.value,
@@ -4655,6 +4783,14 @@ class Orchestrator:
         while not self._shutdown.is_set():
             chunk = self.audio.get_chunk(timeout=0.5)
             if chunk is None:
+                # Idle heartbeat (~every 0.5s, LLM/TTS guaranteed idle):
+                # apply any settings-panel config reload + runtime
+                # actions HERE so GUI changes take effect live (hot)
+                # without waiting for the next turn, and safely (no
+                # generation in flight). Both are mtime/offset-gated and
+                # fail-open.
+                self._maybe_reload_config()
+                self._drain_gui_actions()
                 continue
             self.ring.write(chunk)
             if self.wake.process(chunk):

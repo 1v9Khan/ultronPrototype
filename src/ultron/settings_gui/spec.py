@@ -31,16 +31,22 @@ __all__ = [
     "Section",
     "SECTIONS",
     "RELOAD_SIGNAL_RELPATH",
+    "ACTION_RELPATH",
     "read_value",
     "render_value",
     "patch_config_text",
     "apply_updates",
     "write_reload_signal",
+    "write_action",
 ]
 
 # The orchestrator watches this file (relative to the repo data dir);
 # the GUI touches it after a successful apply to request a hot reload.
 RELOAD_SIGNAL_RELPATH = "config_reload.signal"
+# Runtime-action channel: the GUI appends one JSON line per action
+# (gaming-mode toggle, LLM preset swap, Kokoro device move); the
+# orchestrator drains it at its idle poll point and applies each live.
+ACTION_RELPATH = "gui_action.jsonl"
 
 
 @dataclass(frozen=True)
@@ -55,7 +61,14 @@ class Knob:
         choices: allowed values for ``choice`` knobs.
         minimum / maximum: numeric bounds (display + validation).
         restart: True when the value is read at construction time and
-            only applies on the next Ultron start.
+            only applies on the next Ultron start. (No knob in the
+            shipped catalogue sets this -- every exposed knob is hot,
+            either call-time or via ``action``.)
+        action: runtime action the orchestrator fires on apply for a
+            value that isn't read call-time (``"llm_preset"`` reloads
+            the model; ``"kokoro_device"`` moves the TTS engine). The
+            config is still patched so the change survives a restart;
+            the action makes it take effect live.
         help: one-line tooltip text.
     """
 
@@ -66,6 +79,7 @@ class Knob:
     minimum: Optional[float] = None
     maximum: Optional[float] = None
     restart: bool = False
+    action: Optional[str] = None
     help: str = ""
 
 
@@ -96,35 +110,34 @@ SECTIONS: tuple[Section, ...] = (
              help="Comma-separated callout names beyond the agent roster"),
     )),
     Section("Voice", (
-        Knob(("tts", "engine"), "TTS engine", "choice",
-             choices=("kokoro", "xtts_v3", "piper_rvc"), restart=True),
-        Knob(("tts", "kokoro", "voice"), "Kokoro voice", "str", restart=True),
+        # Kokoro device move is hot (gaming mode already swaps it live).
         Knob(("tts", "kokoro", "device"), "Kokoro device", "choice",
-             choices=("cuda", "cpu"), restart=True),
+             choices=("cuda", "cpu"), action="kokoro_device",
+             help="Move the TTS engine between GPU and CPU live"),
         Knob(("tts", "kokoro", "speed"), "Speech speed", "float",
              minimum=0.8, maximum=1.3),
         Knob(("tts", "pause_ms"), "Sentence pause (ms)", "int",
              minimum=0, maximum=1000),
         Knob(("tts", "output_watch", "enabled"), "Blip watcher", "bool",
              help="Analyze every clip for audio artifacts"),
+        Knob(("tts", "output_watch", "waveform_enabled"), "Waveform pane",
+             "bool"),
     )),
     Section("Hearing", (
-        Knob(("stt", "engine"), "STT engine", "choice",
-             choices=("moonshine", "whisper", "parakeet"), restart=True),
         Knob(("wake_word", "threshold"), "Wake-word threshold", "float",
              minimum=0.0, maximum=1.0),
         Knob(("vad", "threshold"), "VAD threshold", "float",
              minimum=0.0, maximum=1.0),
         Knob(("vad", "min_silence_duration_ms"), "End-of-turn silence (ms)",
              "int", minimum=100, maximum=5000),
-        Knob(("audio", "input_device"), "Microphone", "str", restart=True),
-        Knob(("audio", "input_gain_db"), "Input gain (dB)", "float",
-             minimum=-20, maximum=30, restart=True),
         Knob(("audio", "barge_in_enabled"), "Barge-in", "bool",
              help="Interrupt Ultron by speaking over him"),
     )),
     Section("Brain", (
-        Knob(("llm", "preset"), "Model preset", "str", restart=True),
+        # Preset swap is hot via reload_for_preset (the gaming-mode
+        # LLM swap proves it's safe at idle).
+        Knob(("llm", "preset"), "Model preset", "str", action="llm_preset",
+             help="Hot-swaps the local model"),
         Knob(("llm", "default_temperature"), "Temperature", "float",
              minimum=0.0, maximum=2.0),
         Knob(("llm", "default_max_tokens"), "Max tokens", "int",
@@ -171,13 +184,9 @@ SECTIONS: tuple[Section, ...] = (
     Section("Gaming / Anticheat", (
         Knob(("gaming_mode", "enabled"), "Gaming mode voice trigger",
              "bool"),
-        Knob(("gaming_mode", "anticheat_with_gaming_mode"),
-             "Anticheat with gaming mode", "bool",
-             help="Auto-block all desktop interaction when gaming mode engages"),
-        Knob(("gaming_mode", "anticheat_safe_mode"),
-             "Anticheat pinned ON", "bool",
-             help="Permanently block desktop interaction (voice + relay stay live)"),
         Knob(("gaming_mode", "llm_preset"), "Gaming LLM preset", "str"),
+        Knob(("gaming_mode", "toggle_docker"), "Stop Docker in game",
+             "bool", help="Free Docker/WSL RAM while gaming"),
     )),
 )
 
@@ -332,3 +341,23 @@ def write_reload_signal(data_dir: Path) -> Path:
     signal.parent.mkdir(parents=True, exist_ok=True)
     signal.write_text(str(time.time()), encoding="utf-8")
     return signal
+
+
+def write_action(data_dir: Path, action: str, value: Any) -> Path:
+    """Append one runtime-action request to the action channel.
+
+    Args:
+        data_dir: the repo data dir (holds the channel file).
+        action: action name (``"gaming_mode"`` / ``"llm_preset"`` /
+            ``"kokoro_device"``).
+        value: the action payload (bool / str).
+
+    Returns:
+        The action-channel path.
+    """
+    path = data_dir / ACTION_RELPATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"ts": time.time(), "action": action, "value": value}
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+    return path

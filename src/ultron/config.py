@@ -690,9 +690,31 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+class IdleVramReclaimConfig(_Strict):
+    """Idle-time CUDA caching-allocator reclaim (2026-06-11 VRAM hygiene).
+
+    The per-response VRAM creep is the torch caching allocator ratcheting
+    its reserved high-water mark to the largest synth (CUDA Kokoro). When
+    enabled, the orchestrator calls ``torch.cuda.empty_cache()`` at the
+    IDLE transition -- after the response is spoken, before blocking on
+    the wake word -- so it NEVER costs turn latency, gated on
+    ``min_slack_mb`` of reserved-but-unused VRAM so it only syncs when
+    there's real bloat to release. Fully fail-open.
+    """
+
+    enabled: bool = True
+    # Only empty_cache when reserved-minus-allocated exceeds this; below
+    # it the reclaim is a no-op (avoids needless device syncs on idle).
+    min_slack_mb: float = Field(default=192.0, ge=0.0)
+
+
 class LLMConfig(_Strict):
     # Pinned to llama_cpp per feedback_llm_runtime_decision.md (2026-05-08).
     provider: Literal["llama_cpp"] = "llama_cpp"
+    # Idle-time VRAM reclaim (see class). Zero hot-path latency by design.
+    idle_vram_reclaim: IdleVramReclaimConfig = Field(
+        default_factory=IdleVramReclaimConfig,
+    )
     # 4B optimization plan Stage A — model preset.
     #   "qwen3.5-9b"        — pre-4B-plan default; 9B GGUF + n_ctx=8192,
     #                         no draft model. Retained for swap-back.
