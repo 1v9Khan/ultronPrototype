@@ -291,12 +291,20 @@ _GROUP_MENTION_RE = re.compile(
 # agent. A CLOSED vocabulary keeps the matcher strict ("tell Sarah
 # I'll be late" never relays); extend per-game/per-friend via the
 # ``relay_speech.addressee_names`` config list.
+# The full 29-agent VALORANT roster (as of 2026: + Miks, Veto). A CLOSED
+# vocabulary keeps the matcher strict. The spaced / homophone spellings
+# ("kay o", "kill joy", "cipher", "gecko", "mix", "way lay") cover how the
+# STT commonly renders the trickier names so "tell my cypher to smoke"
+# still routes to a teammate; ``_NAME_CANON`` maps every variant back to the
+# real agent's display name.
 DEFAULT_ADDRESSEE_NAMES: tuple[str, ...] = (
     "astra", "breach", "brimstone", "chamber", "clove", "cypher",
     "deadlock", "fade", "gekko", "harbor", "iso", "jett", "kayo",
-    "kay o", "killjoy", "kill joy", "neon", "omen", "phoenix", "raze",
-    "reyna", "sage", "skye", "sova", "tejo", "viper", "vyse", "waylay",
-    "yoru",
+    "kay o", "killjoy", "kill joy", "miks", "neon", "omen", "phoenix",
+    "raze", "reyna", "sage", "skye", "sova", "tejo", "veto", "viper",
+    "vyse", "waylay", "yoru",
+    # common STT homophones of the trickier names
+    "cipher", "gecko", "mix", "way lay",
 )
 
 
@@ -478,6 +486,11 @@ _NAME_CANON: dict[str, str] = {
     "kayo": "Kayo",
     "kill joy": "Killjoy",
     "killjoy": "Killjoy",
+    # STT homophones -> the real agent's display name.
+    "cipher": "Cypher",
+    "gecko": "Gekko",
+    "mix": "Miks",
+    "way lay": "Waylay",
 }
 
 
@@ -694,6 +707,13 @@ _REPHRASE_PROMPT = (
     "off-angle hiding spots; 'crossfire' = two players covering one angle "
     "from opposite sides; 'aimlabs is free' = a jab that their aim is bad. "
     "If a term is unfamiliar, relay it unchanged rather than guessing.\n"
+    "VALORANT agents (any of these names is the user's TEAMMATE playing that "
+    "agent -- treat it as a person, keep the name, never translate it to a "
+    "common word): Jett, Phoenix, Raze, Reyna, Yoru, Neon, Iso, Waylay, "
+    "Brimstone, Viper, Omen, Astra, Harbor, Clove, Miks, Sova, Breach, Skye, "
+    "KAY/O, Fade, Gekko, Tejo, Cypher, Sage, Killjoy, Chamber, Deadlock, "
+    "Vyse, Veto. (Cipher=Cypher, Gecko=Gekko, Mix=Miks are speech-to-text "
+    "mishears of the same agents.)\n"
     "{context_block}"
     "{recent_block}\n"
     "{payload_block}\n\n"
