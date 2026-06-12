@@ -215,7 +215,7 @@ def test_first_person_instruction_present_in_prompt() -> None:
     build_relay_line(
         cmd, generate_fn=lambda p: captured.append(p) or iter(["x y"]),
     )
-    assert "first person" in captured[0]
+    assert "first person" in captured[0].lower()
 
 
 def test_named_fallback_line() -> None:

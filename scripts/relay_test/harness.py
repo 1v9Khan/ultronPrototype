@@ -156,8 +156,17 @@ def score_asr(intended_line: str, heard: str) -> list[str]:
 
 # --- stages -----------------------------------------------------------------
 
-def run(stage: str, limit: int | None, run_tag: str) -> int:
+def run(stage: str, limit: int | None, run_tag: str,
+        categories: set | None = None) -> int:
     cases = build_corpus()
+    if categories:
+        cases = [c for c in cases if c.category in categories]
+    # Deterministic shuffle so identical templates (29 "calm down" lines, the
+    # location grid) aren't fired back-to-back -- that clusters the recent-line
+    # ring and provokes the LLM to copy the previous output, which never
+    # happens in real spread-out play. Seeded for reproducible runs.
+    import random as _random
+    _random.Random(42).shuffle(cases)
     if limit:
         cases = cases[:limit]
     out_dir = ROOT / "logs" / "relay_test"
@@ -246,9 +255,14 @@ def run(stage: str, limit: int | None, run_tag: str) -> int:
 # --- model helpers ----------------------------------------------------------
 
 def _load_llm():
-    """Construct the production LLM engine the same way the orchestrator does."""
+    """Construct the production LLM engine the same way the e2e harness /
+    orchestrator does (LLMEngine(memory=...))."""
     from kenning.llm.inference import LLMEngine
-    eng = LLMEngine()
+    from kenning.memory.embedder import HybridEmbedder
+    from kenning.memory.qdrant_store import ConversationMemory
+    embedder = HybridEmbedder()
+    memory = ConversationMemory(embedder=embedder)
+    eng = LLMEngine(memory=memory)
     if hasattr(eng, "warmup"):
         try:
             eng.warmup()
@@ -297,8 +311,11 @@ def main() -> int:
                     choices=["matcher", "rephrase", "audio", "asr", "full"])
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--tag", default="r1")
+    ap.add_argument("--category", default=None,
+                    help="comma-separated categories to restrict to")
     args = ap.parse_args()
-    return run(args.stage, args.limit, args.tag)
+    cats = set(args.category.split(",")) if args.category else None
+    return run(args.stage, args.limit, args.tag, cats)
 
 
 if __name__ == "__main__":
