@@ -79,6 +79,60 @@ def test_construct_requires_embedder() -> None:
         ProjectIndex(embedder=None)
 
 
+def test_shared_client_construction_does_not_reopen_path(
+    tmp_path: Path, embedder
+) -> None:
+    # 2026-06-12 Qdrant double-open fix: local-mode Qdrant allows ONE
+    # client per path. Pre-fix, constructing a second ProjectIndex on
+    # the same path raised "already accessed by another instance";
+    # borrowing the open client must work end-to-end.
+    idx1 = ProjectIndex(
+        embedder=embedder,
+        qdrant_path=tmp_path / "qdrant",
+        collection_name="proj_owner",
+    )
+    try:
+        idx2 = ProjectIndex(
+            embedder=embedder,
+            client=idx1._client,
+            collection_name="proj_borrowed",
+        )
+        assert idx1._owns_client is True
+        assert idx2._owns_client is False
+        entry = idx2.upsert(_make_digest("shared_app", tmp_path / "shared_app"))
+        assert entry is not None
+        assert idx2.get(entry.project_id) is not None
+    finally:
+        idx1.close()
+
+
+def test_borrowed_client_close_is_noop(tmp_path: Path, embedder) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    fake = Mock()
+    fake.get_collections.return_value = SimpleNamespace(collections=[])
+    fake.scroll.return_value = ([], None)
+    # qdrant_path is ignored for client construction when client= is
+    # passed, but it anchors the mkdir -- keep it in tmp_path so the
+    # test never writes the real data/ tree.
+    idx = ProjectIndex(
+        embedder=embedder, client=fake, collection_name="c",
+        qdrant_path=tmp_path / "qdrant",
+    )
+    idx.close()
+    fake.close.assert_not_called()
+
+
+def test_owned_client_close_releases_lock(tmp_path: Path, embedder) -> None:
+    p = tmp_path / "qdrant"
+    idx1 = ProjectIndex(embedder=embedder, qdrant_path=p, collection_name="c1")
+    idx1.close()
+    # Succeeds only if close() freed the embedded store's .lock.
+    idx2 = ProjectIndex(embedder=embedder, qdrant_path=p, collection_name="c2")
+    idx2.close()
+
+
 # ---------------------------------------------------------------------------
 # upsert + get
 # ---------------------------------------------------------------------------

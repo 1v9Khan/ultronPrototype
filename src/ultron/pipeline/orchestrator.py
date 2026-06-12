@@ -3110,7 +3110,24 @@ class Orchestrator:
         if cfg.index_enabled and embedder is not None:
             try:
                 from ultron.coding.project_index import ProjectIndex
-                project_index = ProjectIndex(embedder=embedder)
+                # 2026-06-12: local-mode Qdrant allows ONE client per
+                # path, and ConversationMemory already holds the
+                # data/qdrant lock -- a second QdrantClient(path=...)
+                # raised "already accessed by another instance" on
+                # EVERY boot, silently degrading the supervisor to
+                # registry-only. Borrow the memory's open client (the
+                # same pattern WebResultsCache uses); ProjectIndex
+                # falls back to its own client when none is passed
+                # (scripts / tests / memory-disabled installs).
+                shared_client = None
+                if self.memory is not None:
+                    try:
+                        shared_client = self.memory._client  # noqa: SLF001
+                    except Exception:                       # noqa: BLE001
+                        shared_client = None
+                project_index = ProjectIndex(
+                    embedder=embedder, client=shared_client,
+                )
             except Exception as e:                                  # noqa: BLE001
                 logger.warning(
                     "Supervisor: ProjectIndex construction failed (%s); "

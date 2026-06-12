@@ -17,6 +17,13 @@ Threading model:
   * Read methods (search, get, list) acquire the lock briefly.
   * Writes are synchronous (no background queue -- digests fire
     rarely enough that the overhead is fine).
+  * When constructed with a BORROWED client (the production wiring:
+    the orchestrator passes ConversationMemory's embedded client,
+    because local-mode Qdrant allows one open client per path),
+    upserts (bridge COMPLETE-listener thread) and searches (dispatch
+    path) share that client with ConversationMemory's writer thread
+    and the web cache -- the same already-proven concurrent pattern
+    WebResultsCache uses on the disjoint ``web_results`` collection.
 
 Fail-open:
   * Qdrant unavailable / connection error -> all methods return
@@ -169,6 +176,7 @@ class ProjectIndex:
         qdrant_path: Optional[Path] = None,
         collection_name: Optional[str] = None,
         recent_cache_size: int = 50,
+        client: Optional[Any] = None,
     ) -> None:
         """Construct + open the underlying Qdrant collection.
 
@@ -181,10 +189,22 @@ class ProjectIndex:
                 makes that boundary explicit).
             qdrant_path: directory for the embedded Qdrant store. None
                 pulls from config (same path as conversation memory).
+                Ignored for client construction when ``client`` is
+                passed (the path still feeds logging).
             collection_name: override the default collection name.
                 None pulls from config (``qdrant.collections.projects``).
             recent_cache_size: max entries kept in the in-process
                 cache. List/get hits the cache first.
+            client: an already-open Qdrant client to BORROW instead of
+                opening a new one. Local-mode Qdrant allows ONE open
+                client per path -- a second ``QdrantClient(path=...)``
+                against ``data/qdrant`` raises "already accessed by
+                another instance" (the live bug that forced the
+                supervisor to registry-only on every boot). The
+                orchestrator passes ConversationMemory's client here,
+                mirroring the WebResultsCache borrow pattern. The
+                OWNER controls the close lifecycle; :meth:`close` is a
+                no-op on borrowed clients.
         """
         from ultron.config import get_config, resolve_path
 
@@ -213,9 +233,15 @@ class ProjectIndex:
             else cfg.qdrant.collections.projects
         )
 
-        # Lazy import so a missing qdrant-client doesn't crash on import.
-        from qdrant_client import QdrantClient
-        self._client = QdrantClient(path=str(self.path))
+        self._owns_client = client is None
+        if client is not None:
+            # Borrowed client (see the ``client`` docstring above).
+            self._client = client
+        else:
+            # Lazy import so a missing qdrant-client doesn't crash on
+            # import.
+            from qdrant_client import QdrantClient
+            self._client = QdrantClient(path=str(self.path))
         self._ensure_collection()
         self._warm_recent_cache()
 
@@ -567,6 +593,20 @@ class ProjectIndex:
             return int(getattr(info, "points_count", 0) or 0)
         except Exception:                                           # noqa: BLE001
             return 0
+
+    def close(self) -> None:
+        """Release the underlying Qdrant client IF this index owns it.
+
+        Borrowed clients (``client=`` passed at construction) are
+        never closed here -- the owner (ConversationMemory in the
+        production wiring) controls that lifecycle. Never raises.
+        """
+        if not getattr(self, "_owns_client", False):
+            return
+        try:
+            self._client.close()
+        except Exception as e:                                      # noqa: BLE001
+            logger.debug("ProjectIndex.close failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
