@@ -157,6 +157,33 @@
 > verified; live search turn green), phase 11 = 2/2 with REAL tokens
 > (create -> narration -> sandbox run exact-stdout -> edit follow-up ->
 > re-run).
+> **Then: the measured latency/resource pass (campaign Phase 5).**
+> Voice-baseline re-measure from main with a THREE-WAY CODE A/B in the
+> SAME environment: the 2026-05-26 locked-baseline code (`29ffe49`) reads
+> TTFT 281ms / TTS 117ms / peak 6538MB TODAY; the pre-session tip
+> (`1c43e29`) reads 266/109/6538; session HEAD reads 282/109/6596-6598.
+> All three statistically identical (run noise +-24ms) -> **zero code
+> regression at any point, including this session**; the apparent drift
+> from the locked absolutes (TTFT 172 -> ~270, TTS 78 -> ~109) is
+> ENVIRONMENTAL (GPU driver/thermal/desktop era between May 26 and
+> June 10), not code. STT byte-identical at 16ms throughout. **VRAM peak
+> 6596-6598MB <= the locked 6664MB even in absolute terms** (loaded
+> 6130-6174 <= 6254; Ultron's own load delta ~4242MB vs the locked-era
+> ~4223MB). Prefill-growth suspects ruled out empirically: the skills
+> block is 0 chars on baseline queries; the composed system prompt is
+> ~1k tokens; USER.md is 82 bytes. The new guardrail brake's RELATIVE
+> pre/post-snapshot design is exactly the form that survives this class
+> of environmental drift. `baselines.json` updated with the HEAD run.
+> Optimization landed: the ~2s pure-CPU cross-encoder reranker warm in
+> `Orchestrator.__init__` moved to a DAEMON THREAD so it overlaps the
+> GPU model loads instead of serialising in front of them (consumers
+> already lazy-load on miss -> a still-warming thread degrades to the
+> pre-existing path; fail-open). The LLM/Kokoro CUDA-init overlap was
+> deliberately NOT bundled -- concurrent CUDA init can shift peak-VRAM
+> behaviour, so it needs its own measured pass against the locked
+> contract. SearxNG restored (Docker Desktop started; container
+> `ultron-searxng` maps 8888->8080) -- live search provider latency back
+> to ~1.5s from the ~17s degraded-fallback path.
 > Earlier sweep state: **9156 passed / 35 skipped / 0 failed (~103s)** with the
 > loaded-machine ignore recipe (below); ~9182 no-deselect (now 9199 on an idle
 > machine, no deselect, 2026-06-10 baseline). The +8 skipped vs earlier are

@@ -514,22 +514,33 @@ class Orchestrator:
         # singleton at startup. Without this, the first turn that
         # exercises memory retrieval OR web-search snippet ranking
         # pays a ~2 s cold model load on the user's first interaction.
-        # Loading at construct time amortises that cost into the
-        # already-slow startup window. Fail-open: any error falls
-        # back to the lazy-load path inside the reranker itself.
+        # Production-hardening: warm on a DAEMON THREAD so the ~2 s
+        # pure-CPU sentence-transformers load overlaps the GPU model
+        # loads below instead of serialising in front of them (the
+        # reranker shares no state with the LLM / TTS / STT loads, and
+        # every consumer already lazy-loads on miss, so a still-warming
+        # or failed thread degrades to the pre-existing lazy path).
+        def _warm_reranker() -> None:
+            try:
+                from ultron.memory.reranker import get_shared_reranker
+                t0 = time.monotonic()
+                shared = get_shared_reranker()
+                # Touch the model so the underlying sentence-transformers
+                # ``CrossEncoder`` is loaded into memory + ONNX-compiled.
+                shared._ensure_model()
+                logger.info(
+                    "Cross-encoder reranker warmed in %.2fs (background)",
+                    time.monotonic() - t0,
+                )
+            except Exception as e:                                      # noqa: BLE001
+                logger.debug("Reranker warmup skipped (%s)", e)
+
         try:
-            from ultron.memory.reranker import get_shared_reranker
-            t0 = time.monotonic()
-            shared = get_shared_reranker()
-            # Touch the model so the underlying sentence-transformers
-            # ``CrossEncoder`` is loaded into memory + ONNX-compiled.
-            shared._ensure_model()
-            logger.info(
-                "Cross-encoder reranker warmed in %.2fs",
-                time.monotonic() - t0,
-            )
+            threading.Thread(
+                target=_warm_reranker, name="reranker-warm", daemon=True,
+            ).start()
         except Exception as e:                                          # noqa: BLE001
-            logger.debug("Reranker warmup skipped (%s)", e)
+            logger.debug("Reranker warmup thread skipped (%s)", e)
         self.llm = LLMEngine(memory=self.memory)
         # Latency hygiene: warm the LLM so the first real turn doesn't pay the
         # cold-context prefill (~100-200 ms of TTFT shaved off the user's first
