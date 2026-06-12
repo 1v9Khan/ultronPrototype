@@ -12,6 +12,10 @@
 >
 > **Validating HEAD:** **production-hardening campaign (2026-05-29, CLOSED OUT
 > 2026-06-11: consolidated e2e suite 12/12 green from main; unit sweep green)**
+> **+ the 2026-06-11 live-dogfood session layer** (monitored live run ->
+> findings list; teammate voice relay grown into a conversational game-chat
+> agent; TTS output-quality watcher; voice-launched settings control panel
+> with config hot-reload; sweep **9435 passed / 39 skipped / 0 failed**).
 > -- a campaign to wire every recent catalog port into one cohesive unit,
 > complete the voice-controlled coding engineer end to end, build a real-usage
 > e2e suite, make the system pervasively self-improving, and cut latency +
