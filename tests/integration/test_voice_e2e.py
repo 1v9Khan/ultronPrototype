@@ -123,6 +123,7 @@ def _assert_no_scenario_errors(scenarios: Any) -> None:
         )
 
 
+@pytest.mark.timeout(900)
 @pytest.mark.parametrize("phase_name", _PHASES)
 def test_e2e_phase(harness: Any, phase_name: str) -> None:
     """Run one full-pipeline phase end-to-end; assert every scenario passed.
@@ -130,6 +131,13 @@ def test_e2e_phase(harness: Any, phase_name: str) -> None:
     Each phase drives real input through the real stack and records a
     ``Scenario`` per case. We fail the pytest (with the offending scenario
     names + error messages) if any scenario recorded an error.
+
+    Explicit 900 s budget (R6): each phase loads a full model stack
+    (Kokoro / Moonshine / Qwen / embedder) and several run REAL external
+    work -- live web search, and the ``coding`` phase waits on two real
+    coding-CLI subprocess tasks (up to ~320 s each) -- so the default
+    30 s per-test deadline cannot apply. The suite is GPU-gated and
+    never part of the 90 s unit sweep.
     """
     fn = getattr(harness, f"phase_{phase_name}", None)
     assert fn is not None, f"harness has no phase_{phase_name}()"
