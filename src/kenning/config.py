@@ -249,7 +249,11 @@ class VADConfig(_Strict):
 class WakeWordConfig(_Strict):
     name: str = "kenning"
     model_path: str = "models/openwakeword/kenning.onnx"
-    fallback_model: str = "hey_jarvis"
+    # Fallback when the selected model is missing. Resolved FIRST as a
+    # custom ONNX next to the selected one (models/openwakeword/ultron.onnx)
+    # -- a pretrained openWakeWord word is used only if that is absent too.
+    # NEVER hey_jarvis: the user requires ultron as the fallback.
+    fallback_model: str = "ultron"
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     cooldown_seconds: float = 1.5
 

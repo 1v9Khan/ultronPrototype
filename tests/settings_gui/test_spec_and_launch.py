@@ -399,7 +399,7 @@ def test_write_action_appends_jsonl(tmp_path: Path) -> None:
 
 def test_every_action_knob_has_known_action() -> None:
     """Action knobs must use an action the orchestrator dispatches."""
-    known = {"gaming_mode", "llm_preset", "kokoro_device"}
+    known = {"gaming_mode", "llm_preset", "kokoro_device", "wake_word"}
     for section in SECTIONS:
         for knob in section.knobs:
             if knob.action is not None:

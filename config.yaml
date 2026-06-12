@@ -222,9 +222,14 @@ vad:
 # ---------------------------------------------------------------------------
 
 wake_word:
+  # "kenning" and "ultron" are side-by-side custom models in
+  # models/openwakeword/. The active word is `name`; hot-swap between them
+  # from the settings panel's "Wake word" dropdown (no restart). When the
+  # selected model is missing the detector falls back to the custom
+  # `fallback_model` ONNX -- NEVER hey_jarvis.
   name: "kenning"
   model_path: "models/openwakeword/kenning.onnx"
-  fallback_model: "hey_jarvis"   # used (with warning) if custom model is missing
+  fallback_model: "ultron"       # custom ultron.onnx; used if kenning.onnx is missing
   threshold: 0.5
   cooldown_seconds: 1.5         # debounce repeated triggers
 

@@ -1864,6 +1864,16 @@ class Orchestrator:
                     and hasattr(tts, "move_to_device"):
                 tts.move_to_device(device)
                 logger.info("gui action: kokoro_device -> %s", device)
+        elif action == "wake_word":
+            word = str(value or "").strip().lower()
+            wake = getattr(self, "wake", None)
+            if word and wake is not None and hasattr(wake, "reload_for_word"):
+                ok, msg = wake.reload_for_word(word)
+                logger.info("gui action: wake_word -> %s (%s)", word, msg)
+                self._speak(
+                    f"Wake word is now {word}." if ok else
+                    f"Could not switch wake word: {msg}"
+                )
 
     def _get_spotify_client(self):
         """Lazily build (and cache) the Spotify client from the

@@ -138,6 +138,11 @@ SECTIONS: tuple[Section, ...] = (
              "bool"),
     )),
     Section("Hearing", (
+        # Hot-swaps the live detector between the side-by-side custom
+        # models (kenning.onnx / ultron.onnx). ultron is also the fallback.
+        Knob(("wake_word", "name"), "Wake word", "choice",
+             choices=("kenning", "ultron"), action="wake_word",
+             help="Hot-swap the wake word; ultron is the fallback"),
         Knob(("wake_word", "threshold"), "Wake-word threshold", "float",
              minimum=0.0, maximum=1.0),
         Knob(("vad", "threshold"), "VAD threshold", "float",
