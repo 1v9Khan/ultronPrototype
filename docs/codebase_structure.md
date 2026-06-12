@@ -10,7 +10,42 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD: `0827fbf`** (2026-06-12 late evening — wake-word
+> **Validating HEAD: `c51d6da`** (2026-06-12 NAP SESSION — 6 commits on
+> `main` over `4f17af7`: `10434a2` qdrant lock-guardrail, `c8653a1` 2nd
+> OBS-capture audio output, `1eddfbb` relay batch 2, `c51d6da` loud-burst
+> trim fix). Four things, all hand-reviewed on the actual gaming 3B +
+> waveforms analyzed personally — full detail in the memory topic
+> `project_kenning_2026_06_12_relay_batch2_broadcast_burst.md`:
+> (1) **Broadcast mirror** — NEW `src/kenning/audio/broadcast.py`
+> `BroadcastSink` tees ALL Kenning speech (normal + relay) to
+> `audio.broadcast_device` (""=off) for an isolated OBS capture source,
+> zero speaker-path latency (daemon + drop-oldest queue), mono→stereo;
+> tapped in Kokoro `_play`/`speak_stream` + the relay path; GUI "Broadcast
+> output (OBS)" dropdown (Voice section) + `broadcast_device` gui_action.
+> A SEPARATE device from the relay mic B-bus — teammates never hear
+> non-team audio. Relay mic-routing re-confirmed (normal→speakers,
+> relay→mic, broadcast→capture).
+> (2) **Qdrant lock guardrail** — `ConversationMemory._open_client_with_retry`
+> (5×@0.4s on a lock-race → `QdrantUnavailableError`) + the relay harness
+> uses a PID-unique temp qdrant with atexit cleanup.
+> (3) **Relay batch 2** — greet/farewell curated Ultron pools
+> (`DEFAULT_GREETING/VICTORY/DEFEAT/FAREWELL_LINES`,
+> `_GREET_RE`/`_FAREWELL_RE`/`_farewell_directive`/`_DIRECTIVE_POOLS`);
+> full eco/ult/enemy-read/self-playstyle vocabulary; `max_line_chars`
+> 280→360 with `_cap_line` trimming ONLY at a sentence boundary (fixes
+> mid-sentence truncation); banter engages the specific insult (no stock
+> "bots"); identity AI/bot/streamer declares Ultron; killed an
+> "<agent> has ult → They're vents" hallucination + a count-drop.
+> Corpus 672 cases. Known 3B nuance: first-person playstyle occasionally
+> drops "I'm" (intent always conveyed).
+> (4) **Loud fragmented post-gap burst fix** — `spectral_smooth.
+> _strip_post_gap_blip` uses the last SUSTAINED content run (≥60 ms) for
+> speech-end, catching the -20 dB fragmented blip that defeated both the
+> run-discard and the faint-only strip; reverb/speech-safe; official
+> `analyze_clip` 5/5→0/70 trailing bursts. NEW dev tools
+> `scripts/relay_test/{reprobe,waveform_check,burst_diag}.py`.
+>
+> **Earlier validating HEAD: `0827fbf`** (2026-06-12 late evening — wake-word
 > shipped + Phase B Valorant relay testing, pushed to origin/main;
 > doc-bumps ride on top). **The product is named Kenning** -- package
 > `src/kenning/`, env-var prefix `KENNING_*`, runtime dirs `~/.kenning`,
