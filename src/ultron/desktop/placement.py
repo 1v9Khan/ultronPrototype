@@ -80,6 +80,9 @@ def move_window_to_monitor(
         lock state -- a ``True`` here means the call succeeded, not
         that the user-perceived result is guaranteed.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('window_move')
     if fullscreen and maximize:
         return PlacementResult(
             success=False, hwnd=hwnd, monitor_index=monitor.index,
@@ -139,6 +142,9 @@ def move_window_to_monitor(
 
 def maximize_window(hwnd: int) -> PlacementResult:
     """Maximize on whichever monitor the window currently sits."""
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('window_move')
     try:
         win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
     except Exception as e:  # noqa: BLE001
@@ -148,6 +154,9 @@ def maximize_window(hwnd: int) -> PlacementResult:
 
 def minimize_window(hwnd: int) -> PlacementResult:
     """Minimize the window to the taskbar."""
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('window_move')
     try:
         win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
     except Exception as e:  # noqa: BLE001
@@ -157,6 +166,9 @@ def minimize_window(hwnd: int) -> PlacementResult:
 
 def restore_window(hwnd: int) -> PlacementResult:
     """Restore (un-minimize / un-maximize) the window."""
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('window_move')
     try:
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
     except Exception as e:  # noqa: BLE001
@@ -174,6 +186,9 @@ def focus_window(hwnd: int) -> PlacementResult:
     BringWindowToTop as a fallback. The result reports success of the
     call, not the user-perceived outcome.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('window_focus')
     _restore_if_minimized(hwnd)
     try:
         try:

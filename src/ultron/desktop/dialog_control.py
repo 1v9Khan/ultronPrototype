@@ -320,6 +320,9 @@ def find_dialogs(
         Empty when no dialogs are open or :func:`enumerate_windows`
         raised.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('dialog_read')
     try:
         windows = enumerate_windows(
             include_minimized=include_minimized,
@@ -384,6 +387,9 @@ def read_dialog(
         :class:`DialogContent` snapshot. ``None`` when pywinauto
         unavailable or the connect fails.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('dialog_read')
     hwnd = _coerce_hwnd(source)
     spec = _connect_to_window(hwnd)
     if spec is None:
@@ -596,6 +602,9 @@ def click_dialog_button(
             explicit-intent matcher can verify the user actually asked
             for the action.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('dialog_click')
     name = (button_name or "").strip()
     if not name:
         return DialogActionResult(
@@ -691,6 +700,9 @@ def type_into_dialog_field(
             open-dialog filename, search prompts).
         user_text: forwarded to the safety validator.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('dialog_type')
     if text is None:
         return DialogActionResult(
             success=False, action="type_field",
@@ -808,6 +820,9 @@ def dismiss_dialog(
             order. Useful when the caller knows the dialog has an
             "Apply" or "Skip" button that should be preferred.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('dialog_click')
     hwnd = _coerce_hwnd(source)
     spec = _connect_to_window(hwnd)
     if spec is None:
@@ -902,6 +917,9 @@ def wait_for_dialog(
     Returns:
         The first matching :class:`DialogInfo`, or None on timeout.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('dialog_read')
     if timeout_s <= 0:
         return None
 

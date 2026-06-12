@@ -18,6 +18,7 @@ from ultron.audio.relay_speech import (
     RelayCommand,
     build_relay_line,
     match_relay_command,
+    match_relay_toggle,
     play_to_device,
     resolve_relay_device,
 )
@@ -638,3 +639,128 @@ def test_is_relay_command_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     o = _bare_orchestrator()
     _patch_config(monkeypatch, _relay_cfg(enabled=False))
     assert o._is_relay_command("tell my team to save this round") is False
+
+
+# ---------------------------------------------------------------------------
+# Streaming safety: explicit commands ONLY + the session mute toggle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The user's exact stream-narration examples: descriptive
+        # speech about the team must NEVER relay.
+        "I want my team to smoke window",
+        "why is my team not smoking window",
+        "I wish my team would rotate faster",
+        "my team should really full buy here",
+        "I told my team to save and they didn't",
+        "why won't clove smoke window",
+        "clove is not smoking window again",
+    ],
+)
+def test_stream_narration_never_relays(text: str) -> None:
+    assert match_relay_command(text) is None
+
+
+@pytest.mark.parametrize(
+    "text,addressee,payload",
+    [
+        # The user's exact explicit-command examples DO relay.
+        ("Ask my team to smoke window every round", "team",
+         "smoke window every round"),
+        ("ask my clove why she is not smoking window", "Clove",
+         "why she is not smoking window"),
+        ("ask my team why no one is buying armor", "team",
+         "why no one is buying armor"),
+        ("tell my sova to drone first", "Sova", "drone first"),
+    ],
+)
+def test_explicit_commands_relay(text: str, addressee: str,
+                                 payload: str) -> None:
+    cmd = match_relay_command(text)
+    assert cmd is not None, text
+    assert cmd.addressee == addressee
+    assert cmd.payload == payload
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Mute the team chat.", False),
+        ("mute the relay", False),
+        ("turn off the team relay", False),
+        ("stop talking to my team", False),
+        ("don't talk to my teammates", False),
+        ("Unmute the relay.", True),
+        ("turn on the team chat", True),
+        ("enable the relay", True),
+        ("you can talk to my team again", True),
+        ("start talking to my team again", True),
+        # Non-toggles.
+        ("the relay is cool", None),
+        ("stop", None),
+        ("mute the tv", None),
+        ("tell my team to rotate B", None),
+    ],
+)
+def test_match_relay_toggle(text: str, expected) -> None:
+    assert match_relay_toggle(text) == expected
+
+
+def test_orchestrator_toggle_mutes_and_unmutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    o = _bare_orchestrator()
+    _patch_config(monkeypatch, _relay_cfg())
+    assert o._maybe_handle_relay_toggle("mute the team chat") is True
+    assert o._relay_runtime_enabled is False
+    assert "muted" in o._spoken[-1]
+    assert o._maybe_handle_relay_toggle("unmute the relay") is True
+    assert o._relay_runtime_enabled is True
+    assert "back on" in o._spoken[-1]
+    assert o._maybe_handle_relay_toggle("what time is it") is False
+
+
+def test_orchestrator_toggle_requires_feature_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    o = _bare_orchestrator()
+    _patch_config(monkeypatch, _relay_cfg(enabled=False))
+    assert o._maybe_handle_relay_toggle("mute the team chat") is False
+
+
+def test_muted_relay_command_acknowledged_not_transmitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ultron.audio.relay_speech as relay_mod
+
+    o = _bare_orchestrator()
+    o.tts = SimpleNamespace(
+        _synthesize=lambda text: (np.ones(10, dtype=np.int16), 24000),
+    )
+    o._relay_runtime_enabled = False
+    _patch_config(monkeypatch, _relay_cfg())
+
+    def must_not_play(pcm, sr, device, **kw):  # pragma: no cover
+        raise AssertionError("muted relay must not transmit")
+
+    monkeypatch.setattr(relay_mod, "resolve_relay_device", lambda c: 25)
+    monkeypatch.setattr(relay_mod, "play_to_device", must_not_play)
+
+    assert o._maybe_handle_relay_speech("tell my team to rotate B") is True
+    assert "muted" in o._spoken[0]
+
+
+def test_is_relay_command_true_for_toggle_and_while_muted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Toggle phrases bypass the addressing gate too, and a muted
+    relay-shaped utterance still routes to the handler (for the muted
+    notice) instead of falling into the LLM path."""
+    o = _bare_orchestrator()
+    o._relay_runtime_enabled = False
+    _patch_config(monkeypatch, _relay_cfg())
+    assert o._is_relay_command("unmute the relay") is True
+    assert o._is_relay_command("tell my team to rotate B") is True

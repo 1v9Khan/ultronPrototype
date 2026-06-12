@@ -243,6 +243,72 @@ def test_watcher_close_is_idempotent(tmp_path: Path) -> None:
     w.close()
 
 
+def test_waveform_stream_records_every_clip(tmp_path: Path) -> None:
+    wave = tmp_path / "audio_waveform.jsonl"
+    w = OutputQualityWatcher(jsonl_path=tmp_path / "q.jsonl",
+                             waveform_path=wave)
+    try:
+        w.submit(_pad(_speech_like()), SR, label="clean clip")
+        bad = _pad(_speech_like(), lead_ms=0.0).copy()
+        bad[:200] = 0.5
+        w.submit(bad, SR, label="bad clip")
+        assert _wait_until(lambda: w.stats()["clips_seen"] >= 2)
+        assert _wait_until(
+            lambda: wave.is_file()
+            and len(wave.read_text().splitlines()) >= 2
+        )
+        records = [json.loads(line) for line in wave.read_text().splitlines()]
+        assert len(records) == 2
+        clean = next(r for r in records if r["label"] == "clean clip")
+        flagged = next(r for r in records if r["label"] == "bad clip")
+        assert clean["findings"] == []
+        assert 0 < len(clean["env"]) <= 120
+        assert max(clean["env"]) > 0.1
+        assert any(f["kind"] == "hard_onset" for f in flagged["findings"])
+    finally:
+        w.close()
+
+
+def test_waveform_stream_size_bounded(tmp_path: Path) -> None:
+    wave = tmp_path / "audio_waveform.jsonl"
+    w = OutputQualityWatcher(jsonl_path=tmp_path / "q.jsonl",
+                             waveform_path=wave)
+    try:
+        # Pre-fill past the cap; the next append must rewrite keeping
+        # only the newest lines.
+        filler = json.dumps({"label": "old", "env": [0.0] * 120}) + "\n"
+        wave.write_text(filler * 1400, encoding="utf-8")
+        assert wave.stat().st_size > w._WAVEFORM_MAX_BYTES
+        w.submit(_pad(_speech_like()), SR, label="newest")
+        assert _wait_until(
+            lambda: wave.stat().st_size <= w._WAVEFORM_MAX_BYTES
+        )
+        lines = wave.read_text().splitlines()
+        assert len(lines) <= w._WAVEFORM_KEEP_LINES
+        assert json.loads(lines[-1])["label"] == "newest"
+    finally:
+        w.close()
+
+
+def test_waveform_stream_disabled_writes_nothing(tmp_path: Path) -> None:
+    w = OutputQualityWatcher(jsonl_path=tmp_path / "q.jsonl",
+                             waveform_path=None)
+    try:
+        w.submit(_pad(_speech_like()), SR, label="clip")
+        assert _wait_until(lambda: w.stats()["clips_seen"] == 1)
+        assert not (tmp_path / "audio_waveform.jsonl").exists()
+    finally:
+        w.close()
+
+
+def test_output_watch_waveform_config_defaults() -> None:
+    from ultron.config import OutputWatchConfig
+
+    cfg = OutputWatchConfig()
+    assert cfg.waveform_enabled is True
+    assert cfg.waveform_jsonl_filename == "audio_waveform.jsonl"
+
+
 # ---------------------------------------------------------------------------
 # Singleton + config gate
 # ---------------------------------------------------------------------------

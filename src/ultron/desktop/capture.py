@@ -147,6 +147,9 @@ class ScreenCapture:
         Returns None on any failure (missing monitor, mss error). Caller
         treats None as "couldn't see the screen right now".
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('screenshot')
         if isinstance(monitor, int):
             mons = enumerate_monitors()
             if not (0 <= monitor < len(mons)):
@@ -166,6 +169,9 @@ class ScreenCapture:
 
     def capture_all_monitors(self) -> list[Screenshot]:
         """Capture every connected monitor in index order."""
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('screenshot')
         results: list[Screenshot] = []
         for mon in enumerate_monitors():
             shot = self.capture_monitor(mon)
@@ -182,6 +188,9 @@ class ScreenCapture:
         height: int,
     ) -> Optional[Screenshot]:
         """Capture an arbitrary rectangle in virtual-screen coordinates."""
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('screenshot')
         if width <= 0 or height <= 0:
             return None
         return self._capture_region(
@@ -368,6 +377,9 @@ def find_image_on_screen(
     ``Optional[TemplateMatch]`` and the orchestrator can simply branch
     on ``None`` instead of catching exceptions.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('find_image_on_screen')
     if not isinstance(template_path, str) or not template_path:
         return None
     try:
@@ -491,6 +503,9 @@ def get_pixel_color(x: int, y: int) -> Optional[tuple[int, int, int]]:
         ``(r, g, b)`` 3-tuple of 0-255 integers when successful, or
         ``None`` on failure.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('get_pixel_color')
     try:
         # Local import to avoid pulling pyautogui at module load (mss
         # is the standard capture path; pyautogui is only needed here).

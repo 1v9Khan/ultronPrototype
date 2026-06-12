@@ -248,6 +248,18 @@
 > (`_maybe_reload_config`, one os.stat per loop tick); CLOSE exits the
 > process — pipeline untouched throughout. Two drift-guard tests pin
 > the knob catalogue to the real config.yaml.
+> THEN (same day): the relay mute toggle + stream-safe matching
+> (session mute "mute the team chat"; narration can never relay;
+> possessive + question-word callouts); the panel's OUTPUT WAVEFORM
+> pane (per-clip envelope stream from the blip watcher, red markers at
+> finding positions); **anticheat-safe mode** (NEW
+> `safety/anticheat.py` — see the module section: 49 module guards
+> across 14 desktop modules + validator BLOCK_HARD + voice/gaming-mode
+> toggles; audio + team relay stay live); and a DISK CLEANING run
+> (dead training assets + 22 stale worktrees + 1 unreferenced GGUF →
+> `I:\Ultron Archive\2026-06-11\`, ~40 GB reclaimed; the live
+> `kokoro_finetune` compat path + all preset GGUFs + locked voice
+> assets verified-referenced and untouched).
 > Earlier sweep state: **9156 passed / 35 skipped / 0 failed (~103s)** with the
 > loaded-machine ignore recipe (below); ~9182 no-deselect (now 9199 on an idle
 > machine, no deselect, 2026-06-10 baseline). The +8 skipped vs earlier are
@@ -2962,6 +2974,13 @@ config (default ON).
   counters; `close()` joins the thread.
 - `get_output_watcher()` / `reset_output_watcher()` — config-gated,
   fail-open process singleton.
+- **Waveform stream (2026-06-11):** the watcher also writes a compact
+  per-clip envelope record for EVERY clip (clean or flagged) to
+  `logs/audio_waveform.jsonl` — 120-point |peak| envelope + finding
+  kinds/positions; size-bounded (rewritten keeping the newest ~80
+  records past 768 KB). The control panel's OUTPUT WAVEFORM pane tails
+  it and renders each clip with red dashed markers at the exact blip
+  positions. `tts.output_watch.waveform_enabled` (default ON).
 - Hook: tail of `KokoroSpeech._synthesize` — a try/except enqueue after
   the int16 conversion (covers speak / speak_stream / the voice relay;
   ack-cache hits skip analysis since those clips are static +
@@ -2977,6 +2996,51 @@ config (default ON).
   mirroring the observation-writer guard) so stubbed-synth unit tests
   never spawn analyzer threads or touch the live logs dir; the
   watcher's own tests opt back in.
+
+#### `safety/anticheat.py` (NEW 2026-06-11 — anticheat-safe mode)
+
+A process-wide hard kill-switch for every OS-interaction surface,
+built for kernel-level anticheats (Vanguard/EAC/BattlEye). While
+active, Ultron cannot inject input, capture the screen, read pixels /
+templates / OCR, walk UIA trees, automate the clipboard / dialogs /
+elements, manipulate or launch windows, drive the browser CDP, or use
+the bridge's desktop tools — while the AUDIO pipeline stays fully
+alive (mic, STT, LLM, TTS, the VoiceMeeter team relay: shared-mode
+audio APIs, the same surface Discord uses; they interact with no other
+process).
+
+- Enforcement is BELT-AND-SUSPENDERS, three layers: **(1)** 49 module
+  guards inserted at the top of every OS-touching public entry across
+  14 modules (`input_control` ×5, `capture` ×5, `uia` ×10,
+  `clipboard` ×2, `dialog_control` ×6, `element_click` ×3,
+  `windows` ×2, `placement` ×5, `launcher` ×3, `ocr` ×2,
+  `sequence.run`, `browser_use._invoke` — the single subprocess choke
+  point for all ~25 browser methods —, `screen_context`,
+  bridge `DesktopTool` ×3), each raising `AnticheatBlockedError`
+  BEFORE any OS API is imported or touched; **(2)** a
+  `ToolCallValidator.check` pre-check returning audited BLOCK_HARD for
+  every blocked tool class (`is_blocked_tool` taxonomy); **(3)** the
+  orchestrator voice toggle + intent layer.
+- Analyzed and deliberately NOT blocked (documented in the module
+  docstring): audio capture/playback, `nvidia-smi` global GPU queries
+  (same surface as MSI Afterburner), `psutil` self-scoped process
+  management (Ultron's OWN children / own priority only — no foreign
+  process handles), shell-level window-metadata reads
+  (`enumerate_windows` / `get_foreground_window` — the gaming-mode
+  game detector needs them; same API the taskbar uses).
+- Activation: voice toggle ("enable/disable anticheat mode", also
+  "tournament mode" — `match_anticheat_toggle` +
+  `Orchestrator._maybe_handle_anticheat_toggle`); automatic with
+  gaming mode (`gaming_mode.anticheat_with_gaming_mode`, default ON —
+  `GamingModeManager._set_anticheat` in engage/disengage `finally`);
+  pinned via `gaming_mode.anticheat_safe_mode`. Config errors fail
+  OPEN for the probe but the runtime flag always wins, so a broken
+  config can never silently disable an explicit toggle.
+- Tests: `tests/safety/test_anticheat.py` (55) — incl. an **AST audit
+  test** that re-parses every guarded source file and fails if ANY of
+  the 49 guards is ever refactored away, representative
+  raise-before-OS-touch checks, the validator pre-check + audit, the
+  toggle matrix, and the gaming-mode tie-in with opt-out.
 
 #### `settings_gui/` (NEW 2026-06-11 — voice-launched control panel)
 
@@ -3086,12 +3150,27 @@ role-played). Driven by `relay_speech` config (default ON).
   `relay_speech.follow_up_seconds` (default 120 s vs the ~30 s warm
   window), so after one "Ultron, …" the whole in-game conversation flows
   bare: "ask sage for a heal", "tell them nice try", …
-- Tests: `tests/audio/test_relay_speech.py` (73 — matcher matrix incl.
-  the named-agent + compose callout matrix, rephrase fallbacks per mode,
-  recent-lines prompt + cap, the addressing-gate probe, the ring +
-  follow-up arming, fake-stream playback incl. float32 conversion +
-  teardown-on-error, device fail-open, orchestrator wiring via
-  `Orchestrator.__new__`).
+- **Streaming safety (2026-06-11):** every pattern is anchored to an
+  imperative relay verb, so narration ("I want my team to smoke
+  window", "why is my team not smoking window") can NEVER relay — only
+  explicit commands ("ask my team to smoke window every round") do.
+  Possessive named callouts ("ask **my** clove …") and question-word
+  ask-payloads ("ask my clove **why** she is not smoking window" →
+  relayed as a question) are supported. `match_relay_toggle` +
+  `Orchestrator._maybe_handle_relay_toggle`: "mute the team chat" /
+  "stop talking to my team" vs "unmute the relay" / "you can talk to my
+  team again" flip a SESSION mute (`_relay_runtime_enabled`); while
+  muted a matched relay command is acknowledged ("Team relay is muted…")
+  but never transmitted and never role-played; toggle phrases also
+  bypass the follow-up addressing gate. The persistent master switch is
+  `relay_speech.enabled` (config + control panel).
+- Tests: `tests/audio/test_relay_speech.py` (102 — matcher matrix incl.
+  the named-agent + compose callout matrix, the stream-narration
+  negative matrix + explicit-command positives, the mute-toggle matrix +
+  muted-acknowledge wiring, rephrase fallbacks per mode, recent-lines
+  prompt + cap, the addressing-gate probe, the ring + follow-up arming,
+  fake-stream playback incl. float32 conversion + teardown-on-error,
+  device fail-open, orchestrator wiring via `Orchestrator.__new__`).
 
 #### `audio/ring_buffer.py`
 - `class RingBuffer` — fixed-duration audio backlog (pre-speech window)

@@ -1750,18 +1750,27 @@ class Orchestrator:
         return True
 
     def _is_relay_command(self, user_text: str) -> bool:
-        """True iff ``user_text`` is a strict relay command and the relay
-        feature is enabled. Used by the follow-up addressing gate: a
-        relay match is definitionally addressed to Ultron, so it
-        bypasses the zero-shot classifier (no wake word needed inside
-        the window). Fail-open to False."""
+        """True iff ``user_text`` is a strict relay command (or a relay
+        mute/unmute toggle) and the relay feature is enabled. Used by
+        the follow-up addressing gate: these are definitionally
+        addressed to Ultron, so they bypass the zero-shot classifier
+        (no wake word needed inside the window). NOTE: the session mute
+        deliberately does NOT gate this -- a relay-shaped utterance
+        while muted still routes to the handler, which answers with the
+        muted notice instead of letting it fall into the LLM path.
+        Fail-open to False."""
         try:
-            from ultron.audio.relay_speech import match_relay_command
+            from ultron.audio.relay_speech import (
+                match_relay_command,
+                match_relay_toggle,
+            )
             from ultron.config import get_config
 
             cfg = get_config().relay_speech
             if not getattr(cfg, "enabled", False):
                 return False
+            if match_relay_toggle(user_text) is not None:
+                return True
             return match_relay_command(
                 user_text,
                 names=getattr(cfg, "addressee_names", None) or None,
@@ -1769,6 +1778,64 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             logger.debug("relay command probe failed: %s", e)
             return False
+
+    def _maybe_handle_anticheat_toggle(self, user_text: str) -> bool:
+        """Anticheat-safe mode voice toggle: "enable anticheat mode" /
+        "disable anticheat mode" (also "tournament mode"). While active,
+        EVERY desktop-interaction surface is hard-blocked at three
+        layers; the audio pipeline (mic / STT / LLM / TTS / the
+        VoiceMeeter relay) stays fully alive. Also auto-ties to gaming
+        mode via ``gaming_mode.anticheat_with_gaming_mode``. Strict
+        matcher -> ordinary utterances fall through."""
+        try:
+            from ultron.safety.anticheat import (
+                match_anticheat_toggle,
+                set_anticheat_active,
+            )
+
+            verdict = match_anticheat_toggle(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("anticheat toggle probe failed: %s", e)
+            return False
+        if verdict is None:
+            return False
+        set_anticheat_active(verdict, "voice toggle")
+        self._speak(
+            "Anticheat mode engaged. Desktop control, screen capture, "
+            "and input are locked out. Voice and team chat stay live."
+            if verdict else
+            "Anticheat mode off. Full desktop control restored."
+        )
+        return True
+
+    def _maybe_handle_relay_toggle(self, user_text: str) -> bool:
+        """Session mute for the team relay: "mute the team chat" /
+        "stop talking to my team" vs "unmute the relay" / "you can talk
+        to my team again". Streaming-safe: while muted, relay commands
+        are acknowledged but NEVER transmitted. The mute is
+        session-scoped; the persistent master switch is the
+        ``relay_speech.enabled`` knob (also in the control panel).
+        Strict matcher -> ordinary utterances fall through."""
+        try:
+            from ultron.audio.relay_speech import match_relay_toggle
+            from ultron.config import get_config
+
+            if not getattr(get_config().relay_speech, "enabled", False):
+                return False
+            verdict = match_relay_toggle(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("relay toggle probe failed: %s", e)
+            return False
+        if verdict is None:
+            return False
+        self._relay_runtime_enabled = verdict
+        logger.info("relay:toggle | enabled=%s", verdict)
+        self._speak(
+            "Team relay is back on." if verdict else
+            "Team relay muted. I won't speak to your team until you "
+            "turn it back on."
+        )
+        return True
 
     def _maybe_handle_relay_speech(self, user_text: str) -> bool:
         """Voice relay -- "tell my teammates X" speaks a rephrased line on
@@ -1800,6 +1867,13 @@ class Orchestrator:
         )
         if command is None:
             return False
+        # Session mute (streaming safety): a matched relay command while
+        # muted is acknowledged -- never transmitted, never role-played.
+        if not getattr(self, "_relay_runtime_enabled", True):
+            self._speak(
+                "Team relay is muted. Say 'unmute the relay' first."
+            )
+            return True
         # Session ring of lines already spoken into the channel: fed to
         # the rephrase prompt so wording varies between calls (no
         # soundboard feel) and consecutive callouts read as one
@@ -4203,6 +4277,43 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="scrap",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Anticheat-safe mode toggle: "enable anticheat
+                    # mode" hard-blocks every desktop-interaction
+                    # surface (input/capture/windows/clipboard/...)
+                    # while keeping voice + the team relay alive.
+                    if self._maybe_handle_anticheat_toggle(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="anticheat_toggle",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Relay mute toggle: "mute the team chat" / "you can
+                    # talk to my team again" -- session-scoped streaming
+                    # safety switch. Checked BEFORE the relay handler.
+                    if self._maybe_handle_relay_toggle(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="relay_toggle",
                             follow_up=bool(follow_up_until),
                         )
                         continue

@@ -181,6 +181,25 @@ class GamingModeManager:
         with self._lock:
             return self._status
 
+    def _set_anticheat(self, active: bool) -> None:
+        """Tie anticheat-safe mode to gaming mode (config-gated, fail-open)."""
+        try:
+            from ultron.config import get_config
+
+            if not bool(getattr(
+                getattr(get_config(), "gaming_mode", None),
+                "anticheat_with_gaming_mode", True,
+            )):
+                return
+            from ultron.safety.anticheat import set_anticheat_active
+
+            set_anticheat_active(
+                active,
+                "gaming mode engaged" if active else "gaming mode disengaged",
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("anticheat tie-in failed: %s", e)
+
     async def engage(self) -> GamingModeReport:
         """Disable each configured plugin (and optionally Docker)."""
         with self._lock:
@@ -215,6 +234,10 @@ class GamingModeManager:
             # desktop primitives short-circuit. Done in ``finally`` so
             # even a partial-failure engage still gates the surface.
             set_gaming_mode_active(True)
+            # 2026-06-11: anticheat-safe mode rides along with gaming
+            # mode (config-gated, default ON) -- hard-blocks every
+            # desktop-interaction surface while the game runs.
+            self._set_anticheat(True)
             if self._on_engaged is not None:
                 try:
                     self._on_engaged()
@@ -260,6 +283,7 @@ class GamingModeManager:
             # Track 6: clear the process-global flag so the desktop
             # surface re-engages immediately on disengage.
             set_gaming_mode_active(False)
+            self._set_anticheat(False)
             if self._on_disengaged is not None:
                 try:
                     self._on_disengaged()

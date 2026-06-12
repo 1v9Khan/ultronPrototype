@@ -111,6 +111,9 @@ class DesktopTool:
         timeout_s: Optional[float] = None,
     ) -> DesktopScreenshotResult:
         """Capture a screenshot of the full screen or a named window."""
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('desktop_screenshot')
         params: Dict[str, Any] = {}
         if target:
             params["target"] = target
@@ -155,6 +158,9 @@ class DesktopTool:
         *,
         timeout_s: Optional[float] = None,
     ) -> ListWindowsResult:
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('desktop_list_windows')
         try:
             result = await self.client.invoke_tool(
                 self.list_windows_tool, {}, agent_id=self.agent_id,
@@ -191,6 +197,9 @@ class DesktopTool:
         *,
         timeout_s: Optional[float] = None,
     ) -> FindWindowResult:
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('desktop_find_window')
         if not (query or "").strip():
             return FindWindowResult(
                 success=False, error="empty window query",

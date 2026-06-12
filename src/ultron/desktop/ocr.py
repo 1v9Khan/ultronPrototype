@@ -310,6 +310,9 @@ def ocr_screen_region(
     Returns:
         :class:`OCRResult`.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('ocr')
     region = (int(x), int(y), int(width), int(height))
     if width <= 0 or height <= 0:
         return OCRResult(
@@ -364,6 +367,9 @@ def ocr_screen_monitor(
         lang: Tesseract language.
         capture: optional :class:`ScreenCapture` instance for tests.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('ocr')
     cap = capture
     if cap is None:
         try:

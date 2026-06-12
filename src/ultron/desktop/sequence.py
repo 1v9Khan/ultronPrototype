@@ -430,6 +430,9 @@ class DesktopSequenceRunner:
         executed. The :class:`SequenceResult` carries the prefix of
         executed steps plus their screenshot pairs.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('desktop_sequence')
         start = self._clock()
         executed: list[StepResult] = []
         pairs: list[tuple[ScreenshotRef, ScreenshotRef]] = []

@@ -265,6 +265,45 @@ class ToolCallValidator:
                 reason="safety.enabled=false",
             )
 
+        # Anticheat-safe mode (2026-06-11): while active, EVERY desktop
+        # tool class (input injection / screen capture / window
+        # manipulation / clipboard / dialog / element / browser
+        # automation) is hard-blocked BEFORE rule evaluation -- this is
+        # the audit-trail layer on top of the per-module guards, so
+        # every blocked attempt lands in the ledger. Fail-open on probe
+        # errors (the module guards still apply).
+        try:
+            from ultron.safety.anticheat import (
+                BLOCKED_NOTICE,
+                anticheat_active,
+                is_blocked_tool,
+            )
+
+            if anticheat_active() and is_blocked_tool(ctx.tool_name):
+                reason = (
+                    "anticheat-safe mode active: desktop-interaction "
+                    f"tool {ctx.tool_name!r} is disabled in game"
+                )
+                try:
+                    self.audit_log.record(
+                        rule_id="anticheat_safe_mode",
+                        verdict=Verdict.BLOCK_HARD.value,
+                        tool_name=ctx.tool_name,
+                        capability=ctx.capability,
+                        reason=reason,
+                        context={"user_text_preview": ctx.user_text[:120]},
+                    )
+                except Exception as e:
+                    logger.warning("safety audit write failed: %s", e)
+                return ValidatorVerdict(
+                    verdict=Verdict.BLOCK_HARD,
+                    reason=reason,
+                    triggered_rule_id="anticheat_safe_mode",
+                    user_message=BLOCKED_NOTICE,
+                )
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("anticheat pre-check failed open: %s", e)
+
         results: list[RuleResult] = []
         for rule in self.rules:
             rule_id = getattr(rule, "rule_id", rule.__class__.__name__)

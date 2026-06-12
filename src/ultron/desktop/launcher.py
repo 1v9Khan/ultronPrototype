@@ -413,6 +413,9 @@ class AppLauncher:
             user_text: most recent user utterance, threaded into the
                 safety validator's :class:`RuleContext`.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('app_launch')
         entry = self.find_app(app_name)
         if entry is None:
             return LaunchResult(
@@ -471,6 +474,9 @@ class AppLauncher:
         here only controls window placement (fill the monitor as a
         regular window).
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('app_launch')
         entry = self.find_app("chrome")
         if entry is None:
             return LaunchResult(success=False, error="chrome not in registry")
@@ -519,6 +525,9 @@ class AppLauncher:
         here. Small-window default: 1024x768; set ``small_window=False``
         for a fullscreen-style window on the target monitor.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('app_launch')
         q = (query or "").strip()
         if not q:
             return LaunchResult(success=False, error="empty image query")

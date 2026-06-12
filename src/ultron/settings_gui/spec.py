@@ -168,6 +168,17 @@ SECTIONS: tuple[Section, ...] = (
              "bool"),
         Knob(("deep_research", "enabled"), "Deep research", "bool"),
     )),
+    Section("Gaming / Anticheat", (
+        Knob(("gaming_mode", "enabled"), "Gaming mode voice trigger",
+             "bool"),
+        Knob(("gaming_mode", "anticheat_with_gaming_mode"),
+             "Anticheat with gaming mode", "bool",
+             help="Auto-block all desktop interaction when gaming mode engages"),
+        Knob(("gaming_mode", "anticheat_safe_mode"),
+             "Anticheat pinned ON", "bool",
+             help="Permanently block desktop interaction (voice + relay stay live)"),
+        Knob(("gaming_mode", "llm_preset"), "Gaming LLM preset", "str"),
+    )),
 )
 
 

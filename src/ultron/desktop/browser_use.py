@@ -3590,6 +3590,9 @@ class BrowserUseTool:
            truncated head + tail with an elision marker mirroring
            :func:`ultron.coding.observation_format.truncate_observation`.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('browser_use')
         binary = self.resolve_binary()
         if binary is None:
             return BrowserUseResult(

@@ -46,6 +46,7 @@ __all__ = [
     "RelayCommand",
     "RelayPlaybackResult",
     "match_relay_command",
+    "match_relay_toggle",
     "build_relay_line",
     "resolve_relay_device",
     "play_to_device",
@@ -83,10 +84,12 @@ _RELAY_PATTERNS: tuple[re.Pattern[str], ...] = (
         rf"{_GROUP_WORDS}\s*[.!?]?$",
         re.IGNORECASE,
     ),
-    # "ask my teammates (to|for|if|whether) X"
+    # "ask my teammates (to|for|if|whether|why|...) X" -- question
+    # words kept in the payload so questions relay as questions.
     re.compile(
         rf"^(?:please\s+)?ask\s+(?:my|the)\s+{_GROUP_WORDS}\s+"
-        rf"(?P<payload>(?:to|for|if|whether)\s+.+)$",
+        rf"(?P<payload>(?:to|for|if|whether|why|how|what|when|where|who)"
+        rf"\s+.+)$",
         re.IGNORECASE,
     ),
     # "tell them (that|to) X" -- in a voice-chat session "them" is the
@@ -127,6 +130,13 @@ DEFAULT_ADDRESSEE_NAMES: tuple[str, ...] = (
 )
 
 
+# Conjunctions an ask-payload may open with. "to" is stripped after the
+# match; question words are KEPT so the rephrase delivers a question
+# ("ask my clove why she is not smoking window" -> "Clove, why aren't
+# you smoking window?").
+_ASK_LEAD = r"(?:to|for|if|whether|why|how|what|when|where|who)"
+
+
 @functools.lru_cache(maxsize=8)
 def _named_patterns(names_key: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
     """Compile the named-addressee patterns for one addressee vocabulary."""
@@ -136,26 +146,71 @@ def _named_patterns(names_key: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
     )
     if not alts:
         return ()
-    name = rf"(?P<name>{alts})"
+    # "my clove" / "our sova" -- the user often refers to the teammate
+    # possessively by the agent they're playing.
+    name = rf"(?:my\s+|our\s+)?(?P<name>{alts})\b"
     return (
-        # "tell clove (that|to) X" / "tell sova X"
+        # "tell clove (that|to) X" / "tell my sova X"
         re.compile(
             rf"^(?:please\s+)?tell\s+{name}\s+(?:that\s+|to\s+)?(?P<payload>.+)$",
             re.IGNORECASE,
         ),
-        # "ask sage (to|for|if|whether) X" -- conjunction kept in the
-        # payload (except "to") so questions stay questions.
+        # "ask (my) sage (to|for|if|whether|why|...) X"
         re.compile(
             rf"^(?:please\s+)?ask\s+{name}\s+"
-            rf"(?P<payload>(?:to|for|if|whether)\s+.+)$",
+            rf"(?P<payload>{_ASK_LEAD}\s+.+)$",
             re.IGNORECASE,
         ),
-        # "say X to omen"
+        # "say X to (my) omen"
         re.compile(
             rf"^(?:please\s+)?say\s+(?P<payload>.+?)\s+to\s+{name}\s*[.!?]?$",
             re.IGNORECASE,
         ),
     )
+
+
+# Session mute toggle: streaming-safe voice control over whether relay
+# commands transmit at all. STRICT phrasings only.
+_TOGGLE_OFF_RE = re.compile(
+    r"^(?:please\s+)?(?:"
+    r"(?:mute|disable|turn\s+off|stop)\s+(?:the\s+)?"
+    r"(?:team\s+(?:chat\s+)?relay|relay|team\s+chat|game\s+chat)"
+    r"|stop\s+(?:talking|speaking)\s+to\s+(?:my|the)\s+team(?:mates)?"
+    r"|don'?t\s+(?:talk|speak)\s+to\s+(?:my|the)\s+team(?:mates)?"
+    r")\s*[.!?]?$",
+    re.IGNORECASE,
+)
+_TOGGLE_ON_RE = re.compile(
+    r"^(?:please\s+)?(?:"
+    r"(?:unmute|enable|turn\s+on|resume)\s+(?:the\s+)?"
+    r"(?:team\s+(?:chat\s+)?relay|relay|team\s+chat|game\s+chat)"
+    r"|(?:you\s+can|go\s+ahead\s+and)\s+(?:talk|speak)\s+to\s+(?:my|the)\s+"
+    r"team(?:mates)?(?:\s+(?:again|now))?"
+    r"|start\s+(?:talking|speaking)\s+to\s+(?:my|the)\s+team(?:mates)?"
+    r"(?:\s+again)?"
+    r")\s*[.!?]?$",
+    re.IGNORECASE,
+)
+
+
+def match_relay_toggle(text: str) -> Optional[bool]:
+    """Match the strict relay mute/unmute phrasings.
+
+    Args:
+        text: the user's transcript for this turn.
+
+    Returns:
+        True for "enable the relay" forms, False for "mute the relay" /
+        "stop talking to my team" forms, None otherwise.
+    """
+    if not text:
+        return None
+    cleaned = text.strip()
+    if _TOGGLE_OFF_RE.match(cleaned):
+        return False
+    if _TOGGLE_ON_RE.match(cleaned):
+        return True
+    return None
 
 
 @dataclass(frozen=True)

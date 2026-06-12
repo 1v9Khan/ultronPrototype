@@ -186,6 +186,9 @@ def collect_window_text(
         Empty list when pywinauto unavailable, window can't be
         connected to, or no text was found.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_read')
     hwnd = _resolve_hwnd(window)
     spec = _connect_window(hwnd)
     if spec is None:
@@ -259,6 +262,9 @@ def find_element(
 
     Returns the first matching :class:`UIAElement` snapshot, or None.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_read')
     hwnd = _resolve_hwnd(window)
     spec = _connect_window(hwnd)
     if spec is None:
@@ -436,6 +442,9 @@ def click_element(
     Returns :class:`UIAActionResult` -- ``success=False`` and ``error``
     populated on any failure.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_click')
     hwnd = _resolve_hwnd(window)
     spec = _connect_window(hwnd)
     if spec is None:
@@ -514,6 +523,9 @@ def type_text_into_element(
         clear_first: when True, the target's existing content is
             cleared (Ctrl+A, Delete) before typing.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_type')
     hwnd = _resolve_hwnd(window)
     spec = _connect_window(hwnd)
     if spec is None:
@@ -710,6 +722,9 @@ def dpi_aware_click_at_element_center(
     function defends against disabled elements and degenerate
     ``(0, 0, 0, 0)`` rects before touching the controller.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_click')
 
     if not element.is_enabled:
         return UIAActionResult(
@@ -865,6 +880,9 @@ def get_ui_element_inventory(
     Fail-open at every layer: per-element exceptions are silently
     skipped; a failed tree walk logs WARN and returns ``{}``.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_read')
     hwnd = _resolve_hwnd(window)
     spec = _connect_window(hwnd)
     if spec is None:
@@ -1034,6 +1052,9 @@ def wait_for_text_in_window(
     True immediately. Non-positive ``timeout_s`` returns False without
     polling.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_read')
     needle = (text or "")
     if not needle:
         return True
@@ -1165,6 +1186,9 @@ def wait_for_pixel_color(
     next poll re-tries. Non-positive ``timeout_s`` returns False
     without polling.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('wait_for_pixel_color')
     if timeout_s <= 0:
         return False
     try:
@@ -1318,6 +1342,9 @@ def find_browser_window(
         is the matched entry from :data:`BROWSER_NAMES`. None when no
         browser window is open.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_read')
     # Lazy import so this module stays cheap to load when nothing in
     # the consumer chain needs browser-specific behaviour.
     from ultron.desktop.windows import enumerate_windows
@@ -1446,6 +1473,9 @@ def extract_browser_content(
         :class:`BrowserContent` snapshot, or None when no browser
         window was found / pywinauto unavailable / connect failed.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('uia_read')
     if full:
         include_buttons = True
         include_links = True

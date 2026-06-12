@@ -478,6 +478,9 @@ def focus_by_title(
     Returns:
         :class:`FocusResult` describing which method succeeded.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('window_focus')
 
     title = (partial_title or "").strip()
     if not title:
@@ -803,6 +806,9 @@ def close_window(
         callers can use this to decide whether to gate the close
         behind a two-phase voice confirmation.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('window_close')
 
     title = (partial_title or "").strip()
     if not title:

@@ -276,6 +276,9 @@ def build_screen_context(
         every component fails to its empty/None default rather than
         raising.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('screen_context')
     t0 = time.time()
 
     # Monitors -- fast, no IO.

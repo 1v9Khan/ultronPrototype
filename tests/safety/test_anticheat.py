@@ -1,0 +1,355 @@
+"""Tests for anticheat-safe mode (``ultron.safety.anticheat``).
+
+The user's account is on the line here, so coverage is exhaustive:
+the guard semantics, the toggle matcher, the blocked-tool taxonomy,
+a sweep asserting EVERY guarded desktop entry point actually raises
+before touching any OS API, the validator pre-check, the orchestrator
+voice toggle, and the gaming-mode tie-in.
+"""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from ultron.safety.anticheat import (
+    AnticheatBlockedError,
+    BLOCKED_NOTICE,
+    anticheat_active,
+    guard,
+    is_blocked_tool,
+    match_anticheat_toggle,
+    set_anticheat_active,
+)
+
+SRC = Path(__file__).resolve().parents[2] / "src" / "ultron"
+
+
+@pytest.fixture(autouse=True)
+def _reset_anticheat():
+    """Every test starts and ends with the mode OFF."""
+    set_anticheat_active(False)
+    yield
+    set_anticheat_active(False)
+
+
+# ---------------------------------------------------------------------------
+# Core guard semantics
+# ---------------------------------------------------------------------------
+
+
+def test_inactive_by_default() -> None:
+    assert anticheat_active() is False
+    guard("click")  # no raise
+
+
+def test_runtime_toggle_activates_guard() -> None:
+    set_anticheat_active(True, "test")
+    assert anticheat_active() is True
+    with pytest.raises(AnticheatBlockedError) as exc:
+        guard("click")
+    assert "click" in str(exc.value)
+    assert BLOCKED_NOTICE in str(exc.value)
+    set_anticheat_active(False)
+    guard("click")  # no raise again
+
+
+def test_config_pin_activates_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ultron.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod, "get_config",
+        lambda: SimpleNamespace(
+            gaming_mode=SimpleNamespace(anticheat_safe_mode=True),
+        ),
+    )
+    assert anticheat_active() is True
+
+
+def test_config_errors_fail_open_but_runtime_flag_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ultron.config as config_mod
+
+    def boom():
+        raise RuntimeError("config broken")
+
+    monkeypatch.setattr(config_mod, "get_config", boom)
+    assert anticheat_active() is False  # config error alone -> off
+    set_anticheat_active(True)
+    assert anticheat_active() is True   # runtime flag unaffected
+
+
+# ---------------------------------------------------------------------------
+# Blocked-tool taxonomy (validator layer)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tool", [
+    "click", "type_text", "scroll", "move_mouse", "drag_to",
+    "screenshot", "get_pixel_color", "wait_for_pixel_color",
+    "find_image_on_screen", "clipboard_read", "clipboard_write",
+    "ocr", "semantic_click", "desktop_screenshot", "desktop_list_windows",
+    "desktop_find_window", "window_close", "window_move", "dialog_click",
+    "element_click", "browser_use_open", "ui_inventory", "screen_context",
+])
+def test_blocked_tools(tool: str) -> None:
+    assert is_blocked_tool(tool) is True
+
+
+@pytest.mark.parametrize("tool", [
+    "web_search", "memory_retrieve", "tts_speak", "stt_transcribe",
+    "relay_speech", "llm_generate", "evolution_cycle", "run_program",
+    "",
+])
+def test_allowed_tools(tool: str) -> None:
+    assert is_blocked_tool(tool) is False
+
+
+# ---------------------------------------------------------------------------
+# Voice toggle matcher
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Enable anticheat mode.", True),
+    ("engage anti-cheat mode", True),
+    ("turn on anticheat safe mode", True),
+    ("activate tournament mode", True),
+    ("Disable anticheat mode.", False),
+    ("turn off the anticheat mode", False),
+    ("disengage anti cheat mode", False),
+    # Non-toggles.
+    ("what is anticheat mode", None),
+    ("anticheat mode", None),
+    ("enable gaming mode", None),
+    ("", None),
+])
+def test_match_anticheat_toggle(text: str, expected) -> None:
+    assert match_anticheat_toggle(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# EVERY guarded desktop entry point raises while active
+# ---------------------------------------------------------------------------
+
+# (module, class or None, function) -- must stay in sync with the
+# guards inserted across the desktop surface. The AST audit test below
+# proves each listed function still contains its guard call.
+GUARDED = [
+    ("ultron.desktop.input_control", "InputController",
+     ["move_mouse", "click", "type_text", "drag_to", "scroll"]),
+    ("ultron.desktop.capture", "ScreenCapture",
+     ["capture_monitor", "capture_all_monitors", "capture_region"]),
+    ("ultron.desktop.capture", None,
+     ["find_image_on_screen", "get_pixel_color"]),
+    ("ultron.desktop.uia", None,
+     ["collect_window_text", "find_element", "click_element",
+      "type_text_into_element", "dpi_aware_click_at_element_center",
+      "get_ui_element_inventory", "wait_for_text_in_window",
+      "wait_for_pixel_color", "find_browser_window",
+      "extract_browser_content"]),
+    ("ultron.desktop.clipboard", "ClipboardManager",
+     ["read_text", "write_text"]),
+    ("ultron.desktop.dialog_control", None,
+     ["find_dialogs", "read_dialog", "click_dialog_button",
+      "type_into_dialog_field", "dismiss_dialog", "wait_for_dialog"]),
+    ("ultron.desktop.element_click", None,
+     ["find_elements_by_name", "click_element_by_name",
+      "find_text_in_window"]),
+    ("ultron.desktop.windows", None, ["focus_by_title", "close_window"]),
+    ("ultron.desktop.placement", None,
+     ["move_window_to_monitor", "maximize_window", "minimize_window",
+      "restore_window", "focus_window"]),
+    ("ultron.desktop.launcher", "AppLauncher",
+     ["launch_app", "launch_chrome", "open_image_search"]),
+    ("ultron.desktop.ocr", None, ["ocr_screen_region", "ocr_screen_monitor"]),
+    ("ultron.desktop.sequence", "DesktopSequenceRunner", ["run"]),
+    ("ultron.desktop.browser_use", "BrowserUseTool", ["_invoke"]),
+    ("ultron.desktop.screen_context", None, ["build_screen_context"]),
+    ("ultron.openclaw_bridge.desktop", "DesktopTool",
+     ["screenshot", "list_windows", "find_window"]),
+]
+
+
+def test_every_guarded_function_contains_guard_call() -> None:
+    """AST audit: each listed function literally calls the guard as one
+    of its first statements -- a refactor that drops a guard fails HERE,
+    before it can cost an account."""
+    missing: list[str] = []
+    for module, cls, fns in GUARDED:
+        rel = module.replace("ultron.", "").replace(".", "/") + ".py"
+        tree = ast.parse((SRC / rel).read_text(encoding="utf-8"))
+        for want in fns:
+            found = False
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and node.name == want:
+                    src = ast.unparse(node)
+                    if "_anticheat_guard(" in src or "guard(" in src:
+                        found = True
+                        break
+            if not found:
+                missing.append(f"{module}.{cls or ''}.{want}")
+    assert not missing, f"guards missing from: {missing}"
+
+
+def test_module_guard_blocks_before_os_touch() -> None:
+    """Representative end-to-end checks: guarded entry points raise
+    AnticheatBlockedError immediately (no OS API import/touch) while
+    the mode is active."""
+    set_anticheat_active(True, "test")
+
+    from ultron.desktop.capture import find_image_on_screen, get_pixel_color
+    from ultron.desktop.dialog_control import find_dialogs
+    from ultron.desktop.element_click import find_elements_by_name
+    from ultron.desktop.placement import minimize_window
+    from ultron.desktop.windows import close_window
+
+    with pytest.raises(AnticheatBlockedError):
+        get_pixel_color(10, 10)
+    with pytest.raises(AnticheatBlockedError):
+        find_image_on_screen("nonexistent.png")
+    with pytest.raises(AnticheatBlockedError):
+        find_dialogs()
+    with pytest.raises(AnticheatBlockedError):
+        find_elements_by_name("x")
+    with pytest.raises(AnticheatBlockedError):
+        close_window("Untitled - Notepad")
+    with pytest.raises(AnticheatBlockedError):
+        minimize_window(1)
+
+
+# ---------------------------------------------------------------------------
+# Validator pre-check
+# ---------------------------------------------------------------------------
+
+
+def test_validator_blocks_desktop_tool_when_active(tmp_path: Path) -> None:
+    from ultron.safety.audit import AuditLog
+    from ultron.safety.policy import Policy
+    from ultron.safety.validator import (
+        RuleContext,
+        ToolCallValidator,
+        Verdict,
+    )
+
+    validator = ToolCallValidator(
+        policy=Policy(enabled=True, rule_enabled={}),
+        rules=[],
+        audit_log=AuditLog(path=tmp_path / "audit.jsonl"),
+    )
+    ctx = RuleContext(
+        tool_name="desktop_screenshot", capability="screen_capture",
+        arguments={},
+    )
+    set_anticheat_active(True, "test")
+    verdict = validator.check(ctx)
+    assert verdict.verdict == Verdict.BLOCK_HARD
+    assert verdict.triggered_rule_id == "anticheat_safe_mode"
+    assert verdict.user_message == BLOCKED_NOTICE
+    # Audited.
+    assert (tmp_path / "audit.jsonl").is_file()
+
+    set_anticheat_active(False)
+    verdict = validator.check(ctx)
+    assert verdict.verdict == Verdict.ALLOW
+
+
+def test_validator_allows_non_desktop_tool_when_active(
+    tmp_path: Path,
+) -> None:
+    from ultron.safety.audit import AuditLog
+    from ultron.safety.policy import Policy
+    from ultron.safety.validator import (
+        RuleContext,
+        ToolCallValidator,
+        Verdict,
+    )
+
+    validator = ToolCallValidator(
+        policy=Policy(enabled=True, rule_enabled={}),
+        rules=[],
+        audit_log=AuditLog(path=tmp_path / "audit.jsonl"),
+    )
+    set_anticheat_active(True, "test")
+    verdict = validator.check(RuleContext(
+        tool_name="web_search", capability="network", arguments={},
+    ))
+    assert verdict.verdict == Verdict.ALLOW
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator voice toggle + gaming-mode tie-in
+# ---------------------------------------------------------------------------
+
+
+def _bare_orchestrator():
+    from ultron.pipeline.orchestrator import Orchestrator
+
+    o = Orchestrator.__new__(Orchestrator)
+    o._spoken = []
+    o._speak = lambda text: o._spoken.append(text)  # type: ignore[attr-defined]
+    return o
+
+
+def test_orchestrator_anticheat_toggle() -> None:
+    o = _bare_orchestrator()
+    assert o._maybe_handle_anticheat_toggle("enable anticheat mode") is True
+    assert anticheat_active() is True
+    assert "engaged" in o._spoken[-1].lower()
+    assert o._maybe_handle_anticheat_toggle("disable anticheat mode") is True
+    assert anticheat_active() is False
+    assert "off" in o._spoken[-1].lower()
+    assert o._maybe_handle_anticheat_toggle("what time is it") is False
+
+
+def test_gaming_mode_tie_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ultron.config as config_mod
+    from ultron.openclaw_routing.gaming_mode import GamingModeManager
+
+    monkeypatch.setattr(
+        config_mod, "get_config",
+        lambda: SimpleNamespace(
+            gaming_mode=SimpleNamespace(
+                anticheat_with_gaming_mode=True,
+                anticheat_safe_mode=False,
+            ),
+        ),
+    )
+    mgr = GamingModeManager.__new__(GamingModeManager)
+    mgr._set_anticheat(True)
+    assert anticheat_active() is True
+    mgr._set_anticheat(False)
+    assert anticheat_active() is False
+
+
+def test_gaming_mode_tie_in_respects_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ultron.config as config_mod
+    from ultron.openclaw_routing.gaming_mode import GamingModeManager
+
+    monkeypatch.setattr(
+        config_mod, "get_config",
+        lambda: SimpleNamespace(
+            gaming_mode=SimpleNamespace(
+                anticheat_with_gaming_mode=False,
+                anticheat_safe_mode=False,
+            ),
+        ),
+    )
+    mgr = GamingModeManager.__new__(GamingModeManager)
+    mgr._set_anticheat(True)
+    assert anticheat_active() is False  # opt-out honored
+
+
+def test_gaming_mode_config_defaults() -> None:
+    from ultron.config import GamingModeConfig
+
+    cfg = GamingModeConfig()
+    assert cfg.anticheat_safe_mode is False
+    assert cfg.anticheat_with_gaming_mode is True

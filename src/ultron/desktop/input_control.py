@@ -338,6 +338,9 @@ class InputController:
         the cursor move. With ``smooth=False`` (default, back-compat)
         or ``duration_s=0``, pyautogui's default linear motion is used.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('move_mouse')
         args = {
             "x": int(x),
             "y": int(y),
@@ -385,6 +388,9 @@ class InputController:
         ``button`` accepts ``"left"`` / ``"right"`` / ``"middle"``.
         ``clicks=2`` performs a double click.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('click')
         if button not in ("left", "right", "middle"):
             return InputControlResult(
                 success=False, action="click",
@@ -468,6 +474,9 @@ class InputController:
         ``ZeroDivisionError`` -- ultron returns a structured error
         instead).
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('type_text')
         if not isinstance(text, str):
             return InputControlResult(
                 success=False, action="type_text", error="text must be str",
@@ -624,6 +633,9 @@ class InputController:
         Returns:
             :class:`InputControlResult` with action ``"drag_to"``.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('drag_to')
 
         if button not in ("left", "right", "middle"):
             return InputControlResult(
@@ -704,6 +716,9 @@ class InputController:
         through unknown direction strings to ``hscroll``, ultron
         rejects unknown values with a structured error.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('scroll')
         if direction not in ("vertical", "horizontal"):
             return InputControlResult(
                 success=False, action="scroll",

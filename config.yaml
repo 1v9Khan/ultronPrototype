@@ -1080,6 +1080,8 @@ tts:
     enabled: true
     jsonl_filename: "audio_quality.jsonl"
     max_queue: 16                  # overflow drops clips, never blocks synth
+    waveform_enabled: true         # per-clip envelope stream for the panel's waveform pane
+    waveform_jsonl_filename: "audio_waveform.jsonl"
 
   # ACTIVE WHEN tts.engine == "xtts_v3"  (swap-back).
   # XTTS v2 streaming + v3 Ultron pedalboard filter. Engine spawns
@@ -1461,6 +1463,18 @@ skills:
 
 gaming_mode:
   enabled: true                  # 2026-05-22: voice-trigger active; LLM/Kokoro/STT/VLM swap fires regardless of openclaw state
+  # Anticheat-safe mode (2026-06-11): hard-blocks EVERY desktop-interaction
+  # surface -- input injection, screen capture, pixel/template reads, OCR,
+  # UIA reads, clipboard, dialog/element automation, window manipulation,
+  # app launch, browser CDP, bridge desktop tools -- at three layers
+  # (49 module guards + safety-validator BLOCK_HARD + voice intents).
+  # Audio stays fully alive: mic, STT, LLM, TTS, and the VoiceMeeter team
+  # relay are shared-mode audio APIs (the same surface Discord uses) and
+  # never touch another process. nvidia-smi VRAM probes and Ultron's
+  # self-scoped process management (own children only) are analyzed-safe
+  # and unaffected. Voice toggle: "enable/disable anticheat mode".
+  anticheat_safe_mode: false           # true = pinned permanently on
+  anticheat_with_gaming_mode: true     # auto-engage with "gaming mode"
   plugins_to_disable:
     - desktop-control
     - windows-control

@@ -301,6 +301,7 @@ class OutputQualityWatcher:
         self,
         *,
         jsonl_path: Optional[Path] = None,
+        waveform_path: Optional[Path] = None,
         max_queue: int = 16,
         analyze_kwargs: Optional[dict] = None,
     ) -> None:
@@ -308,10 +309,15 @@ class OutputQualityWatcher:
 
         Args:
             jsonl_path: findings log; None disables the JSONL sink.
+            waveform_path: per-clip envelope stream (EVERY clip, clean or
+                flagged) for the control panel's waveform pane; None
+                disables it. Size-bounded (rewritten keeping the newest
+                records when it grows past ~768 KB).
             max_queue: bounded queue size (overflow drops clips).
             analyze_kwargs: threshold overrides for :func:`analyze_clip`.
         """
         self._jsonl_path = jsonl_path
+        self._waveform_path = waveform_path
         self._analyze_kwargs = dict(analyze_kwargs or {})
         self._queue: "queue.Queue[Optional[tuple]]" = queue.Queue(maxsize=max_queue)
         self._lock = threading.Lock()
@@ -384,8 +390,60 @@ class OutputQualityWatcher:
                         "; ".join(f.detail for f in report.findings),
                     )
                     self._append_jsonl(report)
+                self._append_waveform(pcm, sr, report)
             except Exception as e:  # noqa: BLE001 - analyzer must survive
                 logger.debug("output-quality analysis failed: %s", e)
+
+    # Envelope resolution for the control panel's waveform pane.
+    _ENVELOPE_POINTS = 120
+    _WAVEFORM_MAX_BYTES = 768 * 1024
+    _WAVEFORM_KEEP_LINES = 80
+
+    def _append_waveform(
+        self, pcm: np.ndarray, sample_rate: int, report: ClipQualityReport,
+    ) -> None:
+        """Write one compact per-clip envelope record (EVERY clip).
+
+        The control panel tails this stream and renders each clip's
+        waveform with red markers at the analyzer's finding positions.
+        Size-bounded: when the file grows past ``_WAVEFORM_MAX_BYTES``
+        it is rewritten keeping the newest ``_WAVEFORM_KEEP_LINES``.
+        """
+        if self._waveform_path is None:
+            return
+        try:
+            x = np.abs(_to_float(pcm))
+            if x.size == 0:
+                return
+            n = self._ENVELOPE_POINTS
+            usable = (x.size // n) * n
+            if usable >= n:
+                env = x[:usable].reshape(n, -1).max(axis=1)
+            else:
+                env = x
+            record = {
+                "timestamp": time.time(),
+                "label": report.label,
+                "duration_s": round(report.duration_s, 3),
+                "peak": round(report.peak, 4),
+                "env": [round(float(v), 3) for v in env],
+                "findings": [
+                    {"kind": f.kind, "position_ms": round(f.position_ms, 1)}
+                    for f in report.findings
+                ],
+            }
+            path = self._waveform_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+            if path.stat().st_size > self._WAVEFORM_MAX_BYTES:
+                lines = path.read_text(encoding="utf-8").splitlines()
+                path.write_text(
+                    "\n".join(lines[-self._WAVEFORM_KEEP_LINES:]) + "\n",
+                    encoding="utf-8",
+                )
+        except Exception as e:  # noqa: BLE001 - sink failures are non-fatal
+            logger.debug("waveform append failed: %s", e)
 
     def _append_jsonl(self, report: ClipQualityReport) -> None:
         if self._jsonl_path is None:
@@ -453,9 +511,16 @@ def get_output_watcher() -> Optional[OutputQualityWatcher]:
             cfg = getattr(getattr(get_config(), "tts", None), "output_watch", None)
             if cfg is None or not getattr(cfg, "enabled", False):
                 return None
+            waveform_name = getattr(
+                cfg, "waveform_jsonl_filename", "audio_waveform.jsonl",
+            )
             _watcher = OutputQualityWatcher(
                 jsonl_path=Path(LOGS_DIR) / getattr(
                     cfg, "jsonl_filename", "audio_quality.jsonl",
+                ),
+                waveform_path=(
+                    Path(LOGS_DIR) / waveform_name
+                    if getattr(cfg, "waveform_enabled", True) else None
                 ),
                 max_queue=int(getattr(cfg, "max_queue", 16)),
             )

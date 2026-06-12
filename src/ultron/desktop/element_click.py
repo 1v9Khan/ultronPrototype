@@ -341,6 +341,9 @@ def find_elements_by_name(
         first (preserving tree-walk order within exact); substring
         matches second (also preserving tree-walk order).
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('element_read')
     needle = (name or "").strip()
     if not needle:
         return []
@@ -427,6 +430,9 @@ def click_element_by_name(
         :class:`ClickResult` with success / error + the resolved
         center coordinate + which method actually fired the click.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('element_click')
     types_filter: Optional[tuple[str, ...]] = None
     if control_type is not None:
         ctrl_str = str(control_type).strip()
@@ -547,6 +553,9 @@ def find_text_in_window(
         List of :class:`TextMatch` in tree-walk order. Empty list on
         no match, pywinauto unavailable, or window-walk failure.
     """
+    # Anticheat-safe mode: hard-blocked while the user is in game.
+    from ultron.safety.anticheat import guard as _anticheat_guard
+    _anticheat_guard('element_read')
     needle = (text or "")
     if not needle:
         return []

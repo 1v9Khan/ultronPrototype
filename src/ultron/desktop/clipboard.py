@@ -207,6 +207,9 @@ class ClipboardManager:
             ``max_read_chars``) and ``tainted`` reflects whether the
             taint tracker recorded the bytes.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('clipboard_read')
         # Validator first -- it can refuse the read entirely before we
         # even touch pyperclip.
         verdict = _validate_clipboard_action(
@@ -287,6 +290,9 @@ class ClipboardManager:
         Returns:
             :class:`ClipboardResult` with ``action="write"``.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from ultron.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('clipboard_write')
         if not isinstance(text, str):
             try:
                 text = str(text)

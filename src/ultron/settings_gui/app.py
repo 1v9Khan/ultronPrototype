@@ -101,7 +101,8 @@ class ControlPanel:
     """The tkinter application object."""
 
     def __init__(self, config_path: Path, log_path: Path,
-                 data_dir: Path) -> None:
+                 data_dir: Path,
+                 waveform_path: Optional[Path] = None) -> None:
         self._config_path = config_path
         self._log_path = log_path
         self._data_dir = data_dir
@@ -113,6 +114,10 @@ class ControlPanel:
         self._knobs: dict[tuple[str, ...], Knob] = {}
         self._log_queue: "queue.Queue[str]" = queue.Queue(maxsize=2000)
         self._tailer = LogTailer(log_path, self._log_queue)
+        self._wave_queue: "queue.Queue[str]" = queue.Queue(maxsize=64)
+        self._wave_tailer: Optional[LogTailer] = None
+        if waveform_path is not None:
+            self._wave_tailer = LogTailer(waveform_path, self._wave_queue)
         self._paused = False
 
         self.root = tk.Tk()
@@ -123,7 +128,10 @@ class ControlPanel:
         self._style()
         self._build()
         self._tailer.start()
+        if self._wave_tailer is not None:
+            self._wave_tailer.start()
         self.root.after(120, self._drain_logs)
+        self.root.after(160, self._drain_waveform)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     # ------------------------------------------------------------------
@@ -205,10 +213,28 @@ class ControlPanel:
         for i, section in enumerate(SECTIONS):
             self._build_card(cards, section, row=i // 2, col=i % 2)
 
-        # -- right: live log stream -------------------------------------
-        right = tk.Frame(body, bg=CARD, highlightbackground=CARD_EDGE,
+        # -- right: waveform pane + live log stream ---------------------
+        right_col = tk.Frame(body, bg=BG)
+        right_col.grid(row=0, column=1, sticky="nsew")
+
+        wave = tk.Frame(right_col, bg=CARD, highlightbackground=CARD_EDGE,
+                        highlightthickness=1)
+        wave.pack(fill="x", pady=(0, 8))
+        wave_bar = tk.Frame(wave, bg=CARD)
+        wave_bar.pack(fill="x", padx=10, pady=(8, 2))
+        ttk.Label(wave_bar, text="OUTPUT WAVEFORM",
+                  style="CardTitle.TLabel").pack(side="left")
+        self._wave_info = ttk.Label(wave_bar, text="waiting for speech…",
+                                    style="Dim.TLabel")
+        self._wave_info.pack(side="right")
+        self._wave_canvas = tk.Canvas(
+            wave, height=150, bg="#0a0d12", highlightthickness=0,
+        )
+        self._wave_canvas.pack(fill="x", padx=10, pady=(0, 10))
+
+        right = tk.Frame(right_col, bg=CARD, highlightbackground=CARD_EDGE,
                          highlightthickness=1)
-        right.grid(row=0, column=1, sticky="nsew")
+        right.pack(fill="both", expand=True)
         bar = tk.Frame(right, bg=CARD)
         bar.pack(fill="x", padx=10, pady=(8, 4))
         ttk.Label(bar, text="LIVE LOG", style="CardTitle.TLabel").pack(
@@ -386,16 +412,73 @@ class ControlPanel:
                 self._log.configure(state="disabled")
         self.root.after(150, self._drain_logs)
 
+    def _drain_waveform(self) -> None:
+        """Render the newest synthesized clip's envelope with blip markers."""
+        latest: Optional[str] = None
+        while True:
+            try:
+                latest = self._wave_queue.get_nowait()
+            except queue.Empty:
+                break
+        if latest:
+            try:
+                import json as _json
+
+                rec = _json.loads(latest)
+                self._draw_waveform(rec)
+            except Exception:  # noqa: BLE001 - malformed line, skip
+                pass
+        self.root.after(180, self._drain_waveform)
+
+    def _draw_waveform(self, rec: dict) -> None:
+        c = self._wave_canvas
+        c.delete("all")
+        w = max(int(c.winfo_width()), 50)
+        h = int(c["height"])
+        mid = h // 2
+        env = rec.get("env") or []
+        if not env:
+            return
+        peak = max(max(env), 0.05)
+        n = len(env)
+        bar_w = max(w / n, 1.0)
+        for i, v in enumerate(env):
+            x = i * bar_w + bar_w / 2
+            amp = (v / peak) * (mid - 8)
+            c.create_line(x, mid - amp, x, mid + amp, fill=ACCENT, width=2)
+        c.create_line(0, mid, w, mid, fill=CARD_EDGE)
+        # Red markers at the analyzer's finding positions.
+        duration_ms = float(rec.get("duration_s", 0.0)) * 1000.0
+        findings = rec.get("findings") or []
+        for f in findings:
+            if duration_ms <= 0:
+                break
+            fx = min(max(f.get("position_ms", 0.0) / duration_ms, 0.0), 1.0) * w
+            c.create_line(fx, 4, fx, h - 4, fill=ERR, width=2, dash=(3, 3))
+            c.create_text(
+                min(fx + 4, w - 40), 12, text=f.get("kind", "")[:14],
+                fill=ERR, anchor="w", font=("Segoe UI", 7),
+            )
+        label = (rec.get("label") or "")[:46]
+        kinds = ", ".join(f.get("kind", "") for f in findings)
+        info = f"{label!r} · {rec.get('duration_s', 0):.2f}s"
+        info += f" · ⚠ {kinds}" if kinds else " · clean"
+        self._wave_info.configure(
+            text=info, foreground=(ERR if kinds else DIM))
+
     def _tick_clock(self) -> None:
         self._clock.configure(text=time.strftime("%H:%M:%S"))
         self.root.after(1000, self._tick_clock)
 
     def close(self) -> None:
-        """Stop the tail thread, destroy the window, exit the process."""
-        try:
-            self._tailer.stop()
-        except Exception:  # noqa: BLE001
-            pass
+        """Stop the tail threads, destroy the window, exit the process."""
+        for tailer in (self._tailer, self._wave_tailer):
+            if tailer is None:
+                continue
+            try:
+                tailer.stop()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self.root.destroy()
         except Exception:  # noqa: BLE001
@@ -413,6 +496,7 @@ def main() -> int:
         config_path=Path(PROJECT_ROOT) / "config.yaml",
         log_path=Path(LOGS_DIR) / "ultron.log",
         data_dir=Path(PROJECT_ROOT) / "data",
+        waveform_path=Path(LOGS_DIR) / "audio_waveform.jsonl",
     )
     panel.run()
     return 0

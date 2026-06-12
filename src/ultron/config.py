@@ -2372,6 +2372,10 @@ class OutputWatchConfig(_Strict):
     jsonl_filename: str = "audio_quality.jsonl"
     # Bounded analysis queue; overflow DROPS clips (never blocks synth).
     max_queue: int = Field(default=16, ge=1, le=256)
+    # Per-clip envelope stream for the control panel's waveform pane
+    # (EVERY clip, clean or flagged; size-bounded file).
+    waveform_enabled: bool = True
+    waveform_jsonl_filename: str = "audio_waveform.jsonl"
 
 
 class TTSConfig(_Strict):
@@ -2849,6 +2853,19 @@ class GamingModeConfig(_Strict):
     """
 
     enabled: bool = False
+    # 2026-06-11 anticheat-safe mode -- a process-wide hard block on
+    # EVERY desktop-interaction surface (input injection, screen
+    # capture, pixel/template reads, OCR, UIA, clipboard, dialog /
+    # element automation, window manipulation, app launch, browser
+    # CDP, bridge desktop tools) enforced at three layers (module
+    # guards + safety-validator BLOCK_HARD + orchestrator intents).
+    # The audio pipeline (mic, STT, LLM, TTS, the VoiceMeeter relay)
+    # stays fully alive. ``anticheat_with_gaming_mode`` ties the block
+    # to gaming-mode engage/disengage automatically; the voice toggle
+    # ("enable anticheat mode") works any time;
+    # ``anticheat_safe_mode: true`` pins it permanently on.
+    anticheat_safe_mode: bool = False
+    anticheat_with_gaming_mode: bool = True
     plugins_to_disable: List[str] = Field(
         default_factory=lambda: ["desktop-control", "windows-control"],
     )
