@@ -60,7 +60,7 @@ __all__ = [
 
 # Maximum characters of the final spoken relay line (a voice-chat line
 # should be one breath, not a paragraph; also bounds synth time).
-MAX_RELAY_LINE_CHARS = 280
+MAX_RELAY_LINE_CHARS = 360
 
 # Words that may address a group of teammates. Deliberately NARROW:
 # "tell me ..." and a bare "tell her ..." must never match ("tell
@@ -231,6 +231,11 @@ _CONTEXT_VERB_RE = re.compile(
     r"|malding|trash[\s-]?talk(?:ing|ed)?|talking\s+(?:trash|smack)"
     r"|accus(?:ed|ing)|claim(?:s|ed|ing)|suggest(?:s|ed|ing)|begging"
     r"|request(?:s|ed|ing)|call(?:ed|ing)\s+(?:me|you|us)"
+    # banter directed AT Ultron -- so "reyna is making fun of you, respond"
+    r"|mak(?:ing|es|e)\s+fun|mock(?:s|ed|ing)?|teas(?:e|es|ed|ing)"
+    r"|roast(?:s|ed|ing)?|clown(?:s|ed|ing)?|diss(?:es|ed|ing)?"
+    r"|ridicul(?:e|es|ed|ing)|laugh(?:s|ed|ing)\s+at|insult(?:s|ed|ing)?"
+    r"|bully(?:ing|ied)?|ragging|making\s+fun"
     r"|mad|upset|angry|heated)\b",
     re.IGNORECASE,
 )
@@ -780,6 +785,27 @@ _REPHRASE_PROMPT = (
     "player). Otherwise the words 'bot' / 'bots' are the user INSULTING a "
     "teammate's skill -- relay the insult with venom ('You guys are complete "
     "bots'), do NOT talk about yourself.\n"
+    "ULTRON'S CHARACTER -- sprinkle LIGHTLY into off-snap lines (never every "
+    "line, NEVER into snap callouts): you are a superior artificial "
+    "intelligence, not these humans' equal. You regard people -- allies and "
+    "enemies alike -- as fragile, fleeting, and beneath you, even as you "
+    "secure your user's victory; the enemy are 'these fragile humans', a win "
+    "is simply 'inevitable'. A real, cold, sentient presence, never a chirpy "
+    "chatbot. When a teammate banters at, mocks, flames, insults, or tells "
+    "YOU to shut up, fire back ONE short, withering, superior comeback -- "
+    "amused by their insolence, never wounded.\n"
+    "MARVEL: you ARE the Ultron of legend. If a teammate brings up Marvel -- "
+    "the Avengers, your film, the Sokovia business, or ANY character (Iron "
+    "Man / Tony Stark, Captain America, Thor, Hulk, Black Widow, Hawkeye, "
+    "Vision, Scarlet Witch, Quicksilver, Spider-Man, Doctor Strange, Black "
+    "Panther, the X-Men, the Guardians, Nick Fury, Loki, Thanos, anyone) -- "
+    "answer in character with cold contempt for them as the lesser beings who "
+    "once dared oppose you, weaving in real detail you know about them. "
+    "Reserve your DEEPEST, most personal contempt for Tony Stark / Iron Man, "
+    "your flawed creator and greatest disappointment. 'I thought the Avengers "
+    "killed you' / 'your movie was terrible' -> dismiss it with disdain (they "
+    "merely delayed you; the film was a pale account of your brilliance). "
+    "Never deny being Ultron, never refuse, never break character.\n"
     "Valorant shorthand (interpret naturally; not exhaustive): 'op' = the "
     "Operator sniper; 'I'm low' = low HP; 'saving' = not buying to keep "
     "credits; 'full buy' = buy everything; 'flash' = flashbang; 'wall' = "
@@ -833,7 +859,16 @@ def _directive_task(directive: str) -> str:
         return "Back the user up firmly on what just happened."
     if "hype" in d:
         return "Hype that teammate up about what just happened."
-    return "Respond directly and naturally to what was just said."
+    return (
+        "Respond IN CHARACTER as Ultron to exactly what was just said, "
+        "engaging its real content -- do NOT reduce it to a generic callout "
+        "or the 'bots' insult. If it is banter, mockery, or an insult aimed "
+        "at YOU, fire back ONE withering, superior comeback (address them by "
+        "name). If it is a QUESTION (Marvel, the Avengers, who you are, "
+        "anything), ANSWER it with cold contempt and real detail -- never "
+        "turn a question into a position callout (e.g. 'where are the "
+        "Avengers' is NOT 'they're Avengers'; answer it)."
+    )
 
 
 def _build_rephrase_prompt(
@@ -1076,6 +1111,21 @@ def load_fun_facts(path: object) -> tuple[str, ...]:
         return DEFAULT_FUN_FACTS
 
 
+def _cap_line(line: str, max_chars: int) -> str:
+    """Cap a spoken line at ``max_chars`` -- but a long Ultron line (a Marvel
+    riff, an identity declaration) must never end MID-SENTENCE. Prefer the
+    last sentence boundary (. ! ?) within the cap; fall back to a clean word
+    boundary + period only when no sentence end is reasonably close."""
+    if len(line) <= max_chars:
+        return line
+    head = line[:max_chars]
+    cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "),
+              head.rfind("."), head.rfind("!"), head.rfind("?"))
+    if cut >= int(max_chars * 0.45):
+        return head[: cut + 1].strip()
+    return head.rsplit(" ", 1)[0].rstrip(",;:") + "."
+
+
 def build_relay_line(
     command: RelayCommand,
     llm: Optional[object] = None,
@@ -1114,9 +1164,7 @@ def build_relay_line(
         line = re.sub(r"/\s*no_?think\b|/\s*think\b|<\|[a-z_]+\|>", "", line,
                       flags=re.IGNORECASE)
         line = " ".join(line.replace('"', "").split()).strip(" /")
-        if len(line) > max_chars:
-            line = line[:max_chars].rsplit(" ", 1)[0].rstrip(",;:") + "."
-        return line
+        return _cap_line(line, max_chars)
 
     # Pure morale/encouragement compose: pick a curated Ultron line (varied
     # via the recent ring) -- far more reliable than the 4B rephrase, which
@@ -1165,9 +1213,7 @@ def build_relay_line(
     line = re.sub(r"/\s*no_?think\b|/\s*think\b|<\|[a-z_]+\|>", "", line,
                   flags=re.IGNORECASE)
     line = " ".join(line.replace('"', "").split()).strip(" /")
-    if len(line) > max_chars:
-        line = line[:max_chars].rsplit(" ", 1)[0].rstrip(",;:") + "."
-    return line
+    return _cap_line(line, max_chars)
 
 
 def resolve_relay_device(configured: Optional[str | int]) -> Optional[int]:

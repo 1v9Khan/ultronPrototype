@@ -276,7 +276,7 @@ def test_prompt_context_block_present() -> None:
     )
     prompt = _build_rephrase_prompt(cmd)
     assert "What just happened in voice chat: reyna just asked" in prompt
-    assert "Respond directly and naturally" in prompt
+    assert "Respond IN CHARACTER as Ultron" in prompt
 
 
 def test_prompt_directive_tones() -> None:

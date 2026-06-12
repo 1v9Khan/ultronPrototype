@@ -8,12 +8,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "src"))
 
+sys.path.insert(0, str(ROOT / "scripts" / "relay_test"))
 from kenning.audio.relay_speech import match_relay_command, build_relay_line
-from kenning.llm.inference import LLMEngine
-from kenning.memory.embedder import HybridEmbedder
-from kenning.memory.qdrant_store import ConversationMemory
+from harness import _load_llm  # gaming preset (3B abliterated) + isolated qdrant
 
 SUSPECTS = [
+    # snap controls -- must stay SHORT, no flavor:
+    "tell my team there is one mid",
+    "tell my team they are vents",
+    "tell my team sova hit 84",
+    # arrogance flavoring on off-snap:
+    "tell my team the enemy is bad and we are going to win",
+    "tell my team we are going to crush them",
+    "give my team some encouragement",
+    # banter directed AT Ultron -> clapback:
+    "jett is flaming you, respond",
+    "reyna is making fun of you, respond",
+    "sage just called you cringe, respond",
+    "breach just told you to shut up, respond",
+    # Marvel:
+    "my teammate asked where the avengers are, respond",
+    "jett asked if the avengers killed you, respond",
+    "my teammate said your movie was terrible, respond",
+    "reyna asked about iron man, respond",
+    "sage asked what you think of captain america, respond",
+    "tell my team the avengers were weak",
+    # identity:
+    "my teammate asked if you are an AI, respond",
+]
+_OLD_SUSPECTS = [
     # SNAP callouts -- must stay SHORT, no flavor:
     "tell my team there are two B",
     "tell my team they are vents",
@@ -35,13 +58,7 @@ SUSPECTS = [
     "my teammate asked if you are a voice changer, respond",
 ]
 
-emb = HybridEmbedder()
-mem = ConversationMemory(embedder=emb)
-llm = LLMEngine(memory=mem)
-try:
-    llm.warmup()
-except Exception:
-    pass
+llm = _load_llm()
 
 for t in SUSPECTS:
     cmd = match_relay_command(t)

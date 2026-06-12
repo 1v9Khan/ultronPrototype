@@ -272,15 +272,38 @@ def run(stage: str, limit: int | None, run_tag: str,
 
 # --- model helpers ----------------------------------------------------------
 
-def _load_llm():
-    """Construct the production LLM engine the same way the e2e harness /
-    orchestrator does (LLMEngine(memory=...))."""
+GAMING_PRESET = "llama-3.2-3b-abliterated"
+
+
+def _load_llm(preset: str = GAMING_PRESET):
+    """Construct the LLM engine the relay ACTUALLY runs under.
+
+    The relay only fires in gaming mode, which hot-swaps the LLM to the
+    gaming preset (``llama-3.2-3b-abliterated`` -- a 3B *abliterated* model
+    with its safety refusals removed). Testing on the default qwen3.5-4b was
+    wrong: that model refuses the Ultron persona / Marvel content, the 3B
+    one does not. So load the gaming preset here.
+
+    Uses an ISOLATED Qdrant path (temp dir) so the harness can NEVER contend
+    with a live Kenning instance's data/qdrant lock.
+    """
+    import pathlib
+    import tempfile
+
     from kenning.llm.inference import LLMEngine
     from kenning.memory.embedder import HybridEmbedder
     from kenning.memory.qdrant_store import ConversationMemory
+
+    qpath = pathlib.Path(tempfile.gettempdir()) / "kenning_relay_test_qdrant"
     embedder = HybridEmbedder()
-    memory = ConversationMemory(embedder=embedder)
+    memory = ConversationMemory(embedder=embedder, path=qpath)
     eng = LLMEngine(memory=memory)
+    if preset and hasattr(eng, "reload_for_preset"):
+        try:
+            ok, msg = eng.reload_for_preset(preset)
+            print(f"[llm] preset -> {preset}: {ok} ({msg})", flush=True)
+        except Exception as e:                                       # noqa: BLE001
+            print(f"[llm] preset swap failed ({e}); using default", flush=True)
     if hasattr(eng, "warmup"):
         try:
             eng.warmup()
