@@ -303,6 +303,7 @@ def test_match_negatives(text) -> None:
 class _SpyClient:
     def __init__(self):
         self.calls = []
+        self._auth = SimpleNamespace(authorized=True)
 
     def play_query(self, q, kind):
         self.calls.append(("play", q, kind))

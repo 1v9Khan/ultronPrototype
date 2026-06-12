@@ -45,12 +45,18 @@ def main() -> int:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            # Ignore favicon / prefetch hits -- only the real callback
+            # carries ``code`` or ``error``.
             if "code" in q:
                 captured["code"] = q["code"][0]
                 body = b"Ultron is now connected to Spotify. You can close this tab."
+            elif "error" in q:
+                captured["error"] = q["error"][0]
+                body = b"Authorization was denied. Check the console."
             else:
-                captured["error"] = q.get("error", ["unknown"])[0]
-                body = b"Authorization failed. Check the console."
+                self.send_response(204)
+                self.end_headers()
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
@@ -60,22 +66,27 @@ def main() -> int:
             return
 
     server = HTTPServer((host, port), Handler)
-    threading.Thread(target=server.handle_request, daemon=True).start()
+    # serve_forever in a daemon thread so favicon/prefetch requests don't
+    # consume a one-shot handler before the real callback arrives.
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
     url = build_authorize_url(creds)
-    print("Opening the Spotify consent page in your browser...")
-    print(f"If it doesn't open, paste this URL:\n{url}\n")
+    print("Opening the Spotify consent page in your browser...", flush=True)
+    print(f"If it doesn't open, paste this URL:\n{url}\n", flush=True)
+    print(f"Waiting up to 3 minutes for you to click Agree "
+          f"(listening on {host}:{port})...", flush=True)
     webbrowser.open(url)
 
-    # Wait for the redirect (handle_request serves exactly one).
     import time
 
-    for _ in range(600):  # ~60 s
+    for _ in range(1800):  # ~180 s
         if captured:
             break
         time.sleep(0.1)
+    server.shutdown()
     if "code" not in captured:
-        print(f"No authorization code received ({captured.get('error', 'timeout')}).")
+        print(f"No authorization code received "
+              f"({captured.get('error', 'timeout')}).", flush=True)
         return 1
 
     payload = exchange_code(creds, captured["code"])

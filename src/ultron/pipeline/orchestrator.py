@@ -1870,8 +1870,12 @@ class Orchestrator:
         gitignored credentials. Returns None when disabled or the
         credentials file is missing/unauthorized (the caller speaks a
         clear message instead). Cached across turns; built once."""
-        cached = getattr(self, "_spotify_client", "unset")
-        if cached != "unset":
+        cached = getattr(self, "_spotify_client", None)
+        # Cache only an AUTHORIZED client. An unauthorized one (no
+        # refresh token yet) is rebuilt every call so that finishing the
+        # one-time OAuth mid-session is picked up live -- no restart.
+        if cached is not None and getattr(
+                getattr(cached, "_auth", None), "authorized", False):
             return cached
         client = None
         try:
@@ -1889,7 +1893,8 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             logger.debug("spotify client unavailable: %s", e)
             client = None
-        self._spotify_client = client
+        if client is not None and client._auth.authorized:
+            self._spotify_client = client
         return client
 
     def _maybe_handle_spotify(self, user_text: str) -> bool:
