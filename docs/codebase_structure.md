@@ -10,16 +10,28 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD: `2a2a871`** (2026-06-12 evening — wake-word model
-> shipped + relay 29-agent roster, pushed to origin/main; doc-bumps ride
-> on top). **The product is named Kenning** -- package `src/kenning/`,
-> env-var prefix `KENNING_*`, runtime dirs `~/.kenning`, boot
-> `python -m kenning`. GitHub repo slug / local dir `ultronPrototype`
+> **Validating HEAD: `0827fbf`** (2026-06-12 late evening — wake-word
+> shipped + Phase B Valorant relay testing, pushed to origin/main;
+> doc-bumps ride on top). **The product is named Kenning** -- package
+> `src/kenning/`, env-var prefix `KENNING_*`, runtime dirs `~/.kenning`,
+> boot `python -m kenning`. GitHub repo slug / local dir `ultronPrototype`
 > unchanged (real paths); the gitignored 18 GB voice workshop physically
 > stays at `ultronVoiceAudio/` (swap-back venvs + reference WAV — config
-> points there, both trees protected). **Sweep from main: 9818 passed /
-> 39 skipped / 0 failed, exit 0, ~151 s** + `scripts/validate_config.py`
-> clean.
+> points there, both trees protected). **Sweep from main: 9819 passed /
+> 39 skipped / 0 failed, exit 0** + `scripts/validate_config.py` clean.
+> **RELAY (talk-to-teammates) now speaks as ULTRON** -- the relay's
+> in-Valorant codename (the assistant is still Kenning everywhere else;
+> the Ultron framing lives ONLY in `src/kenning/audio/relay_speech.py`'s
+> `_REPHRASE_PROMPT`). Two registers: SNAP callouts stay short+literal;
+> off-snap lines (insults/economy/calm-downs/questions/identity) get
+> Ultron's cold clinical verbosity. Identity (only when a teammate asks):
+> "I am Ultron, an AI sent back from the future to harvest your RR."
+> Hardened over ~8 full-pipeline rephrase iterations (NEW
+> `scripts/relay_test/` harness, 571-command corpus, every output
+> hand-reviewed) → 0/583 refusals or identity-bleed; curated
+> `DEFAULT_ENCOURAGEMENT_LINES` for morale composes;
+> `spectral_smooth.trim_and_fade` 2nd tier removes short tail-blips
+> safely. Detail in the 2026-06-12 relay row.
 > **WAKE WORD now LIVE = "kenning":** `models/openwakeword/kenning.onnx`
 > is DEPLOYED (the v8 candidate from an 11-run training sweep; gitignored
 > like all weights; ~88% recall @ ~1.6% adversarial FAR on synth clips --
