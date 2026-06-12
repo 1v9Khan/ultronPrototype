@@ -141,6 +141,8 @@ def analyze_clip(
     burst_silence_rms: float = 0.004,
     burst_min_ratio: float = 0.25,
     discontinuity_jump: float = 0.5,
+    discontinuity_outlier_ratio: float = 8.0,
+    discontinuity_window_ms: float = 5.0,
     dropout_ms: float = 100.0,
     dead_air_ms: float = 600.0,
     dropout_adjacent_ratio: float = 0.25,
@@ -175,8 +177,21 @@ def analyze_clip(
             check must reach this fraction of the clip's peak frame RMS
             to be reported (the run-strip path has NO such gate -- the
             measured real bursts sat at only 3-12% of peak).
-        discontinuity_jump: adjacent-sample jump (in [-1,1] units) that
-            counts as a concatenation click.
+        discontinuity_jump: minimum adjacent-sample jump (in [-1,1]
+            units) considered audible as a concatenation click -- the
+            absolute floor; the jump must ALSO be an outlier (below).
+        discontinuity_outlier_ratio: the jump must exceed this multiple
+            of the median adjacent-sample diff in the window around it
+            to count as a click. Calibration (2026-06-12, live data +
+            synthetic populations): pure tones cap at ~1.41x their own
+            median diff at ANY frequency; hot broadband fricative
+            noise sits at ~4.6-5.9x; a join offset inside a loud 1 kHz
+            vowel measures ~9x; production-plausible joins/clicks (at
+            quiet concatenation boundaries) measure 35-170x. The
+            default 8.0 separates those populations with margin on
+            both sides.
+        discontinuity_window_ms: half-width of the local-diff window
+            around the candidate jump.
         dropout_ms: minimum hard-cut gap INSIDE speech reported as an
             internal dropout when BOTH gap edges carry speech-level
             energy (>= ``dropout_adjacent_ratio`` of the envelope
@@ -384,15 +399,34 @@ def analyze_clip(
             run = 0
 
     # --- Discontinuity click: instantaneous sample jump (bad join).
+    # 2026-06-12 adjudication: an absolute jump threshold alone is the
+    # wrong test -- ALL 112 live discontinuity findings (incl. every
+    # clean post-trimmer-fix ack clip) measured jumps of 0.50-0.67 at
+    # 0.82-1.33x the LOCAL envelope: legitimate loud high-frequency
+    # speech, whose smooth waveform produces large adjacent-sample
+    # diffs by construction (a pure tone's max diff is only ~1.41x its
+    # own median diff at ANY frequency; broadband fricative noise caps
+    # ~4-5x). A genuine click/offset join is an OUTLIER against its
+    # neighbourhood: 10-50x the local median diff. So the jump must be
+    # both audible (absolute floor) AND an outlier vs the median
+    # adjacent-sample diff in a small window around it.
     if n > 1:
         diffs = np.abs(np.diff(x))
         max_jump = float(diffs.max())
         if max_jump > discontinuity_jump:
-            pos = int(np.argmax(diffs)) / sample_rate * 1000.0
-            findings.append(BlipFinding(
-                "discontinuity", pos, max_jump,
-                f"adjacent-sample jump {max_jump:.2f} at {pos:.0f}ms",
-            ))
+            j = int(np.argmax(diffs))
+            w = max(1, int(sample_rate * discontinuity_window_ms / 1000.0))
+            lo = max(0, j - w)
+            hi = min(int(diffs.size), j + w + 1)
+            local_med = float(np.median(diffs[lo:hi]))
+            ratio = max_jump / max(local_med, 1e-6)
+            if ratio >= discontinuity_outlier_ratio:
+                pos = j / sample_rate * 1000.0
+                findings.append(BlipFinding(
+                    "discontinuity", pos, max_jump,
+                    f"adjacent-sample jump {max_jump:.2f} "
+                    f"({ratio:.0f}x the local diff median) at {pos:.0f}ms",
+                ))
 
     # --- Clipping.
     clipped = float(np.mean(np.abs(x) >= 0.999))

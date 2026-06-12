@@ -130,6 +130,68 @@ def test_discontinuity_click_detected() -> None:
     assert "discontinuity" in kinds
 
 
+def test_loud_high_frequency_speech_not_discontinuity() -> None:
+    # 2026-06-12 adjudication pin: the live FP class. All 112 live
+    # discontinuity findings were loud high-frequency speech content
+    # (jumps 0.50-0.67 at 0.82-1.33x the local envelope). A 4 kHz tone
+    # at 0.65 amplitude produces an adjacent-sample jump of ~0.65 --
+    # above the old absolute 0.5 threshold -- but its max diff is only
+    # ~1.41x its own median diff, far below the outlier ratio.
+    t = np.arange(int(SR * 1.0), dtype=np.float32) / SR
+    x = _fade((0.65 * np.sin(2 * np.pi * 4000 * t)).astype(np.float32))
+    # Precondition: this clip WOULD have flagged under the old rule.
+    assert float(np.abs(np.diff(x)).max()) > 0.5
+    report = analyze_clip(_pad(x), SR)
+    kinds = {f.kind for f in report.findings}
+    assert "discontinuity" not in kinds, [
+        f.detail for f in report.findings
+    ]
+
+
+def test_loud_fricative_noise_not_discontinuity() -> None:
+    # Broadband noise (sibilant/fricative stand-in): max diff over a
+    # window of Gaussian diffs sits ~4-5x the median -- below the
+    # outlier ratio even when the absolute jump clears the floor.
+    rng = np.random.default_rng(11)
+    x = _fade((0.22 * rng.normal(0.0, 1.0, int(SR * 0.8)))
+              .clip(-0.95, 0.95).astype(np.float32))
+    assert float(np.abs(np.diff(x)).max()) > 0.5  # precondition
+    report = analyze_clip(_pad(x), SR)
+    kinds = {f.kind for f in report.findings}
+    assert "discontinuity" not in kinds, [
+        f.detail for f in report.findings
+    ]
+
+
+def test_offset_join_inside_loud_vowel_still_flagged() -> None:
+    # The hardest production-plausible true positive: a 0.6 DC-offset
+    # join inside a loud 1 kHz vowel measures only ~9x the local diff
+    # median (the vowel's own diffs are substantial) -- it must stay
+    # above the outlier ratio.
+    t = np.arange(int(SR * 0.5), dtype=np.float32) / SR
+    a = (0.4 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    b = (0.4 * np.sin(2 * np.pi * 1000 * t) + 0.6).clip(-1, 1).astype(
+        np.float32
+    )
+    report = analyze_clip(_pad(_fade(np.concatenate([a, b]))), SR)
+    kinds = {f.kind for f in report.findings}
+    assert "discontinuity" in kinds
+
+
+def test_click_in_quiet_audio_still_flagged() -> None:
+    # A click against quiet content is the clearest true positive:
+    # the jump is a massive outlier vs the local diff median.
+    t = np.arange(int(SR * 1.0), dtype=np.float32) / SR
+    x = _fade((0.03 * np.sin(2 * np.pi * 220 * t)).astype(np.float32))
+    spike_at = len(x) // 2
+    x = x.copy()
+    x[spike_at] = 0.62  # single-sample click
+    report = analyze_clip(_pad(x), SR)
+    kinds = {f.kind: f for f in report.findings}
+    assert "discontinuity" in kinds
+    assert "x the local diff median" in kinds["discontinuity"].detail
+
+
 def test_internal_dropout_detected() -> None:
     # 2026-06-12 two-tier rule: a genuine digital HARD CUT -- the gap
     # edges sit at full speech level (no decay). 150 ms is above the

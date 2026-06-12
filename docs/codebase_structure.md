@@ -3131,8 +3131,7 @@ config (default ON).
   per-clip analysis: `hard_onset`/`hard_tail` (un-faded edges that pop on
   stream open/close), `leading_burst`/`trailing_burst` (isolated noise
   spikes separated from the speech body by silence — the classic
-  fine-tune artifact), `discontinuity` (adjacent-sample jump at a bad
-  sentence-concatenation join), `internal_dropout` (two-tier since
+  fine-tune artifact), `discontinuity` (a bad-join click: since 2026-06-12 the jump must clear the absolute floor AND be an outlier >=8x the median adjacent-sample diff in a +-5 ms window -- the previous absolute-only 0.5 threshold flagged 112/174 live records incl. every clean ack clip, because loud high-frequency speech produces jumps comparable to its own local envelope (measured 0.82-1.33x); pure tones cap at ~1.41x their median diff, hot fricative noise at ~4.6-5.9x, while production joins/clicks measure 9-170x), `internal_dropout` (two-tier since
   2026-06-12: a gap ≥600 ms of dead air inside the speech body always
   flags; a 100-600 ms gap flags ONLY when BOTH gap edges carry
   speech-level energy ≥25% of the envelope peak — the signature of a
