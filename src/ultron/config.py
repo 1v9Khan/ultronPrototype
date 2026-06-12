@@ -3477,6 +3477,27 @@ class McpConfig(_Strict):
     servers: List[McpServerSpec] = Field(default_factory=list)
 
 
+class SpotifyConfig(_Strict):
+    """Voice-driven Spotify playback control (2026-06-12).
+
+    Credentials live in a gitignored JSON file OUTSIDE the repo
+    (``credentials_path``, default ``~/.ultron/spotify.json``) holding
+    ``client_id`` / ``client_secret`` / ``redirect_uri`` / (after the
+    one-time ``scripts/spotify_setup.py`` browser consent)
+    ``refresh_token``. Playback control needs Spotify Premium + an
+    active Spotify Connect device. Default ON, fully fail-open: with no
+    credentials / refresh token the matcher still recognises commands
+    but the handler speaks a "connect Spotify first" message instead of
+    crashing.
+    """
+
+    enabled: bool = True
+    credentials_path: str = "~/.ultron/spotify.json"
+    # Preferred device NAME to fall back to when nothing is active
+    # (empty = first available Spotify Connect device).
+    default_device: str = ""
+
+
 class RelaySpeechConfig(_Strict):
     """Voice relay -- speak a message to OTHER PEOPLE on a second output.
 
@@ -3569,6 +3590,9 @@ class UltronConfig(_Strict):
     # secondary output device (VoiceMeeter strip -> mic bus) so people in
     # the user's voice chat hear Ultron. Strict matcher; fail-open.
     relay_speech: RelaySpeechConfig = Field(default_factory=RelaySpeechConfig)
+    # Voice-driven Spotify playback control (credentials gitignored,
+    # outside the repo).
+    spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     # Catalog 13 (clawhub-capability-evolver clean-room) -- bounded
     # autonomous self-improvement. Observes turns, distills repeated
     # success patterns into live trigger-loaded skills under

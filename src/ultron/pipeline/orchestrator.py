@@ -1865,6 +1865,73 @@ class Orchestrator:
                 tts.move_to_device(device)
                 logger.info("gui action: kokoro_device -> %s", device)
 
+    def _get_spotify_client(self):
+        """Lazily build (and cache) the Spotify client from the
+        gitignored credentials. Returns None when disabled or the
+        credentials file is missing/unauthorized (the caller speaks a
+        clear message instead). Cached across turns; built once."""
+        cached = getattr(self, "_spotify_client", "unset")
+        if cached != "unset":
+            return cached
+        client = None
+        try:
+            from ultron.config import get_config
+            from ultron.spotify.auth import SpotifyAuth, load_credentials
+            from ultron.spotify.client import SpotifyClient
+
+            cfg = get_config().spotify
+            if getattr(cfg, "enabled", False):
+                creds = load_credentials(cfg.credentials_path)
+                client = SpotifyClient(
+                    SpotifyAuth(creds),
+                    default_device=getattr(cfg, "default_device", ""),
+                )
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("spotify client unavailable: %s", e)
+            client = None
+        self._spotify_client = client
+        return client
+
+    def _maybe_handle_spotify(self, user_text: str) -> bool:
+        """Spotify playback control. Strict matcher -> non-music
+        utterances fall through. Once a command MATCHES the turn is
+        consumed: a missing-credentials / not-authorized / no-device
+        state speaks a clear instruction rather than crashing or
+        falling into the LLM. Fail-open."""
+        try:
+            from ultron.config import get_config
+            from ultron.spotify.voice import (
+                handle_spotify_command,
+                match_spotify_command,
+            )
+
+            if not getattr(get_config().spotify, "enabled", False):
+                return False
+            command = match_spotify_command(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("spotify matcher unavailable: %s", e)
+            return False
+        if command is None:
+            return False
+        client = self._get_spotify_client()
+        if client is None:
+            self._speak(
+                "Spotify isn't set up yet. Add your credentials and run "
+                "the Spotify setup once."
+            )
+            return True
+        try:
+            line = handle_spotify_command(command, client)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("spotify handling failed: %s", e)
+            line = "Something went wrong with Spotify."
+        logger.info(
+            "spotify | action=%s | arg=%r | -> %r",
+            command.action, command.argument[:40], line[:80],
+        )
+        self._speak(line)
+        return True
+
     def _maybe_handle_settings_gui(self, user_text: str) -> bool:
         """Voice-launched control panel: "pull up your settings" spawns
         the detached settings GUI process; "close the settings" kills
@@ -4473,6 +4540,26 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="run_program",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+                    # Spotify playback control ("play despacito", "skip",
+                    # "pause the music", "what's playing", "turn it up").
+                    # AFTER run/launch so "play the calculator" (a
+                    # sandbox program) wins; strict matcher -> ordinary
+                    # chatter falls through.
+                    if self._maybe_handle_spotify(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="spotify",
                             follow_up=bool(follow_up_until),
                         )
                         continue

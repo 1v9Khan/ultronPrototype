@@ -1637,6 +1637,17 @@ deep_research:
 # game's input device to that bus: teammates then hear Ultron through
 # the mic channel. Fail-open: a missing device speaks a short error on
 # the normal output instead.
+# ---------------------------------------------------------------------------
+# Spotify — voice playback control ("play despacito", "skip", "pause",
+# "what's playing", "turn it up"). Credentials live in a gitignored file
+# OUTSIDE the repo (~/.ultron/spotify.json); run scripts/spotify_setup.py
+# ONCE to authorize. Needs Spotify Premium + an open Spotify device.
+# ---------------------------------------------------------------------------
+spotify:
+  enabled: true
+  credentials_path: "~/.ultron/spotify.json"
+  default_device: ""             # preferred fallback device name (empty = first)
+
 relay_speech:
   enabled: true
   output_device: "Voicemeeter Aux Input"  # name substring or PortAudio index
