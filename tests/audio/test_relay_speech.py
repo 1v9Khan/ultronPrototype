@@ -279,13 +279,15 @@ def test_build_relay_line_fallback_on_llm_error() -> None:
     def boom(prompt: str):
         raise RuntimeError("llm down")
 
-    line = build_relay_line(_cmd("push A together"), generate_fn=boom)
-    assert line == "Team: push A together"
+    # An off-snap insult routes to the LLM, so its error path -> the fallback is
+    # exercised. ('push A together' is now a deterministic directive.)
+    line = build_relay_line(_cmd("they are bots"), generate_fn=boom)
+    assert line == "Team: they are bots"
 
 
 def test_build_relay_line_fallback_on_empty_output() -> None:
-    line = build_relay_line(_cmd("push A together"), generate_fn=lambda p: iter([]))
-    assert line == "Team: push A together"
+    line = build_relay_line(_cmd("they are bots"), generate_fn=lambda p: iter([]))
+    assert line == "Team: they are bots"
 
 
 def test_build_relay_line_rephrase_disabled_skips_llm() -> None:
@@ -311,8 +313,11 @@ def test_build_relay_line_strips_quotes_newlines_and_caps_length() -> None:
 
 
 def test_build_relay_line_no_llm_no_generate_fn_falls_back() -> None:
-    line = build_relay_line(_cmd("watch the flank"), llm=None)
-    assert line == "Team: watch the flank"
+    # An off-snap line (an insult) with no LLM available -> deterministic
+    # fallback. ('watch the flank' is now a handled team directive -> 'Watch
+    # the flank.', so it is no longer an unhandled-fallback probe.)
+    line = build_relay_line(_cmd("they are absolute clowns"), llm=None)
+    assert line == "Team: they are absolute clowns"
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +556,7 @@ def test_orchestrator_relay_echo_to_user(monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
     assert o._maybe_handle_relay_speech("tell them to watch flank") is True
-    assert o._spoken == ["Team: watch flank"]
+    assert o._spoken == ["Watch flank."]
 
 
 def test_orchestrator_relay_playback_failure_speaks_error(
@@ -596,12 +601,15 @@ def test_relay_config_defaults() -> None:
 
 def test_prompt_includes_recent_lines_and_variety_instruction() -> None:
     captured: list[str] = []
-    cmd = match_relay_command("tell my team to push A together")
+    # An enemy playstyle read reaches the LLM (and carries the recent-lines
+    # block), so we can assert the prompt contents. ('push A together' is now a
+    # deterministic directive and never reaches the model.)
+    cmd = match_relay_command("tell my team the enemy is really passive")
     assert cmd is not None
     build_relay_line(
         cmd,
         recent_lines=["Rotate B now, team.", "Sage, can I get a heal?"],
-        generate_fn=lambda p: captured.append(p) or iter(["Push A together."]),
+        generate_fn=lambda p: captured.append(p) or iter(["They cower."]),
     )
     prompt = captured[0]
     assert "Rotate B now, team." in prompt
@@ -643,8 +651,9 @@ def test_orchestrator_relay_records_recent_lines_ring(
 
     assert o._maybe_handle_relay_speech("tell them to watch flank") is True
     assert o._maybe_handle_relay_speech("tell them to push B now") is True
+    # Directives are now resolved deterministically as clean imperatives.
     assert list(o._relay_recent_lines) == [
-        "Team: watch flank", "Team: push B now",
+        "Watch flank.", "Push B now.",
     ]
     assert o._relay_recent_lines.maxlen == 6
     # The follow-up extension is armed for the run-loop branch.
@@ -813,7 +822,10 @@ def test_relay_generation_is_fully_isolated() -> None:
 def test_control_tokens_never_reach_the_spoken_line(
     raw: str, expected: str,
 ) -> None:
-    cmd = match_relay_command("tell my team to rotate B now")
+    # An off-snap insult routes to the LLM, so the control-token strip on the
+    # MODEL output is exercised. (Directive payloads like 'rotate B now' are now
+    # handled deterministically and never reach the model.)
+    cmd = match_relay_command("tell my team they are bots")
     assert cmd is not None
     line = build_relay_line(cmd, generate_fn=lambda p: iter([raw]))
     assert line == expected

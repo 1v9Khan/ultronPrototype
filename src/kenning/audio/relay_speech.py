@@ -1855,6 +1855,16 @@ _ABILITY_VERBS = frozenset((
     "molly used walled"
 ).split())
 
+# Verbs that LEAD a team directive ('smoke A', 'dart heaven', 'play off site',
+# 'crossfire this corner', 'watch back site', 'trade every kill'). A short
+# verb-led order is relayed as a literal imperative -- the 3B otherwise inverts
+# it into an enemy observation ('crossfire this corner' -> 'They're crossfire').
+_TEAM_DIRECTIVE_VERBS = _IMPERATIVE_VERBS | frozenset((
+    "smoke dart flash drone wall cage knife stun recon molly crossfire gather "
+    "use look lurk slow lock anchor default spread stack retake execute peek "
+    "swing trade bait cover clear hold fight rotate push wait force"
+).split())
+
 
 def _is_place(s: str) -> bool:
     words = s.lower().strip().rstrip(".!?").replace("-", " ").split()
@@ -2345,6 +2355,16 @@ def _as_snap_callout(
     }
     if bl in _MOVE:
         return _MOVE[bl]
+    # --- general TEAM directive: a short imperative-verb-led order ('smoke A',
+    #     'dart heaven', 'play off site', 'watch back site', 'trade every kill',
+    #     'crossfire this corner', 'use your util') -> literal imperative. The
+    #     3B otherwise inverts these into enemy observations. Questions defer. ---
+    first = bl.split()[0] if bl.split() else ""
+    if (first in _TEAM_DIRECTIVE_VERBS
+            and not _is_question_payload(body)
+            and 1 <= len(body.split()) <= 7):
+        out = body.rstrip(".!?")
+        return out[0].upper() + out[1:] + "."
     return None
 
 
