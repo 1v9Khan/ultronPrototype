@@ -107,6 +107,7 @@
 - **141-rule** tool-call validator across 19 categories
 - Tamper-evident SHA-256 hash-chain audit log
 - **Gaming-mode** VRAM reclaim chain (~2.3 GB freed on demand)
+- **Anticheat-safe mode** — a 3-layer hard block (module guards · validator BLOCK_HARD · surface-stop hooks) on *every* desktop-interaction surface (input injection, screen capture, OCR, UIA, clipboard, window control, browser CDP), pinnable always-on for running beside kernel anticheats; audio + the voice/team relay + the overlay stay live
 - Typed event bus — `turn.started` · `gate.verdict` · `supervisor.decided` · 14 more
 - opencode-inspired project digest + supervisor stack
 - Pre-push hygiene hook on the repo itself

@@ -523,6 +523,10 @@ class InputController:
         """Press and release a single key (``"enter"``, ``"esc"``,
         ``"f5"``, etc.).
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from kenning.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('press_key')
+
         if not isinstance(key, str) or not key.strip():
             return InputControlResult(
                 success=False, action="press_key", error="empty key",
@@ -558,6 +562,10 @@ class InputController:
         here; use :meth:`type_text` for ordered text + key sequences
         where ordering matters, or sleep between calls.
         """
+        # Anticheat-safe mode: hard-blocked while the user is in game.
+        from kenning.safety.anticheat import guard as _anticheat_guard
+        _anticheat_guard('press_hotkey')
+
         if not keys:
             return InputControlResult(
                 success=False, action="press_hotkey", error="no keys",

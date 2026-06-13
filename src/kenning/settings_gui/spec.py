@@ -220,6 +220,15 @@ SECTIONS: tuple[Section, ...] = (
     Section("Gaming / Anticheat", (
         Knob(("gaming_mode", "enabled"), "Gaming mode voice trigger",
              "bool"),
+        # Always-on anticheat-safe block: hard-stops every desktop-interaction
+        # surface (input injection, screen capture, OCR, UIA, clipboard, window
+        # manipulation, app launch, browser CDP) while keeping mic/STT/LLM/TTS,
+        # the team relay, and the waveform overlay alive. Pinned ON for running
+        # alongside Vanguard. Read fresh each boot + on the anticheat voice
+        # toggle, so no runtime action is needed.
+        Knob(("gaming_mode", "anticheat_safe_mode"), "Anticheat-safe mode",
+             "bool", help="Always-on hard block of all desktop control; safe "
+                          "to run with Valorant/Vanguard. Audio + overlay stay on"),
         Knob(("gaming_mode", "llm_preset"), "Gaming LLM preset", "str"),
         Knob(("gaming_mode", "toggle_docker"), "Stop Docker in game",
              "bool", help="Free Docker/WSL RAM while gaming"),

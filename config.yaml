@@ -1546,12 +1546,14 @@ gaming_mode:
   # never touch another process. nvidia-smi VRAM probes and Kenning's
   # self-scoped process management (own children only) are analyzed-safe
   # and unaffected. Voice toggle: "enable/disable anticheat mode".
-  # Anticheat-safe mode is 100% TIED to gaming mode (2026-06-11): it is
-  # ON exactly when gaming mode is engaged, and OFF otherwise. It never
-  # defaults on and never turns on unless gaming mode is on. Leave
-  # anticheat_safe_mode FALSE -- setting it true is a manual always-on
-  # override (independent of gaming mode) and is NOT the normal path.
-  anticheat_safe_mode: false           # manual override only; normally false
+  # Anticheat-safe mode (2026-06-12): PINNED ON for this setup. The user runs
+  # Kenning alongside Valorant (Vanguard), so the hard block is ALWAYS-ON from
+  # boot -- there is no startup window where any desktop-interaction surface is
+  # live. This is the always-on override (independent of engaging gaming mode);
+  # audio (mic, STT, LLM, TTS, the VoiceMeeter team relay) and the waveform
+  # overlay window stay fully alive. Toggle in the settings panel
+  # (Gaming / Anticheat -> Anticheat-safe mode) or by voice.
+  anticheat_safe_mode: true            # PINNED ON -- safe to run with Vanguard
   anticheat_with_gaming_mode: true     # (retained for back-compat; tie is unconditional)
   plugins_to_disable:
     - desktop-control

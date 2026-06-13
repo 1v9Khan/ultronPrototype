@@ -122,11 +122,19 @@ def test_config_errors_fail_open_but_runtime_flag_wins(
 
 @pytest.mark.parametrize("tool", [
     "click", "type_text", "scroll", "move_mouse", "drag_to",
+    "press_key", "press_hotkey",
     "screenshot", "get_pixel_color", "wait_for_pixel_color",
     "find_image_on_screen", "clipboard_read", "clipboard_write",
     "ocr", "semantic_click", "desktop_screenshot", "desktop_list_windows",
     "desktop_find_window", "window_close", "window_move", "dialog_click",
     "element_click", "browser_use_open", "ui_inventory", "screen_context",
+    # Namespaced dispatcher + dotted bridge names must normalize into the
+    # block + audit ledger (regression: leading "openclaw." / dotted segments
+    # bypassed the prefix check when anticheat was pinned without gaming-mode
+    # engagement).
+    "openclaw.window_automation", "openclaw.desktop_automation",
+    "desktop.input.press_key", "desktop.input.press_hotkey",
+    "OpenClaw.Window_Automation",  # case-insensitive
 ])
 def test_blocked_tools(tool: str) -> None:
     assert is_blocked_tool(tool) is True
@@ -173,7 +181,8 @@ def test_match_anticheat_toggle(text: str, expected) -> None:
 # proves each listed function still contains its guard call.
 GUARDED = [
     ("kenning.desktop.input_control", "InputController",
-     ["move_mouse", "click", "type_text", "drag_to", "scroll"]),
+     ["move_mouse", "click", "type_text", "drag_to", "scroll",
+      "press_key", "press_hotkey"]),
     ("kenning.desktop.capture", "ScreenCapture",
      ["capture_monitor", "capture_all_monitors", "capture_region"]),
     ("kenning.desktop.capture", None,
@@ -289,6 +298,21 @@ def test_no_ban_class_apis_anywhere_in_source() -> None:
         "this could cost the user their game account; remove it or "
         "gate it behind an explicit design review"
     )
+
+
+def test_press_key_and_hotkey_blocked_while_active() -> None:
+    """press_key / press_hotkey drive pyautogui (SendInput) -- a Vanguard/EAC
+    ban-class injection surface. They must hard-raise while anticheat-safe mode
+    is on, exactly like the other five input methods (regression: both were
+    ungated and absent from the validator block list)."""
+    from kenning.desktop.input_control import InputController
+
+    set_anticheat_active(True, "test")
+    ic = InputController()
+    with pytest.raises(AnticheatBlockedError):
+        ic.press_key("enter")
+    with pytest.raises(AnticheatBlockedError):
+        ic.press_hotkey("ctrl", "s")
 
 
 def test_module_guard_blocks_before_os_touch() -> None:

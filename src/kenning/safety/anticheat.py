@@ -204,6 +204,7 @@ def guard(action: str) -> None:
 # manipulates windows/clipboard.
 _BLOCKED_TOOL_EXACT = frozenset({
     "click", "type_text", "scroll", "move_mouse", "drag_to",
+    "press_key", "press_hotkey",
     "screenshot", "get_pixel_color", "wait_for_pixel_color",
     "find_image_on_screen", "clipboard_read", "clipboard_write",
     "ocr", "semantic_click",
@@ -215,11 +216,27 @@ _BLOCKED_TOOL_PREFIXES = (
 
 
 def is_blocked_tool(tool_name: str) -> bool:
-    """True iff ``tool_name`` belongs to the anticheat-blocked classes."""
+    """True iff ``tool_name`` belongs to the anticheat-blocked classes.
+
+    Dispatcher / bridge names arrive namespaced and dotted -- e.g.
+    ``openclaw.window_automation`` (the OpenClaw dispatcher) or
+    ``desktop.input.press_hotkey`` (the desktop input bridge). Normalize both
+    forms so they still land in the BLOCK_HARD + audit-ledger layer: strip a
+    leading ``openclaw.`` namespace, and also test the bare final dotted
+    segment against the exact + prefix sets. Fail-open on junk input.
+    """
     name = (tool_name or "").strip().lower()
-    if name in _BLOCKED_TOOL_EXACT:
-        return True
-    return any(name.startswith(p) for p in _BLOCKED_TOOL_PREFIXES)
+    if not name:
+        return False
+    if name.startswith("openclaw."):
+        name = name[len("openclaw."):]
+    bare = name.rsplit(".", 1)[-1]
+    for cand in (name, bare):
+        if cand in _BLOCKED_TOOL_EXACT:
+            return True
+        if any(cand.startswith(p) for p in _BLOCKED_TOOL_PREFIXES):
+            return True
+    return False
 
 
 # Voice toggle -- strict phrasings only.
