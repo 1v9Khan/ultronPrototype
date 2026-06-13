@@ -176,7 +176,10 @@ def score_asr(intended_line: str, heard: str) -> list[str]:
 
 def run(stage: str, limit: int | None, run_tag: str,
         categories: set | None = None) -> int:
-    cases = build_corpus()
+    from corpus_packs import build_corpus_10k
+    import os as _os
+    _seed = int(_os.environ.get("RELAY_CORPUS_SEED", "0") or "0")
+    cases = build_corpus_10k(_seed)   # expanded ~10k corpus (packs + compounds)
     if categories:
         cases = [c for c in cases if c.category in categories]
     # Deterministic shuffle so identical templates (29 "calm down" lines, the
