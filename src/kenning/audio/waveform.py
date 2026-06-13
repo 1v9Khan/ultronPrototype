@@ -271,6 +271,19 @@ def _set_overlay_window_styles(hwnd_int: int, *, background: bool) -> None:
         u32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
         u32.ShowWindow(hwnd, SW_HIDE)
         u32.ShowWindow(hwnd, SW_SHOWNA if background else SW_SHOW)
+        if background:
+            # Sink the window to the BOTTOM of the z-order so it hides BEHIND
+            # your desktop windows / game (not distracting), while OBS Window
+            # Capture ("Windows 10 (1903+)" / WGC) still grabs its live pixels
+            # even when fully occluded. No admin needed for this -- WGC reads
+            # the window's own framebuffer regardless of z-order.
+            HWND_BOTTOM = ctypes.c_void_p(1)
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE = 0x0002, 0x0001, 0x0010
+            u32.SetWindowPos.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            u32.SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
     except Exception as e:  # noqa: BLE001
         logger.debug("overlay window styles not applied (%s)", e)
 
@@ -471,7 +484,9 @@ class WaveformSink:
             size = self._size
             plate_text = (self._nameplate_text or "").strip()
             plate_h = int(round(size * 0.26)) if plate_text else 0
-            height = size + plate_h
+            # Plate rides at ~0.82*size (see _RenderState.plate_top) instead of
+            # below a full square, so the window is shorter (less screen space).
+            height = (int(round(size * 0.82)) + plate_h) if plate_text else size
             root.geometry(f"{size}x{height}+80+80")
             root.configure(bg=self._bg)
             root.overrideredirect(True)  # borderless
@@ -575,6 +590,11 @@ class _RenderState:
         self.cy = size / 2.0
         self.r0 = size * 0.20          # inner ring radius
         self.r_max = size * 0.46       # max bar tip
+        # The nameplate sits at this y (top of the plate band). Raised well into
+        # the lower square -- the speaking bars fan out everywhere EXCEPT
+        # straight down (see dir_gain in render), so the plate can ride high
+        # with only a small gap and never get covered by the animation.
+        self.plate_top = int(round(size * 0.82))
         self.cur_level = 0.0
         self.cur_bands = np.zeros(bars, dtype=np.float32)
         self.angle = 0.0
@@ -638,14 +658,14 @@ class _RenderState:
             buckets=self._glow_buckets)
         self.plate_imgs = [ImageTk.PhotoImage(f) for f in frames]
         cx = self.size / 2.0
-        cy = self.size + self.plate_h / 2.0
+        cy = self.plate_top + self.plate_h / 2.0
         self.plate_img_item = self.canvas.create_image(
             cx, cy, image=self.plate_imgs[0])
 
     def _build_nameplate_fallback(self) -> None:
         """Plain crisp name (no plate/glow) if PIL isn't available."""
         cx = self.size / 2.0
-        cy = self.size + self.plate_h / 2.0
+        cy = self.plate_top + self.plate_h / 2.0
         fsize = max(10, int(self.plate_h * 0.42))
         self.fallback_text = self.canvas.create_text(
             cx, cy, text=self.text, anchor="center",
@@ -678,7 +698,11 @@ class _RenderState:
             ang = self.angle + (2.0 * math.pi * i / n)
             ca, sa = math.cos(ang), math.sin(ang)
             inner = r0 + 3.0
-            outer = r0 + 6.0 + amp * (r_max - r0)
+            # Fan out everywhere except straight DOWN (toward the nameplate):
+            # sa>0 points down in screen coords, so taper those bars hard. This
+            # frees the lower area so the plate can sit close above.
+            dir_gain = 1.0 - 0.78 * max(0.0, sa)
+            outer = r0 + 6.0 + amp * (r_max - r0) * dir_gain
             x0, y0 = cx + ca * inner, cy + sa * inner
             x1, y1 = cx + ca * outer, cy + sa * outer
             col = _lerp_color(accent, tip, min(1.0, amp * 1.1))

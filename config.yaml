@@ -1776,7 +1776,7 @@ visualizer:
   #         "Windows 10 (1903+)" method, which grabs the window even when it's
   #         fully behind others. No admin needed. Toggle the overlay off/on (or
   #         restart) after changing this.
-  always_on_top: true
+  always_on_top: false         # false = BACKGROUND mode: sinks BEHIND your desktop windows (not distracting) while OBS WGC still captures it. Set true to float on top while positioning.
   nameplate_text: "ULTRON"   # stylized name plate below the waveform ("" = off)
   nameplate_font: "Bahnschrift"  # techy font (falls back if not installed)
 
