@@ -45,3 +45,17 @@ LLM (off-snap, with `_repair_against_input`). The catastrophic failures all happ
 ## Validate
 Re-run `harness --stage rephrase --limit 800` (same seed), compare flag rate, commit only if improved.
 Then reshuffle (RELAY_CORPUS_SEED) for iteration 2.
+
+## RESULTS
+- MATCHER: 10,227 cases 99.9% clean.
+- ITER1 (compound decomp all-or-nothing + snap ext + eco + directives + prompt): rephrase flag rate **~56% -> 37%** (2-agent re-audit of all 764 matched lines).
+- ITER2 (PARTIAL compound resolution + switch guard): fact-token retention (numbers+agents+locations surviving input->output):
+  - compound 41% -> **65%**, agents_abilities 54% -> 62%, callouts 85% -> 89%, ALL 59% -> **72%**.
+- All committed + pushed to origin/main (8 commits). Relay suites 356/356.
+
+## ITER3 TARGETS (residual ~28% fact loss)
+- ult variants: "ult ran out / is gone / is down / back in N" (currently only "just used/fired ult").
+- "just fired/used <named ability>" (hunter fury, etc.) -> keep verbatim.
+- damage "hit them for N" / "hit N for M" phrasings (regex needs "hit <num>", misses "hit them for").
+- mixed-compound ordering (tactical-first; usually fine) + agent-ability name drops on LLM lines.
+- ecobleed on LONG / enemy-economy lines that still reach the LLM (deterministic handler caps at 5 words, our-economy only).
