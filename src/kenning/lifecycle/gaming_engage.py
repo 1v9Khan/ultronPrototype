@@ -61,6 +61,7 @@ class GamingEngageDeps:
         start_parakeet_server: Optional[Callable[..., Any]] = None,
         stop_parakeet_server: Optional[Callable[[], bool]] = None,
         gaming_llm_preset: str = "",
+        gaming_llm_gpu_layers: Optional[int] = None,
         tts_kokoro_default_device: str = "cpu",
         llm_preset_holder: Optional[dict] = None,
         stt_name_holder: Optional[dict] = None,
@@ -73,6 +74,10 @@ class GamingEngageDeps:
         self.start_parakeet_server = start_parakeet_server
         self.stop_parakeet_server = stop_parakeet_server
         self.gaming_llm_preset = gaming_llm_preset
+        # Force the gaming LLM onto CPU (0) regardless of the env / config
+        # gpu_layers override, so generation uses no GPU during a game. None
+        # keeps config behaviour.
+        self.gaming_llm_gpu_layers = gaming_llm_gpu_layers
         self.tts_kokoro_default_device = tts_kokoro_default_device
         # Shared cells so engage can stash the pre-engage state and
         # disengage can read it. The orchestrator passes the same
@@ -131,7 +136,10 @@ async def gaming_engage_iterator(
 
             current_preset = get_config().llm.preset
             if current_preset != deps.gaming_llm_preset:
-                ok, msg = deps.llm.reload_for_preset(deps.gaming_llm_preset)
+                ok, msg = deps.llm.reload_for_preset(
+                    deps.gaming_llm_preset,
+                    gpu_layers=deps.gaming_llm_gpu_layers,  # 0 -> CPU for gaming
+                )
                 if ok:
                     deps.llm_preset_holder["value"] = current_preset
                     logger.info(

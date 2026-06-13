@@ -1570,6 +1570,7 @@ gaming_mode:
   engage_at_startup: true              # boot straight into bare-bones gaming mode (min GPU)
   barebones_skip_retrieval: true       # gaming turns skip RAG memory + reranker (GPU/compute saver)
   barebones_skip_web_search: true      # gaming turns skip the web-search preflight + executor
+  llm_gpu_layers: 0                    # 0 = gaming LLM fully on CPU (no GPU spike on generation); -1 to keep it on GPU
   anticheat_with_gaming_mode: true     # (retained for back-compat; tie is unconditional)
   plugins_to_disable:
     - desktop-control

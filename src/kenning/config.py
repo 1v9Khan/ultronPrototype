@@ -2974,6 +2974,10 @@ class GamingModeConfig(_Strict):
     # just answers without memory recall / search). Default ON with gaming mode.
     barebones_skip_retrieval: bool = True
     barebones_skip_web_search: bool = True
+    # GPU layers for the gaming LLM. 0 = fully on CPU (no GPU compute during
+    # generation), forced regardless of the env/config gpu_layers override.
+    # Set to -1 to keep the gaming LLM on GPU (faster, but spikes the card).
+    llm_gpu_layers: int = Field(default=0, ge=-1, le=200)
     plugins_to_disable: List[str] = Field(
         default_factory=lambda: ["desktop-control", "windows-control"],
     )

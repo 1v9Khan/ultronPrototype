@@ -44,8 +44,9 @@ class _StubLLM:
         self.reload_calls: list[str] = []
         self._ok = reload_ok
 
-    def reload_for_preset(self, preset: str):
+    def reload_for_preset(self, preset: str, *, gpu_layers=None):
         self.reload_calls.append(preset)
+        self.last_gpu_layers = gpu_layers
         return (self._ok, "ok" if self._ok else "boom")
 
 
@@ -246,7 +247,7 @@ def test_engage_llm_exception_does_not_stop_state_machine(stub_config):
     """A raised exception in LLM swap must be swallowed and the state
     machine continues."""
     class _BoomLLM:
-        def reload_for_preset(self, preset):
+        def reload_for_preset(self, preset, *, gpu_layers=None):
             raise RuntimeError("boom")
     tts = _StubTTS()
     vlm = _StubVLM(loaded=True)

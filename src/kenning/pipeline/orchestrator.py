@@ -108,6 +108,44 @@ from kenning.observations import observe_llm_thinking_drift_sample
 logger = get_logger("pipeline.orchestrator")
 
 
+def _drive_async_blocking(coro):
+    """Run a coroutine to completion from a SYNC context, regardless of whether
+    an event loop is already running on this thread.
+
+    The gaming-mode engage/disengage device-swap driver is invoked from inside
+    ``manager.engage()``'s ``finally`` (an ``on_engaged`` callback) -- and every
+    caller wraps that in ``asyncio.run(manager.engage())``. A bare
+    ``asyncio.run`` here would then raise "asyncio.run() cannot be called from a
+    running event loop" and the swaps would silently no-op (LLM/TTS never move
+    to CPU). When a loop is already running we instead drive the coroutine on a
+    fresh loop in a short-lived thread and join, so the swaps actually happen.
+    """
+    import asyncio
+    import threading
+
+    try:
+        asyncio.get_running_loop()
+        running = True
+    except RuntimeError:
+        running = False
+    if not running:
+        return asyncio.run(coro)
+    box: dict = {}
+
+    def _runner():
+        try:
+            box["result"] = asyncio.run(coro)
+        except BaseException as e:  # noqa: BLE001
+            box["error"] = e
+
+    t = threading.Thread(target=_runner, name="async-driver", daemon=True)
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
 class State(Enum):
     IDLE = "idle"
     CAPTURING = "capturing"
@@ -3553,6 +3591,9 @@ class Orchestrator:
             full_cfg = get_config()
             tts_kokoro_default_device = full_cfg.tts.kokoro.device
             gaming_llm_preset = (cfg.llm_preset or "").strip()
+            # Force the gaming LLM onto CPU (bare-bones) regardless of the
+            # env/config gpu_layers override. None = leave on config device.
+            gaming_llm_gpu_layers = getattr(cfg, "llm_gpu_layers", 0)
             # Cell to share the pre-engage preset between callbacks.
             llm_preset_before_engage: dict = {"value": None}
 
@@ -3592,6 +3633,7 @@ class Orchestrator:
                     start_parakeet_server=start_parakeet_server,
                     stop_parakeet_server=stop_parakeet_server,
                     gaming_llm_preset=gaming_llm_preset,
+                    gaming_llm_gpu_layers=gaming_llm_gpu_layers,
                     tts_kokoro_default_device=tts_kokoro_default_device,
                     llm_preset_holder=llm_preset_before_engage,
                     stt_name_holder=stt_name_before_engage,
@@ -3643,7 +3685,7 @@ class Orchestrator:
                     extra_claims={"action": "gaming_engage"},
                 )
                 try:
-                    asyncio.run(
+                    _drive_async_blocking(
                         drive_start_task(
                             gaming_engage_iterator(deps),
                             on_transition=_gaming_voice_ack,
@@ -3671,7 +3713,7 @@ class Orchestrator:
 
                 deps = _build_engage_deps()
                 try:
-                    asyncio.run(
+                    _drive_async_blocking(
                         drive_start_task(
                             gaming_disengage_iterator(deps),
                             on_transition=_gaming_voice_ack,

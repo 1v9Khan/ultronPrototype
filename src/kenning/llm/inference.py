@@ -1326,8 +1326,15 @@ class LLMEngine:
 
     # --- 4B plan: voice-driven on-the-fly model reload ---------------------
 
-    def reload_for_preset(self, preset: str) -> "tuple[bool, str]":
+    def reload_for_preset(
+        self, preset: str, *, gpu_layers: Optional[int] = None,
+    ) -> "tuple[bool, str]":
         """Hot-swap the loaded LLM to ``preset`` without restarting Kenning.
+
+        ``gpu_layers`` forces ``n_gpu_layers`` for this reload, OVERRIDING the
+        config / env (e.g. gaming mode passes ``0`` to put the model fully on
+        CPU regardless of ``KENNING_LLM_GPU_LAYERS`` / ``llm.gpu_layers``).
+        ``None`` keeps the existing behaviour (read from config).
 
         Implementation strategy: load the NEW ``Llama`` instance FIRST,
         then release the old one only on success. This means a failed
@@ -1445,7 +1452,7 @@ class LLMEngine:
         try:
             new_cfg = reload_config().llm
             new_llm, new_path = self._build_llama(
-                new_cfg, model_path=None, n_ctx=None, n_gpu_layers=None,
+                new_cfg, model_path=None, n_ctx=None, n_gpu_layers=gpu_layers,
             )
         except Exception as e:
             # Restore env (so a subsequent get_config() doesn't drift)
