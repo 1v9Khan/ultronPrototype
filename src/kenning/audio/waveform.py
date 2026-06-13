@@ -195,12 +195,18 @@ def _nameplate_frames(W, H, text, font_family, *, plate_fill, accent_rgb,
             gl.putalpha(gl.split()[3].point(lambda p: int(p * scale)))
             for _ in range(reps):
                 img = Image.alpha_composite(img, gl)
-        # Crisp tube core: glyphs light up toward neon as he speaks.
-        core = _lerp_rgb(core_idle, nr, level)
+        # Crisp tube core LAST, on top of the bloom: a WHITE-HOT glyph (like the
+        # lit glass of a neon tube) with a thin neon-red rim. The white-hot
+        # centre stays legible against the equally-red, equally-bright halo --
+        # the glow is unchanged, the letters just read. Brightens as he speaks.
+        white_hot = (255, 240, 242)
+        core = _lerp_rgb(core_idle, white_hot, level)
+        rim = max(1, int(H * 0.02))
         cd = ImageDraw.Draw(img)
         for i, ch in enumerate(text):
             cd.text((xs[i], ty), ch, font=font, anchor="mm",
-                    fill=(core[0], core[1], core[2], 255))
+                    fill=(core[0], core[1], core[2], 255),
+                    stroke_width=rim, stroke_fill=(nr[0], nr[1], nr[2], 255))
         frames.append(img)
     return frames
 
