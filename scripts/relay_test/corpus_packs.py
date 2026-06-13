@@ -48,9 +48,16 @@ _WAKE_LEAD_RE = re.compile(r"^\s*(ultron|kenning)\b[\s,:-]*", re.IGNORECASE)
 # "tell them the") carry no real payload and SHOULD fall through to the
 # conversational pipeline rather than relay a fragment -- so for these the
 # matcher correctly returns None (expect_match=False).
+# Matches ONLY when the WHOLE utterance is a bare trigger skeleton with no real
+# payload -- trigger + group/function words (+ maybe a trailing dash) and nothing
+# else. Anchored start-to-end so a long valid relay that merely ENDS in "tell
+# them" ("...cooldown, tell them to hold") is NOT flagged.
 _INCOMPLETE_RE = re.compile(
-    r"(?:--|—)\s*$"                         # trailing dash (cut off)
-    r"|\b(?:the|a|an|that|to|of|uh|um|like)\s*$",  # trailing function word
+    r"^\W*(?:please\s+|hey\s+|just\s+|ok(?:ay)?\s+)?"
+    r"(?:tell|say|ask|let|warn|inform|remind|relay)\b"
+    r"(?:\s+(?:to|my|our|the|whole|guys?|team\s?mates?|teams?|squad|others?|"
+    r"lobby|chat|them|everyone|everybody|know|about|that|the|a|an|uh|um))*"
+    r"\s*(?:--|—)?\s*$",
     re.IGNORECASE,
 )
 

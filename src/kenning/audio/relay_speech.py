@@ -285,6 +285,28 @@ _VERBATIM_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Spoken-form normalisation applied before matching. (1) Collapse the KAY/O
+# slash ("kay/o", "k/o", "kay / o" -> "kayo") so the agent name tokenises and
+# the named-addressee patterns can match ("ask KAY/O to flash"). (2) Drop
+# standalone speech filler ("uh", "um", "er", "hmm") that real transcripts
+# sprinkle mid-utterance -- it otherwise wedges between a trigger and its
+# payload ("let my team know, uh, two enemies at B" never reached the payload).
+_KAYO_SLASH_RE = re.compile(r"\bk(?:ay)?\s*/\s*o\b", re.IGNORECASE)
+# Eat a standalone filler token AND the surrounding commas/whitespace so a
+# trigger isn't left stranded behind a comma: "know, uh, two" -> "know two".
+_FILLER_RE = re.compile(
+    r"[\s,]*\b(?:uh+|um+|er+|erm|hmm)\b[\s,]*",
+    re.IGNORECASE,
+)
+
+
+def _normalize_speech(text: str) -> str:
+    """Light spoken-form cleanup before relay matching (KAY/O slash + filler)."""
+    text = _KAYO_SLASH_RE.sub("kayo", text)
+    text = _FILLER_RE.sub(" ", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
+
 
 def _strip_verbatim_suffix(payload: str) -> tuple[str, bool]:
     """Split a trailing verbatim demand off a payload.
@@ -680,7 +702,7 @@ def match_relay_command(
     """
     if not text:
         return None
-    cleaned = _LEADING_ARTIFACT.sub("", text.strip())
+    cleaned = _normalize_speech(_LEADING_ARTIFACT.sub("", text.strip()))
 
     vocabulary = tuple(
         n.strip().lower() for n in (names or DEFAULT_ADDRESSEE_NAMES)
