@@ -220,13 +220,25 @@ def _round_rect_points(x0, y0, x1, y1, r):
     ]
 
 
-def _make_background_overlay(root) -> None:
-    """Windows: turn the overlay into an unobtrusive BACKGROUND window -- a tool
-    window (no taskbar / Alt-Tab entry) that never activates or steals focus, so
-    it sinks behind your other windows and isn't distracting, while OBS Window
-    Capture (the 'Windows 10 (1903+)' / WGC method) still grabs its pixels even
-    when fully occluded. Used when ``always_on_top`` is off. Fail-open / no-op
-    off Windows. No administrator rights required for this (non-elevated) window.
+def _set_overlay_window_styles(hwnd_int: int, *, background: bool) -> None:
+    """Windows: make the borderless overlay show up in OBS's Window Capture list
+    and, optionally, behave as an unobtrusive background window.
+
+    Tk's ``overrideredirect`` auto-applies ``WS_EX_TOOLWINDOW`` -- and OBS
+    filters tool windows OUT of its window list, so the overlay never appears as
+    a capture target. We therefore CLEAR ``WS_EX_TOOLWINDOW`` and set
+    ``WS_EX_APPWINDOW`` (taskbar-present + enumerable) so OBS lists it. When
+    ``background`` is True we additionally set ``WS_EX_NOACTIVATE`` so it never
+    steals focus and can sink behind your other windows (OBS's
+    'Windows 10 (1903+)' capture still grabs it when occluded). The window is
+    re-mapped (hide/show) so the APPWINDOW change registers.
+
+    IMPORTANT: this takes a raw HWND (not the Tk root) and MUST be called from a
+    thread OTHER than the Tk mainloop thread. Calling ShowWindow from inside the
+    mainloop makes Tk's own window-proc re-assert ``overrideredirect`` (re-adding
+    WS_EX_TOOLWINDOW) reentrantly, reverting the fix; from another thread the
+    re-map is processed cleanly (this is why the change sticks). Fail-open /
+    no-op off Windows; no admin rights needed.
     """
     try:
         import sys
@@ -236,19 +248,31 @@ def _make_background_overlay(root) -> None:
 
         GWL_EXSTYLE = -20
         WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_APPWINDOW = 0x00040000
         WS_EX_NOACTIVATE = 0x08000000
+        SW_HIDE, SW_SHOW, SW_SHOWNA = 0, 5, 8
         u32 = ctypes.windll.user32
         u32.GetWindowLongW.restype = ctypes.c_long
         u32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
         u32.SetWindowLongW.restype = ctypes.c_long
         u32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
-        root.update_idletasks()
-        hwnd = ctypes.c_void_p(root.winfo_id())
-        style = u32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        u32.SetWindowLongW(hwnd, GWL_EXSTYLE,
-                           style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+        u32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u32.GetAncestor.restype = ctypes.c_void_p
+        u32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        # Tk's winfo_id() can be the CONTENT child; the OS top-level window (the
+        # one the WM/OBS see and that carries WS_EX_TOOLWINDOW) is its GA_ROOT.
+        GA_ROOT = 2
+        root_hwnd = u32.GetAncestor(ctypes.c_void_p(int(hwnd_int)), GA_ROOT)
+        hwnd = ctypes.c_void_p(root_hwnd if root_hwnd else int(hwnd_int))
+        ex = u32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        ex = (ex & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW   # OBS-enumerable
+        if background:
+            ex |= WS_EX_NOACTIVATE
+        u32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
+        u32.ShowWindow(hwnd, SW_HIDE)
+        u32.ShowWindow(hwnd, SW_SHOWNA if background else SW_SHOW)
     except Exception as e:  # noqa: BLE001
-        logger.debug("background overlay styles not applied (%s)", e)
+        logger.debug("overlay window styles not applied (%s)", e)
 
 
 class WaveformSink:
@@ -458,10 +482,21 @@ class WaveformSink:
                     root.wm_attributes("-transparentcolor", self._bg)
                 except Exception:  # noqa: BLE001 - non-Windows / unsupported
                     pass
-            if not self._always_on_top:
-                # Background mode: let it hide behind your desktop windows while
-                # OBS (Windows 10 1903+ capture) still grabs it.
-                _make_background_overlay(root)
+            # Make the borderless window OBS-capturable: clear the auto-applied
+            # WS_EX_TOOLWINDOW (OBS filters tool windows out of its list) + set
+            # WS_EX_APPWINDOW. Done from a SEPARATE one-shot thread on the raw
+            # HWND after the window settles -- doing it on the Tk thread makes
+            # Tk re-assert overrideredirect (re-adding TOOLWINDOW). In background
+            # mode it also sinks behind other windows and never steals focus.
+            root.update_idletasks()
+            _hwnd = root.winfo_id()
+            _bg_mode = not self._always_on_top
+
+            def _apply_styles_async():
+                time.sleep(0.4)
+                _set_overlay_window_styles(_hwnd, background=_bg_mode)
+            threading.Thread(target=_apply_styles_async, daemon=True,
+                             name="waveform-winstyle").start()
             canvas = tk.Canvas(
                 root, width=size, height=height, bg=self._bg,
                 highlightthickness=0, bd=0)
