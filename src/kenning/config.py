@@ -3622,6 +3622,8 @@ class VisualizerConfig(_Strict):
     accent_color: str = "#e5484d"      # Kenning crimson
     transparent: bool = True           # Windows: key out bg_color for an overlay
     always_on_top: bool = True
+    nameplate_text: str = "ULTRON"     # stylized plate below the waveform; "" = off
+    nameplate_font: str = "Bahnschrift"  # techy face; falls back if unavailable
 
 
 class KenningConfig(_Strict):

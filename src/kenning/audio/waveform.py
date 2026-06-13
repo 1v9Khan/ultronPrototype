@@ -118,6 +118,133 @@ def _hex_to_rgb(h: str) -> Tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
+def _rgb_to_hex(c: Tuple[int, int, int]) -> str:
+    return f"#{int(c[0]):02x}{int(c[1]):02x}{int(c[2]):02x}"
+
+
+def _lerp_rgb(c0, c1, t):
+    t = 0.0 if t < 0 else 1.0 if t > 1 else t
+    return (int(c0[0] + (c1[0] - c0[0]) * t),
+            int(c0[1] + (c1[1] - c0[1]) * t),
+            int(c0[2] + (c1[2] - c0[2]) * t))
+
+
+def _load_pil_font(family: str, size: int):
+    """Best-effort TrueType load by family name -> Windows font file, with
+    sensible fallbacks; PIL's default bitmap font as a last resort."""
+    from PIL import ImageFont
+
+    fl = (family or "").lower()
+    cands = []
+    if "bahnschrift" in fl:
+        cands.append("bahnschrift.ttf")
+    if "impact" in fl:
+        cands.append("impact.ttf")
+    if family:
+        cands.append(family + ".ttf")
+    cands += ["bahnschrift.ttf", "impact.ttf", "arialbd.ttf", "seguisb.ttf", "arial.ttf"]
+    for cand in cands:
+        try:
+            return ImageFont.truetype(cand, size)
+        except Exception:  # noqa: BLE001
+            continue
+    return ImageFont.load_default()
+
+
+def _nameplate_frames(W, H, text, font_family, *, plate_fill, accent_rgb,
+                      core_idle, neon_red, buckets):
+    """Render the ULTRON plate as ``buckets`` RGBA PIL frames from idle (calm,
+    readable) to full speech (bright neon + soft Gaussian bloom). The glow is a
+    real blur -> rounded, soft, particle-like halo (like a neon tube), in the
+    SAME red the glyphs light up to. Returns a list of PIL.Image (RGBA)."""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    pad = W * 0.085
+    px0, py0, px1, py1 = pad, H * 0.16, W - pad, H * 0.84
+    radius = int(H * 0.26)
+    font = _load_pil_font(font_family, max(10, int(H * 0.46)))
+    n = max(1, len(text))
+    inner_w = (px1 - px0) * 0.84
+    left = (px0 + px1) / 2.0 - inner_w / 2.0
+    ty = (py0 + py1) / 2.0
+    xs = [left + (i + 0.5) * (inner_w / n) for i in range(len(text))]
+    plate_rgba = (*plate_fill, 255)
+    accent_rgba = (*accent_rgb, 255)
+    nr = neon_red
+    sw = max(1, int(H * 0.04))            # fatten the glow source so blur has mass
+    frames = []
+    for bi in range(buckets):
+        level = bi / max(1, buckets - 1)
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([2, 2, W - 3, H - 3], radius=radius,
+                            fill=plate_rgba, outline=accent_rgba, width=2)
+        glow_inten = 0.16 + 0.84 * level
+        # Wide soft halo + tight bright core, each composited a few times so the
+        # bloom is actually visible while staying soft + rounded (real blur).
+        for blur_fac, reps, a_mul in ((0.18, 2, 0.9), (0.07, 3, 1.0)):
+            gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            gd = ImageDraw.Draw(gl)
+            for i, ch in enumerate(text):
+                gd.text((xs[i], ty), ch, font=font, anchor="mm",
+                        fill=(nr[0], nr[1], nr[2], 255),
+                        stroke_width=sw, stroke_fill=(nr[0], nr[1], nr[2], 255))
+            blur = max(0.8, H * blur_fac * (0.5 + 0.9 * level))
+            gl = gl.filter(ImageFilter.GaussianBlur(blur))
+            scale = min(1.0, glow_inten * a_mul)
+            gl.putalpha(gl.split()[3].point(lambda p: int(p * scale)))
+            for _ in range(reps):
+                img = Image.alpha_composite(img, gl)
+        # Crisp tube core: glyphs light up toward neon as he speaks.
+        core = _lerp_rgb(core_idle, nr, level)
+        cd = ImageDraw.Draw(img)
+        for i, ch in enumerate(text):
+            cd.text((xs[i], ty), ch, font=font, anchor="mm",
+                    fill=(core[0], core[1], core[2], 255))
+        frames.append(img)
+    return frames
+
+
+def _round_rect_points(x0, y0, x1, y1, r):
+    """Point list for a rounded rectangle, used with create_polygon(smooth=True)."""
+    return [
+        x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r,
+        x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
+        x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
+    ]
+
+
+def _make_background_overlay(root) -> None:
+    """Windows: turn the overlay into an unobtrusive BACKGROUND window -- a tool
+    window (no taskbar / Alt-Tab entry) that never activates or steals focus, so
+    it sinks behind your other windows and isn't distracting, while OBS Window
+    Capture (the 'Windows 10 (1903+)' / WGC method) still grabs its pixels even
+    when fully occluded. Used when ``always_on_top`` is off. Fail-open / no-op
+    off Windows. No administrator rights required for this (non-elevated) window.
+    """
+    try:
+        import sys
+        if not sys.platform.startswith("win"):
+            return
+        import ctypes
+
+        GWL_EXSTYLE = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_NOACTIVATE = 0x08000000
+        u32 = ctypes.windll.user32
+        u32.GetWindowLongW.restype = ctypes.c_long
+        u32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u32.SetWindowLongW.restype = ctypes.c_long
+        u32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+        root.update_idletasks()
+        hwnd = ctypes.c_void_p(root.winfo_id())
+        style = u32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        u32.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                           style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("background overlay styles not applied (%s)", e)
+
+
 class WaveformSink:
     """Daemon-backed voice visualizer. One per process (see
     :func:`get_waveform_sink`). Safe to ``submit`` from any thread."""
@@ -140,6 +267,8 @@ class WaveformSink:
         self._transparent = True
         self._always_on_top = True
         self._title = "KENNING // VOICE"
+        self._nameplate_text = "ULTRON"
+        self._nameplate_font = "Bahnschrift"
         # Shared animation state (published by pacer, read by UI thread).
         self._target_level = 0.0
         self._target_bands = np.zeros(self._bars, dtype=np.float32)
@@ -162,6 +291,8 @@ class WaveformSink:
         accent_color: Optional[str] = None,
         transparent: Optional[bool] = None,
         always_on_top: Optional[bool] = None,
+        nameplate_text: Optional[str] = None,
+        nameplate_font: Optional[str] = None,
     ) -> None:
         """Enable/disable the overlay and (re)apply appearance. Starts the
         pacer + UI threads on first enable; idempotent thereafter."""
@@ -182,6 +313,10 @@ class WaveformSink:
                 self._transparent = bool(transparent)
             if always_on_top is not None:
                 self._always_on_top = bool(always_on_top)
+            if nameplate_text is not None:
+                self._nameplate_text = str(nameplate_text)
+            if nameplate_font:
+                self._nameplate_font = str(nameplate_font)
             was = self._enabled
             self._enabled = bool(enabled)
             start = self._enabled and not was
@@ -304,7 +439,10 @@ class WaveformSink:
             root = tk.Tk()
             root.title(self._title)
             size = self._size
-            root.geometry(f"{size}x{size}+80+80")
+            plate_text = (self._nameplate_text or "").strip()
+            plate_h = int(round(size * 0.26)) if plate_text else 0
+            height = size + plate_h
+            root.geometry(f"{size}x{height}+80+80")
             root.configure(bg=self._bg)
             root.overrideredirect(True)  # borderless
             if self._always_on_top:
@@ -314,12 +452,17 @@ class WaveformSink:
                     root.wm_attributes("-transparentcolor", self._bg)
                 except Exception:  # noqa: BLE001 - non-Windows / unsupported
                     pass
+            if not self._always_on_top:
+                # Background mode: let it hide behind your desktop windows while
+                # OBS (Windows 10 1903+ capture) still grabs it.
+                _make_background_overlay(root)
             canvas = tk.Canvas(
-                root, width=size, height=size, bg=self._bg,
+                root, width=size, height=height, bg=self._bg,
                 highlightthickness=0, bd=0)
             canvas.pack(fill="both", expand=True)
 
-            state = _RenderState(canvas, size, self._bars, self._accent, self._bg)
+            state = _RenderState(canvas, size, plate_h, self._bars, self._accent,
+                                 self._bg, plate_text, self._nameplate_font)
             state.build()
 
             # Drag the window by grabbing the visualizer; right-click closes.
@@ -374,9 +517,11 @@ class WaveformSink:
 class _RenderState:
     """Holds the pre-created Canvas items and eases them toward each frame."""
 
-    def __init__(self, canvas, size: int, bars: int, accent: str, bg: str) -> None:
+    def __init__(self, canvas, size: int, plate_h: int, bars: int, accent: str,
+                 bg: str, nameplate_text: str = "", nameplate_font: str = "Bahnschrift") -> None:
         self.canvas = canvas
         self.size = size
+        self.plate_h = plate_h
         self.bars = bars
         self.accent_rgb = _hex_to_rgb(accent)
         self.tip_rgb = (255, 240, 240)
@@ -393,6 +538,23 @@ class _RenderState:
         self.glow_items: list = []
         self.bar_items: list = []
         self.core = None
+        # Nameplate (ULTRON): a dark plate (contrast over gameplay) with a REAL
+        # Gaussian-blurred neon glow -- a bright tube core + soft, rounded halo
+        # in the SAME red the glyphs light up to -- pre-rendered with PIL at N
+        # brightness buckets and swapped per frame on a fast attack/decay
+        # envelope (quick brighten, quick fade). Falls back to plain canvas text
+        # if PIL is unavailable.
+        self.text = (nameplate_text or "").strip()
+        self.font_family = nameplate_font or "Bahnschrift"
+        self.PLATE_FILL = (22, 22, 30)    # distinct from chroma -> opaque plate
+        self.CORE_IDLE = (230, 222, 225)  # calm + readable when not speaking
+        self.NEON_RED = (255, 88, 98)     # glyphs light up THIS; glow is the SAME red
+        self.cur_glow = 0.0
+        self._glow_buckets = 16
+        self._last_bucket = -1
+        self.plate_imgs: list = []        # ImageTk.PhotoImage per brightness bucket
+        self.plate_img_item = None        # canvas image id
+        self.fallback_text = None         # used only if PIL is unavailable
 
     def build(self) -> None:
         c = self.canvas
@@ -407,6 +569,43 @@ class _RenderState:
                               capstyle="round"))
         # Pulsing core.
         self.core = c.create_oval(0, 0, 0, 0, fill=self.bg, outline="")
+        # ---- Nameplate ----
+        if self.plate_h > 0 and self.text:
+            try:
+                self._build_nameplate()
+            except Exception as e:  # noqa: BLE001 - degrade to plain text
+                logger.debug("nameplate glow build failed; plain text (%s)", e)
+                try:
+                    self._build_nameplate_fallback()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _build_nameplate(self) -> None:
+        """Pre-render the ULTRON plate at ``_glow_buckets`` brightness levels,
+        each with a real Gaussian-blurred neon glow, and place the (level 0)
+        image on the canvas. Requires PIL (Pillow + ImageTk)."""
+        from PIL import ImageTk
+
+        frames = _nameplate_frames(
+            self.size, self.plate_h, self.text, self.font_family,
+            plate_fill=self.PLATE_FILL, accent_rgb=self.accent_rgb,
+            core_idle=self.CORE_IDLE, neon_red=self.NEON_RED,
+            buckets=self._glow_buckets)
+        self.plate_imgs = [ImageTk.PhotoImage(f) for f in frames]
+        cx = self.size / 2.0
+        cy = self.size + self.plate_h / 2.0
+        self.plate_img_item = self.canvas.create_image(
+            cx, cy, image=self.plate_imgs[0])
+
+    def _build_nameplate_fallback(self) -> None:
+        """Plain crisp name (no plate/glow) if PIL isn't available."""
+        cx = self.size / 2.0
+        cy = self.size + self.plate_h / 2.0
+        fsize = max(10, int(self.plate_h * 0.42))
+        self.fallback_text = self.canvas.create_text(
+            cx, cy, text=self.text, anchor="center",
+            font=(self.font_family, fsize, "bold"),
+            fill=_rgb_to_hex(self.CORE_IDLE))
 
     def render(self, target_level: float, target_bands: np.ndarray) -> None:
         c = self.canvas
@@ -453,6 +652,22 @@ class _RenderState:
                                 accent, max(0.0, level - 0.15 * k) * 0.5)
             c.coords(item, cx - gr, cy - gr, cx + gr, cy + gr)
             c.itemconfigure(item, outline=shade)
+
+        # ---- Nameplate: swap to the pre-rendered glow image for the current
+        # speech level. Fast attack/decay -> a quick neon pulse (brighten fast,
+        # fade fast) tracking his syllables. ----
+        tgt = min(1.0, target_level * 1.3)
+        self.cur_glow += (tgt - self.cur_glow) * (0.85 if tgt > self.cur_glow else 0.42)
+        if self.plate_img_item is not None and self.plate_imgs:
+            b = int(round(self.cur_glow * (len(self.plate_imgs) - 1)))
+            b = max(0, min(len(self.plate_imgs) - 1, b))
+            if b != self._last_bucket:
+                self._last_bucket = b
+                c.itemconfigure(self.plate_img_item, image=self.plate_imgs[b])
+        elif self.fallback_text is not None:
+            c.itemconfigure(
+                self.fallback_text,
+                fill=_lerp_color(self.CORE_IDLE, self.NEON_RED, self.cur_glow))
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +717,8 @@ def configure_from_config() -> None:
             accent_color=getattr(v, "accent_color", None),
             transparent=getattr(v, "transparent", None),
             always_on_top=getattr(v, "always_on_top", None),
+            nameplate_text=getattr(v, "nameplate_text", None),
+            nameplate_font=getattr(v, "nameplate_font", None),
         )
     except Exception as e:  # noqa: BLE001
         logger.debug("waveform configure apply failed (%s)", e)

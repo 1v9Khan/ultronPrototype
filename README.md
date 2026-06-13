@@ -73,6 +73,8 @@
 - Producer-consumer audio pipeline; clip N+1 synth overlaps clip N playback
 - Boundary-artifact mute via cosine fades + tail aggressive zero
 - **Game team-relay** — deterministic snap callouts + persona off-snap lines, routed to a separate game-chat output strip
+- **Streamer output routing** — plays to your default speakers *and*, in parallel, tees team-only callouts to one virtual device and **all** speech to another (VoiceMeeter B1/B3), with the listen mic untouched — zero added speaker-path latency
+- **Voice waveform overlay** — a separate borderless, always-on-top window with a circular visualizer + neon **ULTRON** nameplate that pulses as he speaks; add it in OBS as one Window Capture (background mode lets it hide behind your desktop yet stay captured)
 
 </td>
 <td width="50%" valign="top">

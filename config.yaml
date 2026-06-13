@@ -1750,7 +1750,16 @@ visualizer:
   bg_color: "#0b0b10"        # chroma key (keyed out when transparent)
   accent_color: "#e5484d"    # Kenning crimson
   transparent: true          # Windows: make bg_color transparent for an overlay
+  # true  = floats on top of everything (easy to see/position while setting up).
+  # false = BACKGROUND mode: sinks behind your desktop windows (tool window, no
+  #         taskbar/Alt-Tab, never steals focus) so it's not distracting, while
+  #         OBS still captures it -- use OBS Window Capture with the
+  #         "Windows 10 (1903+)" method, which grabs the window even when it's
+  #         fully behind others. No admin needed. Toggle the overlay off/on (or
+  #         restart) after changing this.
   always_on_top: true
+  nameplate_text: "ULTRON"   # stylized name plate below the waveform ("" = off)
+  nameplate_font: "Bahnschrift"  # techy font (falls back if not installed)
 
 # ---------------------------------------------------------------------------
 # Evolution (catalog 13) — bounded autonomous self-improvement.
