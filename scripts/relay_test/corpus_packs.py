@@ -44,6 +44,24 @@ _CMD_LEAD_RE = re.compile(
 # Strip a leading wake word (the corpus convention is POST-wake-word text).
 _WAKE_LEAD_RE = re.compile(r"^\s*(ultron|kenning)\b[\s,:-]*", re.IGNORECASE)
 
+# Interrupted / clipped phrasings ("tell my team --", "ask my teammates",
+# "tell them the") carry no real payload and SHOULD fall through to the
+# conversational pipeline rather than relay a fragment -- so for these the
+# matcher correctly returns None (expect_match=False).
+_INCOMPLETE_RE = re.compile(
+    r"(?:--|—)\s*$"                         # trailing dash (cut off)
+    r"|\b(?:the|a|an|that|to|of|uh|um|like)\s*$",  # trailing function word
+    re.IGNORECASE,
+)
+
+
+def _expect_match(text: str) -> bool:
+    """A relay-content item should match UNLESS it is an interrupted fragment
+    or has no addressable payload after the trigger."""
+    if _INCOMPLETE_RE.search(text.strip()):
+        return False
+    return True
+
 
 def _load_pack(name: str) -> list[str]:
     path = os.path.join(_PACK_DIR, name + ".py")
@@ -74,7 +92,8 @@ def _pack_cases(seed: int = 0) -> list[Case]:
         wide = name in ("callouts_maps", "agents_abilities")
         for ii, item in enumerate(items):
             if _CMD_LEAD_RE.match(item):
-                cases.append(Case(item, "pack_" + name, expect_match=True))
+                cases.append(Case(item, "pack_" + name,
+                                  expect_match=_expect_match(item)))
             else:
                 k = 7 if wide else 4
                 used = set()
@@ -84,7 +103,7 @@ def _pack_cases(seed: int = 0) -> list[Case]:
                         continue
                     used.add(pre)
                     cases.append(Case(f"{pre} {item}", "pack_" + name,
-                                      expect_match=True))
+                                      expect_match=_expect_match(item)))
     for name in _QUESTION_PACKS:
         for item in _load_pack(name):
             cases.append(Case(item, "pack_" + name, expect_match=False))

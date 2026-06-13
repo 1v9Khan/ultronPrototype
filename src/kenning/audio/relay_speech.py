@@ -77,6 +77,21 @@ _GROUP_WORDS = (
 # nouns in ordinary speech never trip the matcher.
 _GROUP = rf"(?:my|our|the)\s+(?:whole\s+|entire\s+)?{_GROUP_WORDS}"
 
+# Bare pronoun group references that, in a voice-chat session AFTER the wake
+# word, clearly mean the team: "tell 'em X", "say to the guys X". "them" and
+# "everyone" were already honoured; "em"/"'em" (the spoken contraction) +
+# "the guys/the others/everybody" are the high-frequency live phrasings that
+# were silently falling through to the conversational pipeline. NOT "me"/bare
+# "him"/"her" -- those are excluded by construction.
+_GROUP_PRON = (
+    r"(?:them|'?em|everyone|everybody|the\s+guys|the\s+others|the\s+lobby|chat)"
+)
+# A chat/voice channel the user can name when relaying: "say in game chat X",
+# "say in voice X", "say in the team chat X", "say in my team chat X".
+_CHANNEL = (
+    r"(?:the\s+|my\s+)?(?:team|game|voice|all|in[\s-]?game)\s*(?:chat)?"
+)
+
 # STT artifact normalisation: the wake word occasionally leaves a
 # leading "One," / "1." fragment on the transcript ("One, tell my
 # teammate to drop me a vandal."). Strip ONLY when followed by a relay
@@ -116,8 +131,8 @@ _RELAY_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     # "say X to my teammates" / "say X in (the) (team|game) chat"
     re.compile(
-        rf"^(?:please\s+)?say\s+(?P<payload>.+?)\s+(?:to\s+{_GROUP}"
-        rf"|in\s+(?:the\s+)?(?:team\s+|game\s+)?chat)\s*[.!?]?$",
+        rf"^(?:please\s+)?say\s+(?P<payload>.+?)\s+(?:to\s+(?:{_GROUP}|{_GROUP_PRON})"
+        rf"|in\s+{_CHANNEL})\s*[.!?]?$",
         re.IGNORECASE,
     ),
     # "ask my teammates (to|for|if|whether|why|...) X" -- question
@@ -128,13 +143,28 @@ _RELAY_PATTERNS: tuple[re.Pattern[str], ...] = (
         rf"\s+.+)$",
         re.IGNORECASE,
     ),
-    # "tell them/everyone/chat (that|to) X" -- in a voice-chat session
-    # these address the team; "tell me ..." does not match by
-    # construction, and a bare "tell him/her ..." is only honoured in
-    # the context+directive forms below.
+    # "tell them/'em/everyone/the guys (that|to) X" -- in a voice-chat session
+    # these address the team; "tell me ..." does not match by construction, and
+    # a bare "tell him/her ..." is only honoured in the context+directive forms.
     re.compile(
-        r"^(?:please\s+)?tell\s+(?:them|everyone|chat|the\s+lobby)\s+"
-        r"(?:that\s+|to\s+)?(?P<payload>.+)$",
+        rf"^(?:please\s+)?tell\s+{_GROUP_PRON}\s+"
+        rf"(?:that\s+|to\s+)?(?P<payload>.+)$",
+        re.IGNORECASE,
+    ),
+    # "let 'em/them know (that) X" / "warn 'em X" -- pronoun-group variants of
+    # the let/remind/warn/inform forms above.
+    re.compile(
+        rf"^(?:please\s+)?(?:let\s+{_GROUP_PRON}\s+know|"
+        rf"(?:remind|warn|inform)\s+{_GROUP_PRON})\s+"
+        rf"(?:that\s+|to\s+|about\s+)?(?P<payload>.+)$",
+        re.IGNORECASE,
+    ),
+    # "say to my team X" / "say to the guys X" / "say in game chat (that) X" /
+    # "say in voice X" -- the message PAYLOAD comes AFTER the addressee/channel
+    # (the existing "say X to my team" handles payload-first).
+    re.compile(
+        rf"^(?:please\s+)?say\s+(?:to\s+(?:{_GROUP}|{_GROUP_PRON})"
+        rf"|in\s+{_CHANNEL})\s+(?:that\s+)?(?P<payload>.+)$",
         re.IGNORECASE,
     ),
     # "call out (that) X" -- gamer shorthand for a team info callout.
@@ -520,6 +550,13 @@ _JUNK_SINGLE_WORDS = frozenset(
     "the a an to that this it is are was be my our me you i and or".split()
 )
 
+# Valid SHORT (<4 char) one-word callouts that must relay even though the
+# generic single-word gate below requires >=4 chars (which rejects clipped
+# articles). These are real terse directives/callouts a teammate acts on.
+_SHORT_CALLOUTS = frozenset(
+    "eco op go gg ace run hp low top sub cat rat ult mid off".split()
+)
+
 # First-person instructions TO Kenning ("I want you to acknowledge")
 # are not reported teammate speech -- the pronoun pair gives them away.
 _FIRST_PERSON_TO_YOU_RE = re.compile(r"^i\s+\w+\s+you\b", re.IGNORECASE)
@@ -538,6 +575,8 @@ def _payload_has_content(payload: str) -> bool:
     if not words:
         return False
     word = words[0].strip(".,!?;:").lower()
+    if word in _SHORT_CALLOUTS:
+        return True
     return len(word) >= 4 and word not in _JUNK_SINGLE_WORDS
 
 
