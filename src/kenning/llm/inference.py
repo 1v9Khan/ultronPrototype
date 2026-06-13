@@ -1194,11 +1194,12 @@ class LLMEngine:
         # Fail-open: any error here just falls through to normal retrieval.
         try:
             from kenning.openclaw_routing.gaming_mode import is_gaming_mode_active
+            from kenning.safety.testing_mode import is_testing_mode_active
 
-            if is_gaming_mode_active() and getattr(
+            if (is_gaming_mode_active() or is_testing_mode_active()) and getattr(
                 get_config().gaming_mode, "barebones_skip_retrieval", True,
             ):
-                logger.debug("RAG retrieval skipped (bare-bones gaming mode)")
+                logger.debug("RAG retrieval skipped (bare-bones gaming/testing mode)")
                 return []
         except Exception:  # noqa: BLE001
             pass

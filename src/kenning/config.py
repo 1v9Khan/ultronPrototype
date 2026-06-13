@@ -3662,6 +3662,16 @@ class VisualizerConfig(_Strict):
     nameplate_font: str = "Bahnschrift"  # techy face; falls back if unavailable
 
 
+class TestingModeConfig(_Strict):
+    """Testing mode -- a separate, off-by-default mode that mimics the
+    disabled-functionality conditions of gaming + anticheat mode (RAG, reranker,
+    web search, desktop automation OFF) for corpus testing, while keeping the
+    GPU available for fast generation. Never triggers the gaming device swaps
+    and never alters real gaming/anticheat engage. See safety/testing_mode.py.
+    Defaults OFF so a normal restart is never accidentally in testing mode."""
+    enabled: bool = False
+
+
 class KenningConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -3706,6 +3716,9 @@ class KenningConfig(_Strict):
     relay_speech: RelaySpeechConfig = Field(default_factory=RelaySpeechConfig)
     # Voice waveform overlay window for OBS window-capture (off by default).
     visualizer: VisualizerConfig = Field(default_factory=VisualizerConfig)
+    # Testing mode -- mimics gaming/anticheat disabled-functionality (RAG/web/
+    # desktop off) on the GPU for fast corpus testing. OFF by default.
+    testing_mode: TestingModeConfig = Field(default_factory=TestingModeConfig)
     # Voice-driven Spotify playback control (credentials gitignored,
     # outside the repo).
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)

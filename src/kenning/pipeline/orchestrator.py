@@ -1870,10 +1870,11 @@ class Orchestrator:
         -- force NO_SEARCH so a gaming turn never pays the search preflight."""
         try:
             from kenning.openclaw_routing.gaming_mode import is_gaming_mode_active
+            from kenning.safety.testing_mode import is_testing_mode_active
             from kenning.config import get_config
 
             return bool(
-                is_gaming_mode_active()
+                (is_gaming_mode_active() or is_testing_mode_active())
                 and getattr(get_config().gaming_mode, "barebones_skip_web_search", True)
             )
         except Exception:  # noqa: BLE001

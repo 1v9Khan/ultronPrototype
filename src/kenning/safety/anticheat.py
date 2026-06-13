@@ -121,6 +121,16 @@ def anticheat_active() -> bool:
     """
     if _runtime_active:
         return True
+    # Testing mode mimics the gaming/anticheat disabled-functionality posture
+    # (desktop automation hard-blocked) while allowing the GPU. Separate flag;
+    # never set by gaming/anticheat engage.
+    try:
+        from kenning.safety.testing_mode import is_testing_mode_active
+
+        if is_testing_mode_active():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
     if not _config_pin_enabled:
         return False
     try:

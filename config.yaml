@@ -1781,6 +1781,18 @@ visualizer:
   nameplate_font: "Bahnschrift"  # techy font (falls back if not installed)
 
 # ---------------------------------------------------------------------------
+# Testing mode — mimics gaming/anticheat disabled-functionality on the GPU.
+# ---------------------------------------------------------------------------
+# A SEPARATE, off-by-default mode for corpus testing: RAG retrieval, the
+# reranker, web search, and desktop automation are all OFF (same as gaming +
+# anticheat) so outputs reflect the gaming runtime, but the LLM/TTS stay on the
+# GPU for fast generation. It NEVER triggers the gaming device swaps and NEVER
+# alters real gaming/anticheat engage. Keep this false for normal use; the test
+# harness flips the runtime flag itself.
+testing_mode:
+  enabled: false
+
+# ---------------------------------------------------------------------------
 # Evolution (catalog 13) — bounded autonomous self-improvement.
 # ---------------------------------------------------------------------------
 # Kenning observes its own turns, distills repeated success patterns into
