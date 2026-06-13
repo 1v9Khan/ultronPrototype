@@ -6,7 +6,7 @@
 
 *Say "kenning." Talk. Get answers in a custom voice. Everything runs on your GPU.*
 
-[![tests](https://img.shields.io/badge/tests-9719%20passing-brightgreen?style=flat-square)](https://github.com/1v9Khan/ultronPrototype)
+[![tests](https://img.shields.io/badge/tests-9991%20passing-brightgreen?style=flat-square)](https://github.com/1v9Khan/ultronPrototype)
 [![latency](https://img.shields.io/badge/TTFA-~266ms-blueviolet?style=flat-square)](#-at-a-glance)
 [![VRAM](https://img.shields.io/badge/VRAM-6.3GB%20standby-orange?style=flat-square)](#-at-a-glance)
 [![python](https://img.shields.io/badge/python-3.11+-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
@@ -39,7 +39,7 @@
 | 🌐 &nbsp;`"kenning, take me to HBO Max"` | Recognizes navigate intent → opens Chrome to the best-matching domain |
 | 🕐 &nbsp;`"kenning, what time is it in Tokyo?"` | Hits local zoneinfo cache → speaks the answer in ~5 ms (no LLM, no search) |
 | 🧭 &nbsp;`"kenning, switch to the 8B"` | Hot-swaps the local LLM preset mid-conversation |
-| 🗣️ &nbsp;`"kenning, tell my team to rotate B"` | Rephrases into a natural spoken line → plays it on a VoiceMeeter strip → your game voice chat hears Kenning (named agent callouts, no wake word mid-conversation) |
+| 🗣️ &nbsp;`"kenning, tell my team they are pushing B"` | Valorant teammate-relay: snap callouts stay short & literal (subject-exact, never the LLM); off-snap lines (banter, economy, answers, greets) carry an in-game persona with varied flavor → plays on a VoiceMeeter strip so your voice chat hears it — full map-callout vocabulary for all maps, no wake word mid-conversation |
 | 🎛️ &nbsp;`"kenning, pull up your settings"` | Spawns a detached dark-theme control panel → edit knobs at a glance → every toggle hot-applies live (no restart) → CLOSE leaves zero residue |
 | 🎵 &nbsp;`"kenning, play some Daft Punk"` | Searches Spotify → starts playback on your active device (play/pause/skip/queue/volume/shuffle, all by voice) |
 | 🛡️ &nbsp;`"kenning, engage gaming mode"` | Frees VRAM/Docker **and** hard-disables every desktop-interaction surface (input, capture, windows) — kernel-anticheat-safe; voice + team relay stay live |
@@ -50,7 +50,7 @@
 
 |  |  |
 |---|---|
-| 🧪 &nbsp;**Tests** | 9719 passing · 39 skipped · 0 failed (~144 s sweep) |
+| 🧪 &nbsp;**Tests** | 9991 passing · 39 skipped · 0 failed (~152 s sweep) |
 | ⚡ &nbsp;**Latency (TTFA)** | ~266 ms composite cache-hit turn (LLM TTFT 172 ms, TTS synth 78 ms, STT 16 ms) |
 | 🧠 &nbsp;**VRAM** | ~6.3 GB standby on RTX 4070 Ti (peak ~6.7 GB) → ~2.1 GB in gaming mode |
 | 🛠️ &nbsp;**Active stack** | Parakeet TDT STT (CUDA) · Qwen 3.5 4B Q4_K_M (CUDA) · Kokoro StyleTTS2 (CUDA, fine-tuned voice) · OpenClaw bridge live |
@@ -71,6 +71,7 @@
 - **Custom fine-tuned voicepack** — Kokoro StyleTTS2 on CUDA
 - Producer-consumer audio pipeline; clip N+1 synth overlaps clip N playback
 - Boundary-artifact mute via cosine fades + tail aggressive zero
+- **Game team-relay** — deterministic snap callouts + persona off-snap lines, routed to a separate game-chat output strip
 
 </td>
 <td width="50%" valign="top">
