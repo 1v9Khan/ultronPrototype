@@ -2930,8 +2930,19 @@ def _as_compound_callout(
     if leftover:
         # Tactical facts go out deterministically; the off-snap remainder is
         # rephrased by the LLM and appended by the caller. No tail here -- the
-        # LLM piece carries the character.
-        return det_line, " ".join(leftover)
+        # LLM piece carries the character. Join the leftover PIECES as separate
+        # sentences (each split point was a real fact boundary -- dash/also/plus
+        # or a new-fact comma) so neither the LLM input nor the fail-open literal
+        # fallback runs two facts together ('rotate from B Vyse vine active').
+        segs = []
+        for seg in leftover:
+            seg = seg.rstrip(" .!?,;:").strip()
+            if seg:
+                segs.append(seg[:1].upper() + seg[1:])
+        lo = ". ".join(segs)
+        if lo and not lo.endswith((".", "!", "?")):
+            lo += "."
+        return det_line, lo
     # Every piece resolved: one short Ultron tail on a tight enemy-facing line.
     if enemy_facing and len(det_line.split()) <= 11:
         det_line = _flavored(det_line, _FLAVOR_ENEMY, recent_lines)
