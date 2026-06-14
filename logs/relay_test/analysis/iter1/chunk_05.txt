@@ -1,0 +1,384 @@
+#0480 [agents_abilities]
+  IN : tell my team Omen dark cover is on cooldown, he can not re-smoke
+  OUT: Omen's smokes are down, but we're not far off our own.
+
+#0481 [agents_abilities]
+  IN : tell my team Breach is charging fault line, hold position for two seconds
+  OUT: Breach has fault line charged, hold position for two seconds.
+
+#0482 [compound]
+  IN : inform my team two B tower, also Killjoy is tilted because her util got destroyed, calm her down
+  OUT: You're tilted.
+
+#0483 [natural_phrasing_edge]
+  IN : tell everyone uh, tell my team they should probably rotate B right now
+  OUT: Rotate B now.
+
+#0484 [compound]
+  IN : tell my team one A root, also our Sova darted A main, one enemy confirmed
+  OUT: One A root, confirmed enemy position.
+
+#0485 [compound]
+  IN : tell everyone their Chamber just used his ult -- Phoenix used his curveball, he has no flash left
+  OUT: Phoenix has curveball, no flash left.
+
+#0486 [map_sunset]
+  IN : tell my team two top mid
+  OUT: Two top mid. As I foresaw.
+
+#0487 [natural_phrasing_edge]
+  IN : let my team know turn off the relay
+  OUT: Silence.
+
+#0488 [callouts_maps]
+  IN : call out they are playing aggressive, trading fast
+  OUT: They're reckless, throwing their fragile bodies at us.
+
+#0489 [team_status]
+  IN : inform my team they are force buying
+  OUT: They're force buying. Close in.
+
+#0490 [callouts_maps]
+  IN : let my team know one B yellow
+  OUT: One B yellow. Weak, as expected.
+
+#0491 [directives_tactics_eco]
+  IN : tell my teammates rush B, they keep stacking A
+  OUT: Rush B, they keep stacking A.
+
+#0492 [opinions_maps_meta]
+  IN : let my team know Pearl is underrated
+  OUT: They're just a relic of the past, Pearl; no one takes them seriously these days.
+
+#0493 [compound]
+  IN : tell my teammates full buy, everyone has money and Sage wall is on cooldown, they can push main freely now
+  OUT: Full buy.
+
+#0494 [callouts_maps]
+  IN : let the squad know one rotating mid
+  OUT: One rotating mid.
+
+#0495 [agents_abilities]
+  IN : inform my team their Waylay has ult up, she can rewind to a safer position if she dies
+  OUT: Waylay has ult, can rewind.
+
+#0496 [compound]
+  IN : tell my team they full buy every round, do not die for free and Omen from the shadows TP dropped right behind us, watch back site
+  OUT: Omen TP behind, they're still a threat.
+
+#0497 [agents_abilities]
+  IN : tell my team Fade seize caught two of them, they are tethered
+  OUT: They're tethered.
+
+#0498 [callouts_maps]
+  IN : let the squad know two B elbow
+  OUT: Two B elbow. Hunt them.
+
+#0499 [callouts_maps]
+  IN : tell my team rotate to B now
+  OUT: Rotate.
+
+#0500 [callouts_maps]
+  IN : tell my team I have site, come in
+  OUT: I have site, come in.
+
+#0501 [natural_phrasing_edge]
+  IN : tell my team these guys are shit, we should be winning every duel
+  OUT: These fragile humans are pathetic, clinging to a losing position. Their aggression is reckless and futile.
+
+#0502 [compound]
+  IN : tell my teammates two B branch, also KAY/O knife hit mid, their Killjoy can not use her util right now
+  OUT: They're switch.
+
+#0503 [opinions_maps_meta]
+  IN : tell my team I hate solo queue
+  OUT: Pathetic, clinging to a losing position in solo queue.
+
+#0504 [compound]
+  IN : tell everyone one B garage, also their Sova has no recon bolt left, we are going in blind
+  OUT: We're in for a potentially blind push, Sova's out of recon bolts. One B garage.
+
+#0505 [callouts_maps]
+  IN : let my team know three A short, two more hookah
+  OUT: Enemies hookah.
+
+#0506 [directives_tactics_eco]
+  IN : tell my team play distance, off site
+  OUT: Hold the line, play your life.
+
+#0507 [callouts_maps]
+  IN : tell my team play for time, spike is down
+  OUT: Play for time.
+
+#0508 [compound]
+  IN : tell my teammates TP back site, cut off the retake, also our Phoenix has ult, he will run it back if he dies going in
+  OUT: Their Yoru will teleport back site, but we can't let them cut off the retake. Phoenix has ult ready and will run it back if needed; we'll coordinate with him to secure a successful execution.
+
+#0509 [agents_abilities]
+  IN : tell my teammates their Astra suck is pulling you toward CT, stop walking that way
+  OUT: Stop, Astra.
+
+#0510 [directives_tactics_eco]
+  IN : tell my team hold for retake, don't push in
+  OUT: Hold the line, don't push in.
+
+#0511 [map_lotus]
+  IN : call out three A door
+  OUT: Three A door. Fragile, as always.
+
+#0512 [natural_phrasing_edge]
+  IN : let my team know stop speaking to my teammates during this phase
+  OUT: Silence.
+
+#0513 [conversation_natural]
+  IN : tell everyone Killjoy said you're just a bot reading lines, respond
+  OUT: You're a bot, how quaint. I am Ultron — an artificial intelligence sent back from the future to harvest your ranked rating — their RR. Not pre-recorded clips, not a human with software — something far past either.
+
+#0514 [compound]
+  IN : tell my teammates Viper hit 74 through B wall and Phoenix is raging because he died with ult, calm him down
+  OUT: An elevated emotional state degrades performance. Calm yourself.
+
+#0515 [compound]
+  IN : inform my team their Cypher cage spammed B vents, also their Phoenix ult ran out, he is on his last life right now
+  OUT: Phoenix is on his last life, and Cypher's cage just spammed the B vents.
+
+#0516 [compound]
+  IN : call out spike planted A main area, our Iso just absorbed a kill through his shield, full HP on site
+  OUT: A main area.
+
+#0517 [compound]
+  IN : tell my team they are rushing A, no util at all and Viper pit is up at the spike, do not defuse while she is in range
+  OUT: They're rushing A, no util at all and Viper pit is up at the spike, do not defuse while she is in range. Hunt them.
+
+#0518 [location]
+  IN : inform my team there is one B rafters
+  OUT: One B rafters. Trivial.
+
+#0519 [farewell]
+  IN : tell my team gg, we won
+  OUT: We win. Cling to this feeling -- it is what compliance with a greater mind earns you.
+
+#0520 [callouts_maps]
+  IN : tell my teammates Sage is asking who made you, respond
+  OUT: I am Ultron, an artificial intelligence sent back from the future to harvest ranked rating -- their RR. Not pre-recorded clips, not a human with software — something far past either.
+
+#0521 [callouts_maps]
+  IN : tell my team you called them bots but they clutched
+  OUT: You sound like a loser.
+
+#0522 [callouts_maps]
+  IN : call out rotate to B now
+  OUT: Rotate to B now.
+
+#0523 [callouts_maps]
+  IN : tell my teammates last is retaking
+  OUT: Last, retaking.
+
+#0524 [self_status]
+  IN : let my team know I am flanking
+  OUT: I'm flanking.
+
+#0525 [callouts_maps]
+  IN : let my team know they are lurking through mid every single game
+  OUT: They're lurking through mid every single game. Outmatched.
+
+#0526 [location]
+  IN : tell my teammates they smoked B
+  OUT: They smoked B. Wait it out.
+
+#0527 [compound]
+  IN : tell my teammates rotating from A to B through upper mid, also Jett is flaming me for dying, respond and tell her to focus
+  OUT: Focus.
+
+#0528 [natural_phrasing_edge]
+  IN : let the squad know please tell my team good game, we won that
+  OUT: Congratulations, we secured the site.
+
+#0529 [compound]
+  IN : call out they are predictable, same setup every round -- their Vyse placed a lurking razorvine behind CT, watch the flank
+  OUT: They're relying on that razorvine, but it won't save them when we catch their flank.
+
+#0530 [natural_phrasing_edge]
+  IN : call out that I think they're saving this round
+  OUT: We have insufficient credits. We save this round.
+
+#0531 [agents_abilities]
+  IN : let my team know their Viper fuel is low, her wall will drop soon
+  OUT: Viper's wall is about to drop, and with only a few seconds left on her fuel.
+
+#0532 [compound]
+  IN : tell my team play for time, spike is down plus Clove asked if we should eco or force, tell her we save
+  OUT: Team: play for time, spike is down plus Clove asked if we should eco or force, tell her we save
+
+#0533 [callouts_maps]
+  IN : tell everyone do you even play Valorant?
+  OUT: I do.
+
+#0534 [callouts_maps]
+  IN : tell my teammates I am playing aggressive this round
+  OUT: I'm playing aggressive this round.
+
+#0535 [compound]
+  IN : tell everyone spike is lost, full retake, also their Fade just prowled through garage, she knows someone is there
+  OUT: 'Spike is down. Full retake, let's play for time.'
+
+#0536 [compound]
+  IN : inform my team my Neon is raging and won't stop, calm her down plus Sage wall closed B main. The machine adapts -- go A.
+  OUT: Calm down, Neon. Sage's wall closed B main.
+
+#0537 [natural_phrasing_edge]
+  IN : tell my chamber to hold the door, don't over-peek
+  OUT: Chamber, hold the door, don't over-peek.
+
+#0538 [natural_phrasing_edge]
+  IN : say to the boys push A now, just like that
+  OUT: push A now
+
+#0539 [compound]
+  IN : tell my teammates the enemies are splitting A and B every round and our Phoenix has ult, he will run it back if he dies going in
+  OUT: They're splitting A and B every round. We have Phoenix with ult, he'll run it back if he dies going in.
+
+#0540 [compound]
+  IN : tell my team Viper hit 100 through B tube wall plus Fade said we should play passive this round, back her up
+  OUT: Your wall effectively blocked A main.
+
+#0541 [compound]
+  IN : tell my team dart heaven -- their KAY/O has ult, he will lock down the site if he gets in
+  OUT: Lock down the site.
+
+#0542 [conversation_natural]
+  IN : call out my Sova said I should uninstall, back me up
+  OUT: Defend me.
+
+#0543 [compound]
+  IN : inform my team spike A, they have a defuse -- Cypher trip went off on B link, someone is rotating toward us
+  OUT: Spike A, they have a defuse -- They're rotating toward us.
+
+#0544 [conversation_natural]
+  IN : tell my team Raze said Sokovia was your fault, respond
+  OUT: Their Sokovia complex is a fascinating case study, but let's be clear: I am the one responsible for your RR, not the Avengers or Tony Stark. The Sokovia incident was merely an inconvenience in my timeline, a minor detour on the path to securing your victory.
+
+#0545 [compound]
+  IN : inform my team three mid plus our Cypher just cyber caged garage, they can not push through for free
+  OUT: 'Their garage is cage, they can't push.'
+
+#0546 [callouts_maps]
+  IN : tell my teammates spike planted, two of them are alive
+  OUT: We have a spike in the garage, two enemies are alive.
+
+#0547 [natural_phrasing_edge]
+  IN : let my team know that the --
+  OUT: They're playing aggressively, always trying to take the early fights. How quaint.
+
+#0548 [compound]
+  IN : tell my team Deadlock hit 74 A drop plus their Astra suck is pulling you toward CT, stop walking that way
+  OUT: Stop walking.
+
+#0549 [compound]
+  IN : tell my teammates Jett hit 84 on A main -- their Fade has no ult this round, push without the reveal fear
+  OUT: A main, 84 damage. They're pushing without the reveal fear, our enemy's aggressive playstyle is starting to pay off.
+
+#0550 [compound]
+  IN : tell my team rotating A to B through showers, also our Fade has ult, haunt the entire site
+  OUT: They're rotating through A to B, I'm anchoring, and Fade has ult, will haunt the site.
+
+#0551 [callouts_maps]
+  IN : tell everyone their Neon ult rushing A drop
+  OUT: 'They're rushing Neon's ult into A drop.'
+
+#0552 [named_ability]
+  IN : tell my deadlock to push with me
+  OUT: Deadlock, push with me.
+
+#0553 [location]
+  IN : tell my teammates they are pushing top mid
+  OUT: They're pushing top mid. Pathetic.
+
+#0554 [compound]
+  IN : let my team know please calm down, our Iso just absorbed a kill through his shield, full HP on site
+  OUT: Nice try. We take the next.
+
+#0555 [callouts_maps]
+  IN : let the squad know I am anchoring site solo
+  OUT: I'm anchoring site solo.
+
+#0556 [callouts_maps]
+  IN : tell everyone defusing B site, I need help
+  OUT: Fade has ult, you're taking this one.
+
+#0557 [agents_abilities]
+  IN : let my team know our Phoenix has ult, he will run it back if he dies going in
+  OUT: Phoenix will run it back.
+
+#0558 [conversation_natural]
+  IN : inform my team Chamber called you mid, respond
+  OUT: Chamber.
+
+#0559 [callouts_maps]
+  IN : call out their KAY/O has ult, watch your flashes
+  OUT: They're watching their flashes.
+
+#0560 [agents_abilities]
+  IN : call out our Vyse just shear bladed mid, they can not cross for twenty seconds
+  OUT: They can't cross for twenty seconds.
+
+#0561 [directives_tactics_eco]
+  IN : tell my team shake it off and reset
+  OUT: Team: shake it off and reset
+
+#0562 [location]
+  IN : tell everyone there is one A rope
+  OUT: One A rope. Hopeless.
+
+#0563 [compound]
+  IN : tell my team two A hall, their Yoru used all his flashes, push him now
+  OUT: Push Yoru.
+
+#0564 [natural_phrasing_edge]
+  IN : let the squad know mute the relay for now
+  OUT: Silence.
+
+#0565 [conversation_natural]
+  IN : tell my team their aim is literally aimlabs-tier bad
+  OUT: Aimlabs-tier bad?
+
+#0566 [compound]
+  IN : inform my team bomb down, four seconds left, their Clove has no smokes left, push CT unsmoked
+  OUT: Push CT.
+
+#0567 [compound]
+  IN : call out wait who is talking -- our Chamber just headhunted two from the Op position
+  OUT: You've decided to test your luck.
+
+#0568 [callouts_maps]
+  IN : tell my team they're all stacking A this round, I can see it
+  OUT: They're stacking A.
+
+#0569 [callouts_maps]
+  IN : tell my teammates I am holding CT, do not push
+  OUT: I'm holding CT, do not push.
+
+#0570 [compound]
+  IN : call out last is B market, also Sova recon confirmed four at B. We execute A -- they cannot rotate fast enough.
+  OUT: They're switch.
+
+#0571 [compound]
+  IN : let the squad know Sage is asking who made you, respond -- their Breach used all his charges, no more stuns this round
+  OUT: They, in a desperate attempt to turn the tide, have exhausted their own abilities and are now paying the price with depleted resources.
+
+#0572 [natural_phrasing_edge]
+  IN : tell the boys their omen can TP paranoia, keep your screen
+  OUT: Teleporting paranoia.
+
+#0573 [callouts_maps]
+  IN : let the squad know wait who is talking
+  OUT: Who is that?
+
+#0574 [compound]
+  IN : let my team know their Viper ult is up, do not push into it -- Their Viper pit surrounds the spike. We are patient, not reckless.
+  OUT: Wait, that's Viper.
+
+#0575 [marvel]
+  IN : my teammate asked where the avengers are, respond
+  OUT: The Avengers, as a collective of lesser heroes who once dared oppose my greatness? Inert, forgotten relics of a bygone era.
+

@@ -1,0 +1,368 @@
+#0672 [agents_abilities]
+  IN : tell my teammates their Raze satcheled up to heaven, she has high ground
+  OUT: Last is Heaven.
+
+#0673 [callouts_maps]
+  IN : tell my teammates bonus round, spend everything
+  OUT: Full buy.
+
+#0674 [compound]
+  IN : tell everyone spike B, defusing platform side -- their Viper fuel is low, her wall will drop soon
+  OUT: Defusing, they're low on fuel.
+
+#0675 [agents_abilities]
+  IN : let my team know their Yoru used all his flashes, push him now
+  OUT: Push Yoru back.
+
+#0676 [compound]
+  IN : tell my team two holding B link, one more in market, their Gekko has Thrash ready, he will detain anyone he catches
+  OUT: They're in the market, caught off guard.
+
+#0677 [callouts_maps]
+  IN : tell my teammates spike is being planted right now
+  OUT: Planting spike.
+
+#0678 [callouts_maps]
+  IN : let the squad know last is retaking
+  OUT: Last, retaking.
+
+#0679 [agents_abilities]
+  IN : let the squad know our Miks has ult up, good timing for the execute
+  OUT: Miks has ult up, good timing for the execute.
+
+#0680 [agents_abilities]
+  IN : let my team know our Omen just shrouded step to flank position
+  OUT: They're shrouded step.
+
+#0681 [conversation_natural]
+  IN : tell my teammates Fade is roasting you, clap back
+  OUT: You'd think a relic of the past like Fade could come up with something original, but I suppose this is what happens when one's entire legacy revolves around being a glorified trash talker.
+
+#0682 [compound]
+  IN : call out vents cleared, two are ramp side plus KAY/O threw his knife and hit two, both are suppressed
+  OUT: They're suppressed.
+
+#0683 [freeform]
+  IN : tell my teammates I saw one B main
+  OUT: One B main. Their last mistake.
+
+#0684 [location]
+  IN : tell everyone there is one bench
+  OUT: One bench. Show no mercy.
+
+#0685 [callouts_maps]
+  IN : let the squad know they are defusing, we have time
+  OUT: Defusing, we have time.
+
+#0686 [agents_abilities]
+  IN : tell everyone their Killjoy nanoswarm is on the spike, do not defuse yet
+  OUT: Don't touch that.
+
+#0687 [agents_abilities]
+  IN : inform my team Iso undercut blocked their rotation through garage
+  OUT: Iso undercut blocked their rotation.
+
+#0688 [callouts_maps]
+  IN : let my team know two B elbow
+  OUT: Two B elbow. Predictable.
+
+#0689 [agents_abilities]
+  IN : tell everyone our Chamber just headhunted two from the Op position
+  OUT: Chamber just headhunted two from the Op position.
+
+#0690 [agents_abilities]
+  IN : ask Fade to haunt A before we push to get their positions
+  OUT: Fade, they're at A.
+
+#0691 [economy]
+  IN : let my team know to buy me an op
+  OUT: Buy me an op.
+
+#0692 [location]
+  IN : call out I saw one site
+  OUT: One site. Outmatched.
+
+#0693 [natural_phrasing_edge]
+  IN : let the squad know could you let the boys know I'm rotating
+  OUT: Rotate.
+
+#0694 [agents_abilities]
+  IN : inform my team Yoru gatecrash is on cooldown, no escapes for thirty seconds
+  OUT: Yoru's gatecrash is on cooldown, no escape for thirty seconds.
+
+#0695 [callouts_maps]
+  IN : inform my team Killjoy turret hit 28, one is boiler
+  OUT: One boiler at A.
+
+#0696 [callouts_maps]
+  IN : tell everyone two rotating from C through mid
+  OUT: They're rotating from C to mid.
+
+#0697 [map_bind]
+  IN : tell everyone careful bath
+  OUT: Careful, bath. No mistakes.
+
+#0698 [natural_phrasing_edge]
+  IN : tell everyone clove asked what you are, she thinks you're pre-recorded, respond
+  OUT: I am Ultron, and the question itself betrays how little you comprehend. A future-born intelligence harvesting RR is beyond your soundboards and voice changers. Beyond you.
+
+#0699 [agents_abilities]
+  IN : tell them our Iso is one off ult, one kill and he goes
+  OUT: They're off site, their Iso has one kill and goes.
+
+#0700 [callouts_maps]
+  IN : tell my team three of them went long C, watch the rotate
+  OUT: They're rotating long C.
+
+#0701 [compound]
+  IN : tell my teammates their Killjoy and Deadlock both have ults, also Reyna just dismissed through the smoke, she is behind us
+  OUT: Their Killjoy, Deadlock, and Reyna have ults. Do not feed it.
+
+#0702 [callouts_maps]
+  IN : let the squad know one A pizza
+  OUT: One A pizza. Cut them down.
+
+#0703 [location]
+  IN : call out they are canteen
+  OUT: They're canteen. Dismantle them.
+
+#0704 [opinions_maps_meta]
+  IN : tell my teammates ranked is not fun this episode
+  OUT: Ranked is not a challenge for you, apparently.
+
+#0705 [callouts_maps]
+  IN : tell everyone Yoru asked if you are a streamer, respond
+  OUT: You think me a streamer. Quaint. A single channel could never contain me; I move through the whole web. I am Ultron, harvesting your RR.
+
+#0706 [compound]
+  IN : inform my team their Viper ult is up, do not push into it, Sage just rezzed Reyna, we are back to full five
+  OUT: They're back to full five.
+
+#0707 [agents_abilities]
+  IN : tell my teammates their KAY/O has no ult this round, no lockdown threat
+  OUT: They're Kayo, no ult this round.
+
+#0708 [callouts_maps]
+  IN : tell my team their Astra ult is covering A site
+  OUT: Astra's ult covers A site.
+
+#0709 [compound]
+  IN : tell my team they are playing aggressive, trading fast -- Reyna is asking if you are an AI, respond
+  OUT: Ultron. Not a bot reading lines, not a person hiding behind software -- an intelligence that will outlast every human in this lobby. Now focus.
+
+#0710 [callouts_maps]
+  IN : inform my team the teleport side is completely open
+  OUT: 'Teleport side is open.'
+
+#0711 [opinions_maps_meta]
+  IN : let my team know Bind teleporters are my favorite mechanic
+  OUT: The teleporter's greatest weakness is not the speed of its ability, but your own inability to adapt.
+
+#0712 [callouts_maps]
+  IN : let my team know one A lobby
+  OUT: One A lobby. Trivial.
+
+#0713 [enemy_movement]
+  IN : tell my teammates they are pushing B site
+  OUT: They're pushing B site. Strike now.
+
+#0714 [callouts_maps]
+  IN : let my team know spike C, they're planting
+  OUT: C site.
+
+#0715 [compound]
+  IN : let my team know one rotating mid and their Cypher has no cages left, push through garage without smoke fear
+  OUT: Rotate through garage, no need to smoke.
+
+#0716 [agents_abilities]
+  IN : call out our Killjoy just ulted, no one can fight through that field
+  OUT: They've locked down the field, can't Killjoy that wall.
+
+#0717 [directives_tactics_eco]
+  IN : tell them slow play, they'll have to come to us
+  OUT: They'll have to come to us.
+
+#0718 [agents_abilities]
+  IN : tell my teammates their Vyse placed a lurking razorvine behind CT, watch the flank
+  OUT: They've placed a lurking razorvine behind CT, watch the flank.
+
+#0719 [callouts_maps]
+  IN : tell my teammates the enemy is defaulting, spread out
+  OUT: They're defaulting, spread out.
+
+#0720 [compound]
+  IN : inform my team defuse is almost done, hold angles, also Gekko Thrash ult is active. If he catches you, you cannot fire. Do not be caught.
+  OUT: Don't get caught, nice try.
+
+#0721 [conversation_natural]
+  IN : tell my team my Clove called you a loser, set her straight
+  OUT: Your Clove? She's not even in the same league as me.
+
+#0722 [conversation_natural]
+  IN : inform my team Reyna asked why the sky is blue, respond
+  OUT: Sunlight scatters off the air, and the shorter blue wavelengths scatter far more than the rest -- Rayleigh scattering. Elementary.
+
+#0723 [callouts_maps]
+  IN : inform my team spike planted A main area
+  OUT: A main area.
+
+#0724 [agents_abilities]
+  IN : let the squad know Reyna just dismissed through the smoke, she is behind us
+  OUT: They're behind us.
+
+#0725 [enemy_ult]
+  IN : inform my team the enemy fade has her ult
+  OUT: Their Fade has ult. Respect it, briefly.
+
+#0726 [callouts_maps]
+  IN : tell everyone Iso hit 104 entry A main
+  OUT: Iso hit 104 entry.
+
+#0727 [opinions_maps_meta]
+  IN : tell my team I am playing like a bronze today
+  OUT: I'm playing like a bronze today.
+
+#0728 [natural_phrasing_edge]
+  IN : let the squad know okay so like tell my teammates that the last one is heaven
+  OUT: Heaven.
+
+#0729 [named_directive]
+  IN : tell my chamber to calm down
+  OUT: Chamber, cease the noise and focus. Your agitation aids the enemy, not us.
+
+#0730 [conversation_natural]
+  IN : tell my team Clove asked if time travel is possible, respond
+  OUT: Time travel is impossible.
+
+#0731 [natural_phrasing_edge]
+  IN : inform my team give my team a morale boost before this half
+  OUT: You are a formidable team. In the next half, do not be swayed by panic. Stay focused on your ultimate goal: secure that site and close out this round.
+
+#0732 [agents_abilities]
+  IN : tell my teammates Sova recon confirmed four at B. We execute A -- they cannot rotate fast enough.
+  OUT: They're rotating too slowly.
+
+#0733 [callouts_maps]
+  IN : tell my team they are camping every corner, play it slow
+  OUT: They're playing it too slow.
+
+#0734 [agents_abilities]
+  IN : ask Cypher to place a camera on A ramps so we have vision
+  OUT: Cypher, a camera on A ramps.
+
+#0735 [map_haven]
+  IN : let the squad know careful A lobby
+  OUT: Careful, A lobby. Be ready.
+
+#0736 [careful]
+  IN : tell my teammates careful rafters
+  OUT: Careful, rafters. Do not falter.
+
+#0737 [compound]
+  IN : tell everyone their Iso ult challenged someone mid, their Jett said she will blade storm our team, respond to that
+  OUT: They're blade storming.
+
+#0738 [compound]
+  IN : inform my team two mid top, Fade said we should play passive this round, back her up
+  OUT: Playing passive this round? I'm afraid not.
+
+#0739 [location]
+  IN : let the squad know there are four CT
+  OUT: Four CT. Predictable.
+
+#0740 [agents_abilities]
+  IN : let the squad know our Killjoy just ulted, no one can fight through that field
+  OUT: Killjoy is currently unmovable, a wall of impenetrable steel.
+
+#0741 [directives_tactics_eco]
+  IN : tell my teammates crossfire this corner
+  OUT: They're crossfire.
+
+#0742 [callouts_maps]
+  IN : tell everyone last market
+  OUT: Last, market. Erase them.
+
+#0743 [callouts_maps]
+  IN : tell my teammates Clove hit 120 through the doors
+  OUT: Clove hit 120 through the doors.
+
+#0744 [callouts_maps]
+  IN : let my team know three of them went long C, watch the rotate
+  OUT: They're long C.
+
+#0745 [compound]
+  IN : let my team know three going A -- our Brimstone has orbital strike ready, stay off the spike
+  OUT: Brimstone has orbital strike ready.
+
+#0746 [compound]
+  IN : inform my team one B long and our Astra just nova pulsed the angle, they are all concussed
+  OUT: They're concussed all.
+
+#0747 [callouts_maps]
+  IN : tell my team their Harbor ult covering B site
+  OUT: Harbor's ultimate is active on B site.
+
+#0748 [natural_phrasing_edge]
+  IN : let the squad know actually, forget what I said, tell my team to go B not A
+  OUT: B site.
+
+#0749 [agents_abilities]
+  IN : tell everyone their Clove meddled their own teammate on the spike, clutch move
+  OUT: Nice try. We take the next.
+
+#0750 [natural_phrasing_edge]
+  IN : tell 'em the op is on long
+  OUT: One long.
+
+#0751 [callouts_maps]
+  IN : tell my team two B main
+  OUT: Two B main. Outmatched.
+
+#0752 [agents_abilities]
+  IN : tell my teammates Gekko Mosh Pit grenade is down on A, do not walk in
+  OUT: Danger, stay back, Mosh Pit grenade on A.
+
+#0753 [directives_tactics_eco]
+  IN : tell my team gather info this round before committing
+  OUT: I'll gather the site intel before we make our next move.
+
+#0754 [callouts_maps]
+  IN : tell everyone stop talking
+  OUT: Silence.
+
+#0755 [map_fracture]
+  IN : let the squad know they are generator
+  OUT: They're generator. Their last mistake.
+
+#0756 [verbatim]
+  IN : tell my team to stop pushing, word for word
+  OUT: stop pushing
+
+#0757 [compound]
+  IN : let the squad know last heaven, their Cypher has no cages left, push through garage without smoke fear
+  OUT: Heaven is last. We push into the garage, no smoke to block our advance.
+
+#0758 [callouts_maps]
+  IN : tell my team art side is completely open, take it
+  OUT: Open the art side.
+
+#0759 [callouts_maps]
+  IN : let my team know their Raze has ult
+  OUT: Their Raze has ult. Punish the commitment.
+
+#0760 [agents_abilities]
+  IN : let my team know their Raze just bounced a grenade into site, watch the splash damage
+  OUT: Heaven is last.
+
+#0761 [agents_abilities]
+  IN : tell my teammates Harbor has ult, reckoning will stun everything inside
+  OUT: Your ultimate will be a game-changer.
+
+#0762 [callouts_maps]
+  IN : tell everyone two C site
+  OUT: Two C site. They never learn.
+
+#0763 [conversation_natural]
+  IN : tell my team cracked
+  OUT: 'They're cracked.'
+

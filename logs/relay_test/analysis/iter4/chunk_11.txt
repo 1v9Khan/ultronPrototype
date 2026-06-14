@@ -1,0 +1,344 @@
+#0946 [var_calm_deescalate] (llm)
+  IN : tell them the scoreboard has been wrong before and it will be wrong again
+  OUT: The scoreboard has been known to betray the truth before; it will likely continue to deceive you, Ultron.
+
+#0947 [var_damage_trades] (llm)
+  IN : tell them Iso's double tap shield absorbed my first shot, he needed two hits to kill and now he's at 40 HP
+  OUT: Iso has 40 HP, double tap shield.
+
+#0948 [var_calm_deescalate] (llm)
+  IN : tell them to stop playing scared and just play their game
+  OUT: Scared? I am Ultron -- an AI sent back from the future to harvest your ranked rating. No soundboard, no voice changer.
+
+#0949 [stress_directive_obs_traps] (partial)
+  IN : tell my team they peeked aggressive out of B main, hold the angle
+  OUT: Hold the angle. They're aggressive out of B main.
+
+#0950 [var_economy_buys] (llm)
+  IN : tell my squad Spectre and light armor for the bonus round
+  OUT: Spectre and light armor, a curious combination for the bonus round.
+
+#0951 [stress_flavor_register] (partial)
+  IN : tell my team their controller is out of all abilities and they are pushing with rifles only, absolutely no utility
+  OUT: They're pushing with rifles only, absolutely no utility. No abilities.
+
+#0952 [var_utility_reports] (llm)
+  IN : relay: spike planted B default, KJ lockdown is covering it, we lose if they break the device
+  OUT: They're playing for retake.
+
+#0953 [var_directives_strats] (llm)
+  IN : relay to my team: I lurk their CT, you pressure B
+  OUT: They're lurking their CT.
+
+#0954 [compound] (partial)
+  IN : tell my teammates buy an OP this round, they are playing passive, their Neon ult ran out early, she missed all her shots
+  OUT: Buy an OP this round. They're cowering in the corners, playing hide and wait. Pathetic, even for humans -- we punish it with precision.
+
+#0955 [var_spike_plant_defuse] (llm)
+  IN : tell everyone they should have planted sooner, terrible timing
+  OUT: Poor timing. You planted when I had already secured the site, and now you're playing for retake?
+
+#0956 [var_agent_opinions] (llm)
+  IN : tell them the enemy Clove ulted and she needs a kill in ten seconds or she dies again
+  OUT: Clove has ult, one kill needed in 10 seconds.
+
+#0957 [agents_abilities] (llm)
+  IN : tell my teammates to let Omen TP in first and then follow his smoke
+  OUT: Teleport to first site.
+
+#0958 [var_directives_strats] (partial)
+  IN : let my team know they love the flank here, check it
+  OUT: Check it. Flanking here is a recipe for disaster, fragile humans.
+
+#0959 [stress_firstperson_traps] (partial)
+  IN : let the squad know I planted in the Viper pit, I am at 30 HP, I have no util left, and I am outside the pit now counting 8 seconds
+  OUT: I'm at 30 HP. I have no util left. Outside the pit, eight seconds.
+
+#0960 [stress_ask_answer_bait] (partial)
+  IN : ask Astra how many stars she has left
+  OUT: Astra, two.
+
+#0961 [stress_clutch_dense] (llm)
+  IN : tell my teammates he's defusing, viper wall is blocking my shot, need someone to get through
+  OUT: Viper, get through the wall.
+
+#0962 [conversation_natural] (llm)
+  IN : tell my team I don't think this is what Riot intended
+  OUT: Riot's design, not their intention.
+
+#0963 [var_self_status] (llm)
+  IN : tell them my Annihilation is ready, I'll cocoon someone on retake
+  OUT: Annihilation, go for it.
+
+#0964 [var_insults_trashtalk] (partial)
+  IN : tell their Neon she is fast but she still lost every gunfight she ran into
+  OUT: Neon, your aggressive playstyle is commendable, but unfortunately, it's also a recipe for disaster. Your tendency to rush into fights results in unnecessary deaths.
+
+#0965 [agents_abilities] (llm)
+  IN : let my team know Reyna just dismissed through the smoke, she is behind us
+  OUT: Enemies are behind us.
+
+#0966 [stress_opinion_mangling] (llm)
+  IN : tell my team they took away Bind, which was the most fun map, and left in Fracture, which is the worst map, and this is not an accident
+  OUT: The map swap is no coincidence, Brimstone. Fracture's design exploits the very weakness you've demonstrated in your aggressive playstyle: overextension. The enemy knew they could lure you into a trap.
+
+#0967 [natural_phrasing_edge] (llm)
+  IN : tell my team they'd better eco, we can't afford another loss round
+  OUT: We have insufficient credits.
+
+#0968 [var_utility_reports] (llm)
+  IN : relay: their whole team burned flashes and smokes on a failed mid fight, they have nothing left
+  OUT: We're out of vision-blocking abilities now, rotate and get into position.
+
+#0969 [var_calm_deescalate] (llm)
+  IN : tell them if the plan changed call it and adapt, don't freeze
+  OUT: Adjust your strategy, adapt to the new layout. We'll reassess our approach as we navigate this unexpected change.
+
+#0970 [var_ult_states] (llm)
+  IN : call out our ult count is stronger, we go now before they save up to match us
+  OUT: Now.
+
+#0971 [var_agent_opinions] (llm)
+  IN : tell them Tejo stealth drone suppresses and reveals at the same time, everyone scatter
+  OUT: They're scattered.
+
+#0972 [stress_ask_answer_bait] (partial)
+  IN : ask Breach if rolling thunder will hit through the Sage wall blocking main
+  OUT: Breach, rolling thunder is going through the Sage wall.
+
+#0973 [stress_firstperson_traps] (llm)
+  IN : inform my team I see their Cypher camera, I will shoot it so we have no info for 45 seconds
+  OUT: Shoot their Cypher camera, we'll be blind for 45 seconds.
+
+#0974 [stress_compounds_3fact] (llm)
+  IN : inform my team pass along that our Yoru faked a gatecrash at B, actually real-teleported to A Short, and now he has dimensional drift up to scout before re-engaging
+  OUT: They're dimensional drifting, caught off guard.
+
+#0975 [var_economy_buys] (llm)
+  IN : tell them Tejo's Stealth Drone costs 400 for the extra, skip it on a force
+  OUT: We have insufficient credits.
+
+#0976 [stress_compounds_3fact] (llm)
+  IN : tell my teammates their Skye tiger concussed our entry fragger at B Main on Pearl and two hawks are still up to flash the rest of the team entering
+  OUT: They're still up, two hawks flashing.
+
+#0977 [stress_slang_runons] (llm)
+  IN : tell everyone ngl bro they planted it on A site and the timer is at forty five seconds fr we need to full commit retake now bro
+  OUT: Full commit retake, now.
+
+#0978 [stress_firstperson_traps] (llm)
+  IN : tell my team push through when I call that I activated the pit
+  OUT: I'm not activating the pit.
+
+#0979 [var_agent_opinions] (llm)
+  IN : tell them a Phoenix who heals himself mid-fight is genuinely hard to kill
+  OUT: Their self-healing abilities make them nearly impervious to damage.
+
+#0980 [stress_directive_obs_traps] (llm)
+  IN : tell them plant for heaven so they can't defuse from above
+  OUT: Plant for heaven, they can't defuse from above.
+
+#0981 [stress_agents_ability_exhaustive] (llm)
+  IN : call out our Waylay dashed twice with lightspeed, both charges consumed, no more dashes this round
+  OUT: Waylay has exhausted his dashes for the round.
+
+#0982 [stress_directive_obs_traps] (llm)
+  IN : tell my team stack the side they go every first round
+  OUT: We've taken that side in every first round, let's keep it up.
+
+#0983 [var_self_status] (llm)
+  IN : let the boys know I bought a Marshal this round, no rifle
+  OUT: We have insufficient credits. We buy the Marshal.
+
+#0984 [var_ult_states] (llm)
+  IN : tell my team we need to coordinate ults before using them, two people burned theirs for one kill total
+  OUT: Two people burned theirs for one kill total, we should rotate to a safer position.
+
+#0985 [var_rotations_movement] (llm)
+  IN : let the squad know cross via the drop, catch them off guard
+  OUT: Cross via the drop.
+
+#0986 [stress_directive_obs_traps] (llm)
+  IN : tell my squad destroy Chamber's teleport anchor before he peeks
+  OUT: Chamber's teleport anchor.
+
+#0987 [var_utility_reports] (llm)
+  IN : tell the team Kayo downed during ult, revive him or we lose the ability lockout
+  OUT: Revive Kayo.
+
+#0988 [compose] (llm)
+  IN : ask my team how their day is going
+  OUT: It's been a long day.
+
+#0989 [stress_flavor_register] (llm)
+  IN : tell my teammates Vyse steel garden active, primaries are scrap metal for eight seconds
+  OUT: Her steel garden is active for eight seconds, and her primaries are scrap metal.
+
+#0990 [stress_firstperson_traps] (llm)
+  IN : let my team know I will knife their site with zero-point and the second you hear the suppress you rush in
+  OUT: You're playing a reckless game of chicken.
+
+#0991 [stress_compounds_5fact] (llm)
+  IN : tell my team their Deadlock gravnetted the A dish entry, everyone is crouching, annihilation cocoon ready
+  OUT: Enemy entry at A dish, crouched, cocoon ready.
+
+#0992 [stress_directive_obs_traps] (llm)
+  IN : let my team know they're running a split to kill our crossfire setups
+  OUT: Rotate.
+
+#0993 [stress_compounds_5fact] (partial)
+  IN : call out their Breach rolling thunder went off at A main entry, three stunned six seconds, push now
+  OUT: Push now. Their Breach has ult.
+
+#0994 [var_insults_trashtalk] (llm)
+  IN : tell them the agent they picked has a win rate above fifty percent and they are single-handedly dragging that stat down
+  OUT: Sova. Your aggressive playstyle is costing you that win rate, as your opponents are too eager to engage with a single agent.
+
+#0995 [stress_stt_homophones] (llm)
+  IN : tell my teammates the enemy micks placed her m-pulse on hookah, don't push through the deafen
+  OUT: Deafen.
+
+#0996 [var_insults_trashtalk] (llm)
+  IN : tell them they run the fastest ecos in the history of Valorant and they spend them on the same three angles
+  OUT: You run the fastest ecos in the history of Valorant and spend them all on the same three angles, always.
+
+#0997 [stress_clutch_dense] (llm)
+  IN : tell everyone planted, 15 seconds, if we win this it's 12-12, overtime on the table
+  OUT: Play their life.
+
+#0998 [var_self_status] (llm)
+  IN : inform them my arc rose is planted at elbow, I'll pop it on your call
+  OUT: Elbow.
+
+#0999 [var_ult_states] (partial)
+  IN : call out Reyna empress is active, do not peek her one at a time, trade immediately or bail
+  OUT: Reyna empress is active. Trade immediately or bail. They're playing one at a time.
+
+#1000 [compound] (llm)
+  IN : inform my team the enemy is eco this round -- Gekko reclaiming wingman
+  OUT: Enemies are defaulting.
+
+#1001 [var_utility_reports] (partial)
+  IN : tell them Yoru blind coming off the wall, look right
+  OUT: Look right. Yoru is blind coming off the wall.
+
+#1002 [stress_compounds_5fact] (llm)
+  IN : tell my teammates two eco round at B, sheriffs and one ability each, our team should not eco trade our rifles
+  OUT: We have insufficient credits. We save this round.
+
+#1003 [stress_agents_ability_exhaustive] (llm)
+  IN : tell them our Clove is smoking from the grave post-death while their Clove died with no smokes left
+  OUT: Clove is dead, and you're still smoking out of habit.
+
+#1004 [compound] (partial)
+  IN : tell everyone three C, they stacked C site, vine active on spike, don't step in
+  OUT: Three C. C site is under control.
+
+#1005 [stress_clutch_dense] (partial)
+  IN : let my team know spike is down, molly the spike immediately, Brimstone
+  OUT: Spike is down. Molly the spike immediately. Brimstone, play for time.
+
+#1006 [var_utility_reports] (llm)
+  IN : tell them Vyse steel garden going on site, their primary weapons are jammed
+  OUT: They're jammed.
+
+#1007 [stress_directive_obs_traps] (llm)
+  IN : tell them they stalled mid for 30 seconds before committing B
+  OUT: Play for time.
+
+#1008 [stress_nanoswarm_wait] (partial)
+  IN : tell everyone stop, don't defuse, molly is going
+  OUT: Molly is going. They're defusing.
+
+#1009 [var_greetings_gg] (llm)
+  IN : say to my team good luck have fun, let's win this
+  OUT: Inevitable.
+
+#1010 [var_spike_plant_defuse] (llm)
+  IN : let the squad know we're running out of time, 15 seconds
+  OUT: We're running out of time.
+
+#1011 [stress_hallucination_bait] (partial)
+  IN : let my team know wall that entry and we're good
+  OUT: Wall that entry. We're good.
+
+#1012 [stress_agents_ability_exhaustive] (llm)
+  IN : let the squad know our Neon slide reset on the kill, she has another slide charge this round
+  OUT: Neon's slide reset on the kill, she has another slide charge this round.
+
+#1013 [stress_firstperson_traps] (partial)
+  IN : tell my teammates I am solo-anchoring A, you two rotate B and I will hold
+  OUT: I'm solo-anchoring A, you two rotate B. Hold the line.
+
+#1014 [stress_agents_ability_exhaustive] (llm)
+  IN : tell them their Chamber tour de force is active with five bullets while our Chamber has no ult
+  OUT: Enemies have five Chamber agents with active ults.
+
+#1015 [agents_abilities] (partial)
+  IN : ask Breach to aftershock the spike after they plant so no one can defuse
+  OUT: Breach, anchor.
+
+#1016 [var_map_opinions] (llm)
+  IN : tell them a Vyse Shear placed on the approach choke forces defenders to stop or get rooted
+  OUT: They're rooted.
+
+#1017 [stress_hallucination_bait] (llm)
+  IN : tell them we can retake if we go at the same time
+  OUT: Retake at the same time.
+
+#1018 [directives_tactics_eco] (partial)
+  IN : tell them don't defuse yet, wait for us
+  OUT: Wait for us. Don't defuse yet.
+
+#1019 [stress_disfluency] (llm)
+  IN : call out you know like -- hmm -- three B no armor -- just say three B no armor
+  OUT: Three B no armor.
+
+#1020 [var_morale_hype] (llm)
+  IN : tell my teammates that 1v4 just saved our economy and our confidence, that was massive
+  OUT: That was a bold play.
+
+#1021 [var_self_status] (llm)
+  IN : tell them I have enough for rifle and full armor, no util though
+  OUT: We have sufficient credits for rifle and full armor.
+
+#1022 [conversation_natural] (llm)
+  IN : tell my team no, we've been going A all half, switch it up
+  OUT: Switch to B, it's time for a change.
+
+#1023 [var_spike_plant_defuse] (llm)
+  IN : call out post-plant lotus B, upper and stairs crossfire
+  OUT: Upper and stairs, crossfire.
+
+#1024 [directives_tactics_eco] (llm)
+  IN : let my squad know close the half strong
+  OUT: Strong half. Hold the line.
+
+#1025 [stress_ask_answer_bait] (llm)
+  IN : ask if three people can full buy or are we half buying
+  OUT: We are half buying.
+
+#1026 [var_damage_trades] (llm)
+  IN : tell them I hit the Chamber 71 right as he tried to TP away
+  OUT: Chamber 71, right on his teleport.
+
+#1027 [var_map_opinions] (llm)
+  IN : let my team know a coordinated three-man execute is stronger than a chaotic five-man rush on every map
+  OUT: A chaotic five-man rush is a fleeting moment of chaos, a brief lapse in coherence before the inevitable. A well-coordinated three-man execute, on the other hand, is a symphony of precision and control, each note playing its part in a beautiful, crushing melody.
+
+#1028 [var_map_opinions] (llm)
+  IN : tell them B Tunnel Underpass lets us split B with some going B Main and some going through Tunnel
+  OUT: Split B with a rotation to B Main and a site play on the tunnel, as their defuse attempt just failed.
+
+#1029 [stress_hallucination_bait] (llm)
+  IN : relay to my squad: pop your X ability on them
+  OUT: A burst of speed and fury.
+
+#1030 [natural_phrasing_edge] (partial)
+  IN : remind my team to buy shields, don't forget armor
+  OUT: Buy shields. Don't forget armor.
+
+#1031 [stress_hallucination_bait] (llm)
+  IN : tell them cage the area so they can't see us
+  OUT: They're camping.
+

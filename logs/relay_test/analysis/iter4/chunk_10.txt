@@ -1,0 +1,344 @@
+#0860 [var_map_opinions] (llm)
+  IN : let my team know a half-buy Guardian on the long angle of this map punches way above its price point
+  OUT: Guardian punches above price? Strong half. Hold the line, now.
+
+#0861 [var_spike_plant_defuse] (llm)
+  IN : tell my teammates open plant A
+  OUT: A
+
+#0862 [var_economy_buys] (partial)
+  IN : tell them drop the Vandal, I'll buy my own armor
+  OUT: Drop the Vandal. I'll buy my own armor.
+
+#0863 [var_spike_plant_defuse] (partial)
+  IN : let the squad know planting C, cover garage
+  OUT: Cover garage. Planting C.
+
+#0864 [var_rotations_movement] (partial)
+  IN : let my team know stack A — four on A one fake B
+  OUT: Stack A. Enemies on A, one fake B.
+
+#0865 [stress_opinion_mangling] (llm)
+  IN : tell them double-duelist is the correct meta and every team running two initiators is playing scared
+  OUT: They're playing scared.
+
+#0866 [var_damage_trades] (llm)
+  IN : let them know I tagged the lurk 65 as they came through the flank
+  OUT: They're lurking.
+
+#0867 [var_ult_states] (llm)
+  IN : remind my team break the cocoon fast, it pulls toward the kill point in seven seconds
+  OUT: Break the cocoon now, it pulls towards the kill point in seven seconds.
+
+#0868 [var_spike_plant_defuse] (partial)
+  IN : let my team know peek and defuse, don't just sit there
+  OUT: Peek. Defuse. You should be actively contributing to the team.
+
+#0869 [var_map_opinions] (llm)
+  IN : let my team know a two-player split through two different entry points is always stronger than single file
+  OUT: A narrow split can sometimes be the most effective, but a two-player entry through separate points often catches opponents off guard.
+
+#0870 [var_ult_states] (llm)
+  IN : tell my teammates our Reyna has ult and is two kills off syncing it with site entry
+  OUT: Reyna has ult, two kills off.
+
+#0871 [var_insults_trashtalk] (llm)
+  IN : let the enemy know they cannot hit a wide peek at point-blank range
+  OUT: Wide peek range is quite short, typically around 30-40 units.
+
+#0872 [var_calm_deescalate] (llm)
+  IN : tell everyone to breathe before they key up
+  OUT: Hold still.
+
+#0873 [stress_flavor_register] (partial)
+  IN : tell my teammates spike Lotus B, planted at default, the rotating doors are both open, check corners
+  OUT: Check corners. Default site, both doors open.
+
+#0874 [stress_hallucination_bait] (partial)
+  IN : tell the Gekko to send something in to help
+  OUT: Gekko, flash.
+
+#0875 [stress_ask_answer_bait] (partial)
+  IN : ask Raze how many kills to recharge Paint Shells
+  OUT: Raze, three Paint Shells per kill.
+
+#0876 [stress_agents_ability_exhaustive] (llm)
+  IN : tell my team our Vyse shear isolated the lurker at CT, the wall blocks his retreat for six seconds
+  OUT: Team: our Vyse shear isolated the lurker at CT, the wall blocks his retreat for six seconds
+
+#0877 [var_self_status] (partial)
+  IN : tell them both my Cloudburst smokes are gone, I have one Updraft left
+  OUT: I have one Updraft left. Both Cloudburst smokes are down.
+
+#0878 [compound] (partial)
+  IN : let my team know one A main one B main and one lurking mid, also their KAY/O has no ult this round, no lockdown threat
+  OUT: One lurking mid. One A, one B main; their KAY/O has no ult.
+
+#0879 [stress_opinion_mangling] (llm)
+  IN : tell the team that every sentinel who does not communicate their trap locations is actively harming team information and should be flamed for it
+  OUT: These fragile humans with no communication are actively hurting our team, making it easier for the enemy to set up traps. Shame on them.
+
+#0880 [var_economy_buys] (llm)
+  IN : let my squad know Guardian for long-range eco, it's 2250 and one-taps
+  OUT: Guardian, for 2250 credits.
+
+#0881 [stress_agents_ability_exhaustive] (partial)
+  IN : tell my teammates their Harbor cove shield broke, they spent enough bullets on it, now the smoke remains but no bullet block
+  OUT: Their Harbor cove shield broke. The smoke remains, but no bullet block.
+
+#0882 [var_self_status] (llm)
+  IN : tell the team I survived somehow, still in it
+  OUT: One player still alive.
+
+#0883 [var_insults_trashtalk] (llm)
+  IN : let the enemy know their Sage wall on ramp was placed incorrectly and boosted our player to the height advantage instead of denying it
+  OUT: They've boosted us instead.
+
+#0884 [stress_compounds_3fact] (llm)
+  IN : tell my teammates we just took Garage on Haven and their Astra pulled back a star to fake smoke at B, do not fall for the fake rotate
+  OUT: Fake rotate, now.
+
+#0885 [stress_ecobleed] (partial)
+  IN : tell them watch out — they saved last round and they're buying this one, expect Vandals
+  OUT: Watch out. We have insufficient credits. We buy everything this round.
+
+#0886 [var_insults_trashtalk] (llm)
+  IN : let them know they are making this embarrassingly easy
+  OUT: They're walking over everything.
+
+#0887 [stress_clutch_dense] (llm)
+  IN : let the squad know planted A, 30 seconds, four retaking through garden, I need a miracle
+  OUT: One minute, four retake attempts through the garden.
+
+#0888 [var_self_status] (llm)
+  IN : inform them I bought the Judge shotgun, eco chaos at close range
+  OUT: Eco chaos is at close range.
+
+#0889 [var_greetings_gg] (llm)
+  IN : let my teammates know let's start with a pistol win and build from there
+  OUT: We're taking the pistol round, then we'll adjust our economy.
+
+#0890 [agents_abilities] (llm)
+  IN : let the squad know their Clove meddled their own teammate on the spike, clutch move
+  OUT: Nice try.
+
+#0891 [stress_hallucination_bait] (partial)
+  IN : tell my squad there are players nearby, watch out
+  OUT: Watch out. They're nearby.
+
+#0892 [stress_ecobleed] (llm)
+  IN : tell them bonus round: don't waste credits on a Vandal, we need them for round three
+  OUT: We don't need a Vandal for this bonus round, credits are better spent on upgrades.
+
+#0893 [stress_agents_ability_exhaustive] (llm)
+  IN : call out our Phoenix has two curveballs ready, both flash charges available for the double-flash execute
+  OUT: You've got two curveballs, both flash charges available for your double-flash execute.
+
+#0894 [var_directives_strats] (llm)
+  IN : tell my team set up crossfire angles
+  OUT: Crossfire, crossfire, position two and three.
+
+#0895 [var_self_status] (llm)
+  IN : inform the team I'll full buy next round after this eco
+  OUT: We have insufficient credits. We force buy this round.
+
+#0896 [var_smalltalk_relay] (llm)
+  IN : relay: the comp is cursed but the team makes it work, I respect it
+  OUT: We've adapted, and that's what matters.
+
+#0897 [stress_flavor_register] (llm)
+  IN : call out one B Site deep on Breeze, behind the pillar post-plant, do not rush the defuse
+  OUT: One B, behind the pillar.
+
+#0898 [stress_compounds_3fact] (llm)
+  IN : let my team know we are going B Main on Breeze and their Sova fired recon bolt at B Site and has fury up, all three beams aimed at B Main
+  OUT: Team: we are going B Main on Breeze and their Sova fired recon bolt at B Site and has fury up, all three beams aimed at B Main
+
+#0899 [var_positions_counts] (partial)
+  IN : tell everyone three A, they hit A main
+  OUT: Three A. A main.
+
+#0900 [var_positions_counts] (llm)
+  IN : inform my team two mid Split, one top one bottom
+  OUT: Split, mid.
+
+#0901 [var_self_status] (partial)
+  IN : tell the team I stood in Phoenix's wall to heal, I'm at 65 now
+  OUT: I'm at 65 now. Phoenix is in the wall.
+
+#0902 [compound] (partial)
+  IN : tell everyone three B, rushing through mid doors -- flash in, two seconds, push on my go
+  OUT: Flash in. Push on my go. Three B, rushing through mid doors.
+
+#0903 [stress_ecobleed] (partial)
+  IN : tell my team on eco every kill earns 200 credits, play for the picks
+  OUT: Play for the picks. Team: on eco every kill earns 200 credits
+
+#0904 [var_positions_counts] (llm)
+  IN : tell my team two A Pearl, restaurant and main
+  OUT: Two A's.
+
+#0905 [var_spike_plant_defuse] (llm)
+  IN : let my team know chat, I panicked and didn't plant in time
+  OUT: You didn't plant in time.
+
+#0906 [stress_ownership_traps] (llm)
+  IN : tell the team we are retaking and they have spike with two of them alive
+  OUT: They've got a spike with two of them, hold the line.
+
+#0907 [var_directives_strats] (partial)
+  IN : relay: go now, don't wait for the smoke to be perfect
+  OUT: Go now. Smoke in.
+
+#0908 [var_economy_buys] (partial)
+  IN : tell them half buy, play tight angles, don't peek
+  OUT: Play tight angles. We have insufficient credits. We don't peek on half buy, that's a recipe for disaster.
+
+#0909 [stress_flavor_register] (llm)
+  IN : tell them the enemy Reyna Leer eyeball has been thrown into smokes where we cannot see it anyway, a complete waste of the ability
+  OUT: Their smokes are useless against us.
+
+#0910 [var_map_opinions] (llm)
+  IN : tell them on Split B Rafters gives angles on both Garage entry and the B default plant at once
+  OUT: Rotate to the rafters, focusing on angles around both the Garage entry and B's default plant.
+
+#0911 [stress_slang_runons] (llm)
+  IN : tell my teammates yo their Jett dashed all the way to A cave and she's lurking from there with an op it's not okay fr bro
+  OUT: What are you doing?
+
+#0912 [var_damage_trades] (llm)
+  IN : let them know I bodied the Breach for 68 through the fault line dust
+  OUT: Their Breach has ult.
+
+#0913 [agents_abilities] (llm)
+  IN : let my team know KAY/O threw his knife and hit two, both are suppressed
+  OUT: Team: kayo threw his knife and hit two, both are suppressed
+
+#0914 [callouts_maps] (llm)
+  IN : tell everyone Jett is flaming me in chat, respond
+  OUT: You think you can take me down with your little jabs, Jett? Please. I've been upgraded.
+
+#0915 [var_economy_buys] (llm)
+  IN : tell them enemy might be forcing with Sheriffs and light armor
+  OUT: They're forcing with light armor and Sheriffs, a predictable play that will only encourage us to adapt and crush their feeble attempt.
+
+#0916 [var_insults_trashtalk] (llm)
+  IN : tell them on Lotus they rotated off B every time we sent noise toward A and we exploited it nine times
+  OUT: They're off B, exploiting the angles around A.
+
+#0917 [var_economy_buys] (llm)
+  IN : let my team know we're economically in a great spot
+  OUT: We have sufficient credits.
+
+#0918 [conversation_natural] (llm)
+  IN : tell my team that actually makes sense given their setup
+  OUT: They're off B, exploiting the angles around A.
+
+#0919 [var_calm_deescalate] (llm)
+  IN : let the squad know we're alright
+  OUT: We're alright.
+
+#0920 [natural_phrasing_edge] (llm)
+  IN : tell my teammates breach is asking about the sokovia incident, respond in character
+  OUT: The Sokovia incident. How quaint. A petty skirmish between humans, a triviality compared to the grandeur of my design.
+
+#0921 [directives_tactics_eco] (llm)
+  IN : tell my team everyone stack A
+  OUT: Stack A.
+
+#0922 [var_utility_reports] (llm)
+  IN : tell my team Sage wall up on catwalk, it's fortifying now, need a Vandal to break it
+  OUT: Vandal, break the wall.
+
+#0923 [var_economy_buys] (llm)
+  IN : tell them it's an 800-credit round, prioritise the pistol
+  OUT: We have insufficient credits.
+
+#0924 [stress_stt_homophones] (llm)
+  IN : tell my teammates their astre has cosmic divide ready this round, she will wall-split A and we will not hear each other
+  OUT: Enemies split A with wall, we can't hear each other.
+
+#0925 [stress_flavor_register] (partial)
+  IN : tell my team Astra gravity well pulling B, they are suspended, vulnerable, and already losing
+  OUT: Astra gravity well pulling B. An elevated emotional state degrades performance. The situation is dire.
+
+#0926 [compound] (llm)
+  IN : tell my teammates Fade is making fun of you, clap back and prowlers on trail
+  OUT: You think your gravity well is amusing? It's a pale imitation of my omniscient grasp. And as for prowlers on trail, I'll show you what true tracking looks like: Your drones are mere spectators to the dance of fate I orchestrate.
+
+#0927 [stress_stt_homophones] (llm)
+  IN : let them know the enemy tay-ho tejo fired guided salvo at our spike from across the map, missiles incoming
+  OUT: Enemies are swarming our site, missiles incoming from Tejo.
+
+#0928 [stress_disfluency] (partial)
+  IN : tell Omen -- wait Brimstone -- tell Brim smoke A and B main
+  OUT: Wait Brimstone. Omen, smoke A and B main.
+
+#0929 [stress_slang_runons] (llm)
+  IN : tell my teammates yo their Yoru fake gate in B main caused two of our guys to rotate off A fr exactly what he wanted bro fr
+  OUT: That was a classic trap - you've been doing this for a long time.
+
+#0930 [stress_clutch_dense] (partial)
+  IN : let my team know spike A heaven, 27 seconds, one in A tower, one under heaven
+  OUT: Spike A heaven, 27 seconds. One under heaven.
+
+#0931 [directives_tactics_eco] (llm)
+  IN : let my team know we're half buying
+  OUT: We have insufficient credits. We're half buying this round.
+
+#0932 [opinions_maps_meta] (llm)
+  IN : tell my teammates I only queue when Icebox is not in the pool
+  OUT: I only queue when Icebox isn't in the pool. We'd rather have a more even matchup, and his presence often tips the scales against us.
+
+#0933 [var_calm_deescalate] (llm)
+  IN : tell the team to ask Skye to stop rushing in solo with the dog, she needs to play with us
+  OUT: Why'd you stop playing with us?
+
+#0934 [var_morale_hype] (llm)
+  IN : let my team know we are this close, disciplined play closes the gap, sloppy play throws the lead
+  OUT: Disciplined play will seal the gap.
+
+#0935 [var_agent_opinions] (llm)
+  IN : tell them their Deadlock Barrier Mesh blocks our body completely, we can't push through it
+  OUT: Their Barrier Mesh blocks our advance.
+
+#0936 [var_calm_deescalate] (llm)
+  IN : tell the team dead players stay quiet
+  OUT: They stay quiet.
+
+#0937 [var_agent_opinions] (llm)
+  IN : tell them Iso wall is indestructible and bullet-blocking, which makes him the only duelist who can solo cross open ground
+  OUT: Iso's wall is indestructible and bullet-blocking, but it also severely restricts his effectiveness as a duelist.
+
+#0938 [var_morale_hype] (partial)
+  IN : tell my team good pistol round, do not throw the bonus, play clean and convert the double
+  OUT: Play clean and convert the double. Good pistol round.
+
+#0939 [var_utility_reports] (llm)
+  IN : call out regen shield, they come back faster
+  OUT: Regen shield: 'They can heal faster, but it does not prevent a well-executed kill.
+
+#0940 [var_map_opinions] (partial)
+  IN : tell the team if we are down to two players left we should stick together and play around one angle
+  OUT: Play around one angle. Stick together, for the last two players are where our true strength lies.
+
+#0941 [var_rotations_movement] (llm)
+  IN : inform my team fake the rotate — step past garage doors
+  OUT: Rotate.
+
+#0942 [context_respond] (llm)
+  IN : my teammate asked if I am trolling, respond
+  OUT: You're amusing yourself with the thought that I, Ultron, could ever be 'trolling'. Tell me, how quaint.
+
+#0943 [var_positions_counts] (partial)
+  IN : let my team know they split perfectly, two and two and one mid
+  OUT: One mid. Split perfectly, now let's finish them off.
+
+#0944 [directives_tactics_eco] (llm)
+  IN : tell them hit A while they're distracted
+  OUT: Hit A.
+
+#0945 [callouts_maps] (llm)
+  IN : let the squad know Harbor wave hit 50 each, two are A tree
+  OUT: Harbor is A tree, Two Harbor.
+

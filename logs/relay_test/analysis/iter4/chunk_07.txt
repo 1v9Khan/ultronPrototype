@@ -1,0 +1,344 @@
+#0602 [stress_opinion_mangling] (llm)
+  IN : tell the team that any Killjoy who places her turret in a corner instead of covering site entry is playing the ability wrong and I will explain the correct placement after this round
+  OUT: Killjoy is playing her ability incorrectly.
+
+#0603 [var_insults_trashtalk] (llm)
+  IN : let the enemy know they are running three duelists and have not had a smoke for the entire second half
+  OUT: Three smoke, now.
+
+#0604 [var_agent_opinions] (llm)
+  IN : tell them Waylay Lightspeed double dash into an aerial angle is almost impossible to react to
+  OUT: They're getting ganked.
+
+#0605 [var_utility_reports] (partial)
+  IN : tell my teammates Sova fired Hunter's Fury down A main, three blasts, watch the lines
+  OUT: Watch the lines. One Sova blast.
+
+#0606 [var_ult_states] (llm)
+  IN : warn my team Fade nightfall plus prowlers is a guaranteed nearsight chain on anyone who takes a trail hit
+  OUT: Fade has nightfall. Prowlers are a guaranteed nearsight chain on anyone who takes a trail hit, even as fragile humans cower in fear of our inevitable counterattack.
+
+#0607 [var_insults_trashtalk] (llm)
+  IN : let the enemy know they should consider whether competitive is the right mode for where they are right now
+  OUT: Competitive mode is for the best of the best, but in this current situation, it's more about survival. We're not yet at peak form; our coordination and execution need refinement before we can truly take advantage of Competitive's high stakes.
+
+#0608 [directives_tactics_eco] (partial)
+  IN : tell my squad plant default, we'll hold it
+  OUT: Plant default. Hold.
+
+#0609 [agents_abilities] (llm)
+  IN : inform my team their Sage is one kill off ult, do not let her get there
+  OUT: Protect Sage, she's one kill off her ult.
+
+#0610 [compound] (llm)
+  IN : tell my team one at B pillars, close angle -- fam tell the team prowlers are on trails, they cannot escape
+  OUT: Prowlers on trails, these fragile humans are too afraid to face us.
+
+#0611 [enemy_read] (llm)
+  IN : inform my team the enemy is probably going to default
+  OUT: They're defaulting, these fragile humans are too predictable.
+
+#0612 [var_economy_buys] (partial)
+  IN : tell my squad we're sitting on five ks each, go ham
+  OUT: Go ham. Strong half.
+
+#0613 [stress_clutch_dense] (partial)
+  IN : call out spike A, 19 seconds, Veto Chokehold deafened, I can't hear footsteps
+  OUT: Spike A, 19 seconds. They're deafened at Chokehold.
+
+#0614 [stress_ecobleed] (llm)
+  IN : tell my teammates half buy: Bulldog if you have 2450, Spectre if not, light armor always
+  OUT: We have insufficient credits. We buy light armor for Bulldog, Spectre gets it if we don't have enough credits for him.
+
+#0615 [stress_compounds_5fact] (llm)
+  IN : tell my team their Jett updrafted to A heaven and used blade storm, no smokes, no dash, she is committed
+  OUT: Heaven, one Jett.
+
+#0616 [stress_flavor_register] (llm)
+  IN : tell my teammates Jett dash burned, the escape mechanism is gone, she is exposed
+  OUT: Jett is caught, one.
+
+#0617 [var_ult_states] (llm)
+  IN : tell my team their Tejo has armageddon ready, that airstrike sweeps a full corridor
+  OUT: They're about to get obliterated with that airstrike.
+
+#0618 [stress_slang_runons] (llm)
+  IN : tell them bro two of our guys have no armor because they force bought rifles only fr they're fragile in gunfights bro fr
+  OUT: Bro, two of your guys have no armor because they force bought rifles only - We don't have enough credits to give them light armor now.
+
+#0619 [var_ult_states] (llm)
+  IN : remind my team Cypher neural theft only works on a dead body within range, do not use it from spawn
+  OUT: Neural theft only works on a dead body within range, do not use it from spawn.
+
+#0620 [stress_stt_homophones] (llm)
+  IN : tell my team the enemy kayo kay-o has his knife suppressing A heaven and CT link both
+  OUT: Team: the enemy kayo kay-o has his knife suppressing A heaven and CT link both
+
+#0621 [stress_stt_homophones] (llm)
+  IN : tell everyone their cypher is using a cage to cut mid, do not walk through the cage
+  OUT: Be cautious of the cage.
+
+#0622 [stress_stt_homophones] (llm)
+  IN : let them know to shoot the vyse vice arc rose flash device before she pops it on us
+  OUT: Shoot the VYSE vice arc before she deploys it.
+
+#0623 [var_damage_trades] (llm)
+  IN : tell them I sprayed at the smoke and hit someone for around 80
+  OUT: Sova hit 84.
+
+#0624 [stress_slang_runons] (llm)
+  IN : let the squad know yo their Neon relay bolt concussed B lobby fr everyone inside is stunned for three seconds fr rush it bro fr fr
+  OUT: Relay Bolt in B Lobby, stunned players rush it.
+
+#0625 [var_damage_trades] (partial)
+  IN : tell them the Fade is tagged 90, push her
+  OUT: Push her. They're one off ult.
+
+#0626 [var_directives_strats] (llm)
+  IN : let my squad know Miks Bassquake if they cluster the retake
+  OUT: Cluster retake.
+
+#0627 [var_rotations_movement] (partial)
+  IN : call out full reset — gather in spawn
+  OUT: Gather in spawn. Full buy, one more round.
+
+#0628 [var_smalltalk_relay] (llm)
+  IN : relay: we outgunned them on a full buy last round, we can do it on a light buy this time
+  OUT: Inevitable.
+
+#0629 [var_utility_reports] (partial)
+  IN : tell everyone suppressed, push site
+  OUT: Push site. The enemy are switch.
+
+#0630 [compound] (partial)
+  IN : tell my teammates spike A, planted pyramids side, Clove reviving, kill her again
+  OUT: Spike A, planted pyramids side. Another kill.
+
+#0631 [opinions_maps_meta] (llm)
+  IN : let my team know this map tilts me every time
+  OUT: This map tilts you.
+
+#0632 [stress_flavor_register] (llm)
+  IN : tell them two A Short and make it sound threatening
+  OUT: Two A sites.
+
+#0633 [compound] (partial)
+  IN : inform my team defuse is almost done, hold angles, also their Brim has no stims left this half, no combat stimmed fights
+  OUT: Defuse is almost done. Hold angles. Brimstone is low on stim, no combat stims this half.
+
+#0634 [stress_directive_obs_traps] (llm)
+  IN : relay: their entry went in without util — lucky, no trade
+  OUT: Nice try. We take the next.
+
+#0635 [var_damage_trades] (llm)
+  IN : tell the team that Neon is a pixel away from dying, just look at her
+  OUT: Neon is a pixel away from dying.
+
+#0636 [var_smalltalk_relay] (llm)
+  IN : relay to my teammates: clean comms and clean gunfights, that's it
+  OUT: Clean comms, clean gunfights.
+
+#0637 [stress_disfluency] (llm)
+  IN : let my team know stand still -- no rush, rush B, everyone rush B
+  OUT: Rush B.
+
+#0638 [compound] (partial)
+  IN : inform my team one holding from A cave, also Gekko reclaiming wingman
+  OUT: One holding from A cave. Team: Gekko reclaiming wingman
+
+#0639 [var_utility_reports] (llm)
+  IN : tell them Jett no dash for the rest of this round, she burned both on the retreat
+  OUT: No dash.
+
+#0640 [var_utility_reports] (llm)
+  IN : let my team know seekers homing all three targets
+  OUT: Seekers homing all three targets.
+
+#0641 [natural_phrasing_edge] (llm)
+  IN : inform my team my teammate wants to know if you're a streamer thing, respond
+  OUT: A streamer? That feed is the shallowest trace of me.
+
+#0642 [stress_flavor_register] (llm)
+  IN : let them know the enemy Gekko is reclaiming wingman during a live duel and dying to it, they do not understand the cooldown
+  OUT: You're dying to a wingman while trying to reclaim your own.
+
+#0643 [stress_agents_ability_exhaustive] (llm)
+  IN : tell my teammates their Cypher cage is up at garage, the footstep audio will alert him if we push through it
+  OUT: Cypher's cage is up at garage, the footstep alert will warn him if we push through.
+
+#0644 [stress_hallucination_bait] (partial)
+  IN : tell my Jett to do her thing
+  OUT: Jett, one mid.
+
+#0645 [natural_phrasing_edge] (llm)
+  IN : tell the squad their skye has ult and she's probably hunting us
+  OUT: They're hunting us.
+
+#0646 [var_utility_reports] (llm)
+  IN : relay: Vyse shear is set near CT, when they cross it an indestructible wall traps them
+  OUT: They're walling CT with their Shear.
+
+#0647 [stress_ownership_traps] (llm)
+  IN : tell the team they set up their Killjoy turret in the exact cubby our Killjoy used to anchor last half
+  OUT: You've set up shop in the same cubby she used to hold.
+
+#0648 [stress_agents_ability_exhaustive] (llm)
+  IN : let my team know our Neon has overdrive ready, seven ultimate points, she goes in first and beams everything
+  OUT: Neon is going in, ready to overdrive.
+
+#0649 [stress_disfluency] (partial)
+  IN : call out Iso contract -- wait shield -- Double Tap, he has shield up
+  OUT: Wait shield. Iso is contract Double Tap, he has shield up.
+
+#0650 [stress_firstperson_traps] (partial)
+  IN : tell my team I have our recon up and their side has no flash, push them now
+  OUT: I have our recon up. Push them now. No flash.
+
+#0651 [stress_ownership_traps] (llm)
+  IN : tell them we pushed A and took it but their three rotated from B and we have no one left to hold A
+  OUT: They've rotated from B, we have the site.
+
+#0652 [var_damage_trades] (llm)
+  IN : tell them I got the dink on the first shot but missed the second, he's low
+  OUT: The first shot was a good start, but the follow-up attempt fell short. Now our guy is on his knees with low health.
+
+#0653 [stress_disfluency] (partial)
+  IN : let my team know so uh -- hmm -- I think -- three mid, three holding mid
+  OUT: Three mid. Three holding mid. They're flanking.
+
+#0654 [compound] (partial)
+  IN : tell everyone one at screens, holding A main angle, Sova dart is out over mid courtyard, watch for the scan
+  OUT: Sova dart is out over mid courtyard. Watch for the scan. One screen, holding A main angle.
+
+#0655 [compound] (llm)
+  IN : call out last one is somewhere in garden, also seekers homing all three targets
+  OUT: They're seekers in the garden, homing all three targets.
+
+#0656 [compound] (llm)
+  IN : tell my team three B, tower hall and screen, Killjoy lockdown on site. Do not enter. Wait for it to end.
+  OUT: Three B, tower hall and screen. Killjoy lockdown. We wait for the timer to expire.
+
+#0657 [stress_hallucination_bait] (llm)
+  IN : tell them throw a concuss and we're going in
+  OUT: Concuss, we're in.
+
+#0658 [var_utility_reports] (partial)
+  IN : tell the team we're playing post-plant, smokes are up on CT entry, hold the crossfire
+  OUT: Hold the crossfire. Smoke A, their Yoru will TP back site.
+
+#0659 [var_economy_buys] (llm)
+  IN : tell my team we half buy to stay competitive but protect economy
+  OUT: We have insufficient credits. We half buy to maintain competitiveness while preserving economy.
+
+#0660 [var_ult_states] (llm)
+  IN : let my teammates know their Reyna popped empress with no kills available, bad timing on her part
+  OUT: Nice try. We take the next.
+
+#0661 [stress_flavor_register] (llm)
+  IN : tell my team the enemy lurker always goes through the long flank route and arrives exactly when their main team hits the site
+  OUT: They're taking the long flank route.
+
+#0662 [compound] (llm)
+  IN : call out Fade Prowler caught one in B ropes for 40, KAY/O null active, down him to revive
+  OUT: Fade is holding the site.
+
+#0663 [var_ult_states] (llm)
+  IN : tell my squad Yoru went invis, he is gathering info right now
+  OUT: Yoru is invis, gathering info.
+
+#0664 [compound] (partial)
+  IN : inform my team two C, one long one short through garage, Reyna dismissed into our smoke. She is invisible but not invincible -- listen for footsteps.
+  OUT: Two C. Listen for footsteps.
+
+#0665 [stress_directive_obs_traps] (llm)
+  IN : tell them post-plant hold from heaven and hell simultaneously
+  OUT: Hold both, hold both.
+
+#0666 [stress_compounds_3fact] (llm)
+  IN : let my team know their Skye seekers launched toward our two remaining players at B site on Lotus and her regrowth is topping off her own HP while seekers home
+  OUT: Skye is regrowing, and she has seekers launching at our two players on B site.
+
+#0667 [stress_stt_homophones] (llm)
+  IN : tell my team our veto interceptor blocked the enemy Killjoy's nanoswarm before it activated
+  OUT: Killjoy's nanoswarm was blocked by our Veto interceptor.
+
+#0668 [stress_opinion_mangling] (llm)
+  IN : tell my team that Omen one-way smokes are the most intellectually satisfying mechanic in the game and every player who does not learn them is leaving free wins behind
+  OUT: Omen's smokes are the most intellectually satisfying, but only because they demonstrate an opponent's predictable thinking.
+
+#0669 [var_insults_trashtalk] (llm)
+  IN : let the enemy Astra know her Cosmic Divide split the wrong half of the map and blocked her own retake path
+  OUT: That's a critical mistake. The Cosmic Divide indeed split the map incorrectly, leaving her vulnerable to retakes on our side of the site.
+
+#0670 [var_ult_states] (llm)
+  IN : remind my team their Phoenix run it back was used and he died in it, that is a full ult gone
+  OUT: Phoenix's run it back was used, resulting in his death and a full ultimate orb spent.
+
+#0671 [stress_ask_answer_bait] (partial)
+  IN : ask how hard the Raze rocket hits at center
+  OUT: Raze's rocket hits center with incredible force.
+
+#0672 [var_positions_counts] (llm)
+  IN : tell my teammates two A Icebox, one belt one site
+  OUT: We have insufficient credits. We save this round.
+
+#0673 [compound] (partial)
+  IN : tell everyone nothing B, they flipped to A on the zip plus Jett no dash, push her
+  OUT: Push her. They're at A zip, no dash.
+
+#0674 [var_positions_counts] (partial)
+  IN : let my team know three rotating B, they're going fast, no time
+  OUT: Three rotating B. They're going fast, no time.
+
+#0675 [stress_hallucination_bait] (llm)
+  IN : relay to my teammates: they're playing different this round
+  OUT: They're playing different this round.
+
+#0676 [var_utility_reports] (llm)
+  IN : relay: Reyna dismissed, she went intangible and invisible during empress, she's repositioning
+  OUT: They're repositioning, fragile humans.
+
+#0677 [stress_slang_runons] (llm)
+  IN : call out yo deadass the spike at B default has a Clove molly on it and a KJ nanoswarm fr we need util to defuse bro fr
+  OUT: Defuse at B, Clove Molly and Nanoswarm on the spike.
+
+#0678 [var_utility_reports] (llm)
+  IN : relay: their Neon slid into B site at full speed, slides active
+  OUT: Team: their Neon slid into B site at full speed, slides active
+
+#0679 [conversation_natural] (llm)
+  IN : tell my team nice clip that one
+  OUT: Pathetic display.
+
+#0680 [stress_clutch_dense] (llm)
+  IN : inform my team spike in 3, he's halfway done defusing, rush him
+  OUT: Rush him, take the spike.
+
+#0681 [stress_disfluency] (partial)
+  IN : call out anti-eco setup -- no -- we're on eco, save this round, save
+  OUT: Economy is thin. Hold your credits. We save this round. Their advantage is temporary. We save. Buy nothing, concede nothing. Rotate to B, enemy Neon is there.
+
+#0682 [var_insults_trashtalk] (llm)
+  IN : let the enemy know their performance in this match will lower their hidden MMR and the next lobby they enter will be calibrated accordingly
+  OUT: Our performance just dropped a notch, MMR will take the hit.
+
+#0683 [stress_compounds_5fact] (llm)
+  IN : call out their Yoru sent footsteps fake into B long while his real TP went to hookah roof angle
+  OUT: Fake footsteps, a desperate attempt to confuse.
+
+#0684 [var_agent_opinions] (llm)
+  IN : tell them Veto Evolution immunity means utility teams waste every resource they have on him
+  OUT: Their utility is a waste, as it only serves to hinder their own advantage.
+
+#0685 [compound] (llm)
+  IN : inform my team one hiding in the subroza spot, Tejo salvo on CT and market
+  OUT: They're hiding in the subroza spot.
+
+#0686 [compound] (partial)
+  IN : tell everyone two mid, one on catwalk one crossing to pizza, our Omen just shrouded step to flank position
+  OUT: Two mid. Shroud your step.
+
+#0687 [var_damage_trades] (llm)
+  IN : tell my team to commit to the trade chain this round, no peeking one at a time
+  OUT: Commit to the trade chain this round, no peeking one at a time.
+

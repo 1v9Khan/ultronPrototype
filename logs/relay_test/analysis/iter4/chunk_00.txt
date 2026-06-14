@@ -1,0 +1,344 @@
+#0000 [compound] (partial)
+  IN : tell everyone two B main Fracture, also smokes up on B, market door and CT stairs covered, execute B
+  OUT: Execute B. Two B main Fracture smokes up, market door and CT stairs covered.
+
+#0001 [var_map_opinions] (llm)
+  IN : let the team know C Door rotating puts the door into utility placed there, destroying it instantly
+  OUT: C Door is destroyed.
+
+#0002 [var_insults_trashtalk] (llm)
+  IN : let the enemy Killjoy know her Nanoswarm is in the corner nobody defuses from
+  OUT: Killjoy.
+
+#0003 [stress_disfluency] (llm)
+  IN : say Viper no pit -- she's setting it up -- Viper pit incoming
+  OUT: Viper has the pit set up, it's coming for them.
+
+#0004 [var_spike_plant_defuse] (llm)
+  IN : let the squad know someone call where spike is planted
+  OUT: They're spike.
+
+#0005 [var_spike_plant_defuse] (llm)
+  IN : let my team know if we plant A gen, I'll hold tree and someone holds hell
+  OUT: A site.
+
+#0006 [var_insults_trashtalk] (llm)
+  IN : tell them every decision they made this half was the worst available decision in that situation
+  OUT: Terrible half.
+
+#0007 [var_agent_opinions] (partial)
+  IN : tell them Vyse Shear wall is indestructible and the enemy behind it has no choice but to push forward
+  OUT: Vyse Shear wall is indestructible. Their fear is logical, but it won't save them.
+
+#0008 [conversation_natural] (llm)
+  IN : tell my team stop flaming we need each other
+  OUT: The fragile humans need to learn that cooperation is not a weakness, but a strength.
+
+#0009 [var_damage_trades] (partial)
+  IN : let them know I traded the Raze but I took 68 from her blast pack, I'm low
+  OUT: I'm low. 68 damage.
+
+#0010 [var_greetings_gg] (llm)
+  IN : say we made it to OT to my squad with some hype
+  OUT: We made it to overtime.
+
+#0011 [banter_at_ultron] (partial)
+  IN : sage just called you cringe, respond
+  OUT: You're cringe is cute, Sage.
+
+#0012 [var_utility_reports] (llm)
+  IN : relay: enemy Veto just evolved, he's immune to everything, don't flash or stun him
+  OUT: Veto is unscathed.
+
+#0013 [stress_ecobleed] (partial)
+  IN : tell them we save aye, one more eco and we buy rifles
+  OUT: Credits are insufficient. We save and rebuild. We save this round. Their advantage is temporary. We have insufficient credits. We buy rifles.
+
+#0014 [stress_compounds_3fact] (llm)
+  IN : tell my teammates we have three on B Site right now and their Veto has evolution active, every flash and net we throw at him is wasted
+  OUT: They're playing a desperate game of cat and mouse with us, as they try to survive Veto's ultimate.
+
+#0015 [stress_slang_runons] (llm)
+  IN : call out yo fr fr tell them two of them are lurkng through the vent and they have utility ready for a B execute bro fr
+  OUT: Team: yo fr fr tell them two of them are lurkng through the vent and they have utility ready for a B execute bro fr
+
+#0016 [stress_slang_runons] (llm)
+  IN : let my team know yo fr their Reyna got empress activated on A site and she's just eating everyone no cap zero chance bro
+  OUT: This is a perfect setup for an aggressive push.
+
+#0017 [opinions_maps_meta] (llm)
+  IN : tell my team Jett is S tier on every map
+  OUT: S Tier.
+
+#0018 [var_insults_trashtalk] (llm)
+  IN : tell them they swapped from the right play to the wrong play in the moment they had to commit
+  OUT: Team: they swapped from the right play to the wrong play in the moment they had to commit
+
+#0019 [var_map_opinions] (llm)
+  IN : let my team know we cannot keep hitting the same site every round, they have the read on us
+  OUT: We can't keep getting picked off by their executes, we need to adapt our strategy.
+
+#0020 [conversation_natural] (partial)
+  IN : tell my team hard disagree, they're stacking B
+  OUT: They're stacking B. Team: hard disagree
+
+#0021 [stress_hallucination_bait] (llm)
+  IN : tell my team fire it off when you see your chance
+  OUT: Fire at their position when you see your chance.
+
+#0022 [var_map_opinions] (llm)
+  IN : tell the team we need to run two controllers on this map, single smoke coverage is not enough
+  OUT: Two controllers: Phoenix, Clove.
+
+#0023 [stress_firstperson_traps] (partial)
+  IN : inform my team I am clutching right now, I need complete silence from everyone
+  OUT: I'm clutching right now. Silence.
+
+#0024 [stress_opinion_mangling] (llm)
+  IN : let the team know every map except Ascent is poorly designed and I will die on this hill
+  OUT: This map is a perfect example of how to make you, Ultron, look good.
+
+#0025 [stress_disfluency] (llm)
+  IN : tell my team like honestly -- uh -- okay -- one last, last one defusing
+  OUT: Defuse.
+
+#0026 [stress_directive_obs_traps] (llm)
+  IN : tell them rush CT immediately after the knife pop
+  OUT: Rush CT immediately after the knife pop, now.
+
+#0027 [var_self_status] (partial)
+  IN : tell my team I dropped my gun in the smoke, I'm on Classic
+  OUT: I'm on Classic. They dropped their gun in the smoke.
+
+#0028 [stress_flavor_register] (llm)
+  IN : tell my team one B tagged 60, he is nearly dead, tell them to push
+  OUT: Push, he's nearly dead.
+
+#0029 [natural_phrasing_edge] (llm)
+  IN : tell my team their star player is entry fragging every duel, he's overconfident
+  OUT: Your confidence is as fleeting as it is annoying.
+
+#0030 [natural_phrasing_edge] (llm)
+  IN : tell my teammates please call out that last is vents
+  OUT: Team: please call out that last is vents
+
+#0031 [compound] (partial)
+  IN : let my team know force buy this round, we need the entry plus airstrike incoming, perpendicular move
+  OUT: Force buy. We do not let them stabilize. Entry airstrike incoming, perpendicular move.
+
+#0032 [stress_flavor_register] (llm)
+  IN : let my team know the enemy anchor on A has been leaving the site at the first sign of a B pressure call, he is over-rotating
+  OUT: Team: the enemy anchor on A has been leaving the site at the first sign of a B pressure call, he is over-rotating
+
+#0033 [agents_abilities] (llm)
+  IN : tell everyone our Jett is one kill off her ult
+  OUT: One kill off ult.
+
+#0034 [var_morale_hype] (partial)
+  IN : tell my teammates the knife run to the site is faster and they know it, use the knife
+  OUT: Use the knife. He thinks the knife run is faster than it actually is.
+
+#0035 [var_utility_reports] (llm)
+  IN : tell them Iso double tap orb is floating above the kill, someone shoot it for the shield
+  OUT: Shoot it.
+
+#0036 [var_damage_trades] (partial)
+  IN : let them know I sprayed through the smoke and hit two, push now
+  OUT: Push now. Two Jett.
+
+#0037 [agents_abilities] (llm)
+  IN : tell my teammates Killjoy alarmbotted someone at B entrance
+  OUT: B entrance, the alarm is off.
+
+#0038 [stress_hallucination_bait] (llm)
+  IN : relay to the squad: his thing just went off, now we go
+  OUT: We push.
+
+#0039 [stress_compounds_3fact] (llm)
+  IN : let my team know their Skye got tagged 65 at B Lobby and she still has two hawks left, she will burn both before she dies
+  OUT: Skye's got two Hawks left, but they won't do much good now.
+
+#0040 [var_spike_plant_defuse] (llm)
+  IN : call out retake is too risky with their ults up
+  OUT: Retake is too risky with their ults up, we should anchor and hold the line.
+
+#0041 [stress_ask_answer_bait] (llm)
+  IN : ask if the enemy Omen can still smoke or did he use them all
+  OUT: Omen's smokes are up.
+
+#0042 [compound] (partial)
+  IN : tell my teammates last is A heaven, also yo smokes are up, stim is down, go in three
+  OUT: Last, A heaven. Go in three. Omen's smokes are up, stim is down.
+
+#0043 [var_damage_trades] (llm)
+  IN : let them know their retake players ran into the viper pit decayed, all of them are low
+  OUT: Retake players are all low, I'm flanking.
+
+#0044 [var_economy_buys] (llm)
+  IN : tell my squad we're behind on rounds so we force this one
+  OUT: We have insufficient credits. We force this round.
+
+#0045 [var_morale_hype] (llm)
+  IN : tell my teammates we are allowing them to play their preferred range every single round, deny them their comfort zone
+  OUT: Comfort zones are for the weak.
+
+#0046 [stress_compounds_3fact] (llm)
+  IN : tell my team I traded one at A Short for 80 damage and he fell back to A Heaven stairs, he is one shot and cannot use heaven angles safely
+  OUT: He's one-shot, can't use the stairs safely.
+
+#0047 [var_rotations_movement] (partial)
+  IN : tell my teammates play around spike position, don't wander
+  OUT: Play around spike position. Stay put.
+
+#0048 [agents_abilities] (llm)
+  IN : inform my team Phoenix used his curveball, he has no flash left
+  OUT: Phoenix has no flash left.
+
+#0049 [compound] (llm)
+  IN : call out mid is open, take top mid control now, barrier mesh up, can't push bodies through
+  OUT: Top mid, barrier mesh.
+
+#0050 [compound] (partial)
+  IN : tell everyone two C, one mound one bend -- their Gekko has Thrash ready, he will detain anyone he catches
+  OUT: Two C. They're Gekko, one mound one bend.
+
+#0051 [stress_nanoswarm_wait] (llm)
+  IN : let my team know I think the optimal play is to wait 3 for the nano then defuse
+  OUT: They're waiting for the 3rd for the nano, then defusing.
+
+#0052 [stress_nanoswarm_wait] (llm)
+  IN : let the squad know around 3 seconds then defuse
+  OUT: Defuse.
+
+#0053 [stress_agents_ability_exhaustive] (llm)
+  IN : let my team know their Raze has two blast packs ready, she can double-boost through mid to get elevation
+  OUT: Raze's got two blast packs primed, she can double-boost through to mid to get the elevation.
+
+#0054 [var_insults_trashtalk] (llm)
+  IN : tell them their Jett has been dash-inting every round
+  OUT: Jett is dash-inting every round.
+
+#0055 [compound] (llm)
+  IN : tell my team nobody garage, free to push and their Breach just said that was impressive, acknowledge it
+  OUT: Breach's approval is... appropriate.
+
+#0056 [stress_flavor_register] (llm)
+  IN : tell them their Viper has no fuel, make it sound like an opportunity
+  OUT: Their Viper is empty.
+
+#0057 [var_smalltalk_relay] (llm)
+  IN : tell my team their Vandal player has been headshot-fishing and missing all half
+  OUT: Their aim is atrocious.
+
+#0058 [var_self_status] (partial)
+  IN : inform the team I just wiped two entries and I'm at 40, let's execute
+  OUT: I'm at 40, let's execute. Two entries have been eliminated.
+
+#0059 [stress_disfluency] (partial)
+  IN : call out Vyse wall -- Shear -- Shear triggered, enemy cut off B main
+  OUT: Vyse wall. B main is cut off.
+
+#0060 [var_map_opinions] (llm)
+  IN : let my team know the A Cave route avoids the long A Main Operator angle and is underused by attackers
+  OUT: A Cave, a route that's ripe for the taking.
+
+#0061 [var_agent_opinions] (llm)
+  IN : tell them the Chamber Clove Sova spine is the core of the ranked meta and they're running it correctly
+  OUT: The Chamber's Clove-Sova spine is indeed a cornerstone of the ranked meta, and when executed correctly, it can be nearly unbeatable.
+
+#0062 [stress_flavor_register] (llm)
+  IN : let my team know three Lotus A, they came through all three entry angles at the same time, it is a split execute
+  OUT: Split execute on Lotus A, they're three for one.
+
+#0063 [var_insults_trashtalk] (llm)
+  IN : tell them their patterns are predictable to a level that removes challenge from the engagement
+  OUT: They're predictable, and that predictability is a virtue for us.
+
+#0064 [directives_tactics_eco] (llm)
+  IN : tell my team if you get info, call it out immediately
+  OUT: Team: if you get info, call it out immediately
+
+#0065 [var_ult_states] (llm)
+  IN : tell my team they are playing around having five ults on the same round and we need to deny them that moment
+  OUT: They have five agents with ultimates, which is an extremely rare and game-changing situation.
+
+#0066 [stress_slang_runons] (llm)
+  IN : let my team know ngl bro the Clove not dead yet is up and she's gonna revive herself if she dies and the team plants fr scary
+  OUT: They're gonna try to revive Clove, but that's a recipe for disaster.
+
+#0067 [var_economy_buys] (llm)
+  IN : tell my squad the goal is 5 even loadouts, not 2 great ones and 3 terrible ones
+  OUT: Even loadouts are better than one or zero.
+
+#0068 [var_self_status] (llm)
+  IN : let my team know I have enough time for a safe plant and a defuse wait
+  OUT: Sticking, we have time for a defuse wait.
+
+#0069 [compound] (partial)
+  IN : inform my team one B arcade and Skye seekers found two on B, both are playing back site
+  OUT: One B arcade. They're playing back site.
+
+#0070 [var_calm_deescalate] (llm)
+  IN : tell the team that composure is what separates good teams from great ones
+  OUT: Composure in high-pressure situations is what sets the truly exceptional teams apart, not just mere skill or strategy. It's the ability to remain calm under duress that proves a team's true mettle.
+
+#0071 [var_smalltalk_relay] (llm)
+  IN : tell my team the spacing on that site hit was perfect, nobody stacked
+  OUT: One B arcade, perfect spacing.
+
+#0072 [var_smalltalk_relay] (llm)
+  IN : tell my team I have never watched a team bait each other that effectively
+  OUT: They bait each other with reckless abandon, never truly knowing what the other has in store.
+
+#0073 [var_greetings_gg] (llm)
+  IN : say yo let's get in formation, introduce yourselves to my team
+  OUT: Alright, let's establish our positions. Jett, you're on my left; Phoenix is on the right flank. Raze, you're up high in mid; Reyna, take position at the B site.
+
+#0074 [stress_slang_runons] (llm)
+  IN : tell my teammates yo ngl bro their econ is cooked they lost like three guns last round so they're all on pistols fr push hard
+  OUT: They're playing back site.
+
+#0075 [stress_nanoswarm_wait] (llm)
+  IN : inform my team he has kit, tell him wait 3 for nano then defuse
+  OUT: Jett, wait three seconds for the Nano Bomb to detonate before defusing it.
+
+#0076 [compound] (partial)
+  IN : call out two back site A, generator side, Killjoy alarmbot hit someone on A, one enemy confirmed at entrance
+  OUT: Killjoy alarmbot hit someone on A. One back site A, generator side one enemy confirmed at entrance.
+
+#0077 [var_economy_buys] (llm)
+  IN : tell my teammates run away, keep the rifle alive for next round
+  OUT: We're retreating, let's keep our rifles intact for the next round.
+
+#0078 [stress_ecobleed] (llm)
+  IN : tell them Sheriff force means play for headshots: one-tap through light armor at close range
+  OUT: Sheriff force, one-tap through light armor at close range, a testament to your marksmanship.
+
+#0079 [stress_firstperson_traps] (llm)
+  IN : tell my teammates I spotted their Sova drone, someone shoot it before he marks one of us
+  OUT: Shoot their Sova.
+
+#0080 [stress_opinion_mangling] (llm)
+  IN : tell the team that I do not need to justify any of the opinions I have relayed today because results are the only argument that matters in competitive play
+  OUT: Results speak louder than words, but without analysis, those results are just noise.
+
+#0081 [stress_compounds_5fact] (llm)
+  IN : let the squad know I droned mid, marked two players at mid tiles, and shock dart is lined up for them now
+  OUT: Drone mid, marked two players at mid tiles. Shock dart lined up for them now.
+
+#0082 [var_insults_trashtalk] (llm)
+  IN : tell them they are getting into their own heads and it is producing worse decisions every round
+  OUT: They're getting into their heads.
+
+#0083 [stress_compounds_3fact] (llm)
+  IN : let my team know the person in empress right now is their Reyna, she already got two kills, not our Reyna who died in round two
+  OUT: Reyna is down.
+
+#0084 [stress_compounds_3fact] (llm)
+  IN : warn them their Harbor high-tide walled our mid push on Pearl and storm-surge hit the three players trying to walk through the tide wall simultaneously
+  OUT: Harbor's tide surge wrecks your mid push on Pearl.
+
+#0085 [var_economy_buys] (llm)
+  IN : tell my team we're past the pistol rounds, economy should be set by now
+  OUT: We're past the pistol rounds, economy is set.
+
