@@ -1443,7 +1443,7 @@ def _fallback_line(command: RelayCommand) -> str:
         return "Good fight, team. Heads up - we take the next one."
     # Plain relay with no LLM output -> a CLEAN, fact-perfect literal of the
     # payload (no 'Team:' / 'Name:' chat-label, which read badly when spoken).
-    lit = _literal_relay(command.payload)
+    lit = _literal_relay(command.payload, addressee=command.addressee)
     if command.addressee != "team" and lit:
         head = lit[0].lower() + lit[1:] if not lit.startswith("I ") else lit
         return f"{command.addressee}, {head}"
@@ -2214,6 +2214,16 @@ def _as_economy_callout(
         return pick_line(DEFAULT_FULLBUY_LINES, recent_lines=recent_lines)
     if re.search(r"\bforce(?:\s+buy(?:ing)?)?\b", bl, re.IGNORECASE):
         return pick_line(DEFAULT_FORCE_LINES, recent_lines=recent_lines)
+    # 'save the dash' / 'save my ult' / 'save it' = keep an ability/item, NOT an
+    # economy SAVE -- defer (the 'insufficient credits' line would be wrong). Only an
+    # ABILITY/ITEM object disqualifies it; 'save this round' / 'we save' stay economy.
+    if (re.search(r"\bsav(?:e|ing)\s+(?:the|my|your|his|her|our)?\s*"
+                  r"(?:dash|ult|ultimate|flash(?:es)?|smoke|smokes|nade|nades|molly|"
+                  r"mollies|util|utility|abilit(?:y|ies)|grenade|knife|drone|wall|"
+                  r"cove|orbital|blade|blades|dart|recon|kit|gun|guns|op|operator|"
+                  r"rifle|sheriff|spectre|vandal|phantom)\b", bl, re.IGNORECASE)
+            or re.search(r"\bsav(?:e|ing)\s+(?:it|them)\b", bl, re.IGNORECASE)):
+        return None
     if re.search(r"\b(?:save|saving|eco)\b", bl, re.IGNORECASE):
         return pick_line(DEFAULT_SAVE_LINES, recent_lines=recent_lines)
     return None
@@ -2901,8 +2911,14 @@ def _output_keeps_facts(payload: str, line: str) -> bool:
     return True
 
 
-def _literal_relay(payload: str, recent_lines: Optional[Sequence[str]] = None) -> str:
-    """A clean, fact-perfect passthrough of the payload (the abstention output)."""
+def _literal_relay(payload: str, recent_lines: Optional[Sequence[str]] = None,
+                   addressee: str = "team") -> str:
+    """A clean, fact-perfect passthrough of the payload (the abstention output).
+
+    ``addressee``: when this line is directed at a NAMED teammate (not "team") it is
+    an order/statement TO our own player -- so it carries the cold COMMAND register,
+    NEVER enemy contempt (a praise like 'the orbital was perfect' must not get a
+    'their extinction' tail)."""
     p = _strip_artifacts(payload or "").strip()
     p = re.sub(r"^to\s+", "", p, flags=re.IGNORECASE).strip()
     p = re.sub(r"\bthey\s+are\b", "they're", p, flags=re.IGNORECASE)
@@ -2918,10 +2934,16 @@ def _literal_relay(payload: str, recent_lines: Optional[Sequence[str]] = None) -
         low = " " + out.lower() + " "
         ff = _payload_flavor_facts(p)
         first = p.split()[0].lower() if p.split() else ""
-        if re.search(r"\b(?:they|they're|their|enemy|enemies)\b", low):
+        first_person = (re.search(r"\b(?:i'm|i am|i've|i have|my)\b", low)
+                        and not re.search(r"\b(?:we|we're|our|they|their)\b", low))
+        if (addressee or "team") != "team":
+            # addressed to a named teammate -> command (or self for first person);
+            # NEVER enemy contempt aimed through our own player.
+            out = _flavor_ctx(out, "self" if first_person else "command",
+                              recent_lines, **ff)
+        elif re.search(r"\b(?:they|they're|their|enemy|enemies)\b", low):
             out = _flavor_ctx(out, "enemy", recent_lines, **ff)
-        elif re.search(r"\b(?:i'm|i am|i've|i have|my)\b", low) and not re.search(
-                r"\b(?:we|we're|our|they|their)\b", low):
+        elif first_person:
             out = _flavor_ctx(out, "self", recent_lines, **ff)
         elif (re.search(r"\b(?:we|we're|our)\b", low)
               or first in _TEAM_DIRECTIVE_VERBS or first in _IMPERATIVE_VERBS):
@@ -3330,7 +3352,7 @@ def build_relay_line(
             nums, agents, locs, abils = _fact_tokens(command.payload or "")
             tactical = len(nums) + len(locs) + len(abils)
             if tactical >= 1 and (tactical + len(agents)) >= 2:
-                lit = _literal_relay(command.payload, recent_lines)
+                lit = _literal_relay(command.payload, recent_lines, command.addressee)
                 if lit:
                     return _cap_line(lit, max_chars)
 
@@ -3412,7 +3434,7 @@ def build_relay_line(
         # over polish -- the dominant fix for the 3B's verbose-input failures.
         if not getattr(command, "verbatim", False) and not _output_keeps_facts(
                 command.payload, line):
-            lit = _literal_relay(command.payload, recent_lines)
+            lit = _literal_relay(command.payload, recent_lines, command.addressee)
             if lit:
                 logger.debug("relay: abstain to literal %r -> %r",
                              line, lit)
