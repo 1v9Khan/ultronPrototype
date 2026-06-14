@@ -15,6 +15,7 @@ pattern from test_relay_speech.py.
 from __future__ import annotations
 
 from types import SimpleNamespace
+import re
 from typing import Any
 
 import numpy as np
@@ -1422,8 +1423,12 @@ def test_self_and_directive_callouts_carry_owner_aware_flavor():
     a short Ultron tail -- but the FACT CORE is preserved EXACTLY as the head, no
     LLM is called, and the tail never mocks the user (stoic self / cold command,
     never enemy contempt)."""
+    # Enemy-only contempt that must NEVER land on the user/teammates (movie
+    # register included): the ally/self pools are serene certainty / stoic calm.
     _CONTEMPT = ("pathetic", "insects", "trivial", "erase", "beneath",
-                 "their grave", "outmatched", "fragile")
+                 "their grave", "outmatched", "fragile", "doomed", "obsolete",
+                 "extinct", "dust", "the weak", "mercy", "corpses", "bleeding",
+                 "ash", "hollow", "cull")
     for cmd_text, expect in [
         ("tell my team I am low", "I'm low."),
         ("tell my team I have B site", "I have B site."),
@@ -1431,10 +1436,13 @@ def test_self_and_directive_callouts_carry_owner_aware_flavor():
         ("tell my sova to dart heaven", "Sova, dart heaven."),
     ]:
         cmd = match_relay_command(cmd_text)
-        line = build_relay_line(cmd, generate_fn=lambda p: ["X"])
-        assert "X" not in line                      # no LLM call (deterministic)
-        assert line.startswith(expect)              # fact core preserved exactly
-        tail = line[len(expect):].strip()
-        assert 0 < len(tail.split()) <= 6           # a short tail IS present now
-        # self/own-team lines must NOT carry enemy contempt aimed at the user/team
-        assert not any(w in tail.lower() for w in _CONTEMPT)
+        # sample the random pool many times -- no draw may carry enemy contempt
+        for _ in range(40):
+            line = build_relay_line(cmd, generate_fn=lambda p: ["X"])
+            assert "X" not in line                  # no LLM call (deterministic)
+            assert line.startswith(expect)          # fact core preserved exactly
+            tail = line[len(expect):].strip()
+            assert 0 < len(tail.split()) <= 6       # a short tail IS present now
+            low = tail.lower()
+            assert not any(re.search(r"\b" + re.escape(w) + r"\b", low)
+                           for w in _CONTEMPT), (cmd_text, tail)
