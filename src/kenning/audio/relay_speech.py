@@ -2300,7 +2300,11 @@ def _payload_flavor_facts(p: str) -> dict:
         return {}
     return {
         "agents": _roster_agents(p or ""),       # canonical, may be 0/1/2+
-        "loc": next(iter(sorted(locs)), None),
+        # The bare article 'a'/'an'/'the' is never a real location -- excluding it
+        # stops a morale line ('a bad round', 'a team effort') from being read as
+        # an enemy position callout and getting contempt flavor.
+        "loc": next((l for l in sorted(locs)
+                     if l.lower() not in {"a", "an", "the"}), None),
         "ability": next(iter(sorted(abils)), None),
         "count": next(iter(sorted(nums)), None),
     }
@@ -3142,9 +3146,14 @@ def _literal_relay(payload: str, recent_lines: Optional[Sequence[str]] = None,
         elif (re.search(r"\b(?:we|we're|our)\b", low)
               or first in _TEAM_DIRECTIVE_VERBS or first in _IMPERATIVE_VERBS):
             out = _flavor_ctx(out, "command", recent_lines, **ff)
-        elif ff.get("count") or ff.get("loc") or ff.get("agents"):
-            # a bare count / position / agent callout ('three are b long', 'two
-            # mid') describes the ENEMY -> enemy contempt (no pronoun present).
+        elif ff.get("agents") or ff.get("loc"):
+            # a bare position / named-agent callout ('cypher main', 'three b
+            # long') describes the ENEMY -> enemy contempt (no pronoun present).
+            out = _flavor_ctx(out, "enemy", recent_lines, **ff)
+        elif ff.get("count") and len(p.split()) <= 4:
+            # a SHORT bare count ('two left', 'one down') is an enemy report; a
+            # longer sentence that merely contains a number ('one calm round is
+            # the start of the comeback') is morale, not a callout -> no contempt.
             out = _flavor_ctx(out, "enemy", recent_lines, **ff)
     return out
 
