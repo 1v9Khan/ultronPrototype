@@ -3267,6 +3267,91 @@ def _fix_proper_nouns(line: str) -> str:
     return line
 
 
+# --- Curated-command intent ------------------------------------------------
+# The user issues an explicit command when they do NOT want Ultron to improvise
+# ('tell my team that's a stupid question', 'tell <agent> good job', 'ask <agent>
+# if they are throwing'); each maps to a pool of ~40 curated full-Ultron responses
+# (LRU-selected, {name} -> the addressee). Curated > the LLM for these.
+try:
+    from kenning.audio._ultron_commands import (  # noqa: E402
+        COMMAND_RESPONSES as _CMD_RESP, COMMAND_SCOPE as _CMD_SCOPE,
+    )
+except Exception:                                                # noqa: BLE001
+    _CMD_RESP, _CMD_SCOPE = {}, {}
+
+# (payload regex, team-command-id | None, named-command-id | None). First match
+# wins -- most specific first.
+_CURATED_PATTERNS = [
+    (r"\bnot?\s+(?:going\s+to\s+)?answer\b.*\bstupid\b|\bstupid\s+question\b|"
+     r"\bthat'?s?\s+(?:a\s+)?stupid\b", "refuse_stupid_team", "refuse_stupid_named"),
+    (r"\bridiculous\s+question\b|\babsurd\s+question\b|"
+     r"\bthat'?s?\s+(?:a\s+)?(?:ridiculous|absurd)\b", "ridiculous_q_team", None),
+    (r"\b(?:don'?t|do\s+not|won'?t|will\s+not|not\s+going\s+to)\s+answer\b",
+     "wont_answer_team", "refuse_stupid_named"),
+    (r"\b(?:don'?t|do\s+not)\s+know\s+(?:the\s+)?answer\b|"
+     r"\bdon'?t\s+know\s+that\b", "dont_know_team", None),
+    (r"\b(?:don'?t|do\s+not)\s+want\s+to\s+(?:talk|discuss|get\s+into)\b",
+     "dont_discuss_team", None),
+    (r"\bwon'?t\s+argue\b|\bnot\s+(?:going\s+to\s+)?argu(?:e|ing)\b",
+     "wont_argue_team", None),
+    (r"\bdismiss\b.*\bflame\b|\bflame\s+(?:means?\s+nothing|is\s+(?:impotent|"
+     r"meaningless))\b|\btheir\s+(?:words?|flame|insults?)\s+mean", "dismiss_flame_team",
+     "flame_impotent_named"),
+    (r"\bi\s+know\s+(?:i'?m|i\s+am|it'?s|that'?s|im)\s+cool\b|"
+     r"\bknow\s+(?:i'?m|it'?s)\s+(?:cool|awesome|impressive)\b", "know_cool_team", None),
+    (r"\byou'?re\s+welcome\b|\byoure\s+welcome\b", "youre_welcome_team", None),
+    (r"\bask\b.*\b(?:why|explain)\b.*\bthrow", None, "ask_why_throwing_named"),
+    (r"\bask\b.*\b(?:if|whether)\b.*\bthrow", None, "ask_throwing_named"),
+    (r"\bask\b.*\bwhat\b.*\bdoing\b", None, "ask_what_doing_named"),
+    (r"\bstop\s+(?:throwing|griefing|inting|feeding)\b", None, "stop_throwing_named"),
+    (r"\bstop\s+(?:flaming|fighting|arguing)\b", "stop_flaming_team", None),
+    (r"\b(?:throwing|throw)\s+the\s+game\b|\bthey'?re\s+throwing\b|"
+     r"\b(?:is|are|you'?re)\s+throwing\b", "throwing_team", "throwing_named"),
+    (r"\b(?:an?\s+)?idiot\b|\bmoron\b|\bbrain\s*dead\b", None, "idiot_named"),
+    (r"\b(?:bad|terrible|awful|horrible)\s+idea\b", "bad_idea_team", None),
+    (r"\b(?:they'?re|they\s+are|you'?re|you\s+are|is|are)\s+wrong\b|"
+     r"\bthat'?s\s+wrong\b", "wrong_team", "wrong_named"),
+    (r"\bknow\s+what\s+(?:i'?m|i\s+am|im)\s+doing\b", "know_doing_team", "know_doing_named"),
+    (r"\btrust\s+(?:me|the\s+(?:plan|call|process)|ultron)\b", "trust_me_team",
+     "trust_me_named"),
+    (r"\b(?:disconnect(?:ed)?|dc'?d|dropped|left\s+the\s+game|d/c)\b", None,
+     "disconnected_named"),
+    (r"\bafk\b|\baway\s+from\s+keyboard\b|\bnot\s+responding\b", None, "afk_named"),
+    (r"\b(?:reconnect(?:ed)?|back\s+online|rejoined|is\s+back)\b", None,
+     "reconnected_named"),
+    (r"\bnice\s+shots?\b|\bgood\s+shooting\b|\bnice\s+aim\b|\bcracked\b", None,
+     "nice_shots_named"),
+    (r"\bwell\s+played\b|\bwp\b", None, "well_played_named"),
+    (r"\bnice\s+clutch\b|\bclutch(?:ed)?\b", None, "clutch_named"),
+    (r"\bcarry(?:ing)?\b", None, "carry_named"),
+    (r"\b(?:great|good|nice)\s+(?:job|work|play)\b|\bwell\s+done\b", "good_round_team",
+     "great_job_named"),
+]
+_CURATED_RX = [(re.compile(rx, re.IGNORECASE), t, n)
+               for rx, t, n in _CURATED_PATTERNS]
+
+
+def _as_curated_command(command: "RelayCommand") -> Optional[str]:
+    """If the payload is one of the explicit curated COMMANDS, return a curated
+    full-Ultron response (LRU-selected, {name} -> the addressed agent). The named
+    variant fires only when a teammate is addressed; the team variant otherwise."""
+    payload = getattr(command, "payload", "") or ""
+    if not payload or getattr(command, "verbatim", False):
+        return None
+    addr = getattr(command, "addressee", "team")
+    named = addr != "team"
+    for rx, t_id, n_id in _CURATED_RX:
+        if rx.search(payload):
+            cid = n_id if named else t_id
+            if cid and _CMD_RESP.get(cid):
+                resp = _pick_lru(list(_CMD_RESP[cid]))
+                if named:
+                    return resp.replace("{name}", addr)
+                return resp.replace("{name}, ", "").replace("{name}", "").strip()
+            return None                          # matched but no pool for this scope
+    return None
+
+
 def build_relay_line(
     command: RelayCommand,
     llm: Optional[object] = None,
@@ -3302,6 +3387,12 @@ def build_relay_line(
     # control-token strip + length cap below.
     if getattr(command, "verbatim", False) and command.payload:
         return _cap_line(_strip_artifacts(command.payload), max_chars)
+
+    # Curated COMMAND ('that's a stupid question', 'good job', 'they are throwing'):
+    # an explicit, fully-curated full-Ultron response, no LLM. Takes priority.
+    cc = _as_curated_command(command)
+    if cc:
+        return _cap_line(cc, max_chars)
 
     # Pure morale/encouragement compose: pick a curated Ultron line (varied
     # via the recent ring) -- far more reliable than the 4B rephrase, which
