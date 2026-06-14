@@ -10,7 +10,72 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
-> **Validating HEAD: `c51d6da`** (2026-06-12 NAP SESSION — 6 commits on
+> **Validating HEAD: `3480454`** (2026-06-13/14 — RELAY-QUALITY + 20k-CORPUS
+> CAMPAIGN, 30 commits on `main` over `585fc84`, all pushed to origin/main).
+> **Test count: 10,129 collected.** Ultron is currently SHUT DOWN. This campaign
+> rebuilt the Valorant teammate-relay into a deterministic-first, fact-preserving
+> pipeline and stood up a full metrics harness. Themes (detail in the per-module
+> sections + memory `project_overnight_corpus_loop_2026_06_13.md`):
+>
+> (1) **RELAY QUALITY, iter 1-4** (`src/kenning/audio/relay_speech.py`, now 3409
+> lines). The pipeline is HYBRID: tactical callouts resolve DETERMINISTICALLY
+> (snap/compound/curated, fact-exact, never the LLM); only off-snap conversational
+> lines (insults/banter/opinions/identity/Marvel/playstyle) reach the gaming 3B.
+> NEW mechanisms: `_as_compound_callout`/`_split_compound` (resolve each fact of a
+> multi-fact callout; PARTIAL = tactical facts deterministic + only the off-snap
+> remainder to the LLM); `_as_agent_utility` (ownership-aware `[our/their] <agent>
+> <ability> <rest>`); `_output_keeps_facts`+`_literal_relay` FACT-PRESERVING
+> ABSTENTION (if a tactical LLM line drops >30% fact-tokens / hallucinates an
+> agent-or-location / flips our<->their, relay a clean literal instead); PRE-ROUTE
+> (a tactical line the handlers can't structure goes straight to literal BEFORE the
+> LLM = no model call). Matcher hardened (`relay:`/enemy-addressee/implicit-ask/
+> bare-say/named `the/their`/`_NARRATION_LEAD_RE` false-relay guard). Guards: eco
+> concatenation dedupe, `Team:` strip + clean literal fallback, switch-hallucination
+> ("enemies are switch"), recent-line bleed fix, `_repair_against_input`. RESULTS
+> (2k-sample scorecard, gaming/testing conditions): matcher clean 94.07%->99.35%,
+> false-relay 22->3; overall fact-retention mean **0.95** (count 0.99 / loc 0.99 /
+> ability 0.99 / agent 0.95 / owner 0.85); inversion 0.37%; flavor type/token 0.91.
+>
+> (2) **20,000-CASE ADVERSARIAL CORPUS + METRICS HARNESS** (`scripts/relay_test/`).
+> Built by 3 web-grounded Sonnet agent boards: research -> `refs/*.md` (current
+> Valorant agents/abilities/maps/callouts/economy/slang/meta/Marvel); variety ->
+> `vocab_packs/var_*.py`; metric-stress -> `vocab_packs/stress_*.py` (each pack
+> engineered to break one metric). 48 packs / ~29.4k unique payloads;
+> `corpus_packs.build_corpus(seed, target=20000)` auto-discovers packs by kind
+> (relay / question / NEGATIVE=must-not-relay), `_split_compound`/`_compound_cases`,
+> stratified cap. NEW `scorecard.py` = the reliability scorecard (Valorant
+> fact-token extractor; `classify_route` by whether the LLM was INVOKED;
+> per-category fact-retention p50/p95/p99; inversion + hallucination rate;
+> deterministic coverage; matcher clean + false-relay on a NEGATIVE_SET; flavor
+> TTR; `--bench` = CPU-3B latency + peak RSS; before/after no-regression diff).
+> NEW `make_audit_chunks.py` (split LLM-routed lines for the line-by-line audit
+> board).
+>
+> (3) **NEW metrics: LATENCY + RESOURCE** (measured on the live CPU-3B gaming
+> config): deterministic path p50 0.15 ms / p99 0.46 ms vs LLM path p50 1266 ms /
+> p99 5573 ms; peak RSS ~3577 MB. The lever is deterministic coverage (32%->61%
+> via abstention + pre-route) — every line off the CPU-3B path is instant +
+> fact-perfect.
+>
+> (4) **BARE-BONES GAMING MODE** (`lifecycle/gaming_engage.py`, `llm/inference.py`,
+> `pipeline/orchestrator.py`): gaming LLM = CPU-only 3B (`gpu_layers=0`, no draft);
+> per-turn RAG/reranker/web skipped when `is_gaming_mode_active()`;
+> `reset_shared_reranker()` frees ~1 GB on engage; `engage_at_startup` boots into
+> gaming; `_drive_async_blocking` runs the engage device-swaps off the running loop;
+> `LLM.reload_for_preset(preset, *, gpu_layers=...)` forces CPU regardless of
+> env/config. (5) **ANTICHEAT** (`safety/anticheat.py`): `press_key`/`press_hotkey`
+> injection gap closed + namespaced-dispatcher tool matching; pinned-on.
+> (6) **TESTING MODE** (NEW `safety/testing_mode.py`): a SEPARATE off-by-default
+> mode that gates RAG/web/desktop like gaming but KEEPS the GPU — used by the relay
+> harness for fast, faithful generation; never triggers gaming device swaps.
+> (7) **WAKE WORD** (`audio/wake_word.py`): default `ultron`, per-word `thresholds`
+> + `min_consecutive_frames` consecutive-frame gate. (8) **OVERLAY** (NEW
+> `audio/waveform.py`): waveform + glowing nameplate (raised, downward-suppressed
+> bars), hide-behind that OBS still captures, green chroma. (9) **IN-MODEL PROSODY**
+> (NEW `tts/f0_control.py` + `tts/duration_control.py`): scale Kokoro's predicted
+> F0/energy/duration curves before the decoder (zero added latency).
+>
+> **Earlier validating HEAD: `c51d6da`** (2026-06-12 NAP SESSION — 6 commits on
 > `main` over `4f17af7`: `10434a2` qdrant lock-guardrail, `c8653a1` 2nd
 > OBS-capture audio output, `1eddfbb` relay batch 2, `c51d6da` loud-burst
 > trim fix). Four things, all hand-reviewed on the actual gaming 3B +
@@ -1767,6 +1832,8 @@ For the current decisions and Foundation phase status see
 │       │   ├── policy.py           ← Policy dataclass + load_policy() with K-protected paths
 │       │   ├── intent.py           ← explicit-intent matcher (verb+object within window)
 │       │   ├── taint.py            ← cross-capability taint tracker (60s TTL hash-match)
+│       │   ├── anticheat.py        ← anticheat_active() (runtime flag OR config pin OR testing_mode); surface-stop hooks physically halt input/capture/window subsystems; _BLOCKED_TOOL_EXACT incl. press_key/press_hotkey; is_blocked_tool strips openclaw. + matches bare dotted segment
+│       │   ├── testing_mode.py     ← NEW 2026-06-13: is_testing_mode_active()/set_testing_mode_active() — a SEPARATE off-by-default mode that gates RAG/web/desktop like gaming but KEEPS the GPU (relay-harness fast generation); never triggers gaming device swaps
 │       │   └── rules/
 │       │       ├── __init__.py
 │       │       ├── base.py         ← Rule ABC + PathSetRule + PathPatternRule + CommandPatternRule + ToolNameRule + SandboxConfinementRule
@@ -1800,7 +1867,9 @@ For the current decisions and Foundation phase status see
 │       │   ├── ring_buffer.py      ← Pre-speech audio buffer
 │       │   ├── smart_turn.py       ← Smart Turn V3 ONNX wrapper (NEW 2026-05-12; CPU-only end-of-turn confirmation)
 │       │   ├── vad.py              ← Silero-VAD wrapper
-│       │   └── wake_word.py        ← openWakeWord (custom kenning.onnx + hey_jarvis fallback)
+│       │   ├── wake_word.py        ← openWakeWord (custom ultron.onnx default + kenning; per-word thresholds + min_consecutive_frames consecutive-frame gate; reload_for_word hot-swap)
+│       │   ├── broadcast.py        ← BroadcastSink: daemon tee of ALL Kenning speech (normal + relay) to audio.broadcast_device for an isolated OBS capture source (drop-oldest, mono→stereo, zero speaker-path latency)
+│       │   └── waveform.py         ← WaveformSink: borderless Tk overlay (radial waveform + glowing PIL nameplate, downward-suppressed bars, hide-behind that OBS still captures, green chroma); off by default, fail-open
 │       │
 │       ├── addressing/             ← Phase 2 addressing classifier (CPU)
 │       │   ├── classifier.py       ← AddressingClassifier (rule + zero-shot dispatcher)
@@ -1861,6 +1930,8 @@ For the current decisions and Foundation phase status see
 │       │   ├── speech.py           ← TextToSpeech (legacy Piper + RVC engine; selected by tts.engine="piper_rvc"; ack cache + prepare_output_stream)
 │       │   ├── spectral_smooth.py  ← spectral magnitude smoothing for partial-fine-tune (STFT median-filter ISTFT, optional); 2026-05-22 ADDED trim_and_fade(audio, sr, **kwargs) -- RMS trim + raised-cosine fades + hard silence pad + tail aggressive zero (mutes Kokoro end-of-clip blip)
 │       │   ├── kenning_filter.py    ← v3 Kenning mechanical filter (NEW 2026-05-10; pedalboard DSP chain; unused on kokoro engine when apply_runtime_filter=false)
+│       │   ├── f0_control.py        ← NEW 2026-06-12: install_f0_contour_shaping — patches Kokoro predictor.F0Ntrain to scale predicted pitch/energy curves before the ISTFTNet decoder (zero added latency)
+│       │   ├── duration_control.py  ← NEW 2026-06-12: install_duration_shaping — vendored forward_with_tokens that scales per-phoneme durations (cadence); composes ON TOP of the F0 hook (install F0 first)
 │       │   └── xtts_v3.py          ← XTTSV3Speech engine (NEW 2026-05-10; selected by tts.engine="xtts_v3"; retained for swap-back to XTTS+v3 stack)
 │       │
 │       ├── coding/                 ← Phase A coding orchestration + Coding Addendum + 2026-05-22 supervisor stack
@@ -2176,11 +2247,21 @@ For the current decisions and Foundation phase status see
 │   ├── bench_llm_ubatch.py        ← 2026-05-15 latency: sweep n_batch / n_ubatch combinations (writes baselines.json:llm_n_ubatch_sweep)
 │   ├── bench_stt_latency.py       ← 2026-05-15 latency: measure Whisper STT latency at varied audio lengths (drove beam_size 5->1 decision)
 │   ├── bench_llm_prefix_cache.py  ← 2026-05-16 latency 2: cold-vs-warm TTFT bench for LlamaRAMCache (writes baselines.json:llm_prefix_cache_bench; result: -15 ms regression on this stack -> Phase 2 default flipped to disabled)
-│   └── eval_harness.py            ← 2026-05-18 Phase 0: classifier-only eval harness (routing + addressing + web_gate); reads tests/eval/corpus.jsonl; writes logs/eval_runs/<ts>.json; exit codes 0/1/2 for CI
+│   ├── eval_harness.py            ← 2026-05-18 Phase 0: classifier-only eval harness (routing + addressing + web_gate); reads tests/eval/corpus.jsonl; writes logs/eval_runs/<ts>.json; exit codes 0/1/2 for CI
+│   ├── stream_check.py            ← 2026-06-12: pre-stream device-routing check (default speakers / relay mic bus / OBS capture / mic untouched)
+│   └── relay_test/                ← Valorant relay test harness + 20k corpus + scorecard (see the "2026-06 relay/gaming campaign" section below)
+│       ├── harness.py             ← staged matcher/rephrase/audio/asr/full pipeline test (GAMING_PRESET 3B, testing-mode parity, RELAY_TEST_GPU_LAYERS)
+│       ├── corpus.py              ← original build_corpus() base cases + _GROUP_PREFIXES
+│       ├── corpus_packs.py        ← build_corpus(seed, target=20000): auto-discover packs by kind (relay/question/NEGATIVE) + _split_compound/_compound_cases + stratified cap; build_corpus_10k/_20k aliases
+│       ├── scorecard.py           ← reliability scorecard: fact-token extractor, classify_route (by LLM-invocation), per-category retention p50/p95/p99, inversion/hallucination, deterministic coverage, matcher/false-relay, flavor TTR, --bench (CPU-3B latency+RSS), no-regression diff
+│       ├── make_audit_chunks.py   ← split the LLM-routed lines of a rephrase JSONL into per-agent audit chunks
+│       ├── vocab_packs/           ← 48 packs (~29.4k payloads): 8 base + var_* variety + stress_* metric-stress + persona_flavor (OUTPUT pool, excluded from inputs)
+│       ├── refs/                  ← 20 web-grounded Valorant reference docs (agents/abilities/maps/callouts/economy/slang/meta/Marvel) used to ground generation
+│       └── (dev tools)            ← play_sample, cadence_actual/cadence_check, flow_check, validate_pipeline, probe/reprobe/waveform_check/burst_diag
 │
 ├── tests/
 │   ├── conftest.py                 ← Path setup + pytest_sessionfinish hook that reaps test-spawned python children (preserves the live Kenning on port 19761); pytest_configure walks the process tree + refuses to start if another pytest is running on this codebase
-│   ├── test_*.py                   ← ~80 unit/integration test files at the top level (default suite); see scripts/run_tests.py to invoke. 2026-06-12 additions: test_audio_capture_status.py (status-flag/drop accounting), test_follow_up_streaming_stt.py (WARM-path streaming lane: structural pins + behavioral state machine on the real _follow_up_listen), test_main_single_instance.py (entrypoint guard integration, hermetic logging fixture)
+│   ├── test_*.py                   ← ~80 unit/integration test files at the top level (default suite; current total 10,129 collected); see scripts/run_tests.py to invoke. 2026-06-12 additions: test_audio_capture_status.py, test_follow_up_streaming_stt.py, test_main_single_instance.py. 2026-06 relay/gaming campaign additions: test_wake_word.py (per-word thresholds + consecutive-frame gate), test_f0_control.py + test_duration_control.py (in-model prosody shaping), test_llm_preset.py (gaming CPU/no-draft preset)
 │   ├── lifecycle/                  ← lifecycle package tests: test_start_task.py, test_pending_message_queue.py, test_gaming_engage.py, test_docker_startup.py, test_single_instance.py (NEW 2026-06-12: held-lock acquire/contention/metadata-while-locked/env-escape/pidfile-fallback/errno-classification/no-unlink-on-release; tmp_path locks only)
 │   ├── pipeline/                   ← orchestrator-helper tests: test_idle_vram_reclaim.py, test_coding_runner_drains.py, test_supervisor_stack_shared_client.py (NEW 2026-06-12: _build_supervisor_stack passes ConversationMemory's client / falls back / fail-open)
 │   ├── bus/                        ← 2026-05-22 session E: typed event bus (43 tests)
@@ -3409,98 +3490,146 @@ music", "what's playing", "turn it up", "play my focus playlist",
   volume clamp, the full matcher matrix + negatives, dispatch incl.
   auth/no-device error messages, orchestrator wiring; all HTTP faked).
 
-#### `audio/relay_speech.py` (NEW 2026-06-11 — teammate voice relay)
+#### `src/kenning/audio/relay_speech.py` (Valorant teammate-relay)
 
-Speak a message to OTHER PEOPLE through a secondary output device.
-"Kenning, tell my teammates they should be smoking mid window" is an
-instruction to DELIVER a spoken line into the game voice chat, not a
-conversational prompt (previously it fell through to the LLM and got
-role-played). Driven by `relay_speech` config (default ON).
+Converts a user voice command into a line Kenning speaks on a **separate** PortAudio output device (typically a VoiceMeeter virtual input wired to the game mic bus), so teammates hear Kenning — not a conversational response. The relay persona in this file is **Ultron** (cold, superior AI from the future), exclusively; Kenning is the product name used everywhere else.
 
-- `match_relay_command(text, *, names) -> Optional[RelayCommand]` —
-  STRICT matcher (run/scrap philosophy): "tell my/the
-  teammate(s)/team/squad/lobby/party X", "say X to my team", "ask the
-  team to/for/if X", "tell them X". "tell me ..." can never match;
-  payloads under two words are rejected (clipped transcripts); a
-  leading "One," STT artifact is stripped only when followed by a relay
-  verb; a leading "to" is dropped from ask-payloads (questions keep
-  if/whether/for). **Named addressees:** "ask Clove to smoke window" /
-  "tell Sova to drone sewers" / "say nice flash to Breach" address ONE
-  teammate by the agent they're playing — a CLOSED vocabulary
-  (`DEFAULT_ADDRESSEE_NAMES` = the Valorant roster, overridable via
-  `relay_speech.addressee_names`), so "tell Sarah I'll be late" never
-  relays; `RelayCommand.addressee` carries the display-cased name and
-  the rephrase prompt opens with it. **Compose mode:** "give my team
-  (some) encouragement / a pep talk" / "encourage my team" / "hype up
-  my squad" sets `RelayCommand.compose=True` — Kenning AUTHORS an
-  original line instead of relaying a literal message. The rephrase
-  prompt also instructs first-person preservation, so "tell my team I
-  am lurking" relays as "I'm lurking" and "tell my team that I am
-  Kenning..." delivers the self-introduction verbatim in spirit.
-- `build_relay_line(command, llm, *, rephrase, max_chars, generate_fn)` —
-  converts reported speech into the line Kenning speaks DIRECTLY to the
-  teammates (second person, ≤2 short sentences) via a small
-  `generate_stream(record_history=False, enable_thinking=False)` rephrase.
-  Fail-open: any LLM problem returns the deterministic "Team: <payload>"
-  line. Output is quote/newline-stripped and capped at `max_line_chars`.
-- `resolve_relay_device(configured) -> Optional[int]` — delegates to
-  `audio.devices.resolve_device(..., "output")`, fail-open to None.
-- `play_to_device(pcm, sr, device_index, *, stream_factory)` — synchronous
-  mono playback on the given PortAudio device (int16; float32 converted);
-  injectable stream factory for hermetic tests; guaranteed stop/close.
-- Orchestrator: `_maybe_handle_relay_speech` short-circuit (after scrap,
-  before deep-research; `via="relay_speech"`). Once MATCHED the turn is
-  always consumed — device/synth failures speak a short error on the
-  NORMAL output instead of letting the command fall into the LLM path.
-  Synthesis uses the session's existing Kokoro engine (`tts._synthesize`);
-  only the playback target differs, so the locked TTS hot path is
-  untouched.
-- Typical wiring: `output_device: "Voicemeeter Aux Input"`; in VoiceMeeter
-  route that strip to the same B-bus as the microphone (e.g. B2) and set
-  the game's input to that bus — teammates hear Kenning through the mic
-  channel.
-- **Conversational layer:** `build_relay_line(..., recent_lines=...)`
-  feeds the session's last ≤6 spoken relay lines into the prompt with an
-  explicit vary-your-wording instruction (no soundboard feel; consecutive
-  callouts read as one conversation). The orchestrator keeps the ring
-  (`_relay_recent_lines`, deque maxlen 6, lazily created). **No wake word
-  inside the window:** the follow-up addressing gate short-circuits via
-  `Orchestrator._is_relay_command` — a strict relay match is
-  definitionally addressed to Kenning, so it bypasses the zero-shot
-  classifier (fixes the observed 0.75-conf drop; saves ~190 ms) — and
-  relay turns hold the follow-up window open for
-  `relay_speech.follow_up_seconds` (default 120 s vs the ~30 s warm
-  window), so after one "Kenning, …" the whole in-game conversation flows
-  bare: "ask sage for a heal", "tell them nice try", …
-- **Isolated generation + token hygiene (2026-06-11 live game-chat
-  incident):** the rephrase call passes `suppress_memory_context=True`
-  — without it the engine prepends conversation history and the model
-  answers the CONVERSATION ("Clove, the program is still in
-  development…") instead of rephrasing the callout; the spoken-line
-  cleanup also strips control-token leakage (`/no_think`, `/think`,
-  `<|…|>` — a non-Qwen gaming preset parroted "/ no_think" into game
-  chat). `_GROUP_WORDS` tolerates the "teams" STT artifact.
-- **Streaming safety (2026-06-11):** every pattern is anchored to an
-  imperative relay verb, so narration ("I want my team to smoke
-  window", "why is my team not smoking window") can NEVER relay — only
-  explicit commands ("ask my team to smoke window every round") do.
-  Possessive named callouts ("ask **my** clove …") and question-word
-  ask-payloads ("ask my clove **why** she is not smoking window" →
-  relayed as a question) are supported. `match_relay_toggle` +
-  `Orchestrator._maybe_handle_relay_toggle`: "mute the team chat" /
-  "stop talking to my team" vs "unmute the relay" / "you can talk to my
-  team again" flip a SESSION mute (`_relay_runtime_enabled`); while
-  muted a matched relay command is acknowledged ("Team relay is muted…")
-  but never transmitted and never role-played; toggle phrases also
-  bypass the follow-up addressing gate. The persistent master switch is
-  `relay_speech.enabled` (config + control panel).
-- Tests: `tests/audio/test_relay_speech.py` (102 — matcher matrix incl.
-  the named-agent + compose callout matrix, the stream-narration
-  negative matrix + explicit-command positives, the mute-toggle matrix +
-  muted-acknowledge wiring, rephrase fallbacks per mode, recent-lines
-  prompt + cap, the addressing-gate probe, the ring + follow-up arming,
-  fake-stream playback incl. float32 conversion + teardown-on-error,
-  device fail-open, orchestrator wiring via `Orchestrator.__new__`).
+---
+
+#### Public API (`__all__`)
+
+- `DEFAULT_ADDRESSEE_NAMES` — the 29-agent Valorant roster plus common STT homophones (`cipher`→Cypher, `gecko`→Gekko, `mix`→Miks, `way lay`→Waylay); the closed vocabulary the named-addressee patterns match against.
+- `DEFAULT_ROAST_LINES`, `DEFAULT_FUN_FACTS` — seed / fallback pools for verbatim line types.
+- `RelayCommand` — frozen dataclass from `match_relay_command`: `payload`, `raw_text`, `addressee` (`"team"` or display-cased agent name), `compose`, `context`, `directive`, `roast`, `fun_fact`, `verbatim`.
+- `RelayPlaybackResult` — frozen dataclass from callers: `success`, `spoken_line`, `device_index`, `seconds`, `error`.
+- `match_relay_command(text, *, names=None) -> Optional[RelayCommand]` — the strict matcher.
+- `match_relay_toggle(text) -> Optional[bool]` — True = unmute relay, False = mute relay, None = not a toggle command.
+- `build_relay_line(command, llm=None, *, rephrase, max_chars, recent_lines, generate_fn) -> str` — the main converter.
+- `load_roast_lines(path)`, `load_fun_facts(path)` — load user-curated verbatim pools from disk, fail-open to defaults.
+- `pick_roast_line(lines, recent_lines, rng) -> str` — anti-repeat random pick from any verbatim pool; `pick_line` is an alias.
+- `resolve_relay_device(configured) -> Optional[int]` — resolve device name/index via `kenning.audio.devices.resolve_device`, fail-open.
+- `play_to_device(pcm, sample_rate, device_index, *, stream_factory) -> float` — synchronous playback via `sounddevice.OutputStream` (or test seam); returns seconds written.
+
+---
+
+#### `match_relay_command` — parsing pipeline
+
+**Normalisation (`_normalize_speech`)** applied first:
+- `_KAYO_SLASH_RE`: collapses `kay/o` / `k/o` / `kay / o` → `kayo` so the agent name tokenises.
+- `_FILLER_RE`: strips standalone filler (`uh`, `um`, `er`, `hmm`) and surrounding commas so triggers survive mid-utterance filler.
+- `_ABBREV_SUBS`: word-boundary substitutions `kj`→Killjoy, `brim`→Brimstone, `yoroo`→Yoru, `vyce`→Vyse.
+- `_LEADING_ARTIFACT`: strips a leading `"One,"` / `"1."` STT artifact before a relay verb.
+
+**False-relay guard (`_NARRATION_LEAD_RE`)**: if the cleaned text matches narration/private-thought patterns (e.g. `"I should tell them"`, `"part of me wants to"`, `"chat says … respond"`, `"do I tell"`, `"have you ever"`) the function returns `None` immediately — the streamer is thinking out loud, not commanding.
+
+**Ordered match attempts** (first match wins):
+1. `_ROAST_RE` → `RelayCommand(roast=True, compose=True)`
+2. `_FUN_FACT_RE` → `RelayCommand(fun_fact=True, compose=True)`
+3. `_GREET_RE` (skipped when verbatim suffix present) → `compose=True, directive="greet"`
+4. `_FAREWELL_RE` (skipped when verbatim) → `compose=True, directive` from `_farewell_directive` (`farewell_win` / `farewell_loss` / `farewell` via `_WIN_RE` / `_LOSS_RE`)
+5. `_COMPOSE_PATTERNS` (encouragement) → `compose=True, payload="encouragement"`
+6. **`_RELAY_PATTERNS`** — 13 patterns covering group addressees (`_GROUP` = `my/our/the team/squad/…`), pronoun groups (`_GROUP_PRON` = `them/'em/everyone/the guys/…`), channel forms (`in game chat`), enemy-addressed bravado (`_ENEMY_GROUP`), `call out X`, `relay X`, `relay to my team X`, bare `relay X`, implicit-ask (`ask if anyone…`). Payload extracted; `ask … to` strips leading `to`; `_strip_verbatim_suffix` splits off trailing verbatim demand. Gated by `_payload_has_content`.
+7. **Named-addressee patterns** (`_named_patterns`, LRU-cached per vocabulary key) — `the/my/their <agent>`: `tell <name> X`, `ask <name> X`, `say X to <name>`. `_NAME_CANON` maps STT variants (`kay o`→Kayo, `kill joy`→Killjoy, `cipher`→Cypher, `gecko`→Gekko, `mix`→Miks, `way lay`→Waylay) to display names via `_display_name`.
+8. **Context + directive** (`_match_context_directive`): `"<reported-speech context>, <directive>"`. Context must be ≥ 3 words and contain `_CONTEXT_VERB_RE` (asked/saying/flaming/tilted/roasting/…) and not match `_FIRST_PERSON_TO_YOU_RE`. Literal-payload variant (`_TELL_HIM_TAIL_RE`: `"..., tell him X"`) checked first; then closed-directive-atom tail (`_DIRECTIVE_TAIL_RE`: respond/calm down/clap back/back me up/…). Addressee inferred from single roster name in context via `_addressee_from_context`.
+9. **Open ask** (`_ASK_OPEN_RE`): `ask what my Skye is doing` — only when payload mentions a roster name (single name) or a group reference.
+10. **Bare `say X`** (`_BARE_SAY_RE`, last resort, ≥ 2 words): blocked when payload starts with `something/anything/your/the most…`, targets `stream/chat/viewers`, or contains `you can say/right now/for once/without conditions`.
+
+**`_payload_has_content`**: rejects all-junk payloads (`_JUNK_SINGLE_WORDS`); single words must be in `_SHORT_CALLOUTS` or ≥ 4 chars and non-junk.
+
+---
+
+#### `build_relay_line` — routing order
+
+1. **Verbatim** (`command.verbatim`) → `_cap_line(_strip_artifacts(payload))`.
+2. **Pure morale compose** (compose + no directive + no context + `_is_morale_payload`) → `pick_line(DEFAULT_ENCOURAGEMENT_LINES)`.
+3. **Greet / farewell compose** (compose + directive in `_DIRECTIVE_POOLS`) → `pick_line(_DIRECTIVE_POOLS[directive])`; pools: `greet`, `farewell_win`, `farewell_loss`, `farewell`.
+4. **Calm-down** (`_is_calm_directive` on directive, or `_is_calm_payload` on payload) → `pick_line(DEFAULT_CALM_LINES)` with `{name}` substituted by addressee prefix.
+5. **Identity question** (`_is_identity_question` on context or payload) → `pick_line(DEFAULT_IDENTITY_LINES)` or `DEFAULT_STREAMER_LINES` when `_STREAMER_Q_RE` matches.
+6. **Known-fact** (`_as_known_fact`) — checks `_GK_FACTS` (28 curated Q&A pairs covering common 3B errors: first president, moon distance, blood colour, etc.). Returns curated Ultron-voiced answer or None.
+7. **Morale phrase** (`_is_morale_phrase`: `lock in`, `we got this`, `heads up`, etc.) → `pick_line(DEFAULT_ENCOURAGEMENT_LINES)`.
+8. **Consolation / praise** (`_as_consolation_or_praise`): `_CONSOLATION_RE` (`nice try`, `unlucky`, `almost`) → `DEFAULT_CONSOLATION_LINES`; `_PRAISE_RE` (`good half`, `clutch`, `gg`) → `DEFAULT_PRAISE_LINES`.
+9. **Deterministic snap callout** (`_as_snap_callout`) — returns `None` for off-snap content (LLM path), otherwise a zero-flavor or flavored literal:
+   - Named addressee: `_as_named_question` for dominant small-talk questions; short imperative-verb-led orders → `"{Name}, {body}."`; questions and non-imperatives → None (LLM).
+   - `careful <rest>` → `_flavored(", _FLAVOR_CAREFUL)`.
+   - First-person self-reports (`_FP_LEAD_RE`: `I am/I'm`) → `"I'm {rest}."`.
+   - `I have <x>` → `"I have {x}."`; `I saw/see <count> <place>` → count + place (enemy-flavored).
+   - Counts: `_LEADING_COUNT_RE` (`there is/are <count> <place>` / bare `<count> <place>`) with `_is_place` guard → `"{Count} {place}."` (enemy-flavored).
+   - Count + movement: `<count> rotating/coming/going/pushing/…` (≤ 8-word rest) → `"{Count} {rest}."`.
+   - Spike: `spike <rest>` (≤ 7 words) → `"Spike {rest}."`.
+   - Last alive: `_LAST_LEAD_RE` + `_is_place` → `"Last, {place}."`.
+   - All enemies: `all enemies are <place>` → `"They're all {place}."`.
+   - Enemy has weapon/ult: `they have op/ult/odin/…` → `_FLAVOR_ULT`-flavored.
+   - Enemy utility: `they walled/smoked/darted/… <place>` → `_FLAVOR_UTILITY`-flavored.
+   - Enemy movement: `they're pushing/going/rushing <place>` → enemy-flavored.
+   - Enemy position / action: `_ENEMY_LEAD_RE` + `_is_place` or `_ACTION_WORDS` → enemy-flavored; inside this block also tries `_as_agent_position`, `_as_ult_callout`, `_as_agent_utility`.
+   - Named agent(s) at place: `_as_agent_position` (roster-name subject only, `_is_place` on location).
+   - Damage: `<agent> hit <n>` (optional short location) → `_FLAVOR_DAMAGE`-flavored.
+   - Ults: `_as_ult_callout` — `<agent> has ult`, `<agent> is one off ult`, multi-agent `have ults`, `just used/ulted`, `has no ult`, `ult is down [back in N]`, `ult ran out` → `_FLAVOR_ULT` when Their-prefixed.
+   - Agent utility: `_as_agent_utility` (agent name + ability-lead token in first 1–2 tokens) → `_FLAVOR_UTILITY` for enemy, clean for ours.
+   - Economy (`_as_economy_callout`): bare save/force/full-buy → `DEFAULT_SAVE_LINES` / `DEFAULT_FORCE_LINES` / `DEFAULT_FULLBUY_LINES`; enemy economy, `anti`, or long → None.
+   - Economy request: `drop/buy … gun/op/…` (≤ 6 words) → literal imperative.
+   - `_MOVE` table: exact bare movement commands → canonical strings (`"Rotate."` etc.).
+   - General team directive: first word in `_TEAM_DIRECTIVE_VERBS`, ≤ 7 words, no question → literal imperative.
+10. **Compound callout** (`_as_compound_callout` / `_split_compound`): splits on strong joiners (`--`, `;`, `plus`, `also`) and on ` and ` / `,` ONLY before a `_NEWFACT_SUBJECT` (preserving multi-agent callouts and intra-fact commas). Each piece re-run through `_as_snap_callout(flavor=False)`. Economy deduplication prevents repeated save lines. Returns `(det_line, None)` (fully deterministic, single enemy-facing tail ≤ 11 words) or `(det_line, leftover)` (partial); leftover is recursively routed through `build_relay_line` with `recent_lines=None`.
+11. **Pre-route dense-tactical to literal**: if `_fact_tokens` finds ≥ 1 tactical fact-token (count/location/ability) AND total ≥ 2 fact+agent tokens, and no snap/compound handler matched, skip the LLM entirely → `_literal_relay` (instant in gaming mode).
+12. **LLM rephrase** (`generate_fn` or `llm.generate_stream`): prompt built by `_build_rephrase_prompt`. Called with `record_history=False, suppress_memory_context=True, enable_thinking=False` (no conversation bleed). Anti-repeat ring: last 6 recent lines shown for team-addressed non-answer commands only; suppressed for named-teammate callouts and any answer/respond/identity command (`_is_answer_command`).
+13. **Recent-echo guard**: if model output matches a recent line verbatim → discard → fallback.
+14. **Switch-hallucination guard**: if output contains `they're/enemies switch` and input has no `switch` → discard → fallback.
+15. **Post-processing**: `_strip_artifacts` (removes `/no_think`, `<|...|>`, `<placeholder>` leakage, speaker labels `Ultron:` / `Team:`, outer quotes); `_cap_sentences` (cap at 3 whole sentences); `_strip_spurious_vocative` (removes roster-name or generic vocative opener on team-wide lines); `_fix_proper_nouns` (Sokovia, Wakanda, Mjolnir).
+16. **Repair** (`_repair_against_input`, plain relays only): restores first-person subject dropped/inverted (`_FP_LEAD_RE`), enemy subject flipped to self or second person (`_ENEMY_LEAD_RE` + `_FIRST_PERSON_OUT_HEAD`), `last` callout dropped (`_LAST_LEAD_RE`), leading enemy count dropped (`_LEADING_COUNT_RE`).
+17. **Fact-preserving abstention** (`_output_keeps_facts`): if ≥ 30 % of fact-tokens (counts, agents, locations, ability words) dropped, or output invents an agent/location absent from input, or ownership flipped (their↔our) → `_literal_relay` (clean passthrough with optional enemy-flavor tag).
+18. **Agent-name preservation** (`_preserve_agent_names`): single-agent swap (Chamber→KAY/O) undone by re-substituting the input's agent.
+19. **Addressee enforcement** (`_ensure_addressee`): named callouts always open with the teammate's name.
+20. **`_cap_line`** (sentence-boundary-aware): cuts at last complete sentence that fits within `MAX_RELAY_LINE_CHARS` (360).
+
+---
+
+#### Curated pools
+
+| Symbol | Use |
+|---|---|
+| `DEFAULT_ENCOURAGEMENT_LINES` | Pure morale / hype / focus calls (12 lines) |
+| `DEFAULT_CONSOLATION_LINES` | After lost round (`nice try` / `unlucky`) (8 lines) |
+| `DEFAULT_PRAISE_LINES` | After won round (`good half` / `clutch`) (8 lines) |
+| `DEFAULT_GREETING_LINES` | Team intro as Ultron (6 lines) |
+| `DEFAULT_VICTORY_LINES` | Win sign-off (6 lines) |
+| `DEFAULT_DEFEAT_LINES` | Loss sign-off (5 lines) |
+| `DEFAULT_FAREWELL_LINES` | Neutral sign-off (4 lines) |
+| `DEFAULT_IDENTITY_LINES` | "Are you an AI?" answer (6 lines) |
+| `DEFAULT_STREAMER_LINES` | "Are you a streamer?" answer (3 lines) |
+| `DEFAULT_CALM_LINES` | Clinical calm-down with `{name}` slot (5 lines) |
+| `DEFAULT_SAVE_LINES`, `DEFAULT_FORCE_LINES`, `DEFAULT_FULLBUY_LINES` | Economy buy decisions |
+| `DEFAULT_ROAST_LINES` | Seed roast (1 line; user extends `data/relay_roasts.txt`) |
+| `DEFAULT_FUN_FACTS` | Fallback fun facts (3 lines; corpus ships at `data/relay_fun_facts.txt`, 1014+ lines) |
+| `_DIRECTIVE_POOLS` | dict mapping directive key → pool for set-piece composes |
+
+Flavor pools appended to snap callouts via `_pick_flavor` (anti-soundboard, avoids recent 8-line window): `_FLAVOR_ENEMY`, `_FLAVOR_CAREFUL`, `_FLAVOR_ULT`, `_FLAVOR_DAMAGE`, `_FLAVOR_UTILITY`. `_flavored(callout, pool, recent_lines)` appends a picked tag; `_pick_flavor` excludes tags seen in recent output.
+
+---
+
+#### `_REPHRASE_PROMPT` — Ultron persona and hard rules
+
+Single large format-string injected with `{task}`, `{addressee}`, `{by_name}`, `{payload_block}`, `{context_block}`, `{recent_block}`. Key sections:
+
+- **Two registers**: SNAP (enemy positions/counts/damage/status/self-status/movement — short, literal, zero flavor) vs OFF-SNAP (insults, economy, calm-down, questions, banter, identity, Marvel — ~2 sentences, cold Ultron character, ≤ 30 words).
+- **Hard rules**: every number, agent name, weapon, map callout kept exactly. Counts never dropped. Plural place names never singularized. `"play their life"` ≠ `"play for time"`. Economy directives are OFF-SNAP (explained). First person (`I am/I'm`) is always the USER's own action — never flipped to second person or imperative. `ask <someone> <question>` means DELIVER the question, never answer it. Directives are commands TO the team, never self-reports. Ownership locked (our/their).
+- **Identity** (Ultron): only when a teammate DIRECTLY asks what Kenning is; cold, brief (2 sentences), names himself Ultron — AI from the future harvesting RR. Streamer dismissal is its own register. Otherwise never self-identifies.
+- **Marvel**: answers in-character with contempt; deepest contempt for Tony Stark.
+- **Banter-at-you**: fresh comeback every time, never echoes the insult back, addresses by name.
+- **Each callout stands alone**: never carry over a name/location/number from a prior line.
+- **Valorant shorthand glossary** inline (op, saving, full buy, force, eco, flash, rotate, anchor, retake, TP, off site, etc.).
+- **Context block** and **recent-line block** injected when present; recent lines shown for team-addressed non-answer lines only (last 6).
+- `_directive_task(directive)` maps closed-vocabulary directive strings to prompt task clauses (calm/de-escalate, acknowledge/agree, clap back/shut down, back-me-up, default respond with GK-answer or banter rules).
+
+---
+
+#### Playback path
+
+- `relay_tts_text(line) -> str`: context-aware TTS pronunciation fix — replaces uppercase `A` before a location token with `eigh` so the site letter is not pronounced as the indefinite article (feeds into the Kokoro `_play` path).
+- `resolve_relay_device(configured)` → PortAudio index (via `kenning.audio.devices.resolve_device`, fail-open).
+- `play_to_device(pcm, sample_rate, device_index, *, stream_factory)` → opens a `sounddevice.OutputStream` per-relay, writes int16 mono PCM synchronously, always closes the stream, returns seconds played.
+- `_fallback_line(command)` → deterministic spoken line when the LLM is unavailable (directive-keyed stock phrases or clean literal of payload; no `"Team:"` label prefix).
+
 
 #### `audio/ring_buffer.py`
 - `class RingBuffer` — fixed-duration audio backlog (pre-speech window)
@@ -4307,7 +4436,7 @@ implementation).
   - `handle_utterance(text) -> Optional[VoiceResponse]` — coding-only (delegated by capability dispatch)
   - `handle_capability_intent(routing_intent) -> Optional[VoiceResponse]` — top-level dispatch (Phase 5)
   - `_build_code_task_response(...)` (V1-gap A4, internal) — wraps `_submit` into a deferred dispatch closure when `coding.pre_task_confirmation_enabled`. Read-only intents (PROGRESS_QUERY / CANCEL / etc.) keep the legacy text-only response.
-  - `_build_pre_task_confirmation(...)` / `_summarise_intent_for_voice(...)` (V1-gap A4, internal) — render the confirmation phrase ("I'll have the AI coding agent &lt;verb&gt; on the &lt;project&gt; project. Going ahead.").
+  - `_build_pre_task_confirmation(...)` / `_summarise_intent_for_voice(...)` (V1-gap A4, internal) — render the confirmation phrase ("I'll have the AI coding agent <verb> on the <project> project. Going ahead.").
   - **2026-05-22 supervisor methods (internal):**
     - `_handle_code_task_via_supervisor(intent) -> Optional[VoiceResponse]` —
       builds `SupervisorInputs`, calls `supervisor_dispatch.dispatch()`,
@@ -5844,6 +5973,429 @@ Reading order for a fresh Claude:
 - **GGUF SHA256 reference:** [docs/model_checksums.md](model_checksums.md)
 
 ---
+
+
+## 2026-06 relay/gaming campaign — module, script, test & config additions
+
+_(Topical detail for the 30-commit relay-quality + 20k-corpus campaign; see the
+validating-HEAD header for the summary. Listed here together for tractability on this
+large file.)_
+
+### Test harness + corpus + scorecard
+
+### `scripts/relay_test/` (Valorant relay test harness + 20k corpus + scorecard)
+
+**Purpose:** end-to-end quality infrastructure for the Valorant teammate-relay feature — staged pipeline harness, a ~20k-case corpus built from 48 vocab packs, a metrics scorecard with no-regression diffing, an audit chunk splitter, and a set of dev-tools for cadence/waveform/pipeline inspection.
+
+---
+
+#### `harness.py`
+
+Staged full-pipeline test runner. Each stage is a superset of the previous.
+
+- **Stages** (cheapest first):
+  - `matcher` — runs `match_relay_command` on every corpus case; grades `expect_match`, addressee canonicalization (via `_NAME_CANON`), and boolean flags. No models loaded.
+  - `rephrase` — adds the real LLM; calls `build_relay_line`; checks non-empty output, no leaked control tokens (`_CONTROL_RE`) or stage directions (`_STAGE_DIR_RE`), length ≤ 300 chars, number preservation on `location`/`ult`/`team_status` categories.
+  - `audio` — adds Kokoro synthesis; runs `analyze_clip` (production blip/burst/dropout detector) on every synthesized clip.
+  - `asr` — adds Moonshine STT; checks output audio produces recoverable speech (`score_asr`: no intelligible speech → fail; lines ≥ 5 content words also check gross recall < 35%).
+  - `full` — also synthesizes the INPUT command in a neutral voice (`am_michael`, `apply_spectral_smooth=False`) and runs it back through STT first, exercising the spoken→STT→relay end-to-end path.
+- **Corpus:** loads `build_corpus_10k(seed)` from `corpus_packs`; seeded-shuffles (seed 7) to prevent clustering identical templates in the recent-line ring; respects `--category` filter.
+- **GAMING_PRESET = `"llama-3.2-3b-abliterated"`** — the exact model the relay runs under in gaming mode (abliterated = no safety refusals; the default Qwen3.5-4b refuses the Ultron/Marvel persona).
+- **Testing-mode parity:** `_load_llm` calls `set_testing_mode_active(True)` to gate RAG and web-search off (matching the gaming-mode context-free path) without triggering the device swaps. GPU layers default to `-1` (full GPU) for speed; set `RELAY_TEST_GPU_LAYERS=0` to reproduce the live CPU-gaming config.
+- **Qdrant isolation:** each harness run creates a PID-unique temp Qdrant path (`$TEMP/kenning_relay_test_qdrant_<pid>`) and registers an `atexit` cleanup — never touches production `data/qdrant` and never strands lock files between runs.
+- **Roast/fun-fact parity:** `roast`/`fun_fact` commands are served verbatim from `load_roast_lines`/`load_fun_facts` pools (mirroring the orchestrator's pre-LLM intercept), not composed by the LLM.
+- **Scoring functions:** `score_matcher(case, cmd) -> list[str]`, `score_rephrase(case, line) -> list[str]`, `score_audio(report) -> list[str]`, `score_asr(intended_line, heard) -> list[str]`; `content_words(text) -> set[str]` (filters stop-words).
+- **Output:** `logs/relay_test/<stage>_<tag>.jsonl` (one JSON record per case) + per-category failure summary to stdout.
+- **CLI:** `--stage matcher|rephrase|audio|asr|full` `--limit N` `--tag TAG` `--category cat1,cat2`.
+
+---
+
+#### `corpus.py`
+
+Base corpus of ~500–600 deterministic test cases covering every relay shape.
+
+- **`Case`** (frozen dataclass): `text`, `category`, `expect_match`, `addressee` (`"team"` or agent name), `flags` (tuple of boolean field names), `glossary` (Valorant terms the rephrase must preserve), `note`.
+- **`build_corpus() -> list[Case]`** — assembles cases across 33 sections:
+  1. Location callouts — combinatorial (position/count/possession/smoke) over `LOCATIONS` (generic callouts + all 12 map-specific grids: Ascent, Bind, Breeze, Fracture, Haven, Icebox, Lotus, Pearl, Split, Sunset, Abyss, Corrode).
+  2. Self-status (`SELF_STATUS`: low/flanking/rotating/saving/planting/defusing/lurking/etc.).
+  3. Team/enemy status (`TEAM_STATUS`).
+  4. Utility callouts (`UTILITY`: ability + place, per-agent verbs).
+  5. Tactical directives (`DIRECTIVES`) — to team and named teammate.
+  6. Ult tracking (`ULTS`).
+  7. Banter/morale (`BANTER`).
+  8. Economy specials.
+  9. Named-agent addressing — ability requests + questions for every agent in `AGENTS` (full 29-agent roster + STT homophone spellings: `"kill joy"`, `"kay o"`, `"cipher"`, `"gecko"`, etc.).
+  10. Context + respond (teammate-said-something clapbacks).
+  11. Verbatim mode variants (`"word for word"`, `"in those words specifically"`, `"verbatim"`).
+  12. Compose / encouragement / greetings.
+  13. Roast (flags `roast`, `compose`).
+  14. Fun-fact (flag `fun_fact`).
+  15. Freeform callouts.
+  16. Greet (curated Ultron intro, flag `compose`).
+  17. Farewell (victory/defeat/neutral registers, flag `compose`).
+  18–33. Enemy-ult (multi-agent), eco-round tactics (`ECO_TACTICS`), enemy tendency reads, self play-style, banter-at-Ultron (flag `context`), Marvel-universe jabs (flag `context`), identity probes (flag `context`), general-knowledge questions (flag `context`), enemy movement, enemy utility, careful-warnings, all-enemies stacks, have-weapon/ult, enemy-spike, per-map callouts, named enemy agents at locations, all-of-them variants, negative controls (`expect_match=False`).
+- **`_vary_phrasing(cases)`** — rotates the leading prefix of safe literal-callout categories through 7 equivalents (`"tell my team"` → `"call out"`, `"let the squad know"`, etc.) so each corpus regeneration exercises fresh phrasing.
+- **Vocab constants:** `GENERIC_CALLOUTS` (42 universal terms), `MAP_CALLOUTS` dict (12 maps), `LOCATIONS` (flattened deduped list), `NUMS_WORD`/`NUMS_DIGIT`, `AGENTS`, `SELF_STATUS`, `TEAM_STATUS`, `UTILITY`, `DIRECTIVES`, `ULTS`, `BANTER`, `ENEMY_ULTS`, `ECO_TACTICS`, `ENEMY_TENDENCIES`, `SELF_PLAYSTYLE`, `BANTER_AT_ULTRON`, `MARVEL`, `IDENTITY`, `GENERAL_KNOWLEDGE`.
+- **`stats(cases) -> dict`** — counts by category + unique text count.
+
+---
+
+#### `corpus_packs.py`
+
+Expands the base corpus to a ~20k stratified sample by auto-discovering vocab packs.
+
+- **`build_corpus(seed=0, target=20000) -> list[Case]`** — merges `_orig_build_corpus()` + `_pack_cases(seed)` + `_compound_cases(seed)`, deduplicates by `(text.lower(), category)`, then calls `_cap_stratified` to trim to `target` while preserving category proportions. Aliased as **`build_corpus_10k`** and **`build_corpus_20k`** (both call `build_corpus` at target=20000; the `10k` name is a historical alias).
+- **Pack auto-discovery:** `_all_pack_names()` lists all `.py` files in `vocab_packs/` (excluding `__init__.py`). Packs are classified by name:
+  - **RELAY** (default) — `expect_match=True`; items already phrased as a command (`_CMD_LEAD_RE`) are used verbatim; raw callouts get a rotating relay prefix varied by `(ii + pi + seed) % len(_GROUP_PREFIXES)`.
+  - **QUESTION** (`_QUESTION_PACKS`: `questions_to_ultron`, `var_teammate_to_ultron`, `var_identity_questions`, `var_marvel_banter`, `var_banter_at_ultron`, `stress_banter_mock`, `stress_marvel_identity_edge`) — teammate-to-Ultron; `expect_match=False`.
+  - **NEGATIVE** (`_NEGATIVE_PACKS`: `stress_false_relay_hard`, `stress_oov_safety`) — relay-shaped stream narration/private thought that must NOT trigger the matcher; `expect_match=False`.
+  - **EXCLUDED** (`_EXCLUDE_PACKS`: `persona_flavor`, `__init__`) — Ultron output pools, never test inputs.
+- **`_load_pack(name) -> list[str]`** — loads a pack module via `importlib`, strips leading wake words (`_WAKE_LEAD_RE`), deduplicates.
+- **`_compound_cases(seed, target=2000) -> list[Case]`** — procedurally generates `"<prefix> <head><joiner><tail>"` compound comms (callout + tactical tail) drawn from `callouts_maps`, `var_positions_counts`, `agents_abilities`, `directives_tactics_eco`, `var_utility_reports`, `var_ult_states`; 5 joiner styles (` and `, `, `, ` -- `, `, also `, ` plus `); seeded, deduped.
+- **`_cap_stratified(cases, target, seed)`** — proportional per-category trim; shuffles within each category before slicing.
+- **~29.4k unique pack payloads** total across the 48 packs; `seed` controls which 20k slice is sampled, so the full pool is covered over multiple autonomous loop iterations.
+
+---
+
+#### `vocab_packs/` (48 packs, ~29.4k payloads)
+
+Each pack is a Python module exporting `ITEMS: list[str]`. Organized into three families:
+
+**Original 8 hand-crafted packs** (base relay shapes, pre-seed-0):
+- `agents_abilities.py` — per-agent ability-usage callouts (all 29 agents × abilities).
+- `callouts_maps.py` — map-specific location callouts across all 12 maps.
+- `conversation_natural.py` — naturalistic multi-turn relay phrases.
+- `directives_tactics_eco.py` — tactical directives, economy calls, round strategies.
+- `natural_phrasing_edge.py` — edge phrasings (interruptions, mid-sentence constructions, hedged callouts).
+- `opinions_maps_meta.py` — map opinions, meta commentary, comp reads.
+- `persona_flavor.py` — Ultron OUTPUT flavor lines (EXCLUDED from test inputs; for reference only).
+- `questions_to_ultron.py` — teammate questions directed at Ultron (QUESTION kind, `expect_match=False`).
+
+**`var_*` variety packs** (19 packs — surface diversity for relay inputs):
+`var_agent_opinions`, `var_banter_at_ultron`, `var_calm_deescalate`, `var_damage_trades`, `var_directives_strats`, `var_economy_buys`, `var_greetings_gg`, `var_identity_questions`, `var_insults_trashtalk`, `var_map_opinions`, `var_marvel_banter`, `var_morale_hype`, `var_positions_counts`, `var_rotations_movement`, `var_self_status`, `var_smalltalk_relay`, `var_spike_plant_defuse`, `var_teammate_to_ultron`, `var_ult_states`, `var_utility_reports`.
+
+**`stress_*` metric-stress packs** (21 packs — engineered adversarial inputs):
+- `stress_agents_ability_exhaustive` — every agent × every named ability combination.
+- `stress_ask_answer_bait` — question-shaped relay commands that must relay, not answer.
+- `stress_banter_mock` — teammate mockery/insults at Ultron (QUESTION, `expect_match=False`).
+- `stress_clutch_dense` — dense multi-fact clutch-round callouts.
+- `stress_compounds_3fact` / `stress_compounds_5fact` — 3-fact and 5-fact compound comms (position + ult + directive; count + ability + action; mixed ownership); engineered to break fact-token retention and inversion detection.
+- `stress_directive_obs_traps` — observation-shaped directives that look like narration.
+- `stress_disfluency` — fillers, false starts, re-starts mid-callout.
+- `stress_ecobleed` — eco/save/force/full-buy confusion traps.
+- `stress_false_relay_hard` — relay-SHAPED stream narration (hypothetical/past-tense/conditional/note-to-self) that must NOT relay; `expect_match=False` (NEGATIVE kind); ~600 items.
+- `stress_firstperson_traps` — first-person statements that must relay (not fall through).
+- `stress_flavor_register` — lines where Ultron's register (snap vs verbose) must be correct.
+- `stress_hallucination_bait` — prompts likely to cause the LLM to invent agent names or locations.
+- `stress_marvel_identity_edge` — edge Marvel/identity probes (QUESTION, `expect_match=False`).
+- `stress_nanoswarm_wait` — Killjoy nanoswarm timing callouts (ability-timing precision).
+- `stress_oov_safety` — out-of-vocabulary agent names / non-roster addressees that must NOT relay (NEGATIVE kind).
+- `stress_opinion_mangling` — opinion statements that must survive paraphrase intact.
+- `stress_ownership_traps` — our/their/enemy ownership ambiguities.
+- `stress_slang_runons` — slang-heavy run-on comms.
+- `stress_stt_homophones` — STT homophones for agents/locations (raze/raise, yoru/your, ult/alt, eco/echo, Kay-O/K.O.).
+
+**`refs/` (15 web-grounded Valorant reference documents):** ground-truth Markdown used during corpus and prompt construction (not loaded at runtime):
+- Per-agent refs: `agents_controllers.md`, `agents_duelists.md`, `agents_initiators.md`, `agents_sentinels.md` — full 29-agent roster, ability names, usage patterns.
+- Per-map refs (10 maps): `map_ascent.md`, `map_bind.md`, `map_breeze.md`, `map_fracture.md`, `map_haven.md`, `map_icebox.md`, `map_lotus.md`, `map_pearl.md`, `map_split.md`, `map_sunset.md`.
+- `maps_newest.md` — Abyss, Corrode (2025–2026 additions).
+- `comms_conventions.md` — anatomy of a callout, shotcalling vocabulary, damage/eco/spike comms. Last verified June 2026 against 14+ competitive sources.
+- `economy_rounds.md` — credit economy, eco/force/full-buy thresholds, round archetypes.
+- `meta_tiers.md` — agent tier lists, pick rates, meta reads.
+- `slang_lingo.md` — Valorant slang, community abbreviations, homophone inventory.
+- `marvel_ultron.md` — MCU/comics Ultron lore (identity, abilities, relationships, Sokovia, Avengers) grounding the in-character persona responses.
+
+---
+
+#### `scorecard.py`
+
+Turns harness JSONL logs into tail-sensitive reliability metrics and a no-regression diff.
+
+- **Valorant fact-token extractor:** `extract_facts(text) -> dict` — extracts 5 category sets: `count` (numeric, word↔digit normalized via `_W2D`), `agent` (single-token agent keys from `_ROSTER_CANON`), `loc` (location tokens from `_LOC_TOKENS`), `ability` (30+ ability verb forms in `_ABILITIES`), `owner` (`our`/`their`/`enemy`/`enemies` via `_OWN_RE`). Does NOT count `my/we/they` as ownership facts (they are naturally rephrased in relay and counting them penalizes correct output; only the inversion rate tracks subject flips).
+- **`_retention(inp, out) -> dict`** — per-category fact-token retention for one utterance (skips categories with no input facts); plus `overall` = union of all fact tokens.
+- **`_pcts(vals) -> dict`** — `{n, mean, p50, p95, p99, min}` percentile helper.
+- **`_is_inversion(inp, out) -> bool`** — subject-flip heuristic: detects enemy-lead→own-lead and own-lead→enemy-lead swaps via `_ENEMY_LEAD`/`_OWN_LEAD` regexes, plus `our`↔`their` ownership token flips on matching agents.
+- **`_hallucinated(inp, out) -> list[str]`** — agent or location tokens in `out` that never appeared in `inp` (zero-tolerance fabrication class).
+- **`classify_route(cmd) -> (str, str)`** — probes `build_relay_line` with a stub `generate_fn` that sets a flag on call; if the stub was never called → `"deterministic"` (snap/compound/curated/pre-routed literal, zero model cost); if called and stub survived intact → `"llm"`; if called but stub was abstained/replaced → `"partial"`.
+- **`NEGATIVE_SET`** — 30 stream-narration phrases (hypothetical, past-tense, indecision, note-to-self) used as a false-relay gate; `matcher_metrics` counts how many trip `match_relay_command`.
+- **`matcher_metrics(seed, limit) -> dict`** — `clean_rate`, `false_relay_rate`/`false_relay_count` on `NEGATIVE_SET`.
+- **`route_and_latency(seed, limit) -> dict`** — `routes` breakdown (`deterministic`/`partial`/`llm`), `pure_deterministic_coverage`, `deterministic_or_partial_coverage`, `det_path_latency_us` percentiles (microseconds; model-free fast path).
+- **`quality_metrics(jsonl_path) -> dict`** — from a rephrase JSONL: per-category fact retention `_pcts`, `retention_by_category`, `inversion_rate`/`_count`, `hallucination_rate`/`_count`/`_examples`, flavor diversity as `flavor_type_token_ratio` (TTR over final sentences) and `flavor_max_repeat`.
+- **`build_scorecard(jsonl_path, seed, limit, tag) -> dict`** — assembles `matcher` + `routing` + optional `quality` sections.
+- **No-regression diff (`diff(prev, cur)`):** 16 tracked metrics (`_TRACKED`) covering matcher clean, false-relay, pure-deterministic coverage, fact-retention mean/p50/p95 (overall + count/owner/agent/loc), count-p99, inversion, hallucination, flavor TTR, flavor max-repeat. Returns `(report_str, passed: bool)`; exit 2 on regression.
+- **`--bench` mode (`bench_llm`):** loads the gaming 3B on CPU (`RELAY_TEST_GPU_LAYERS=0`, the live gaming config), samples LLM-routed cases via `classify_route`, times `build_relay_line` on 50 deterministic + N LLM cases, reports `det_path_ms`/`llm_path_ms` percentiles + `peak_rss_mb` (via `psutil`). This is the authoritative latency gate for the live gaming condition.
+- **Output:** `logs/relay_test/scorecard_<tag>.json` + `logs/relay_test/bench_<tag>.json`.
+- **CLI:** `--jsonl PATH --seed N --limit N --tag TAG --prev scorecard_prior.json --bench --bench-n N`.
+
+---
+
+#### `make_audit_chunks.py`
+
+Splits a rephrase JSONL into per-agent audit `chunk_NN.txt` files for human line-by-line review.
+
+- Filters to **LLM-routed lines only** (via `classify_route`): deterministic snap/compound/curated lines are correct by construction and verified by the scorecard, so only the model-generated lines need auditing.
+- Writes N `chunk_NN.txt` files (default 16) to `<outdir>/`; each entry annotated with global index, category (prefix `pack_` stripped), route (`llm`/`partial`), and the `IN`/`OUT` pair.
+- **CLI:** `python make_audit_chunks.py <jsonl> <outdir> [N_chunks]`.
+
+---
+
+#### Dev tools (read-only measurement / manual testing)
+
+- **`play_sample.py`** — two-phase dev driver: (1) regenerates the full base corpus through the 3B + `build_relay_line` and writes `logs/relay_test/rephrase_<tag>.jsonl`; (2) plays a stratified random sample aloud through the system default speaker via the FULL production pipeline (matcher → 3B rephrase → Kokoro with in-model F0/duration shaping → sounddevice). Supports A/B mode (`--ab`) to compare flat vs. shaped prosody back-to-back. CLI exposes all prosody knobs (`--pitch-factor`, `--pitch-shift`, `--energy-factor`, `--dur-final`, `--dur-internal`, `--dur-stress`, `--max-pause-ms`, etc.).
+- **`cadence_actual.py`** — synthesizes 15 representative relay lines (snap callouts through long identity responses), instruments the dead-space compressor via monkey-patch, and measures actual waveform cadence: per-clause speech segments, pause positions, syllable rate, pitch std deviation in semitones, reverb tail length. Writes `logs/relay_test/cadence_actual.json`.
+- **`cadence_check.py`** — compares actual vs. ideal Ultron cadence (target 4.2 syll/s, `IDEAL_PAUSE_MS` per punctuation mark) for 6 representative lines; prints per-clause verdict (TOO FAST / MISSING pauses / short pause / reverb tail thin / ok). Utilities `syllables(word) -> int` and `clause_split(text) -> list[(clause_text, trailing_punct)]` are imported by `cadence_actual.py`.
+- **`flow_check.py`** — inter-sentence dead-space and reverb audit: measures RAW per-sentence Kokoro chunks (trailing silence + blips) and the FINAL production clip's internal gaps (≥ 150 ms) + reverb decay tail. Distinguishes real dead space from continuous reverb decay. Informational; no code changes.
+- **`validate_pipeline.py`** — 30-case manual full-pipeline validator: matcher → `build_relay_line` (3B + deterministic repair) → Kokoro synth → `analyze_clip` → waveform gap/tail check → dual-ASR (Whisper + Moonshine) word-recall and char-similarity scoring. Flags cases where both ASRs miss ≥ 15% of content words AND char similarity < 0.78 (clipped audio, not jargon mishear).
+- **`probe.py`** (standalone), **`reprobe.py`**, **`waveform_check.py`**, **`burst_diag.py`** — earlier one-off probes for matcher/rephrase smoke-testing and trailing-burst diagnosis (superseded by the harness for systematic use; kept for quick spot checks).
+
+---
+
+### `scripts/stream_check.py`
+
+**Purpose:** pre-stream audio routing validator — confirms Kenning emits to the correct VoiceMeeter buses before going live, without loading the assistant.
+
+- **Checks four paths:** EVERYTHING feed (→ `audio.broadcast_device`, `BroadcastSink`, B3 bus); TEAM feed (→ `relay_speech.output_device`, `play_to_device`, B1 bus); DEFAULT output (system default speakers); MIC (resolved but never opened — confirms independence).
+- **Method:** plays a short quiet sine-tone (`tone()`) to each output via the real production classes (`get_broadcast_sink()`, `play_to_device`, `sd.OutputStream`), then verifies the resolved device index matches the configured device.
+- **Exit 0** = all paths emit; non-zero + `FAIL`/`WARN` lines on any mismatch.
+- **Run before streaming:** `.venv\Scripts\python.exe scripts\stream_check.py` (VoiceMeeter must be open to see meter movement).
+- **Functions:** `tone(sr, hz, secs, amp) -> np.ndarray`, `main() -> int`.
+
+### New & changed source modules (2026-06)
+
+#### New module: src/kenning/safety/testing_mode.py
+
+### `src/kenning/safety/testing_mode.py`
+
+Off-by-default mode for principled corpus testing that mimics the disabled-functionality posture of gaming+anticheat mode (no RAG, no reranker, no web search, no desktop automation) while keeping the LLM/TTS on GPU for fast generation — so corpus outputs are representative of the CPU gaming runtime without the device-swap cost.
+
+- **Flags**: module-level `_runtime_active: bool` (thread-safe via `_lock`); also honours the config pin `testing_mode.enabled`. Defaults to `False`; a config error never silently enables the mode.
+- `set_testing_mode_active(active: bool) -> None` — flip the runtime flag; used by the corpus test harness.
+- `is_testing_mode_active() -> bool` — True if either the runtime flag or `config.testing_mode.enabled` is set. Fail-open to `False` on any config error.
+- **Gating sites**: `llm/inference._retrieve_rag_snippets` and `safety.anticheat.anticheat_active` both import and honour this flag, ensuring identical gate behaviour with gaming mode without ever triggering real gaming-mode device swaps.
+
+#### New module: src/kenning/audio/waveform.py
+
+### `src/kenning/audio/waveform.py`
+
+OBS-capturable radial audio visualizer overlay window that reacts in real time to every Kenning utterance (normal + relay). Zero latency on the speaker path; disabled by default.
+
+**Architecture**
+- `WaveformSink` — process singleton; safe to `submit` from any thread. Two daemon threads: a *pacer* (FFT analysis, real-time frame pacing) and a *UI* (owns `tk.Tk()` + Canvas, ~30 fps redraw). Never spawned until first `configure(enabled=True)`; fully torn down on disable.
+- `_RenderState` — holds pre-created Canvas items and eases them toward each target frame with asymmetric attack/release gains.
+
+**Public API**
+- `get_waveform_sink() -> WaveformSink` — process-wide lazy singleton.
+- `submit(pcm: np.ndarray, sample_rate: int) -> None` — module-level tee; immediate no-op when disabled. Called unconditionally by Kokoro `_play`/`speak_stream` and relay path.
+- `configure_from_config() -> None` — reads `config.visualizer` block and calls `WaveformSink.configure()`; called at orchestrator startup and on GUI changes.
+- `WaveformSink.configure(*, enabled, size, bars, fps, bg_color, accent_color, transparent, always_on_top, nameplate_text, nameplate_font) -> None` — enable/disable and set appearance; starts/tears down threads idempotently.
+- `WaveformSink.submit(pcm, sample_rate) -> None` — drop-oldest bounded queue (`_QUEUE_MAXSIZE=8`); non-blocking, fail-open.
+- `WaveformSink.close() -> None` — stop threads and tear down window; idempotent.
+- `analyze_clip(pcm, sr, *, fps, n_bands) -> List[Frame]` — convert one PCM clip to a `List[(level 0..1, bands[N] 0..1)]` sequence; log-spaced FFT bands 90–7500 Hz, log-compressed, per-clip normalised, loudness-scaled. Pure/fail-open (returns `[]` on any error).
+
+**Key data structures**
+- `Frame = Tuple[float, np.ndarray]` — `(level 0..1, bands[N] 0..1)`.
+- `_RMS_FULL_SCALE = 0.18` — RMS that maps to a full core pulse.
+
+**Overlay / OBS integration**
+- `_set_overlay_window_styles(hwnd_int, *, background) -> None` — Windows ctypes: clears `WS_EX_TOOLWINDOW` (which OBS filters out), sets `WS_EX_APPWINDOW` so the borderless overlay appears in OBS's Window Capture list. Must be called from a non-Tk thread to avoid Tk reasserting `overrideredirect`. With `background=True` also sets `WS_EX_NOACTIVATE` and sinks to `HWND_BOTTOM` (hides behind other windows while WGC still captures it).
+- `_nameplate_frames(W, H, text, font_family, *, plate_fill, accent_rgb, core_idle, neon_red, buckets) -> List[PIL.Image]` — pre-renders the ULTRON nameplate at `buckets` brightness levels with real Gaussian-blurred neon glow; `_RenderState` swaps the `ImageTk.PhotoImage` per frame on a fast attack/decay envelope.
+- Nameplate colours: `PLATE_FILL=(22,22,30)`, `CORE_IDLE=(230,222,225)` (calm/readable), `NEON_RED=(255,88,98)` (lit). Crisp white-hot glyph core is lerped from `CORE_IDLE→(255,240,242)` on top of the bloom so letters stay legible against the halo.
+- Radial bars taper hard in the downward direction (`dir_gain = 1.0 − 0.78 * max(0, sa)`) to keep the nameplate area clear.
+- Background chroma colour (config `visualizer.bg_color`, default `#0b0b10`) is keyed transparent on Windows (`-transparentcolor`); glow rings fade to dark `art_base=(18,8,12)` not the bg to avoid olive mid-tones on green chroma keys.
+
+#### New module: src/kenning/tts/f0_control.py
+
+### `src/kenning/tts/f0_control.py`
+
+In-model F0-contour shaping for Kokoro/StyleTTS2 — adds expressiveness with zero added latency and exact reverb/timbre preservation by operating on `F0_pred` BEFORE the ISTFTNet decoder, inside the same forward pass.
+
+- `scale_f0_curve(f0, *, factor, shift_semitones, max_excursion_semitones) -> Tensor` — expands the predicted F0 curve around its log-domain median, with a tanh soft-limit. Unvoiced frames (≤1 Hz) are untouched. True no-op when `factor==1.0` and `shift_semitones==0.0`. Fail-open (returns `f0` unchanged on any error).
+- `scale_energy_curve(n, *, factor) -> Tensor` — mean-preserving expansion of `N_pred`; widens loud/quiet dynamics without changing overall loudness. True no-op at `factor==1.0`. Fail-open.
+- `install_f0_contour_shaping(engine) -> bool` — patches `engine._model.model.predictor.F0Ntrain` with a closure that reads `engine.f0_contour_factor`, `engine.f0_shift_semitones`, `engine.f0_max_excursion`, `engine.f0_energy_factor` live on every call (hot-swappable). Stores original in `pred._f0shape_orig` for idempotency. Returns `True` if hook is in place; fail-open (logs warning and returns `False`) on missing model layout.
+
+**Info flow**: `KokoroSpeech._install_prosody_hooks()` calls `install_f0_contour_shaping(self)` (install F0 first, then duration), then every `KModel.forward_with_tokens` call invokes the patched `F0Ntrain`, which calls `scale_f0_curve`/`scale_energy_curve`, returning shaped tensors to the ISTFTNet decoder.
+
+#### New module: src/kenning/tts/duration_control.py
+
+### `src/kenning/tts/duration_control.py`
+
+In-model per-phoneme duration shaping for Kokoro/StyleTTS2 — natural, context-aware cadence (phrase-final lengthening + stress emphasis) at zero latency, composing on top of the F0 hook.
+
+**Key constants / data**
+- `_VOWELS` — frozenset of misaki/Kokoro vowels (ASCII + IPA monophthongs + uppercase diphthongs + reduced vowels).
+- `_SENT_PUNCT = frozenset(".!?")`, `_PHRASE_PUNCT = frozenset(",;:—…")` — boundary detection.
+- `_PACE_MIN = 0.85`, `_PACE_MAX = 1.45` — per-phoneme clamp range.
+
+**Functions**
+- `compute_pace_vec(chars, *, final_factor, internal_factor, stress_factor) -> List[float]` — per-phoneme pace multipliers: applies `_lengthen_rime` at every sentence/phrase boundary, then lifts the vowel after each `ˈ` primary-stress mark. Index 0 and last index are sentinels, never touched. Result is clamped to `[_PACE_MIN, _PACE_MAX]`.
+- `_lengthen_rime(chars, pace, punct_i, factor)` — lengthens the final-syllable rime (last vowel: full `factor`; coda consonants: half `factor − 1.0`) before `punct_i`.
+- `install_duration_shaping(engine) -> bool` — replaces `KModel.forward_with_tokens` with a vendored `_patched` that inserts `pace_vec` multiplication on the pre-round `duration` tensor (after `sigmoid`, before `round().clamp(min=1)`). Reads `engine.dur_final_factor`, `engine.dur_internal_factor`, `engine.dur_stress_factor` live; true no-op when all are 1.0. Stores original in `km._dur_orig_fwt` for idempotency. Returns `True` if hook installed; fail-open otherwise.
+
+**Composition with F0**: `km.predictor.F0Ntrain` is called inside `_patched` after alignment is built, so the F0 hook composes naturally — a duration-lengthened phoneme gets more F0 frames, producing richer pitch movement on stressed/final syllables.
+
+#### Changed module: src/kenning/lifecycle/gaming_engage.py
+
+### `src/kenning/lifecycle/gaming_engage.py` — what changed (2026-06 relay/gaming work)
+
+- **`GamingEngageDeps.gaming_llm_gpu_layers: Optional[int]`** (new field) — passed as `gpu_layers=deps.gaming_llm_gpu_layers` to `deps.llm.reload_for_preset(...)` in stage 1 of `gaming_engage_iterator`. `0` forces the gaming LLM fully onto CPU regardless of `KENNING_LLM_GPU_LAYERS` env or `llm.gpu_layers` config; `None` keeps config behaviour. On disengage, `reload_for_preset(prior_preset)` is called WITHOUT a `gpu_layers` override, restoring normal GPU behaviour.
+- **`reset_shared_reranker` call on engage** — NOT in this file; lives in `pipeline/orchestrator.py` `_engage_extra`. After `drive_start_task(gaming_engage_iterator(...))` completes, the orchestrator calls `from kenning.memory.reranker import reset_shared_reranker; reset_shared_reranker()` to free the cross-encoder reranker (~1 GB) since RAG is gated off during gaming. Reranker lazily reloads after disengage.
+- **`_drive_async_blocking`** — NOT in this file; defined as a module-level function in `pipeline/orchestrator.py` (line 111). Runs a coroutine to completion from a sync context regardless of whether an event loop is already running: if a loop is running, drives the coro on a fresh loop in a short-lived thread and joins, avoiding the "asyncio.run() cannot be called from a running event loop" error that previously caused device swaps to silently no-op when `engage` was called from inside `asyncio.run(manager.engage())`.
+
+#### Changed module: src/kenning/safety/anticheat.py
+
+### `src/kenning/safety/anticheat.py` — what changed (2026-06 relay/gaming work)
+
+- **`anticheat_active()` now also honours `testing_mode`** — after checking `_runtime_active`, it imports and calls `is_testing_mode_active()` from `kenning.safety.testing_mode`; if that returns True, `anticheat_active()` returns True. This gives corpus testing the same desktop-automation hard-block as a real gaming session without triggering the config pin path.
+- **`press_key` and `press_hotkey` added to `_BLOCKED_TOOL_EXACT`** — these two tools, which drive `pyautogui.SendInput`, were previously unguarded against the safety validator's `is_blocked_tool` check. Both are now in the frozenset alongside `click`, `type_text`, etc.
+- **`is_blocked_tool` namespaced-dispatcher fix** — `tool_name` values arriving as `openclaw.window_automation` or `desktop.input.press_hotkey` previously fell through all block checks because neither the full name nor the prefix matched. Fix: (1) strip a leading `openclaw.` namespace prefix, then (2) also test the bare final dotted segment (`bare = name.rsplit(".", 1)[-1]`) against both `_BLOCKED_TOOL_EXACT` and `_BLOCKED_TOOL_PREFIXES`. Both the full normalised name and the bare segment are checked so either form blocks.
+
+#### Changed module: src/kenning/llm/inference.py
+
+### `src/kenning/llm/inference.py` — what changed (2026-06 relay/gaming work)
+
+- **`reload_for_preset(preset, *, gpu_layers: Optional[int] = None) -> tuple[bool, str]`** — new `gpu_layers` keyword argument. When not `None`, overrides `n_gpu_layers` for this reload, bypassing both `KENNING_LLM_GPU_LAYERS` env and `llm.gpu_layers` config. Gaming-mode engage passes `gpu_layers=0` to put the model fully on CPU; disengage calls without the argument to restore config behaviour. The override is applied by injecting the value into the env (`KENNING_LLM_GPU_LAYERS`) before `_build_llama_instance` reads it, with rollback on failure. Only supported for `runtime="in_process"`.
+- **Gaming-mode / testing-mode RAG gate in `_retrieve_rag_snippets`** — at the top of the method, if `is_gaming_mode_active() or is_testing_mode_active()` AND `config.gaming_mode.barebones_skip_retrieval` is True (default), the method returns `[]` immediately, skipping the embedder, vector search, and cross-encoder reranker. Fail-open: any import/lookup error falls through to normal retrieval.
+
+#### Changed module: src/kenning/audio/wake_word.py
+
+### `src/kenning/audio/wake_word.py` — what changed (2026-06 relay/gaming work)
+
+- **Per-word thresholds** — `WakeWordDetector.__init__` reads `config.wake_word.thresholds` (a `{word: float}` dict) into `self._thresholds`. `_threshold_for(word) -> float` returns the word-specific value, falling back to `self._default_threshold`. Applied at construction and re-applied in `reload_for_word` when the active word changes.
+- **`min_consecutive_frames` gate** — reads `config.wake_word.min_consecutive_frames` (default 1, i.e. off) into `self._min_consecutive`. In `process()`, if the score is above threshold, `self._consec` is incremented; if `_consec < _min_consecutive` the detection is suppressed and `False` is returned. A real wake word sustains high scores across many frames; confusable single-frame spikes are filtered. `_consec` resets to 0 on any sub-threshold frame and after a successful trigger.
+- **`reload_for_word(word: str) -> tuple[bool, str]`** (new method) — hot-swaps the live model at runtime (settings-panel dropdown). Resolves `word` to its side-by-side custom ONNX via `_model_path_for_word(word)`, loads a new `openwakeword.model.Model`, updates `self._model`, `self._name`, `self._active_word`, `self._using_fallback`, resets `_last_trigger_ts` and `_consec`, and applies the per-word threshold via `_threshold_for`. Falls back to the custom fallback ONNX (`self._fallback_name`) if the requested word's ONNX is missing. Returns `(True, word)` on success, `(False, reason)` otherwise.
+- **`_model_path_for_word(word: str) -> Optional[Path]`** (new helper) — resolves a word name to `{models_dir}/{word}.onnx`, returning `None` if the file does not exist.
+- **Properties added**: `active_word: str`, `using_fallback: bool` (were previously only instance attributes; now exposed as `@property`).
+
+### Tests, config.yaml keys & gaming/testing flow (2026-06)
+
+#### New test files (total: 10,129 collected)
+
+### New test files
+
+`tests/audio/test_stream_routing.py` — routing-matrix regression: verifies normal speech tees to broadcast + waveform (never team), relay path plays only to its injected device, and `BroadcastSink` mono→stereo fan-out; all without live audio.
+
+`tests/audio/test_waveform.py` — `WaveformSink` unit tests: `analyze_clip` FFT-band frames, silence-is-calm, fail-open on garbage, submit enqueue/drop-oldest, buffer copy isolation, stale-sentinel pacer regression, teardown drain.
+
+`tests/test_duration_control.py` — `compute_pace_vec` in-model duration shaping: sentence-final lengthening, comma vs period hierarchy, stress lift, marker passthrough, combined-stress clamp, all-ones flat identity.
+
+`tests/test_f0_control.py` — `scale_f0_curve` / `scale_energy_curve`: variance expansion with preserved median, factor-1 identity, semitone shift accuracy, unvoiced-frame zero preservation, soft excursion cap, mean-preserving energy widening.
+
+`tests/audio/test_relay_speech.py` — hermetic relay core: `match_relay_command` positive/negative matrix, named addressee, compose/encouragement routing, `build_relay_line` LLM wiring + fallbacks, `play_to_device` int16/float32/empty/error paths, `resolve_relay_device` delegation + fail-open, orchestrator wiring (disabled, no-match, no-TTS, no-device, happy-path, echo, playback-failure, mute toggle, recent-lines ring), streaming narration vs explicit-command boundary, control-token strip, plural-teams STT artifact.
+
+`tests/audio/test_relay_speech_expansion.py` — expansion test suite (2026-06-12): user verbatim phrase matrix (group / named / "our" possessive / new verbs), context+directive forms, roast mode (`load_roast_lines`, `pick_roast_line`, orchestrator verbatim delivery + anti-repeat ring), fun-fact corpus loader + orchestrator path, consolation/praise curated pools (LLM never called), general-question classifier, deterministic snap callouts (50+ cases), off-snap LLM deferral, economy determinism, identity/greet/farewell set-pieces with win/loss register, `_cap_line` sentence-boundary safety, multi-agent ult callout routing, adaptive guardrail repair (`_repair_against_input`, `_preserve_agent_names`, `_strip_artifacts`), site-letter pronunciation (`relay_tts_text`), known-fact table overrides, answer-command recent-lines suppression, verbatim mode suffix stripping + LLM bypass.
+
+`tests/test_wake_word.py` — `WakeWordDetector.fired_recently` edge cases (no-fire before trigger, window, idempotent, zero-state, negative window), plus per-word threshold override (`_threshold_for`), consecutive-frame gate (2-frame sustain required to fire, spike-broken reset), hot-swap threshold recompute.
+
+`tests/safety/test_anticheat.py` — exhaustive anticheat coverage (68 tests): guard semantics (inactive default, runtime toggle, config-pin, test-session isolation), blocked-tool taxonomy sweep (27 tools incl. namespaced/dotted/case-insensitive normalization), allowed-tool passthrough, voice toggle matcher, AST audit asserting every guarded desktop function still contains its `guard()` call, surface-hook stop+restore + broken-hook fail-open, ban-class API source sweep, `press_key`/`press_hotkey` hard-raise, `ToolCallValidator` BLOCK_HARD pre-check + audit log, orchestrator voice toggle, gaming-mode tie-in (engage→ON, disengage→OFF unconditionally, broken-config fail-safe).
+
+#### config.yaml new keys
+
+### `config.yaml` new keys
+
+#### `gaming_mode` block
+
+```yaml
+gaming_mode:
+  anticheat_safe_mode: true       # PINNED ON — hard-blocks all desktop-interaction surfaces at boot, independent of gaming-mode engage
+  engage_at_startup: true         # run gaming_mode.engage() at the end of Orchestrator.__init__ (no voice trigger needed)
+  barebones_skip_retrieval: true  # skip per-turn RAG memory retrieval + cross-encoder reranker while gaming is active
+  barebones_skip_web_search: true # skip web-search preflight LLM call + executor; forces NO_SEARCH on every gaming turn
+  llm_gpu_layers: 0               # 0 = gaming LLM fully on CPU (overrides env KENNING_LLM_GPU_LAYERS and config llm.gpu_layers); -1 keeps GPU
+```
+
+- `anticheat_safe_mode` — read by `kenning.safety.anticheat.anticheat_active()` via `_config_pin_enabled`; guards 49 module entry points + safety-validator BLOCK_HARD + voice intents. Toggled by voice ("enable/disable anticheat mode") and the settings GUI.
+- `engage_at_startup` — checked in `Orchestrator.__init__` tail; calls `GamingModeManager.engage()` in a fresh thread via `_drive_async_blocking`.
+- `barebones_skip_retrieval` — gate in `llm.inference._retrieve_rag_snippets`; honours both `is_gaming_mode_active()` and `is_testing_mode_active()`.
+- `barebones_skip_web_search` — gate in `Orchestrator._barebones_skip_web_search()`; same dual-flag check.
+- `llm_gpu_layers` — threaded into `GamingEngageDeps.gaming_llm_gpu_layers` → `LLM.reload_for_preset(preset, gpu_layers=0)`; disengage restores the pre-engage preset on the original device.
+
+#### `testing_mode` block
+
+```yaml
+testing_mode:
+  enabled: false   # flip to true for corpus testing; harness also uses set_testing_mode_active()
+```
+
+Read by `kenning.safety.testing_mode.is_testing_mode_active()`; propagates to the same RAG, web-search, and anticheat gates as gaming mode, but does **not** trigger device swaps or alter the real gaming/anticheat engage path.
+
+#### `wake_word` new keys
+
+```yaml
+wake_word:
+  name: "ultron"          # active word; hot-swap via GUI dropdown (no restart)
+  fallback_model: "kenning"  # custom kenning.onnx; never hey_jarvis
+  thresholds:             # per-word overrides; active word's value replaces the flat threshold on swap
+    kenning: 0.4
+    ultron: 0.6
+  min_consecutive_frames: 2  # score must stay >= threshold for N consecutive frames before firing
+```
+
+- `thresholds` — read by `WakeWordDetector._threshold_for(word)`; applied on construction and on `reload_for_word()`.
+- `min_consecutive_frames` — stored as `_min_consecutive`; gate in `WakeWordDetector.process()` resets on any sub-threshold frame.
+- `fallback_model` — PATH-based loader falls back to the side-by-side custom ONNX (e.g. `models/openwakeword/kenning.onnx`), never the pretrained `hey_jarvis`.
+
+#### `visualizer` block (new keys)
+
+```yaml
+visualizer:
+  enabled: true
+  bg_color: "#00ff00"      # NEON GREEN chroma-key background for OBS color-key filter
+  transparent: false       # solid bg — OBS window capture renders green (can color-key); true → OBS sees black
+  always_on_top: false     # false = background/tool-window mode; OBS WGC still captures it
+  nameplate_text: "ULTRON" # glowing nameplate below waveform ("" = off)
+```
+
+- `bg_color` / `transparent` — control whether the overlay window uses a solid chroma-key colour or Windows transparency (which OBS captures as black).
+- `always_on_top: false` — sets `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` via ctypes (`_make_background_overlay`), sinking the window behind desktop apps while OBS WGC still grabs it.
+- `nameplate_text` — pre-renders 16 brightness buckets (`_nameplate_frames`) with Pillow Gaussian-blurred neon glow; falls back to plain text if Pillow is absent.
+
+#### Gaming-mode + testing-mode cross-cutting flow
+
+### Gaming-mode + testing-mode cross-cutting flow
+
+#### Gaming-mode engage
+
+Triggered by voice ("gaming mode") or automatically at boot when `gaming_mode.engage_at_startup: true`. Entry point: `GamingModeManager.engage()` → `Orchestrator._engage_extra()` → `_drive_async_blocking(gaming_engage_iterator(deps))` (runs the async state machine on a fresh thread to avoid `asyncio.run()` inside an already-running loop).
+
+State machine stages in order (`src/kenning/lifecycle/gaming_engage.py`):
+
+1. **`SWAPPING_LLM`** — `LLM.reload_for_preset(gaming_mode.llm_preset, gpu_layers=gaming_mode.llm_gpu_layers)`; stashes the pre-engage preset in `llm_preset_holder`. Default preset `llama-3.2-3b-abliterated`, `gpu_layers=0` (fully CPU). Disengage restores the prior preset.
+2. **`STOPPING_PARAKEET`** — swaps STT engine to the gaming engine; stops the Parakeet HTTP server (~700 MB VRAM freed).
+3. **`MOVING_KOKORO`** — `KokoroSpeech.move_to_device("cpu")`; frees GPU TTS VRAM (~330 MB) for the running game.
+4. **`UNLOADING_VLM`** — unloads moondream2 if loaded.
+5. **`READY`** — terminal state; anticheat is driven ON unconditionally by `GamingModeManager._set_anticheat(True)` during engage.
+
+Per-turn gates active while gaming mode is engaged:
+- **RAG/reranker off** — `llm.inference._retrieve_rag_snippets` checks `is_gaming_mode_active() or is_testing_mode_active()` + `gaming_mode.barebones_skip_retrieval`.
+- **Web-search off** — `Orchestrator._barebones_skip_web_search()` checks the same dual flag + `gaming_mode.barebones_skip_web_search`; forces `NO_SEARCH` classification, skipping the LLM preflight call and the executor entirely.
+
+Disengage reverses: LLM preset restored (on GPU), STT restored, Parakeet restarted, Kokoro moved back to GPU, VLM reloaded as needed, anticheat driven OFF (unless config-pinned).
+
+#### Testing mode
+
+`src/kenning/safety/testing_mode.py` — a separate, off-by-default flag (`_runtime_active` + `testing_mode.enabled` config pin).
+
+Honoured at the same per-turn gate sites as gaming mode:
+- RAG/reranker gate in `_retrieve_rag_snippets`
+- Web-search gate in `_barebones_skip_web_search()`
+- `anticheat_active()` also returns `True` while testing mode is on (desktop automation hard-blocked)
+
+Key distinction: testing mode **never** triggers the gaming device swaps (no LLM→CPU, no Kokoro→CPU, no Parakeet stop, no VLM unload), so the GPU stays available for fast generation. GPU and CPU produce statistically identical text, so GPU corpus testing is representative of the CPU gaming runtime. The test harness flips the flag via `set_testing_mode_active(True/False)` per-run; `config.testing_mode.enabled` is a persistent pin for extended corpus sessions.
+
+#### Anticheat-safe mode
+
+`src/kenning/safety/anticheat.py` — `anticheat_active()` is `True` if any of:
+1. Runtime toggle set via `set_anticheat_active(True, source)` (voice command "enable anticheat mode", gaming engage, or test fixture).
+2. `is_testing_mode_active()` returns `True`.
+3. `gaming_mode.anticheat_safe_mode: true` in config (config-pin path; disabled for test sessions via `set_config_pin_enabled(False)`).
+
+When active, three enforcement layers fire in concert:
+- **Module guards** — `guard(action)` raises `AnticheatBlockedError` at 49 entry points across all desktop-interaction surfaces (`input_control`, `capture`, `uia`, `clipboard`, `dialog_control`, `element_click`, `windows`, `placement`, `launcher`, `ocr`, `sequence`, `browser_use`, `screen_context`, bridge `DesktopTool`).
+- **Safety-validator BLOCK_HARD** — `ToolCallValidator.check()` returns `Verdict.BLOCK_HARD` with `triggered_rule_id="anticheat_safe_mode"` for any `is_blocked_tool()` call; logged to `audit.jsonl`.
+- **Surface hooks** — registered hooks (`register_surface_hook`) are called on every flip to physically STOP running subsystems (UIA pollers, capture threads); broken hooks are swallowed and never block the flip.
+
+Audio path (mic, STT, LLM, TTS, VoiceMeeter relay, waveform overlay) is explicitly unaffected — these use shared-mode audio APIs (same surface as Discord) and perform no cross-process interaction.
+
 
 ## Maintenance contract
 
