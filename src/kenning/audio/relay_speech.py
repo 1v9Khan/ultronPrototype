@@ -3022,6 +3022,10 @@ def _literal_relay(payload: str, recent_lines: Optional[Sequence[str]] = None) -
         elif (re.search(r"\b(?:we|we're|our)\b", low)
               or first in _TEAM_DIRECTIVE_VERBS or first in _IMPERATIVE_VERBS):
             out = _flavor_ctx(out, "command", recent_lines, **ff)
+        elif ff.get("count") or ff.get("loc") or ff.get("agents"):
+            # a bare count / position / agent callout ('three are b long', 'two
+            # mid') describes the ENEMY -> enemy contempt (no pronoun present).
+            out = _flavor_ctx(out, "enemy", recent_lines, **ff)
     return out
 
 
