@@ -2433,11 +2433,13 @@ def _as_ult_callout(p: str) -> Optional[str]:
     """'<agent> has ult' / 'their <A>, <B> have ults' / '<agent> is one off' ->
     a clean ult callout, adding 'Their' ONLY when the input said their/enemy."""
     their = bool(re.match(r"^\s*(?:their|the\s+enemy|enemy)\b", p, re.IGNORECASE))
+    ours = bool(re.match(r"^\s*(?:our|my)\b", p, re.IGNORECASE))
     body = re.sub(r"^\s*(?:their|the\s+enemy(?:\s+team)?|enemy)\s+", "", p,
                   flags=re.IGNORECASE).strip().rstrip(".!?")
-    # 'our Raze has ult' / 'my Sage has ult' -> teammate ult (no 'Their' prefix).
+    # 'our Raze has ult' / 'my Sage has ult' -> teammate ult ('Our' prefix, kept
+    # symmetric with 'Their' so the ownership marker is never dropped).
     body = re.sub(r"^\s*(?:our|my)\s+", "", body, flags=re.IGNORECASE).strip()
-    pre = "Their " if their else ""
+    pre = "Their " if their else ("Our " if ours else "")
     m = re.match(r"^(?P<a>[A-Za-z/ ]+?)\s+(?:has\s+(?:her\s+|his\s+)?"
                  r"ult(?:imate)?|ult(?:imate)?\s+is\s+(?:ready|up))$", body, re.I)
     if m:
@@ -2519,17 +2521,20 @@ def _as_agent_utility(p: str) -> Optional[tuple[str, bool]]:
     """'[our/their/my] <agent> <ability-word> <rest>' -> ('<Their >?<Agent>
     <rest>.', is_enemy), or None. Ability-word gated so it never grabs banter."""
     their = bool(re.match(r"^\s*(?:their|the\s+enemy|enemy)\b", p, re.IGNORECASE))
+    ours = bool(re.match(r"^\s*(?:our|my)\b", p, re.IGNORECASE))
     body = re.sub(r"^\s*(?:our|my|their|the\s+enemy(?:\s+team)?|enemy)\s+", "", p,
                   flags=re.IGNORECASE).strip()
     body = re.sub(r"^just\s+", "", body, flags=re.IGNORECASE).strip().rstrip(".!?,;:")
     toks = body.split()
     if not (2 <= len(toks) <= 8):
         return None
+    # 'Our' kept symmetric with 'Their' so the ownership marker survives.
+    pre = "Their " if their else ("Our " if ours else "")
     for split in (1, 2):
         ag = _canon_agent(" ".join(toks[:split]))
         if ag and split < len(toks) and toks[split].lower() in _ABILITY_LEAD:
             rest = " ".join(toks[split:]).rstrip(".!?,;:")
-            return (f"{'Their ' if their else ''}{ag} {rest}.", their)
+            return (f"{pre}{ag} {rest}.", their)
     return None
 
 
