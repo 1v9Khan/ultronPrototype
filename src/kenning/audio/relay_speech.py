@@ -1935,6 +1935,21 @@ _ACTION_WORDS = frozenset((
 ).split())
 _MULTI_ACTIONS = ("force buying", "force-buying")
 
+# Bare action verb -> its -ing form, so 'cypher is flank' reads as 'Cypher is
+# flanking'. Only the actions that are commonly said in the bare form.
+_BARE_TO_ING = {
+    "flank": "flanking", "push": "pushing", "rotate": "rotating", "rush": "rushing",
+    "peek": "peeking", "hold": "holding", "lurk": "lurking", "bait": "baiting",
+    "trade": "trading", "swing": "swinging", "plant": "planting", "defuse": "defusing",
+    "default": "defaulting", "anchor": "anchoring", "drone": "droning",
+    "smoke": "smoking", "execute": "executing", "retake": "retaking",
+    "defend": "defending", "stick": "sticking", "save": "saving", "force": "forcing",
+}
+
+
+def _norm_action(w: str) -> str:
+    return _BARE_TO_ING.get(w.lower(), w.lower())
+
 # Short imperative verbs for movement/ability/spike directives (NOT economy --
 # save / force / full buy go to the LLM for the explained, characterful take).
 _IMPERATIVE_VERBS = frozenset((
@@ -2270,6 +2285,42 @@ def _as_agent_position(p: str) -> Optional[str]:
     return f"{names} are {place}."
 
 
+def _as_enemy_action(p: str) -> Optional[str]:
+    """Bare agent(s)/count + an ACTION, no place and no our/my ('cypher is flank',
+    'two are flank', 'fade flanking', 'one rotating') -> a clean ENEMY action callout.
+    The user is spotting the enemy; Ultron infers 'enemy' contextually even though it
+    was not said. Returns None when the subject names our own player ('our Jett ...')."""
+    m = re.match(r"^(?P<sub>.+?)\s+(?:is\s+|are\s+)?(?P<act>[a-z][a-z\-]+)$",
+                 p.strip(), re.IGNORECASE)
+    if m is None:
+        return None
+    act = _norm_action(m.group("act"))
+    if act not in _ACTION_WORDS:
+        return None
+    sub = m.group("sub").strip()
+    if re.match(r"^(?:our|my)\b", sub, re.IGNORECASE):      # our own player -> not this
+        return None
+    sub = re.sub(r"^(?:their|the\s+enemy(?:\s+team)?|enemy)\s+", "", sub,
+                 flags=re.IGNORECASE).strip()
+    cm = re.match(r"^(?:all\s+(?:of\s+them|five|5)|(?P<c>[1-6]|one|two|three|four|"
+                  r"five|six))$", sub, re.IGNORECASE)
+    if cm:
+        c = cm.group("c")
+        if not c:
+            return f"All five {act}."
+        return f"{c if c.isdigit() else c.capitalize()} {act}."
+    agents = _roster_agents(sub)
+    residual = re.sub(r"\b(?:and|&|both|all|the|enemy|enemies|their)\b|[,]", " ",
+                      _ROSTER_RE.sub(" ", sub), flags=re.IGNORECASE).strip()
+    if agents and not residual:
+        if len(agents) == 1:
+            return f"{agents[0]} is {act}."
+        if len(agents) == 2:
+            return f"{agents[0]} and {agents[1]} are {act}."
+        return f"{', '.join(agents[:-1])}, and {agents[-1]} are {act}."
+    return None
+
+
 def _as_ult_callout(p: str) -> Optional[str]:
     """'<agent> has ult' / 'their <A>, <B> have ults' / '<agent> is one off' ->
     a clean ult callout, adding 'Their' ONLY when the input said their/enemy."""
@@ -2567,6 +2618,15 @@ def _as_snap_callout(
             if u is not None:
                 return flav(u[0], _FLAVOR_UTILITY) if u[1] else u[0]
         return None   # insult / playstyle / long -> LLM (flavor)
+
+    # --- agent(s)/count + ACTION, no place, no our/my: 'cypher is flank' ->
+    #     'Cypher is flanking.' / 'two are flank' -> 'Two flanking.' (enemy inferred).
+    #     BEFORE agent-position so an action word is never mistaken for a place.
+    #     (Runs regardless of the compound flag -- like agent-position, it only ever
+    #     matches a whole '<subject> is/are <action>' payload, never a real compound.) ---
+    ea = _as_enemy_action(p)
+    if ea is not None:
+        return fe(ea)
 
     # --- named enemy agent(s) at a place: 'fade and clove are main' ---
     ap = _as_agent_position(p)
