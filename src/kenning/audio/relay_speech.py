@@ -1503,29 +1503,44 @@ def load_roast_lines(path: object) -> tuple[str, ...]:
         return DEFAULT_ROAST_LINES
 
 
+# LEAST-RECENTLY-USED selection (global per-line recency). Every pick returns the
+# candidate that has gone LONGEST since last use (never-used first); ties are broken
+# randomly. Because only the CANDIDATE set is ever compared, pools never contaminate
+# one another -- a greeting's recency cannot block a flavor tail, and vice versa.
+_LRU_COUNT: list[int] = [0]
+_LRU_SEEN: dict[str, int] = {}
+
+
+def _pick_lru(candidates: Sequence[str], rng: Optional[object] = None) -> str:
+    import random as _random
+
+    chooser = rng if rng is not None else _random
+    seen, uniq = set(), []
+    for c in candidates:                       # dedupe (a weighted list collapses)
+        k = c.lower()
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    if not uniq:
+        return ""
+    mn = min(_LRU_SEEN.get(c.lower(), -1) for c in uniq)
+    least = [c for c in uniq if _LRU_SEEN.get(c.lower(), -1) == mn]
+    choice = chooser.choice(least)
+    _LRU_COUNT[0] += 1
+    _LRU_SEEN[choice.lower()] = _LRU_COUNT[0]
+    return choice
+
+
 def pick_roast_line(
     lines: Sequence[str],
     recent_lines: Optional[Sequence[str]] = None,
     rng: Optional[object] = None,
 ) -> str:
-    """Pick one line, avoiding recently spoken ones when possible.
-
-    Used for both roast lines and fun facts (any verbatim line pool).
-
-    Args:
-        lines: the curated lines (non-empty).
-        recent_lines: the relay session ring -- lines just spoken are
-            skipped unless every line was spoken recently.
-        rng: test seam -- an object with ``choice(seq)``; defaults to
-            :mod:`random`.
-    """
-    import random as _random
-
-    chooser = rng if rng is not None else _random
-    pool = list(lines) or list(DEFAULT_ROAST_LINES)
-    recent = set(recent_lines or ())
-    fresh = [line for line in pool if line not in recent]
-    return chooser.choice(fresh or pool)
+    """Pick one line via LRU (longest-unused first, ties random) -- used for roast /
+    fun-fact / every curated verbatim pool. ``recent_lines`` is accepted for
+    backward compatibility but the global LRU supersedes it (strictly stronger
+    anti-repeat, with no cross-pool contamination)."""
+    return _pick_lru(list(lines) or list(DEFAULT_ROAST_LINES), rng=rng)
 
 
 # pick_roast_line is line-pool-generic; this alias documents fun-fact use.
@@ -2026,15 +2041,10 @@ from kenning.audio._ultron_pools import (  # noqa: E402
 
 
 def _pick_flavor(pool: Sequence[str], recent_lines: Optional[Sequence[str]]) -> str:
-    """Pick a flavor tag NOT seen in the recent callouts (anti-soundboard).
-
-    Window widened to the last 16 lines so a tail does not recur within a long
-    exchange (reduces the soundboard max-repeat)."""
-    import random as _r
-
-    recent = " ".join(list(recent_lines or [])[-16:]).lower()
-    fresh = [t for t in pool if t.lower() not in recent]
-    return _r.choice(fresh or list(pool))
+    """Pick a flavor tail via the global LRU -- the tail gone LONGEST since last use
+    (never-used first), ties random. ``recent_lines`` is ignored (the per-line LRU is
+    a stronger, contamination-free anti-repeat)."""
+    return _pick_lru(list(pool))
 
 
 def _flavored(callout: str, pool: Sequence[str],

@@ -246,10 +246,15 @@ def test_load_roast_lines_fail_open(tmp_path: Any) -> None:
     assert load_roast_lines(path) == DEFAULT_ROAST_LINES
 
 
-def test_pick_roast_avoids_recent() -> None:
-    lines = ("a", "b", "c")
-    picked = pick_roast_line(lines, recent_lines=["a", "b"])
-    assert picked == "c"
+def test_pick_roast_lru_no_repeat_until_exhausted() -> None:
+    # LRU selection: every line is returned once (longest-unused first) before any
+    # repeats. Unique tokens so global LRU state from other tests can't interfere.
+    lines = ("lruA", "lruB", "lruC", "lruD")
+    picks = [pick_roast_line(lines) for _ in range(4)]
+    assert set(picks) == set(lines)        # all four covered before a repeat
+    assert len(set(picks)) == 4
+    # the 5th pick repeats the FIRST-used (longest since used), not a random one
+    assert pick_roast_line(lines) == picks[0]
 
 
 def test_pick_roast_all_recent_still_picks() -> None:
