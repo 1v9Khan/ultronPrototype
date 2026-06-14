@@ -446,14 +446,17 @@ def test_is_general_question(payload: str, is_q: bool) -> None:
 def test_economy_drop_buy_request_is_literal(text: str, expect: str) -> None:
     cmd = match_relay_command(text)
     line = build_relay_line(cmd, None, rephrase=True, generate_fn=_boom)
-    assert line == expect
+    # iter5: the literal request is preserved EXACTLY as the head; a short
+    # owner-aware Ultron command tail may follow (actionable words first).
+    assert line.startswith(expect)
+    assert 0 <= len(line[len(expect):].split()) <= 6
 
 
 def test_named_ult_site_is_not_garbled() -> None:
     # 'ult site' must stay 'Killjoy, ult site.' -- never 'ult has site'.
     cmd = match_relay_command("tell my killjoy to ult site")
     line = build_relay_line(cmd, None, rephrase=True, generate_fn=_boom)
-    assert line == "Killjoy, ult site."
+    assert line.startswith("Killjoy, ult site.")
 
 
 def test_enemy_one_off_ult_keeps_agent_name() -> None:
@@ -1127,7 +1130,8 @@ def test_build_relay_line_repairs_first_person_via_stub_llm():
         return ["Play for retake."]            # the 3B's failure mode
 
     line = build_relay_line(cmd, generate_fn=_stub)
-    assert line == "I'm playing for retake."
+    # First person preserved as the head (a stoic self tail may follow in iter5).
+    assert line.startswith("I'm playing for retake.")
 
 
 def test_build_relay_line_does_not_repair_character_lines():
@@ -1190,7 +1194,9 @@ def test_ensure_addressee_does_not_double_name():
     def _stub(prompt):
         return ["Sova, dart heaven."]
 
-    assert build_relay_line(cmd, generate_fn=_stub) == "Sova, dart heaven."
+    line = build_relay_line(cmd, generate_fn=_stub)
+    assert line.startswith("Sova, dart heaven.")     # core + optional command tail
+    assert line.lower().count("sova,") == 1          # name not doubled
 
 
 # ---------------------------------------------------------------------------
@@ -1270,8 +1276,8 @@ def test_named_calm_payload_uses_curated_pool():
     # (command, core callout, flavored?) -- enemy-facing callouts get a short
     # varied Ultron flavor tag appended; self/teammate/directive stay clean.
     ("tell my team they are vents", "They're vents.", True),
-    ("tell my team I have long", "I have long.", False),
-    ("tell my team I have ult", "I have ult.", False),
+    ("tell my team I have long", "I have long.", True),
+    ("tell my team I have ult", "I have ult.", True),
     ("tell my team there is one mid", "One mid.", True),
     ("tell my team I saw one vents", "One vents.", True),
     ("tell my team last is heaven", "Last, heaven.", True),
@@ -1289,16 +1295,16 @@ def test_named_calm_payload_uses_curated_pool():
     ("tell my team all enemies are sewers", "They're all sewers.", True),
     ("tell my team careful ramp", "Careful, ramp.", True),
     ("tell my team one a main", "One a main.", True),
-    ("tell my team I am out of ammo", "I'm out of ammo.", False),
+    ("tell my team I am out of ammo", "I'm out of ammo.", True),
     ("tell my team chamber is one off", "Chamber is one off ult.", False),
     ("tell my team their breach has ult", "Their Breach has ult.", True),
     ("tell my team jett has ult", "Jett has ult.", False),
     ("tell my team raze has her ult", "Raze has ult.", False),
     ("tell my team viper ult is ready", "Viper has ult.", False),
     ("tell my team sova hit 84", "Sova hit 84.", True),
-    ("tell my sova to dart heaven", "Sova, dart heaven.", False),
-    ("tell my yoru to hold flank", "Yoru, hold flank.", False),
-    ("tell my team to rotate", "Rotate.", False),
+    ("tell my sova to dart heaven", "Sova, dart heaven.", True),
+    ("tell my yoru to hold flank", "Yoru, hold flank.", True),
+    ("tell my team to rotate", "Rotate.", True),
 ])
 def test_snap_callout_is_deterministic_and_correct(cmd_text, expect, flavored):
     """Literal callouts are handled deterministically (subject-exact, no
@@ -1312,7 +1318,7 @@ def test_snap_callout_is_deterministic_and_correct(cmd_text, expect, flavored):
     if flavored:
         assert line.startswith(expect)
         tag = line[len(expect):].strip()
-        assert 0 < len(tag.split()) <= 5            # short flavor, <= 5 words
+        assert 0 < len(tag.split()) <= 6            # short flavor, 3-6 words
     else:
         assert line == expect
 
@@ -1411,8 +1417,13 @@ def test_careful_warning_with_crossed():
     assert "X" not in line
 
 
-def test_self_and_directive_callouts_have_no_flavor():
-    """The user's own status/possession and pure team directives stay clean."""
+def test_self_and_directive_callouts_carry_owner_aware_flavor():
+    """iter5: the user's own status/possession and team directives now ALSO carry
+    a short Ultron tail -- but the FACT CORE is preserved EXACTLY as the head, no
+    LLM is called, and the tail never mocks the user (stoic self / cold command,
+    never enemy contempt)."""
+    _CONTEMPT = ("pathetic", "insects", "trivial", "erase", "beneath",
+                 "their grave", "outmatched", "fragile")
     for cmd_text, expect in [
         ("tell my team I am low", "I'm low."),
         ("tell my team I have B site", "I have B site."),
@@ -1420,4 +1431,10 @@ def test_self_and_directive_callouts_have_no_flavor():
         ("tell my sova to dart heaven", "Sova, dart heaven."),
     ]:
         cmd = match_relay_command(cmd_text)
-        assert build_relay_line(cmd, generate_fn=lambda p: ["X"]) == expect
+        line = build_relay_line(cmd, generate_fn=lambda p: ["X"])
+        assert "X" not in line                      # no LLM call (deterministic)
+        assert line.startswith(expect)              # fact core preserved exactly
+        tail = line[len(expect):].strip()
+        assert 0 < len(tail.split()) <= 6           # a short tail IS present now
+        # self/own-team lines must NOT carry enemy contempt aimed at the user/team
+        assert not any(w in tail.lower() for w in _CONTEMPT)

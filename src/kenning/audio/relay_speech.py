@@ -2124,6 +2124,136 @@ def _flavored(callout: str, pool: Sequence[str],
     return f"{callout} {_pick_flavor(pool, recent_lines)}"
 
 
+# ---------------------------------------------------------------------------
+# Owner-aware + CONTEXTUAL flavor (iter5: personality on ~100% of callouts).
+#
+# Three things the user demanded and the older fixed-pool tail did not give:
+#   1. COVERAGE -- a short Ultron tail on (nearly) every deterministic callout,
+#      not just the enemy-facing ones. The actionable callout comes FIRST so a
+#      clipped TTS still lands the call; the flavor is always an additive tail.
+#   2. OWNER-APPROPRIATE register -- contempt at the ENEMY, cold COMMAND for an
+#      order to OUR team, stoic ATTITUDE for the USER's OWN status (Ultron never
+#      mocks his own user). Reassurance is superior-not-cruel, never warm.
+#   3. CONTEXTUAL, not soundboard -- when the callout carries a fact (location,
+#      ability, count, agent) the tail REFERENCES it ("They do not leave B.",
+#      "Their wall changes nothing."), so variety is combinatorial rather than a
+#      fixed ~48-line record. Falls back to the generic register pool otherwise.
+# ---------------------------------------------------------------------------
+
+#: Cold COMMAND tail for an order to OUR team (rotate/push/smoke/plant/full buy).
+#: Commanding and certain -- NEVER contempt (these are our teammates).
+_FLAVOR_COMMAND: tuple[str, ...] = (
+    "Execute.", "No hesitation.", "On my mark.", "Make it clean.",
+    "Commit fully.", "Move with purpose.", "Precision, not haste.",
+    "As I calculated.", "Leave nothing to chance.", "Do not waver.",
+    "Trust the read.", "Decisively.", "Hold the discipline.",
+    "Flawless execution.", "I have already won this.", "Without error.",
+    "Exactly as planned.", "Now -- together.", "My calculation is final.",
+    "Deviate and we lose.",
+)
+#: Stoic ATTITUDE tail for the USER's OWN status ('I'm low', 'I'm flanking',
+#: 'I have site'). Ultron downplays his user's weakness and frames their action
+#: as inevitable -- it adds NO new tactical instruction, only register.
+_FLAVOR_SELF: tuple[str, ...] = (
+    "A minor variable.", "It changes nothing.", "I adapt.", "Briefly.",
+    "Of no consequence.", "I have accounted for it.", "Temporary.",
+    "The plan holds.", "Unfazed.", "This was foreseen.", "I do not falter.",
+    "As intended.", "Calculated.", "Exactly where I must be.",
+)
+
+#: register key -> generic fallback pool. The contextual templates below take
+#: priority when a fact is present; this is the breadth when none is.
+_REGISTER_POOL: dict = {
+    "enemy": _FLAVOR_ENEMY,
+    "ult": _FLAVOR_ULT,
+    "damage": _FLAVOR_DAMAGE,
+    "utility": _FLAVOR_UTILITY,
+    "careful": _FLAVOR_CAREFUL,
+    "command": _FLAVOR_COMMAND,
+    "self": _FLAVOR_SELF,
+}
+
+
+def _ctx_candidates(register: str, *, agent: Optional[str] = None,
+                    ability: Optional[str] = None, loc: Optional[str] = None,
+                    count: Optional[str] = None) -> list[str]:
+    """Short flavor tails that REFERENCE the specific callout fact (location,
+    ability, count, agent). Empty when nothing to anchor to -> caller uses the
+    generic register pool. Kept to <=6 words (a snap tail)."""
+    out: list[str] = []
+    L = (loc or "").strip()
+    if len(L) == 1:                       # a single-letter SITE is always upper (A/B/C)
+        L = L.upper()
+    Ls = (L[:1].upper() + L[1:]) if L else L    # sentence-initial form
+    A = (ability or "").strip().lower()
+    G = (agent or "").strip()
+    c = (count or "").strip().lower()
+    if register == "enemy":
+        if L:
+            out += [f"They do not leave {L}.", f"{Ls} is their grave.",
+                    f"They chose {L} poorly."]
+        if A:
+            out += [f"Their {A} changes nothing.", f"The {A} only delays them.",
+                    f"I accounted for the {A}."]
+        if c in ("1", "one"):
+            out += ["One target. Trivial.", "A single straggler.", "One. Erase it."]
+        elif c in ("3", "three", "4", "four", "5", "five"):
+            out += ["They overcommit.", "All of them -- still not enough."]
+    elif register == "ult":
+        if G:
+            out += [f"{G}'s ult will not save them.", f"Bait {G}'s cast.",
+                    f"Account for {G}. Nothing more."]
+        else:
+            out += ["A delay, nothing more.", "Drain it and move on."]
+    elif register == "damage":
+        if G:
+            out += [f"{G} is already finished.", f"Close {G} out.",
+                    f"{G} cannot heal that."]
+    elif register == "utility":
+        if A:
+            out += [f"Their {A} is wasted.", f"I read the {A}.",
+                    f"The {A} buys them nothing."]
+    elif register == "command":
+        if L:
+            out += [f"{Ls} is ours to take.", f"Own {L}."]
+    return out
+
+
+def _flavor_ctx(callout: str, register: str,
+                recent_lines: Optional[Sequence[str]], *,
+                agent: Optional[str] = None, ability: Optional[str] = None,
+                loc: Optional[str] = None, count: Optional[str] = None) -> str:
+    """Append an owner-aware, fact-referencing Ultron tail to ``callout``. The
+    contextual templates are weighted above the generic pool so the tail names
+    the actual callout fact whenever one is present (anti-soundboard)."""
+    ctx = _ctx_candidates(register, agent=agent, ability=ability,
+                          loc=loc, count=count)
+    pool = list(_REGISTER_POOL.get(register, _FLAVOR_ENEMY))
+    # weight contextual 2x so a fact-bearing line usually references its fact,
+    # but never ALWAYS (variety); recent-line filter keeps it off a record.
+    cands = ctx * 2 + pool
+    return f"{callout} {_pick_flavor(cands, recent_lines)}"
+
+
+def _payload_flavor_facts(p: str) -> dict:
+    """Pull the single most relevant loc / ability / agent / count token from a
+    callout payload, for contextual flavor anchoring. Best-effort, fail-soft."""
+    try:
+        nums, agents, locs, abils = _fact_tokens(p or "")
+    except Exception:                                                # noqa: BLE001
+        return {}
+    ag = None
+    for a in _roster_agents(p or ""):
+        ag = a
+        break
+    return {
+        "loc": next(iter(sorted(locs)), None),
+        "ability": next(iter(sorted(abils)), None),
+        "agent": ag,
+        "count": next(iter(sorted(nums)), None),
+    }
+
+
 # Economy calls are deterministic + correctly framed: the 3B bleeds the SAVE
 # 'insufficient credits' explanation onto force buys, full buys, and even enemy
 # saves. Each pool is the user's clinical Ultron voice, varied via the ring.
@@ -2329,11 +2459,30 @@ def _as_snap_callout(
     # are unaffected and still resolve 'Fade and Clove are main' as one unit.
     _is_compound = len(_split_compound(p)) >= 2
 
-    def fe(callout):   # enemy-info flavor
-        return _flavored(callout, _FLAVOR_ENEMY, recent_lines) if flavor else callout
+    # Contextual flavor anchors pulled once from the payload (loc/ability/agent/
+    # count) so a tail can REFERENCE the actual fact instead of a stock line.
+    _ff = _payload_flavor_facts(p)
+    _POOL_REG = {id(_FLAVOR_ENEMY): "enemy", id(_FLAVOR_ULT): "ult",
+                 id(_FLAVOR_DAMAGE): "damage", id(_FLAVOR_UTILITY): "utility",
+                 id(_FLAVOR_CAREFUL): "careful", id(_FLAVOR_COMMAND): "command",
+                 id(_FLAVOR_SELF): "self"}
+
+    def fe(callout):   # enemy-info flavor (contempt, fact-referencing)
+        return (_flavor_ctx(callout, "enemy", recent_lines, **_ff)
+                if flavor else callout)
 
     def flav(callout, pool):   # pool-specific flavor (ult / careful / damage / ...)
-        return _flavored(callout, pool, recent_lines) if flavor else callout
+        reg = _POOL_REG.get(id(pool), "enemy")
+        return (_flavor_ctx(callout, reg, recent_lines, **_ff)
+                if flavor else callout)
+
+    def fcmd(callout):   # cold COMMAND tail for an order to OUR team
+        return (_flavor_ctx(callout, "command", recent_lines, **_ff)
+                if flavor else callout)
+
+    def fself(callout):   # stoic ATTITUDE tail for the USER's OWN status
+        return (_flavor_ctx(callout, "self", recent_lines, **_ff)
+                if flavor else callout)
 
     # NAMED short imperative directive -> "{Name}, {imperative}." Questions and
     # non-imperatives (jabs, small talk) defer to the LLM. (No flavor: short.)
@@ -2346,7 +2495,7 @@ def _as_snap_callout(
         body = re.sub(r"^to\s+", "", p, flags=re.IGNORECASE).strip()
         first = body.lower().split()[0] if body.split() else ""
         if first in _IMPERATIVE_VERBS and 1 <= len(body.split()) <= 5:
-            return f"{addressee}, {body}."
+            return fcmd(f"{addressee}, {body}.")   # order to a teammate -> command
         return None
 
     # --- CAREFUL warnings: 'careful ramp', 'careful flank', 'careful they
@@ -2357,18 +2506,20 @@ def _as_snap_callout(
         if 1 <= len(rest.split()) <= 9:
             return flav(f"Careful, {rest}.", _FLAVOR_CAREFUL)
 
-    # --- self status / possession / first person (NO flavor -- the user's own) ---
+    # --- self status / possession / first person (stoic ATTITUDE flavor -- it
+    #     adds register only, never a new tactical instruction, and never mocks
+    #     the user whose status this is) ---
     m = _FP_LEAD_RE.match(p)
     if m:
         rest = m.group(1).strip().rstrip(".!?,;:")
         if 1 <= len(rest.split()) <= 6:
-            return f"I'm {rest}."
+            return fself(f"I'm {rest}.")
         return None
     m = re.match(r"^i\s+have\s+(?P<x>.+)$", p, re.IGNORECASE)
     if m:
         thing = m.group("x").strip().rstrip(".!?,;:")
         if 1 <= len(thing.split()) <= 3:
-            return f"I have {thing}."
+            return fself(f"I have {thing}.")
         return None
     m = re.match(r"^i\s+(?:saw|see)\s+(?P<c>[1-6]|one|two|three|four|five)\s+"
                  r"(?P<pl>.+)$", p, re.IGNORECASE)
@@ -2514,9 +2665,10 @@ def _as_snap_callout(
     if not _is_compound:
         u = _as_agent_utility(p)
         if u is not None:
-            return flav(u[0], _FLAVOR_UTILITY) if u[1] else u[0]
+            return flav(u[0], _FLAVOR_UTILITY) if u[1] else fcmd(u[0])
 
-    # --- group movement/spike directive: 'to <verb>' / '<verb>' (NO flavor) ---
+    # --- group movement/spike directive: 'to <verb>' / '<verb>' -> our-team
+    #     COMMAND flavor (actionable word first, short Ultron tail after) ---
     body = re.sub(r"^to\s+", "", p, flags=re.IGNORECASE).strip()
     bl = body.lower()
 
@@ -2536,7 +2688,7 @@ def _as_snap_callout(
             and 2 <= len(body.split()) <= 6
             and "full buy" not in bl and "force buy" not in bl):
         out = re.sub(r"\boperator\b", "op", body, flags=re.IGNORECASE)
-        return out[0].upper() + out[1:].rstrip(".!?") + "."
+        return fcmd(out[0].upper() + out[1:].rstrip(".!?") + ".")
     _MOVE = {
         "rotate": "Rotate.", "rotate now": "Rotate.", "push": "Push.",
         "fall back": "Fall back.", "defuse": "Defuse.", "plant": "Plant.",
@@ -2548,7 +2700,7 @@ def _as_snap_callout(
         "hold a crossfire with me": "Hold a crossfire with me.",
     }
     if bl in _MOVE:
-        return _MOVE[bl]
+        return fcmd(_MOVE[bl])
     # --- general TEAM directive: a short imperative-verb-led order ('smoke A',
     #     'dart heaven', 'play off site', 'watch back site', 'trade every kill',
     #     'crossfire this corner', 'use your util') -> literal imperative. The
@@ -2559,7 +2711,7 @@ def _as_snap_callout(
             and not _is_question_payload(body)
             and 1 <= len(body.split()) <= 7):
         out = body.rstrip(".!?")
-        return out[0].upper() + out[1:] + "."
+        return fcmd(out[0].upper() + out[1:] + ".")
     return None
 
 
@@ -2840,9 +2992,21 @@ def _literal_relay(payload: str, recent_lines: Optional[Sequence[str]] = None) -
     if not p:
         return ""
     out = p[0].upper() + p[1:] + "."
-    if (len(out.split()) <= 9
-            and re.search(r"\b(?:they|they're|their|enemy|enemies)\b", out, re.I)):
-        out = _flavored(out, _FLAVOR_ENEMY, recent_lines)
+    # Owner-aware flavor on the abstention literal too (so even the safety net is
+    # in character): contempt at the enemy, command for our orders, stoic for the
+    # user's own status. Capped so a long multi-clause literal stays un-tailed.
+    if len(out.split()) <= 12:
+        low = " " + out.lower() + " "
+        ff = _payload_flavor_facts(p)
+        first = p.split()[0].lower() if p.split() else ""
+        if re.search(r"\b(?:they|they're|their|enemy|enemies)\b", low):
+            out = _flavor_ctx(out, "enemy", recent_lines, **ff)
+        elif re.search(r"\b(?:i'm|i am|i've|i have|my)\b", low) and not re.search(
+                r"\b(?:we|we're|our|they|their)\b", low):
+            out = _flavor_ctx(out, "self", recent_lines, **ff)
+        elif (re.search(r"\b(?:we|we're|our)\b", low)
+              or first in _TEAM_DIRECTIVE_VERBS or first in _IMPERATIVE_VERBS):
+            out = _flavor_ctx(out, "command", recent_lines, **ff)
     return out
 
 

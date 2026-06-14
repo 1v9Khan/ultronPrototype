@@ -560,7 +560,8 @@ def test_orchestrator_relay_echo_to_user(monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
     assert o._maybe_handle_relay_speech("tell them to watch flank") is True
-    assert o._spoken == ["Watch flank."]
+    # iter5: a short owner-aware command tail may follow the imperative core.
+    assert len(o._spoken) == 1 and o._spoken[0].startswith("Watch flank.")
 
 
 def test_orchestrator_relay_playback_failure_speaks_error(
@@ -655,10 +656,12 @@ def test_orchestrator_relay_records_recent_lines_ring(
 
     assert o._maybe_handle_relay_speech("tell them to watch flank") is True
     assert o._maybe_handle_relay_speech("tell them to push B now") is True
-    # Directives are now resolved deterministically as clean imperatives.
-    assert list(o._relay_recent_lines) == [
-        "Watch flank.", "Push B now.",
-    ]
+    # Directives are resolved deterministically as clean imperatives; iter5 adds a
+    # short owner-aware command tail after the preserved imperative core.
+    ring = list(o._relay_recent_lines)
+    assert len(ring) == 2
+    assert ring[0].startswith("Watch flank.")
+    assert ring[1].startswith("Push B now.")
     assert o._relay_recent_lines.maxlen == 6
     # The follow-up extension is armed for the run-loop branch.
     assert o._relay_follow_up_seconds == 120.0
