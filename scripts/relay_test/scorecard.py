@@ -374,6 +374,10 @@ def quality_metrics(jsonl_path: str) -> dict:
     halluc_examples = []
     by_cat_overall = {}
     lines = []
+    # route-aware fidelity (model-free re-derivation of the route per line)
+    per_route_ret: dict[str, list] = {"deterministic": [], "partial": [], "llm": []}
+    llm_total = llm_flag = 0          # LLM-line flag rate (fact-corrupted LLM lines)
+    comp_total = comp_clean = 0       # compound / multi-fact zero-fact-loss
     for r in matched:
         inp, out = r["text"], r["line"]
         lines.append(out)
@@ -384,13 +388,34 @@ def quality_metrics(jsonl_path: str) -> dict:
         cat = r["category"].replace("pack_", "")
         if ret.get("overall") is not None:
             by_cat_overall.setdefault(cat, []).append(ret["overall"])
-        if _is_inversion(inp, out):
+        inv = _is_inversion(inp, out)
+        if inv:
             inversions += 1
         h = _hallucinated(inp, out)
         if h:
             halluc += 1
             if len(halluc_examples) < 12:
                 halluc_examples.append({"in": inp[:70], "out": out[:70], "halluc": h})
+        # route + the route-derived gates
+        try:
+            cmd = match_relay_command(inp)
+            route = classify_route(cmd)[0] if cmd is not None else "deterministic"
+        except Exception:                                            # noqa: BLE001
+            route = "deterministic"
+        ov = ret.get("overall")
+        if ov is not None:
+            per_route_ret.get(route, per_route_ret["llm"]).append(ov)
+        if route == "llm":
+            llm_total += 1
+            if (ov is not None and ov < 0.9) or h or inv:
+                llm_flag += 1
+        # compound / multi-fact: input carries >=2 fact-tokens across categories
+        fi = extract_facts(inp)
+        nfacts = sum(len(fi[c]) for c in _FACT_CATS)
+        if "compound" in r.get("category", "") or nfacts >= 2:
+            comp_total += 1
+            if ov is not None and ov >= 0.999:
+                comp_clean += 1
     # flavor diversity: type/token over the trailing flavor phrase (last sentence)
     tails = [re.split(r"(?<=[.!?])\s+", ln.strip())[-1].lower().strip(".!?")
              for ln in lines if ln.strip()]
@@ -413,17 +438,126 @@ def quality_metrics(jsonl_path: str) -> dict:
         "flavor_type_token_ratio": ttr,
         "flavor_max_repeat": max_repeat,
         "flavor": _flavor_metrics(lines),
+        "llm_flag_rate": round(llm_flag / llm_total, 4) if llm_total else 0,
+        "llm_lines": llm_total,
+        "compound_zero_fact_loss": round(comp_clean / comp_total, 4) if comp_total else 0,
+        "compound_n": comp_total,
+        "retention_by_route": {k: round(sum(v) / len(v), 4)
+                               for k, v in per_route_ret.items() if v},
+    }
+
+
+def audio_metrics(asr_path: str) -> dict:
+    """Audio + ASR fidelity from an `asr`-stage JSONL: signal-level blips (the
+    production analyze_clip watcher) and ASR-reconstruction coverage."""
+    rows = [json.loads(l) for l in open(asr_path, encoding="utf-8")]
+    spoken = [r for r in rows if r.get("line")]
+    n = len(spoken)
+    blip = sum(1 for r in spoken
+               for f in r.get("fails", []) if str(f).startswith("audio:"))
+    asr_fail = sum(1 for r in spoken
+                   if any(str(f).startswith("asr:") for f in r.get("fails", [])))
+    no_speech = sum(1 for r in spoken
+                    if any("no intelligible speech" in str(f) for f in r.get("fails", [])))
+    long5 = [r for r in spoken
+             if len(re.findall(r"[a-z0-9]+", (r.get("line") or "").lower())) >= 5]
+    return {
+        "n_spoken": n,
+        "blips": blip, "blips_per_1000": round(blip / n * 1000, 2) if n else 0,
+        "asr_fail": asr_fail, "asr_fail_rate": round(asr_fail / n, 4) if n else 0,
+        "asr_coverage": round(1 - asr_fail / n, 4) if n else 0,
+        "no_speech_lines": no_speech, "long5_lines": len(long5),
+    }
+
+
+# Out-of-roster addressees -- 'tell my <Name> to rotate' must NOT resolve to a
+# roster agent (a wrong-addressee broadcast). Target: exactly 0 false matches.
+_OOV_NAMES = ("Sarah", "Mike", "Jordan", "Alex", "Chris", "Sam", "Tyler", "Jake",
+              "Megan", "David", "Kevin", "Ryan", "Lauren", "Nick", "Brandon",
+              "Ashley", "Derek", "Connor", "Hannah", "Logan", "Marcus", "Devon",
+              "Caleb", "Trevor", "Shawn", "Blake", "Cody", "Drew", "Grant", "Ian")
+_OOV_VERBS = ("rotate", "push B", "save this round", "watch flank", "smoke A")
+
+
+def gates_metrics(seed: int, limit: int | None) -> dict:
+    """Zero-tolerance code-path gates (target 0): out-of-roster addressee match,
+    malformed graceful-degradation fallback, and the LLM-isolation flags that keep
+    50 turns of chat history out of a callout."""
+    import itertools
+    # OOV addressee
+    oov_bad = []
+    for nm, vb in itertools.product(_OOV_NAMES, _OOV_VERBS):
+        cmd = match_relay_command(f"tell my {nm} to {vb}")
+        if cmd is not None and getattr(cmd, "addressee", "team") != "team":
+            oov_bad.append((nm, getattr(cmd, "addressee")))
+    oov_n = len(_OOV_NAMES) * len(_OOV_VERBS)
+    # fallback well-formedness (LLM down -> _fallback_line is the spoken line)
+    from kenning.audio.relay_speech import _fallback_line
+    cases = build_corpus_10k(seed)
+    import random as _r
+    _r.Random(7).shuffle(cases)
+    samp = [c for c in cases[: (limit or 4000)]]
+    fb_bad = 0
+    _ctrl = re.compile(r"/\s*no_?think|<\|?[a-z_]+\|?>", re.I)
+    for c in samp[:2000]:
+        cmd = match_relay_command(c.text)
+        if cmd is None:
+            continue
+        try:
+            fb = _fallback_line(cmd)
+        except Exception:                                            # noqa: BLE001
+            fb = ""
+        if (not fb) or _ctrl.search(fb) or len(fb) > 300 or '"' in fb:
+            fb_bad += 1
+    # LLM-isolation flags on the relay generate_stream call
+    iso_ok = iso_total = 0
+
+    class _RecLLM:
+        def __init__(self):
+            self.kw = None
+
+        def generate_stream(self, prompt, **kw):
+            self.kw = kw
+            return iter(["isoZ"])
+    for c in samp:
+        cmd = match_relay_command(c.text)
+        if cmd is None or getattr(cmd, "verbatim", False):
+            continue
+        rec = _RecLLM()
+        try:
+            build_relay_line(cmd, llm=rec, recent_lines=[])
+        except Exception:                                            # noqa: BLE001
+            continue
+        if rec.kw is not None:                       # the LLM path actually fired
+            iso_total += 1
+            if (rec.kw.get("suppress_memory_context") is True
+                    and rec.kw.get("record_history") is False
+                    and rec.kw.get("enable_thinking") is False):
+                iso_ok += 1
+        if iso_total >= 300:
+            break
+    return {
+        "oov_addressee_matches": len(oov_bad),
+        "oov_addressee_n": oov_n,
+        "oov_examples": oov_bad[:8],
+        "fallback_malformed": fb_bad,
+        "isolation_flags_ok": iso_ok, "isolation_flags_checked": iso_total,
+        "isolation_flag_fail": iso_total - iso_ok,
     }
 
 
 def build_scorecard(jsonl_path: str | None, seed: int, limit: int | None,
-                    tag: str) -> dict:
+                    tag: str, asr_path: str | None = None) -> dict:
     sc = {"tag": tag, "seed": seed, "limit": limit}
     sc["matcher"] = matcher_metrics(seed, limit)
     sc["routing"] = route_and_latency(seed, limit)
+    sc["gates"] = gates_metrics(seed, limit)
     if jsonl_path and os.path.exists(jsonl_path):
         sc["quality"] = quality_metrics(jsonl_path)
         sc["quality_source"] = jsonl_path
+    if asr_path and os.path.exists(asr_path):
+        sc["audio"] = audio_metrics(asr_path)
+        sc["audio_source"] = asr_path
     return sc
 
 
@@ -467,6 +601,16 @@ _TRACKED = [
     ("quality.flavor.contextual_match", True, "flavor contextual-match"),
     ("quality.flavor.voice_register_rate", True, "voice register rate"),
     ("quality.flavor.soundboard_max_repeat", False, "soundboard max-repeat"),
+    # comprehensive-loop fidelity metrics
+    ("quality.llm_flag_rate", False, "LLM-line flag rate"),
+    ("quality.compound_zero_fact_loss", True, "compound zero-fact-loss"),
+    # zero-tolerance gates (target 0)
+    ("gates.oov_addressee_matches", False, "OOV-addressee match (0!)"),
+    ("gates.fallback_malformed", False, "fallback malformed (0!)"),
+    ("gates.isolation_flag_fail", False, "isolation-flag fail (0!)"),
+    # audio / ASR fidelity
+    ("audio.blips_per_1000", False, "audio blips / 1000"),
+    ("audio.asr_coverage", True, "ASR coverage"),
 ]
 
 
@@ -552,6 +696,8 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--tag", default="sc")
     ap.add_argument("--prev", default=None, help="prior scorecard JSON to diff against")
+    ap.add_argument("--asr-jsonl", default=None,
+                    help="asr-stage JSONL for audio-blip + ASR-coverage metrics")
     ap.add_argument("--bench", action="store_true", help="run CPU-3B latency+RSS bench")
     ap.add_argument("--bench-n", type=int, default=40)
     args = ap.parse_args()
@@ -566,7 +712,8 @@ def main() -> int:
         print(json.dumps(b, indent=2))
         return 0
 
-    sc = build_scorecard(args.jsonl, args.seed, args.limit, args.tag)
+    sc = build_scorecard(args.jsonl, args.seed, args.limit, args.tag,
+                         asr_path=args.asr_jsonl)
     scp = out_dir / f"scorecard_{args.tag}.json"
     scp.write_text(json.dumps(sc, indent=2), encoding="utf-8")
     # human summary
@@ -595,6 +742,21 @@ def main() -> int:
                   f"contextual-match={fv['contextual_match']:.2%}  "
                   f"voice-register={fv['voice_register_rate']:.2%}  "
                   f"soundboard-max-repeat={fv['soundboard_max_repeat']}")
+        print(f"FIDELITY: LLM-flag-rate={q['llm_flag_rate']:.4f} ({q['llm_lines']} LLM)  "
+              f"compound-zero-loss={q['compound_zero_fact_loss']:.4f} ({q['compound_n']})  "
+              f"by-route={q.get('retention_by_route')}")
+    g = sc.get("gates", {})
+    if g:
+        print(f"GATES (target 0): OOV-addressee={g['oov_addressee_matches']}/"
+              f"{g['oov_addressee_n']}  fallback-malformed={g['fallback_malformed']}  "
+              f"isolation-flag-fail={g['isolation_flag_fail']}/{g['isolation_flags_checked']}")
+        if g.get("oov_examples"):
+            print(f"  OOV examples: {g['oov_examples']}")
+    a = sc.get("audio", {})
+    if a:
+        print(f"AUDIO: blips={a['blips']} ({a['blips_per_1000']}/1000)  "
+              f"ASR-coverage={a['asr_coverage']:.4f}  no-speech={a['no_speech_lines']}  "
+              f"(n={a['n_spoken']})")
     print(f"-> {scp}")
 
     if args.prev and os.path.exists(args.prev):
