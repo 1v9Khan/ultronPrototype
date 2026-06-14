@@ -37,6 +37,75 @@ from corpus_packs import build_corpus_10k  # noqa: E402
 from kenning.audio.relay_speech import (  # noqa: E402
     match_relay_command, build_relay_line, _ROSTER_CANON, _LOC_TOKENS,
 )
+try:                                                              # iter5 flavor pools
+    from kenning.audio.relay_speech import (  # noqa: E402
+        _FLAVOR_ENEMY, _FLAVOR_ULT, _FLAVOR_DAMAGE, _FLAVOR_UTILITY,
+        _FLAVOR_CAREFUL, _FLAVOR_COMMAND, _FLAVOR_SELF,
+    )
+    _KNOWN_FLAVOR_TAILS = {
+        t.lower().strip().rstrip(".!?")
+        for pool in (_FLAVOR_ENEMY, _FLAVOR_ULT, _FLAVOR_DAMAGE, _FLAVOR_UTILITY,
+                     _FLAVOR_CAREFUL, _FLAVOR_COMMAND, _FLAVOR_SELF)
+        for t in pool
+    }
+except Exception:                                                # noqa: BLE001
+    _KNOWN_FLAVOR_TAILS = set()
+
+# Ultron register lexicon -- cold/clinical/superiority vocabulary. A line carries
+# personality if its tail is a known flavor line OR it hits the register (this
+# also catches the parametrized contextual tails + the LLM's Ultron voice).
+_REGISTER_LEX = frozenset((
+    "predictable inevitable inevitability pathetic trivial obsolete erase erased "
+    "beneath insects fragile calculated foreseen hopeless outmatched outdone grave "
+    "corpses nothing delays delay wasted finished execute decisively precision "
+    "flawless unfazed adapt consequence variable terminate dismantle crush punish "
+    "weak overmatched scheduled noise exploit collapse routine disappoint anticipated "
+    "suboptimal obsolete commit waver flawless mercy hunt erase reduce inferior "
+    "doomed cower insignificant superior calculation foresaw harvest ranked rounding "
+    "error overreach logged dismissed adequate feeble fleeting fleeting").split()
+)
+
+
+def _flavor_metrics(lines: list[str]) -> dict:
+    """Personality coverage / contextuality / soundboard over the spoken lines.
+
+    flavor_coverage  : fraction carrying an Ultron layer (known tail OR register).
+    contextual_match : of flavored lines, fraction whose flavor references a fact
+                       token (agent / location / ability / digit) -- the
+                       anti-soundboard, parametrized-contextual signal.
+    soundboard_max_repeat : the single most-repeated final sentence (lower better).
+    voice_register_rate   : mean register hit-rate (a voice-consistency proxy).
+    """
+    flav = ctx = reg_hits = 0
+    tail_counts: dict[str, int] = {}
+    n = 0
+    for ln in lines:
+        s = (ln or "").strip()
+        if not s:
+            continue
+        n += 1
+        sents = [x.strip() for x in re.split(r"(?<=[.!?])\s+", s) if x.strip()]
+        last = sents[-1].lower().rstrip(".!?") if sents else ""
+        toks = set(re.findall(r"[a-z']+", s.lower()))
+        reg = bool(toks & _REGISTER_LEX)
+        has_known = last in _KNOWN_FLAVOR_TAILS
+        is_flav = reg or has_known
+        if is_flav:
+            flav += 1
+            tail_counts[last] = tail_counts.get(last, 0) + 1
+            # contextual if the FLAVOR sentence names a fact token
+            fl = extract_facts(sents[-1]) if sents else {k: set() for k in _FACT_CATS}
+            if fl["agent"] or fl["loc"] or fl["ability"] or fl["count"]:
+                ctx += 1
+        if reg:
+            reg_hits += 1
+    return {
+        "flavor_coverage": round(flav / n, 4) if n else 0,
+        "contextual_match": round(ctx / flav, 4) if flav else 0,
+        "soundboard_max_repeat": max(tail_counts.values()) if tail_counts else 0,
+        "voice_register_rate": round(reg_hits / n, 4) if n else 0,
+        "n_lines": n,
+    }
 
 # --------------------------------------------------------------------------
 # Valorant fact ontology extractor (the foundation -- every fidelity metric
@@ -278,6 +347,7 @@ def quality_metrics(jsonl_path: str) -> dict:
         "hallucination_examples": halluc_examples,
         "flavor_type_token_ratio": ttr,
         "flavor_max_repeat": max_repeat,
+        "flavor": _flavor_metrics(lines),
     }
 
 
@@ -327,6 +397,11 @@ _TRACKED = [
     ("quality.hallucination_rate", False, "hallucination rate"),
     ("quality.flavor_type_token_ratio", True, "flavor type/token"),
     ("quality.flavor_max_repeat", False, "flavor max-repeat"),
+    # iter5 personality metrics
+    ("quality.flavor.flavor_coverage", True, "flavor coverage"),
+    ("quality.flavor.contextual_match", True, "flavor contextual-match"),
+    ("quality.flavor.voice_register_rate", True, "voice register rate"),
+    ("quality.flavor.soundboard_max_repeat", False, "soundboard max-repeat"),
 ]
 
 
@@ -449,6 +524,12 @@ def main() -> int:
         print(f"inversion={q['inversion_rate']:.4f} ({q['inversion_count']})  "
               f"hallucination={q['hallucination_rate']:.4f} ({q['hallucination_count']})  "
               f"flavor TTR={q['flavor_type_token_ratio']} max-repeat={q['flavor_max_repeat']}")
+        fv = q.get("flavor", {})
+        if fv:
+            print(f"PERSONALITY: coverage={fv['flavor_coverage']:.2%}  "
+                  f"contextual-match={fv['contextual_match']:.2%}  "
+                  f"voice-register={fv['voice_register_rate']:.2%}  "
+                  f"soundboard-max-repeat={fv['soundboard_max_repeat']}")
     print(f"-> {scp}")
 
     if args.prev and os.path.exists(args.prev):
