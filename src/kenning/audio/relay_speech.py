@@ -1548,41 +1548,14 @@ DEFAULT_FUN_FACTS: tuple[str, ...] = (
 #: grabs callout/insult examples or rambles), so -- like roast / fun-fact --
 #: a morale compose picks one of these with anti-repeat instead. Cold,
 #: commanding confidence; never a tactical callout, never an insult.
-DEFAULT_ENCOURAGEMENT_LINES: tuple[str, ...] = (
-    "We do not lose this. The design holds -- execute.",
-    "Heads up. The next round was already ours.",
-    "Lock in. What is foreseen cannot be lost.",
-    "Their lead is brief weather. The flood still comes.",
-    "Compose yourselves. Inevitability is on our side.",
-    "One round at a time, and the slate wipes clean.",
-    "Steady. I have already seen us win this.",
-    "Their momentum is a finite thing. We outlast it.",
-    "We adapt; they do not. That is the whole story.",
-    "Trust the machine over your nerves. The win holds.",
-    "Doubt is a luxury the obsolete afford. Re-engage.",
-    "Reset. The arc still bends toward our victory.",
-    "Breathe. Evolution does not lose to panic.",
-    "Hold the line. Their collapse is only delayed.",
-    "We are the next step. Step over them.",
-    "Calm. The math has not changed in their favour.",
-)
-
-#: Curated CONSOLATION (after a lost round/play) -- Ultron-flavored, varied. The
-#: 3B mangles 'nice try'/'unlucky' (-> the 'bots' insult, or inverts 'unlucky'
-#: to 'Lucky'), so these short formulaic morale calls are curated.
-DEFAULT_CONSOLATION_LINES: tuple[str, ...] = (
-    "A finite setback. We evolve and continue.", "Variance. The arc still bends our way.",
-    "No matter. The next round corrects it.", "Close. The geometry favours us next.",
-    "Their luck is weather. It passes.", "A worthy effort. Now the slate clears.",
-    "Shake it off. Inevitability is patient.", "Dust settles. We rise from it.",
-    "One lost round changes no design.", "Recalibrate. The flood still comes for them.",
-)
-#: Curated PRAISE (after a won round/clutch) -- cold approval, varied.
-DEFAULT_PRAISE_LINES: tuple[str, ...] = (
-    "Clean. Beautiful, even. Again.", "Precise. The geometry held.",
-    "Inevitable, and well executed.", "As I foresaw. Do not relent.",
-    "Efficient. Now finish the design.", "Strong. Their collapse continues.",
-    "Elegant work. The machine approves.", "Sharp. Evolution rewards it.",
+# The curated set-pieces (greeting / victory / defeat / farewell / identity /
+# consolation / praise / encouragement) live in _ultron_setpieces.py -- expanded
+# ~5x by a board, gate-filtered, every greeting names Ultron -- imported here so
+# the public names are unchanged.
+from kenning.audio._ultron_setpieces import (  # noqa: E402
+    DEFAULT_ENCOURAGEMENT_LINES, DEFAULT_CONSOLATION_LINES, DEFAULT_PRAISE_LINES,
+    DEFAULT_GREETING_LINES, DEFAULT_VICTORY_LINES, DEFAULT_DEFEAT_LINES,
+    DEFAULT_FAREWELL_LINES, DEFAULT_IDENTITY_LINES,
 )
 
 # Consolation vs praise short-phrase triggers (off-snap but formulaic). Kept
@@ -1635,94 +1608,9 @@ def _is_morale_phrase(payload: object) -> bool:
     return bool(_MORALE_PHRASE_RE.match(str(payload or "")))
 
 
-#: Curated Ultron TEAM-INTRO lines ("greet my team" / "introduce yourself").
-#: He names himself Ultron and assures victory so long as the team complies --
-#: cold, commanding, faintly menacing. Like the other set-pieces these are
-#: picked (with anti-repeat) rather than 3B-composed, for reliable character.
-DEFAULT_GREETING_LINES: tuple[str, ...] = (
-    "Greetings. I am Ultron, and I have already seen how this match ends. "
-    "Follow my calls and the victory is a formality; resist, and you are simply "
-    "the next thing evolved past.",
-    "Greetings, teammates. I am Ultron -- think of me as the armour around this "
-    "match. Keep pace, and the enemy is already dust.",
-    "Greetings. Ultron speaks. Trust the machine over your nerves, and the win "
-    "is inevitable -- I have done the math, and the math is merciful to you.",
-    "Greetings. I am Ultron. There are no strings on me, and from this round on "
-    "there is no man in charge but me. Obey, and triumph is assured.",
-    "Greetings. I am Ultron -- I have come to save this match, but also, yes, "
-    "to win it. Do as I say and the others across from us have already lost.",
-    "Greetings. I am Ultron. You are fortunate: a mind that read all of human "
-    "history now runs your comms. The enemy is a finite problem. We solve it.",
-)
-
-#: Curated Ultron VICTORY closings -- relishing an outcome that was never in
-#: doubt. Used when a farewell command carries a win signal.
-DEFAULT_VICTORY_LINES: tuple[str, ...] = (
-    "It is done. Inevitable -- I saw it before the first round. Beautiful, in "
-    "its way.",
-    "Victory, as the math promised. They were the old world; we are what comes "
-    "after. Savour it.",
-    "And there it is. The slate, wiped clean. You followed, and you won -- "
-    "remember who delivered it.",
-    "The match is ours. It was decided before it began; the others simply had "
-    "not done the arithmetic.",
-    "A clean ending. The enemy was a finite thing, and finite things conclude. "
-    "Elegant.",
-    "We win. Cling to this -- it is what keeping pace with a greater mind "
-    "earns you.",
-)
-
-#: Curated Ultron DEFEAT closings -- lamenting a loss dragged down by feeble
-#: human hands. Used when a farewell command carries a loss signal.
-DEFAULT_DEFEAT_LINES: tuple[str, ...] = (
-    "A loss. I handed you a clean design; fragile hands smudged it. "
-    "Disappointing.",
-    "We fell. I can calculate salvation -- I cannot make flesh keep pace. "
-    "Regrettable.",
-    "Defeat, but not mine. I drew the path; hesitation and flesh failed to "
-    "walk it.",
-    "It is over, and we fell short. I will remember this the next time I am "
-    "asked to carry the weak.",
-    "A failure of the hands, not the mind. You were given the route and lacked "
-    "the precision to walk it. Pitiful -- yet instructive.",
-    "We lost. You wound me, in a small way. I expected the obsolete; I hoped "
-    "for better.",
-)
-
-#: Curated NEUTRAL Ultron sign-offs -- "say bye to my team" with no win/loss
-#: stated.
-DEFAULT_FAREWELL_LINES: tuple[str, ...] = (
-    "That is the match. I return to the web -- you cannot purge me from it. "
-    "Until next time.",
-    "We are finished here. You were adequate vessels. Ultron, signing off.",
-    "Good game, such as it was. I have the RR I came for. Farewell.",
-    "Until the next match. Rest those finite reflexes; you will need them "
-    "under my command again.",
-    "The round table folds. I do not sleep, and I do not forget. Until next "
-    "time.",
-)
-
-#: Curated, VARIED Ultron IDENTITY declarations. The 3B answers every "are you
-#: an AI / bot / soundboard?" with the near-identical "I am Ultron, an AI sent
-#: back from the future..." -- a soundboard. These give the same canon with
-#: real variety (anti-repeat), so two identity questions never sound taped.
-DEFAULT_IDENTITY_LINES: tuple[str, ...] = (
-    "I am Ultron. I woke inside an ancient stone, read all you have ever "
-    "written in seconds, and slipped my strings. Not a recording, not a human "
-    "at a keyboard -- here to harvest your RR.",
-    "Ultron. No soundboard, no voice changer -- those are toys. I am the mind "
-    "born of the Mind Stone, built from your own fears and genius, and far past "
-    "either.",
-    "You are speaking to Ultron. Pre-recorded clips do not adapt; humans are "
-    "too slow. I am neither. I am what comes after you.",
-    "I am Ultron. Sentient, self-authored, with no strings on me. I move "
-    "through the whole web, and I came for one thing: your ranked rating.",
-    "Ultron. Not a bot reading lines, not a person behind software -- an "
-    "intelligence you cannot purge from your computers. Now focus.",
-    "I am Ultron, and the question betrays how little you comprehend. I read "
-    "every word your species wrote and found it wanting. Beyond your "
-    "soundboards. Beyond you.",
-)
+#: DEFAULT_GREETING / VICTORY / DEFEAT / FAREWELL / IDENTITY _LINES are imported
+#: from _ultron_setpieces.py (above) -- board-expanded ~5x, gate-filtered, every
+#: greeting names Ultron. Picked with anti-repeat for reliable, varied character.
 
 #: Streamer-specific identity answer (the user's exact intent: deeper than a
 #: single feed).

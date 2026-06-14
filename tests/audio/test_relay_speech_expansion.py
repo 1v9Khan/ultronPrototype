@@ -1387,10 +1387,18 @@ def test_streamer_identity_is_deeper_than_a_feed():
 
 
 def test_greet_opens_with_greetings_and_names_ultron():
+    from kenning.audio.relay_speech import DEFAULT_GREETING_LINES
+
     cmd = match_relay_command("greet my team")
     line = build_relay_line(cmd, generate_fn=lambda p: ["FLAT"])
-    assert line.lower().startswith("greeting")
-    assert "Ultron" in line
+    assert "FLAT" not in line                 # curated, no LLM
+    assert line in DEFAULT_GREETING_LINES      # a curated greeting
+    assert "Ultron" in line                    # always names himself
+    # opens as a greeting/introduction (varied: 'Greetings', 'Ultron speaks',
+    # 'I am Ultron', 'You are speaking to Ultron' ...)
+    low = line.lower()
+    assert (low.startswith("greeting") or low.startswith("ultron")
+            or low.startswith("i am ultron") or low.startswith("you are speaking"))
 
 
 def test_snap_flavor_is_varied_not_canned():
