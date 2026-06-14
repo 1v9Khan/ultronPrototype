@@ -51,7 +51,11 @@ _ABILITIES = frozenset((
     "ulted nanoswarm lockdown gravenet nightfall paranoia suck seize prowler "
     "aftershock satchel satcheled empress dismiss dismissed reckoning thrash mosh "
     "razorvine cove orbital").split())
-_OWN_RE = re.compile(r"\b(our|their|my|we|they|us|them|enemy|enemies)\b", re.IGNORECASE)
+# Only the AGENT-ATTRIBUTION ownership words count: our/their/enemy. "my/we/they/
+# them/us" are naturally rephrased or dropped in a relay ("tell my team two B" ->
+# "Two B") so counting them as fact-tokens falsely penalizes correct output; the
+# meaningful ownership signal is the inversion rate (our<->their), tracked below.
+_OWN_RE = re.compile(r"\b(our|their|enemy|enemies)\b", re.IGNORECASE)
 # Enemy- vs own-subject leads (for the inversion heuristic).
 _ENEMY_LEAD = re.compile(r"^\s*(?:they(?:'re|\s+are)?|the\s+enem(?:y|ies)|enem(?:y|ies)|their)\b", re.IGNORECASE)
 _OWN_LEAD = re.compile(r"^\s*(?:we(?:'re|\s+are)?|our|i(?:'m|\s+am)?|us)\b", re.IGNORECASE)
