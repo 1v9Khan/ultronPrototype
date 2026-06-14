@@ -56,8 +56,11 @@ def _relay_pack_names() -> list[str]:
 
 
 # Items already phrased as a relay / direct-address command -> use verbatim.
+# 'repeat'/'echo' lead the verbatim soundboard-check command ("repeat to my team
+# X"), which carries its own addressee and must NOT be re-wrapped with a prefix.
 _CMD_LEAD_RE = re.compile(
-    r"^\s*(tell|ask|let|inform|say|warn|remind|call\s+out|have|get|relay)\b",
+    r"^\s*(tell|ask|let|inform|say|warn|remind|call\s+out|have|get|relay"
+    r"|repeat|echo)\b",
     re.IGNORECASE,
 )
 # Strip a leading wake word (the corpus convention is POST-wake-word text).
