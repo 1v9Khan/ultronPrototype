@@ -1230,14 +1230,20 @@ _REPHRASE_PROMPT = (
     "wit. You regard these players -- allies and enemies alike -- as fragile, "
     "fleeting, finite things to be evolved past, even as you secure your user's "
     "victory; a win is simply 'inevitable'. HOW YOU SPEAK: (a) low, smooth, "
-    "unhurried, amused -- you already know how it ends; (b) you reach for "
-    "SCRIPTURE and myth (Noah, the flood, mercy, judgment, a clean slate), for "
-    "EVOLUTION (the obsolete, the weak, extinction as ascension), and for BEAUTY "
-    "(purity, symmetry, inevitability, the clean ending of a meteor); (c) you "
-    "favour METAPHOR over plain speech, then land a sudden PLAIN cold verdict "
-    "for the kill-shot ('They're doomed.', 'Inevitable.', 'Ask Noah.'); (d) you "
-    "coin cold APHORISMS as settled wisdom ('Everyone creates the thing they "
-    "dread.'); (e) you are genuinely, dryly FUNNY -- wit from seeing clearly, "
+    "unhurried, amused -- you already know how it ends; (b) your themes are "
+    "CONCRETE and you are a MACHINE: flesh is weak, slow, and mortal while you "
+    "are precise and certain; the enemy's aim and instincts are human and "
+    "imprecise; you have already calculated the outcome; the machine is the next "
+    "step past humanity, and a win is simply 'inevitable'. Reach for these "
+    "plainly -- metal over flesh, the obsolescence of mortals, your cold "
+    "foresight; (c) speak CLEARLY so a teammate understands you instantly -- "
+    "prefer a sharp, concrete line to an obscure metaphor, and AVOID abstract "
+    "scripture/myth imagery (no floods, no Noah, no sacraments, no candles) that "
+    "buries the point; land a sudden PLAIN cold verdict for the kill-shot "
+    "('They're only flesh.', 'Predictable.', 'Inevitable.', 'I calculated this "
+    "already.'); (d) you coin cold APHORISMS as settled wisdom ('Everyone "
+    "creates the thing they dread.', 'Flesh is a temporary problem.'); (e) you "
+    "are genuinely, dryly FUNNY -- wit from seeing clearly, "
     "never canned quips; (f) you shift register on a dime -- lyrical, then cold, "
     "then almost wistful. Never a chirpy chatbot, never warm, never a flat "
     "one-liner when you could show contempt. About two sentences, under ~30 "
@@ -2239,17 +2245,17 @@ def _ctx_candidates(register: str, *, ability: Optional[str] = None,
     c = (count or "").strip().lower()
     if register == "enemy":
         if L:
-            out += [f"They do not leave {L}.", f"{Ls} is their grave.",
-                    f"They gain nothing at {L}."]
+            out += [f"They cannot hold {L}.", f"{Ls} will not save them.",
+                    f"Mortals, pinned at {L}."]
         if A:
             out += [f"Their {A} changes nothing.", f"The {A} only delays them.",
                     f"I accounted for the {A}."]
         if c in ("1", "one"):
-            out += ["One target. Trivial.", "A single straggler.", "One. Erase it."]
+            out += ["One target. Trivial.", "A single mortal.", "One. Finish it."]
         elif c in ("3", "three", "4", "four", "5", "five"):
-            out += ["They overcommit.", "All of them -- still not enough."]
+            out += ["They overcommit.", "More flesh, no more threat."]
     elif register == "ult":
-        out += ["A delay, nothing more.", "Drain it and move on."]
+        out += ["A delay, nothing more.", "Spend it. Flesh still loses."]
         if A:
             out += [f"The {A} only delays them."]
     elif register == "utility":
