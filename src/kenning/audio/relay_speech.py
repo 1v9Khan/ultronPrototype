@@ -342,10 +342,24 @@ _FILLER_RE = re.compile(
 )
 
 
+# Common agent abbreviations / STT homophones -> the canonical agent name so the
+# matcher + fact-extractor resolve them ("KJ nanoswarm" -> Killjoy; "yoroo
+# gatecrash" -> Yoru). Word-boundary anchored so they never hit inside a word.
+_ABBREV_SUBS = (
+    (re.compile(r"\bkj\b", re.IGNORECASE), "Killjoy"),
+    (re.compile(r"\bbrim\b", re.IGNORECASE), "Brimstone"),
+    (re.compile(r"\byoroo\b", re.IGNORECASE), "Yoru"),
+    (re.compile(r"\bvyce\b", re.IGNORECASE), "Vyse"),
+)
+
+
 def _normalize_speech(text: str) -> str:
-    """Light spoken-form cleanup before relay matching (KAY/O slash + filler)."""
+    """Light spoken-form cleanup before relay matching (KAY/O slash, filler,
+    agent abbreviations/homophones)."""
     text = _KAYO_SLASH_RE.sub("kayo", text)
     text = _FILLER_RE.sub(" ", text)
+    for rx, sub in _ABBREV_SUBS:
+        text = rx.sub(sub, text)
     text = re.sub(r"\s{2,}", " ", text).strip()
     return text
 
@@ -1371,9 +1385,13 @@ def _fallback_line(command: RelayCommand) -> str:
         return "I'm Kenning, his AI on comms. You heard right."
     if command.compose:
         return "Good fight, team. Heads up - we take the next one."
-    if command.addressee != "team":
-        return f"{command.addressee}: {command.payload}"
-    return f"Team: {command.payload}"
+    # Plain relay with no LLM output -> a CLEAN, fact-perfect literal of the
+    # payload (no 'Team:' / 'Name:' chat-label, which read badly when spoken).
+    lit = _literal_relay(command.payload)
+    if command.addressee != "team" and lit:
+        head = lit[0].lower() + lit[1:] if not lit.startswith("I ") else lit
+        return f"{command.addressee}, {head}"
+    return lit or (command.payload or "")
 
 
 # --- Roast lines -------------------------------------------------------
@@ -2621,6 +2639,7 @@ def _as_compound_callout(
     resolved: list[str] = []
     leftover: list[str] = []
     enemy_facing = False
+    econ_added = False
     for piece in parts:
         snap = _as_snap_callout(_PayloadShim(piece), recent_lines, flavor=False)
         if snap is None:
@@ -2629,6 +2648,15 @@ def _as_compound_callout(
         snap = snap.strip()
         if not snap.endswith((".", "!", "?")):
             snap += "."
+        # Dedupe economy/curated lines: a multi-piece economy compound ("we save,
+        # one more eco and we buy rifles") must emit ONE eco line, not three
+        # concatenated "We save..." pool lines.
+        is_econ = bool(re.search(r"\b(?:insufficient\s+credits|we\s+save|"
+                                 r"we\s+force|full\s+(?:buy|loadout))\b", snap, re.I))
+        if is_econ:
+            if econ_added:
+                continue
+            econ_added = True
         resolved.append(snap)
         if re.search(r"\b(?:they|they're|their|enemy|enemies)\b", snap, re.I):
             enemy_facing = True
@@ -2657,11 +2685,10 @@ def _strip_artifacts(line: str) -> str:
         r"/\s*no_?think\b|/\s*think\b|<\|[a-z_]+\|>|<\/?[a-z][a-z0-9_]*>",
         "", line, flags=re.IGNORECASE,
     )
-    # The 3B sometimes prefixes the spoken line with a chat-style PERSONA label
-    # ('Ultron: ...', 'Assistant: ...') -- strip it so the line is spoken clean.
-    # ('Team:' / 'Sova:' are intentional deterministic fallback prefixes and are
-    # left alone; only the persona/self labels are stripped.)
-    line = re.sub(r"^\s*(?:ultron|kenning|assistant|me|you)\s*:\s*",
+    # The 3B sometimes prefixes the spoken line with a chat-style speaker label
+    # ('Ultron: ...', 'Team: ...', 'Assistant: ...') -- strip it so the line is
+    # spoken clean (the fallback no longer emits a 'Team:' prefix either).
+    line = re.sub(r"^\s*(?:ultron|kenning|assistant|me|you|team)\s*:\s*",
                   "", line, flags=re.IGNORECASE)
     # Some outputs arrive wrapped in quotation marks around the WHOLE line.
     line = " ".join(line.replace('"', "").split())
@@ -2755,6 +2782,68 @@ def _word_for_digit(d: str) -> str:
 
 def _digit_for_word(w: str) -> str:
     return _W2D.get(w.lower(), w)
+
+
+# --- Fact-preserving abstention (iter4) ---------------------------------------
+# When the 3B corrupts a TACTICAL line (drops a fact / hallucinates an agent or
+# location / flips ownership) we relay a clean LITERAL of the input instead --
+# correctness over polish. Scoped to plain relays; off-snap insults/banter/
+# opinions WITHOUT a tactical fact-token keep the model's flavor.
+_NUM_TOK_RE = re.compile(r"\b(?:[1-9]\d?|one|two|three|four|five|six)\b", re.IGNORECASE)
+_W2D_FACT = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+             "six": "6"}
+
+
+def _fact_tokens(text: str) -> tuple[set, set, set, set]:
+    t = (text or "").lower()
+    words = re.findall(r"[a-z/0-9']+", t)
+    nums = {_W2D_FACT.get(m.lower(), m.lower()) for m in _NUM_TOK_RE.findall(t)}
+    agents = {w for w in words if w in _ROSTER_CANON}
+    locs = {w for w in words if w in _LOC_TOKENS}
+    abils = {w for w in words if w in _ABILITY_LEAD}
+    return nums, agents, locs, abils
+
+
+def _output_keeps_facts(payload: str, line: str) -> bool:
+    """True if `line` faithfully carries `payload`'s tactical facts. False (=>
+    abstain to a literal) when a fact-bearing payload's output drops >30% of its
+    fact-tokens, invents an agent/location absent from the input, or flips
+    our<->their ownership."""
+    pn, pa, pl, pab = _fact_tokens(payload)
+    in_facts = pn | pa | pl | pab
+    if not in_facts:
+        return True                       # not tactical -> not the validator's job
+    ln, la, ll, lab = _fact_tokens(line)
+    if (la - pa) or (ll - pl):
+        return False                      # hallucinated agent / location
+    kept = len(in_facts & (ln | la | ll | lab))
+    if kept / len(in_facts) < 0.7:
+        return False                      # dropped too many facts
+    p_their = bool(re.search(r"\btheir\b", payload, re.IGNORECASE))
+    p_our = bool(re.search(r"\b(?:our|we|we're|i|i'm)\b", payload, re.IGNORECASE))
+    l_their = bool(re.search(r"\btheir\b", line, re.IGNORECASE))
+    l_our = bool(re.search(r"\b(?:our|we|we're)\b", line, re.IGNORECASE))
+    if p_their and not p_our and l_our and not l_their:
+        return False                      # 'their X' -> 'we/our X'
+    if p_our and not p_their and l_their and not l_our:
+        return False                      # 'our/we X' -> 'their X'
+    return True
+
+
+def _literal_relay(payload: str, recent_lines: Optional[Sequence[str]] = None) -> str:
+    """A clean, fact-perfect passthrough of the payload (the abstention output)."""
+    p = _strip_artifacts(payload or "").strip()
+    p = re.sub(r"^to\s+", "", p, flags=re.IGNORECASE).strip()
+    p = re.sub(r"\bthey\s+are\b", "they're", p, flags=re.IGNORECASE)
+    p = re.sub(r"\bwe\s+are\b", "we're", p, flags=re.IGNORECASE)
+    p = p.strip().rstrip(".!?,;:").strip()
+    if not p:
+        return ""
+    out = p[0].upper() + p[1:] + "."
+    if (len(out.split()) <= 9
+            and re.search(r"\b(?:they|they're|their|enemy|enemies)\b", out, re.I)):
+        out = _flavored(out, _FLAVOR_ENEMY, recent_lines)
+    return out
 
 
 def _cap_line(line: str, max_chars: int) -> str:
@@ -3117,9 +3206,12 @@ def build_relay_line(
             except Exception:                                        # noqa: BLE001
                 sub = None
             if sub is not None:
+                # recent_lines=None for the leftover: the anti-repeat list was
+                # bleeding a PRIOR line's content into the compound tail (audit
+                # #0781 pulled #0779's "Fade revealed three on B").
                 tail = build_relay_line(
                     sub, llm=llm, rephrase=rephrase, max_chars=max_chars,
-                    recent_lines=recent_lines, generate_fn=generate_fn,
+                    recent_lines=None, generate_fn=generate_fn,
                 )
                 if tail and tail.strip():
                     return _cap_line(f"{det_line} {tail.strip()}", max_chars)
@@ -3165,8 +3257,8 @@ def build_relay_line(
         # position form -- a legitimate sentence ('a transistor is a switch') is
         # untouched.
         if (line
-                and re.search(r"\b(?:they'?re|they\s+are|enemies?|enemy|we'?re)"
-                              r"\s+switch\b", line, re.IGNORECASE)
+                and re.search(r"\b(?:they'?re|they|enemies?|enemy|we'?re|we)"
+                              r"\s+(?:are\s+|is\s+)?switch\b", line, re.IGNORECASE)
                 and not re.search(r"\bswitch\b", command.payload or "",
                                   re.IGNORECASE)):
             logger.debug("relay: rejected 'switch' position hallucination %r", line)
@@ -3197,6 +3289,17 @@ def build_relay_line(
             and not getattr(command, "context", None)
             and not getattr(command, "directive", None)):
         line = _repair_against_input(command.payload, line)
+        # FACT-PRESERVING ABSTENTION: if the model still corrupted a TACTICAL
+        # line (dropped facts / hallucinated an agent-or-location / flipped
+        # ownership), relay a clean LITERAL of the input instead. Correctness
+        # over polish -- the dominant fix for the 3B's verbose-input failures.
+        if not getattr(command, "verbatim", False) and not _output_keeps_facts(
+                command.payload, line):
+            lit = _literal_relay(command.payload, recent_lines)
+            if lit:
+                logger.debug("relay: abstain to literal %r -> %r",
+                             line, lit)
+                line = lit
     # Agent-name preservation: undo a single-agent swap (Chamber -> KAY/O).
     want = _roster_agents(getattr(command, "payload", "") or "")
     if command.addressee != "team":

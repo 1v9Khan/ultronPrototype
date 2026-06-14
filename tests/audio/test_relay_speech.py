@@ -242,7 +242,9 @@ def test_named_fallback_line() -> None:
     cmd = match_relay_command("ask sage if I can get a heal")
     assert cmd is not None
     line = build_relay_line(cmd, rephrase=False)
-    assert line == "Sage: if I can get a heal"
+    # Clean literal fallback (no chat-style 'Name:' label); opens with the name.
+    assert line.startswith("Sage,") and "heal" in line.lower()
+    assert ":" not in line.split(",")[0]
 
 
 def test_compose_fallback_line_is_stock_encouragement() -> None:
@@ -279,15 +281,15 @@ def test_build_relay_line_fallback_on_llm_error() -> None:
     def boom(prompt: str):
         raise RuntimeError("llm down")
 
-    # An off-snap insult routes to the LLM, so its error path -> the fallback is
-    # exercised. ('push A together' is now a deterministic directive.)
+    # An off-snap insult routes to the LLM, so its error path -> the clean literal
+    # fallback (no 'Team:' label) is exercised, with the content preserved.
     line = build_relay_line(_cmd("they are bots"), generate_fn=boom)
-    assert line == "Team: they are bots"
+    assert "bots" in line.lower() and not line.lower().startswith("team:")
 
 
 def test_build_relay_line_fallback_on_empty_output() -> None:
     line = build_relay_line(_cmd("they are bots"), generate_fn=lambda p: iter([]))
-    assert line == "Team: they are bots"
+    assert "bots" in line.lower() and not line.lower().startswith("team:")
 
 
 def test_build_relay_line_rephrase_disabled_skips_llm() -> None:
@@ -298,7 +300,7 @@ def test_build_relay_line_rephrase_disabled_skips_llm() -> None:
     # fallback, never the LLM. (Economy 'save' is now handled deterministically,
     # so it is no longer a clean rephrase-skip probe -- see the economy tests.)
     line = build_relay_line(_cmd("they are clueless"), rephrase=False, generate_fn=fail)
-    assert line == "Team: they are clueless"
+    assert "clueless" in line.lower() and not line.lower().startswith("team:")
 
 
 def test_build_relay_line_strips_quotes_newlines_and_caps_length() -> None:
@@ -317,7 +319,7 @@ def test_build_relay_line_no_llm_no_generate_fn_falls_back() -> None:
     # fallback. ('watch the flank' is now a handled team directive -> 'Watch
     # the flank.', so it is no longer an unhandled-fallback probe.)
     line = build_relay_line(_cmd("they are absolute clowns"), llm=None)
-    assert line == "Team: they are absolute clowns"
+    assert "clowns" in line.lower() and not line.lower().startswith("team:")
 
 
 # ---------------------------------------------------------------------------
@@ -535,8 +537,10 @@ def test_orchestrator_relay_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
         "tell my teammates they should be smoking mid window every round"
     )
     assert handled is True
-    # rephrase=False -> deterministic line, synthesized then played.
-    assert synthesized == ["Team: they should be smoking mid window every round"]
+    # rephrase=False -> clean literal fallback (no 'Team:' label), synth + played.
+    assert len(synthesized) == 1
+    assert "smoking mid window" in synthesized[0].lower()
+    assert not synthesized[0].lower().startswith("team:")
     assert played == [(2400, 24000, 25)]
     # echo_to_user=False -> nothing on the normal output.
     assert o._spoken == []
@@ -816,7 +820,7 @@ def test_relay_generation_is_fully_isolated() -> None:
         ("Clove, smoke window. / no_think", "Clove, smoke window."),
         ("Rotate B now. /no_think", "Rotate B now."),
         ("Push A together./think", "Push A together."),
-        ("Team: save round <|im_end|>", "Team: save round"),
+        ("Team: save round <|im_end|>", "save round"),
     ],
 )
 def test_control_tokens_never_reach_the_spoken_line(
