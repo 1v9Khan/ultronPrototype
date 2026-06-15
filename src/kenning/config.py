@@ -2984,6 +2984,14 @@ class GamingModeConfig(_Strict):
     # generation), forced regardless of the env/config gpu_layers override.
     # Set to -1 to keep the gaming LLM on GPU (faster, but spikes the card).
     llm_gpu_layers: int = Field(default=0, ge=-1, le=200)
+    # Device the Kokoro voice model runs on WHILE gaming. Default "cuda": the
+    # ~330 MB voice model stays on the GPU so callouts are snappy AND the CPU is
+    # left free for audio capture + STT. Putting it on CPU (alongside the 3B
+    # LLM + Moonshine) saturates the CPU -> the capture queue drops audio blocks
+    # -> garbled transcription + high latency. The big VRAM saver is the 3B LLM
+    # on CPU (llm_gpu_layers=0), not the voice model. Set "cpu" to force it off
+    # the GPU at the cost of callout latency + STT accuracy.
+    kokoro_engage_device: str = "cuda"
     plugins_to_disable: List[str] = Field(
         default_factory=lambda: ["desktop-control", "windows-control"],
     )

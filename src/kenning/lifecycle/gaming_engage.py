@@ -63,6 +63,7 @@ class GamingEngageDeps:
         gaming_llm_preset: str = "",
         gaming_llm_gpu_layers: Optional[int] = None,
         tts_kokoro_default_device: str = "cpu",
+        tts_kokoro_engage_device: str = "cuda",
         llm_preset_holder: Optional[dict] = None,
         stt_name_holder: Optional[dict] = None,
     ) -> None:
@@ -79,6 +80,12 @@ class GamingEngageDeps:
         # keeps config behaviour.
         self.gaming_llm_gpu_layers = gaming_llm_gpu_layers
         self.tts_kokoro_default_device = tts_kokoro_default_device
+        # Device the Kokoro TTS runs on WHILE gaming. Default "cuda": keeping
+        # the (tiny, ~330 MB) voice model on the GPU is what makes callouts
+        # snappy AND frees the CPU so the audio-capture consumer never falls
+        # behind (CPU saturation = dropped capture blocks = garbled STT). The
+        # big VRAM saver is the 3B LLM on CPU; the voice model is not.
+        self.tts_kokoro_engage_device = tts_kokoro_engage_device
         # Shared cells so engage can stash the pre-engage state and
         # disengage can read it. The orchestrator passes the same
         # dict references for both directions.
@@ -191,11 +198,16 @@ async def gaming_engage_iterator(
         detail="moving voice engine",
         progress=0.7,
     )
+    _engage_dev = getattr(deps, "tts_kokoro_engage_device", "cuda") or "cuda"
     if deps.tts is not None and hasattr(deps.tts, "move_to_device"):
         try:
-            deps.tts.move_to_device("cpu")
+            # Default "cuda": keep the voice model on the GPU so callouts stay
+            # snappy and the CPU is free for audio capture + STT (CPU saturation
+            # was dropping capture blocks -> garbled transcription + lag).
+            deps.tts.move_to_device(_engage_dev)
         except Exception as e:                                      # noqa: BLE001
-            logger.warning("gaming engage: Kokoro move-to-CPU skipped (%s)", e)
+            logger.warning(
+                "gaming engage: Kokoro move-to-%s skipped (%s)", _engage_dev, e)
 
     # ----- 4: VLM unload -----------------------------------------------
     yield task.advance(

@@ -2465,18 +2465,31 @@ class Orchestrator:
         if not getattr(cfg, "enabled", False):
             return False
         names = getattr(cfg, "addressee_names", None) or None
-        command = match_relay_command(user_text, names=names)
-        if command is None:
-            # Fallback: retry after stripping a mis-transcribed leading wake
-            # word ("Run, tell my team ..." -> "tell my team ...").
-            cleaned = _strip_leading_wake_remnant(user_text)
-            if cleaned != user_text:
-                command = match_relay_command(cleaned, names=names)
-                if command is not None:
+        # Progressive live-STT repair, tried in order; the CLEAN text matches
+        # first so clear speech is never altered. Fallbacks: (1) strip a
+        # mis-heard leading wake word / filler ("Run, tell my team ..."), then
+        # (2) snap mis-transcribed agent names + terms back to canon
+        # ("Silva has sold" -> "Sova has ult"). The matched VARIANT is what
+        # gets relayed, so a repaired callout carries the corrected words.
+        from kenning.audio._stt_correct import correct_callout_stt
+        stripped = _strip_leading_wake_remnant(user_text)
+        # CLEAN text first (never over-corrected); then the CORRECTED repairs
+        # BEFORE the raw-stripped text, so a garbled callout is relayed with the
+        # fixed words ("Sova has ult"), not the raw mis-hear ("Silva has sold").
+        variants = [user_text]
+        for v in (correct_callout_stt(stripped),
+                  correct_callout_stt(user_text), stripped):
+            if v and v not in variants:
+                variants.append(v)
+        command = None
+        for v in variants:
+            command = match_relay_command(v, names=names)
+            if command is not None:
+                if v != user_text:
                     logger.info(
-                        "relay: matched after wake-remnant strip %r -> %r",
-                        user_text[:60], cleaned[:60],
-                    )
+                        "relay: matched after STT repair %r -> %r",
+                        user_text[:60], v[:60])
+                break
         if command is None:
             return False
         # Session mute (streaming safety): a matched relay command while
@@ -3811,6 +3824,10 @@ class Orchestrator:
             # call logs WARN and leaves the original state.
             full_cfg = get_config()
             tts_kokoro_default_device = full_cfg.tts.kokoro.device
+            # Keep Kokoro on the GPU while gaming (snappy callouts + frees the
+            # CPU for capture/STT). Default "cuda"; config can force "cpu".
+            tts_kokoro_engage_device = (
+                getattr(cfg, "kokoro_engage_device", "cuda") or "cuda")
             gaming_llm_preset = (cfg.llm_preset or "").strip()
             # Force the gaming LLM onto CPU (bare-bones) regardless of the
             # env/config gpu_layers override. None = leave on config device.
@@ -3862,6 +3879,7 @@ class Orchestrator:
                     gaming_llm_preset=gaming_llm_preset,
                     gaming_llm_gpu_layers=gaming_llm_gpu_layers,
                     tts_kokoro_default_device=tts_kokoro_default_device,
+                    tts_kokoro_engage_device=tts_kokoro_engage_device,
                     llm_preset_holder=llm_preset_before_engage,
                     stt_name_holder=stt_name_before_engage,
                 )
@@ -3984,9 +4002,10 @@ class Orchestrator:
             )
             logger.info(
                 "GamingModeManager ready (plugins=%s, toggle_docker=%s, "
-                "kokoro_engage_device=cpu, kokoro_disengage_device=%s, "
+                "kokoro_engage_device=%s, kokoro_disengage_device=%s, "
                 "vlm_unload_on_engage=True, llm_preset=%s)",
                 cfg.plugins_to_disable, cfg.toggle_docker,
+                tts_kokoro_engage_device,
                 tts_kokoro_default_device,
                 gaming_llm_preset or "(no swap)",
             )
