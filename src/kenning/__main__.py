@@ -97,6 +97,20 @@ def main() -> int:
             orchestrator.shutdown()
 
         signal.signal(signal.SIGINT, _sigint)
+        # SIGTERM (Linux/WSL `kill`, service-manager stop, os.kill(pid, SIGTERM))
+        # must run the SAME full cleanup. NOTE: on Windows `taskkill /F` /
+        # Task-Manager "End task" is TerminateProcess and is UNCATCHABLE -- that
+        # force-kill path is covered at the NEXT boot by the sidecar orphan sweep
+        # + audit-log repair, NOT in-process here.
+        try:
+            signal.signal(signal.SIGTERM, _sigint)
+        except (OSError, ValueError, AttributeError):
+            pass
+        # atexit backstop: catches exit paths that bypass both the `with`
+        # context-manager and the signal handlers (e.g. sys.exit deep in a
+        # thread). shutdown() is idempotent, so the redundant calls are harmless.
+        import atexit
+        atexit.register(orchestrator.shutdown)
 
         try:
             with orchestrator:

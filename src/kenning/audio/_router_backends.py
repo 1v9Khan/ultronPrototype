@@ -248,15 +248,28 @@ class HybridBackend(SimilarityBackend):
         lp = self.lex.prepare(exemplars)
         ep = None
         if self._emb_ok:
-            try:
-                ep = self.emb.prepare(exemplars)
-            except Exception as e:                                # noqa: BLE001
-                # A slow/unavailable sidecar at PREPARE time must NEVER kill the
-                # whole router build -> degrade this family to lexical-only
-                # (still fully usable) instead of losing the semantic layer.
+            import time
+            last_err = None
+            # Retry once: the sidecar /healthz can be up while the FIRST /embed
+            # is still slow (EmbeddingGemma warm-up) -- a single retry covers that
+            # window so we don't needlessly drop to lexical.
+            for attempt in range(2):
+                try:
+                    ep = self.emb.prepare(exemplars)
+                    last_err = None
+                    break
+                except Exception as e:                            # noqa: BLE001
+                    last_err = e
+                    if attempt == 0:
+                        time.sleep(2.0)
+            if last_err is not None:
+                # Degrading to lexical here is the SAFETY NET (never crash the
+                # build); it is meant to be UNREACHABLE in normal operation, so
+                # log it LOUD (ERROR) -- the boot respawn-on-lexical retry acts
+                # on this.
                 self._emb_ok = False
-                logger.warning("command router: embedding prepare failed (%s) "
-                               "-> lexical-only for this session", e)
+                logger.error("command router: embedding prepare FAILED after "
+                             "retries (%s) -> LEXICAL-ONLY this session", last_err)
         return (lp, ep)
 
     def score(self, query: str, prepared: Any) -> List[float]:
@@ -279,14 +292,33 @@ class HybridBackend(SimilarityBackend):
             self._emb_fails += 1
             if self._emb_fails >= 3:
                 self._emb_ok = False
-                logger.warning("command router: embedding sidecar failed %dx -> "
-                               "lexical-only for the rest of this session",
-                               self._emb_fails)
+                logger.error("command router: embedding sidecar failed %dx -> "
+                             "LEXICAL-ONLY for the rest of this session (sidecar "
+                             "may have died; try_recover re-enables it if it returns)",
+                             self._emb_fails)
             return ls
         if len(es) != len(ls):
             return ls
         w = self.emb_weight
         return [w * e + (1.0 - w) * l for e, l in zip(es, ls)]
+
+    def try_recover(self) -> bool:
+        """Re-enable embedding if the sidecar has come back. No-op when already
+        on. Called THROTTLED from the idle voice loop so a transient sidecar
+        outage (the 3x failure latch) doesn't disable the hybrid for the whole
+        session. Returns True iff it (re)enabled embedding on this call."""
+        if self._emb_ok or self.emb is None:
+            return False
+        try:
+            if self.emb.available():
+                self._emb_fails = 0
+                self._emb_ok = True
+                logger.info("command router: embedding sidecar recovered -> "
+                            "hybrid re-enabled (was lexical-only)")
+                return True
+        except Exception:                                         # noqa: BLE001
+            pass
+        return False
 
 
 def get_backend(prefer: str = "hybrid", *, host: str = "127.0.0.1",

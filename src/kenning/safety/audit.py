@@ -174,10 +174,21 @@ class AuditLog:
             # newlines and split.
             data = data.replace(b"\r\n", b"\n")
             lines = data.rstrip(b"\n").split(b"\n")
-            last = lines[-1]
-            if not last:
-                return GENESIS_PREV_HASH
-            return _hash_line(last.decode("utf-8", errors="replace"))
+            # Hash the last line that is VALID JSON. A truncated final line
+            # (process killed mid-write, BEFORE the os.fsync in record()) is a
+            # never-committed write; linking the next entry to its hash would
+            # break the chain, so walk backwards past any partial / blank tail.
+            # repair_if_needed() does the authoritative on-disk truncation.
+            for raw in reversed(lines):
+                s = raw.decode("utf-8", errors="replace")
+                if not s.strip():
+                    continue
+                try:
+                    json.loads(s)
+                except json.JSONDecodeError:
+                    continue
+                return _hash_line(s)
+            return GENESIS_PREV_HASH
         except OSError as e:
             logger.warning(
                 "audit log tail read failed (%s); starting from genesis", e,
@@ -324,6 +335,71 @@ class AuditLog:
                 )
             expected_prev = _hash_line(line)
         return True, "ok"
+
+    def repair_if_needed(self) -> str:
+        """Heal a hash chain broken by an unclean shutdown.
+
+        A kill between ``record()``'s ``write()`` and ``os.fsync()`` leaves a
+        truncated final line whose hash the live log never linked from -> the
+        next boot's ``verify_chain`` reports a ``prev_hash`` mismatch. This
+        finds the longest VALID PREFIX from genesis (each line parses AND links
+        correctly), truncates the file to it, and recomputes the tail hash.
+
+        Only the never-fsync'd tail is removed -- no durably-committed record is
+        ever dropped. Returns ``"ok"`` (intact/empty), ``"repaired"`` (truncated
+        a partial/corrupt tail), or ``"restarted"`` (no valid prefix -> the file
+        is ARCHIVED as ``.corrupt.<ts>``, never deleted, and the chain restarts
+        from genesis). Never raises -- audit integrity must not block boot.
+        """
+        with self._lock:
+            try:
+                if not self._path.is_file():
+                    self._tail_hash = GENESIS_PREV_HASH
+                    return "ok"
+                with self._path.open("r", encoding="utf-8") as f:
+                    lines = [ln.rstrip("\n") for ln in f.readlines()]
+                while lines and not lines[-1].strip():
+                    lines.pop()
+                if not lines:
+                    self._tail_hash = GENESIS_PREV_HASH
+                    return "ok"
+                expected_prev = GENESIS_PREV_HASH
+                valid = 0
+                for line in lines:
+                    if not line.strip():
+                        break
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        break
+                    if entry.get("prev_hash") != expected_prev:
+                        break
+                    expected_prev = _hash_line(line)
+                    valid += 1
+                if valid == len(lines):
+                    self._tail_hash = expected_prev      # fully intact
+                    return "ok"
+                if valid == 0:
+                    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+                    archive = self._path.with_name(self._path.name + f".corrupt.{ts}")
+                    try:
+                        self._path.replace(archive)
+                    except OSError:
+                        pass
+                    self._tail_hash = GENESIS_PREV_HASH
+                    return "restarted"
+                # Truncate the file to the valid prefix (atomic full rewrite +
+                # fsync). Text mode matches record()'s append convention.
+                with self._path.open("w", encoding="utf-8") as f:
+                    f.write("\n".join(lines[:valid]) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                self._tail_hash = expected_prev
+                return "repaired"
+            except Exception as e:                                # noqa: BLE001
+                logger.warning(
+                    "audit log repair failed (%s); leaving the log as-is", e)
+                return "ok"
 
 
 _audit_singleton: Optional[AuditLog] = None

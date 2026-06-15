@@ -161,7 +161,7 @@ def get_command_router() -> Optional[CommandRouter]:
             # COLD boot still gets the embedding backend rather than latching
             # lexical-only. The sidecar is spawned EARLY, so this usually returns
             # after only a couple of seconds at the boot-end warmup.
-            wait = float(getattr(rcfg, "sidecar_startup_timeout_seconds", 0.0)) if rcfg else 0.0
+            wait = float(getattr(rcfg, "sidecar_startup_timeout_seconds", 30.0)) if rcfg else 30.0
             backend = get_backend(prefer, host=host, port=port,
                                   emb_weight=emb_w, wait_seconds=wait)
             _router = CommandRouter(backend)
@@ -171,3 +171,15 @@ def get_command_router() -> Optional[CommandRouter]:
             _router_failed = True
             _router = None
     return _router
+
+
+def reset_command_router() -> None:
+    """Drop the cached router so the next get_command_router() REBUILDS it.
+
+    Used by the boot respawn-on-lexical retry (re-spawn the sidecar, then rebuild
+    the router with embedding) and by test isolation. Takes the singleton lock so
+    it can't race a concurrent build."""
+    global _router, _router_failed
+    with _router_lock:
+        _router = None
+        _router_failed = False

@@ -64,8 +64,12 @@ def configure_logging(
     )
     root.addHandler(console)
 
-    # Tame chatty third-party libraries.
-    for noisy in ("numba", "matplotlib", "urllib3", "huggingface_hub"):
+    # Tame chatty third-party libraries. torio/torchaudio probe for optional
+    # FFmpeg .pyd extensions at import and DEBUG-log the (expected) FileNotFound
+    # tracebacks when they are absent -- Silero VAD uses the PyTorch backend, so
+    # those 4 tracebacks every boot are pure noise. Raise them to WARNING.
+    for noisy in ("numba", "matplotlib", "urllib3", "huggingface_hub",
+                  "torio", "torchaudio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     _CONFIGURED = True

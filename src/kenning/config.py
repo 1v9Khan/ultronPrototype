@@ -2996,6 +2996,23 @@ class GamingModeConfig(_Strict):
     # just answers without memory recall / search). Default ON with gaming mode.
     barebones_skip_retrieval: bool = True
     barebones_skip_web_search: bool = True
+    # 2026-06-15 LEAN GAMING BOOT (permanent default; no switch). When gaming is
+    # the STARTUP INTENT (engage_at_startup), the boot initializes/IMPORTS ONLY
+    # the core relay + Spotify + voice essentials -- everything below is skipped
+    # so it never loads, never imports, never touches RAM (smaller anticheat
+    # surface). All default True; each is independently toggleable. Gated on the
+    # CONFIG INTENT (engage_at_startup), never the runtime-engaged state (which
+    # isn't set until the END of __init__). See feedback-no-default-load-anticheat.
+    barebones_direct_gaming_llm: bool = True      # boot straight into the 3B-CPU preset (no 4B-GPU load-then-swap)
+    barebones_skip_reranker_warmup: bool = True   # cross-encoder reranker is loaded-then-freed on engage
+    barebones_skip_docker_autostart: bool = True  # SearxNG/web-search Docker probe (web search is skipped anyway)
+    barebones_skip_coding: bool = True            # MCP server + coordinator + CodingVoice/ProjectIndex/Supervisor + project_introspect
+    barebones_skip_openclaw: bool = True          # OpenClaw bridge (gateway probe + 60s retry thread + voice-handoff receiver)
+    barebones_skip_evolution: bool = True         # autonomous self-improvement service + per-turn hooks
+    barebones_skip_skills: bool = True            # skills registry walk + per-turn prompt injection
+    barebones_skip_events: bool = True            # JSONL bus event sink
+    barebones_skip_summarizer: bool = True        # idle background LLM summarization pass (competes with relay latency)
+    barebones_lazy_zero_shot_addressee: bool = True  # defer the flan-t5 addressee model load until first ambiguous follow-up
     # GPU layers for the gaming LLM. 0 = fully on CPU (no GPU compute during
     # generation), forced regardless of the env/config gpu_layers override.
     # Set to -1 to keep the gaming LLM on GPU (faster, but spikes the card).
@@ -3740,6 +3757,12 @@ class SemanticRouterConfig(_Strict):
     # in parallel with the rest of boot), so in practice it is already ready by
     # the warmup and the poll returns immediately.
     sidecar_startup_timeout_seconds: float = Field(default=30.0, ge=5.0)
+    # Singleton enforcement: a boot-time sweep reaps any orphan/duplicate on the
+    # embedder port (e.g. left by a force-killed prior Ultron) BEFORE spawning,
+    # using a pidfile to verify ownership. Default ON; tests opt out to avoid
+    # cross-process port races.
+    sidecar_orphan_sweep_enabled: bool = True
+    sidecar_pidfile_path: str = ""   # "" -> ~/.kenning/embedder_sidecar.json
 
 
 class KenningConfig(_Strict):

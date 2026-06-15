@@ -31,64 +31,34 @@ Public surface (Phase 3 complete):
   for inbound voice handoff.
 """
 
-# Browser-tool names are resolved LAZILY (PEP 562, see __getattr__ below) so
-# importing this PACKAGE does NOT pull the browser-automation stack into the
-# process. The anticheat import firewall (safety/import_firewall.py) blocks
-# kenning.openclaw_bridge.browser while a protected game is running, and the boot
-# path imports this package (orchestrator -> OpenClawBridge); an EAGER browser
-# import here crashed the boot under anticheat. Browser names resolve only on
-# first ACCESS -- and the dispatcher imports kenning.openclaw_bridge.browser
-# directly when a browser action is actually dispatched (never under anticheat).
-_LAZY_BROWSER_NAMES = frozenset({
-    "ActionResult", "BrowserTool", "NavigateResult", "PageTextResult",
-    "ScreenshotResult", "Snapshot", "SnapshotMode",
-})
-from kenning.openclaw_bridge.client import (
-    AgentRunResult,
-    CliResult,
-    HeartbeatResult,
-    OpenClawClient,
-    SendMessageResult,
-    ToolInvocationResult,
-    discover_cli,
-)
-from kenning.openclaw_bridge.events import (
-    IncomingMessage,
-    OpenClawEventReceiver,
-    VoiceHandoffHandler,
-)
-from kenning.openclaw_bridge.heartbeat_alerts import (
-    HeartbeatAlert,
-    HeartbeatAlertLog,
-)
-from kenning.openclaw_bridge.holder import OpenClawBridge
-from kenning.openclaw_bridge.lifecycle import (
-    OpenClawLifecycle,
-    OpenClawStatus,
-)
-from kenning.openclaw_bridge.mcp_registration import (
-    RegistrationResult,
-    KenningMcpRegistrar,
-)
-from kenning.openclaw_bridge.notifications import (
-    NotificationDispatcher,
-    NotificationResult,
-)
-from kenning.openclaw_bridge.system_status import (
-    SystemStatusReport,
-    SystemStatusReporter,
-)
-from kenning.openclaw_bridge.persona import (
-    PersonaBundle,
-    PersonaFile,
-    PersonaLoader,
-    PromptMode,
-    default_workspace_dir,
-)
-from kenning.openclaw_bridge.workspace import (
-    WorkspaceWriter,
-    WriteResult,
-)
+# ALL public names resolve LAZILY (PEP 562, see __getattr__ below) so importing
+# THIS PACKAGE -- or any submodule of it (e.g. the LLM imports
+# kenning.openclaw_bridge.persona for the workspace system prompt, which triggers
+# this __init__) -- does NOT eager-load the bridge RUNTIME (holder / client /
+# mcp_registration / notifications / system_status) or the browser-automation
+# stack into RAM. That keeps a LEAN GAMING BOOT's anticheat surface minimal. Each
+# name loads on first ACCESS; the gated (non-gaming) coding + bridge paths still
+# get them via `from kenning.openclaw_bridge import X`. browser is ALSO blocked at
+# the loader by the anticheat import firewall while a protected game is running.
+_LAZY = {
+    "ActionResult": "browser", "BrowserTool": "browser",
+    "NavigateResult": "browser", "PageTextResult": "browser",
+    "ScreenshotResult": "browser", "Snapshot": "browser", "SnapshotMode": "browser",
+    "AgentRunResult": "client", "CliResult": "client", "HeartbeatResult": "client",
+    "OpenClawClient": "client", "SendMessageResult": "client",
+    "ToolInvocationResult": "client", "discover_cli": "client",
+    "IncomingMessage": "events", "OpenClawEventReceiver": "events",
+    "VoiceHandoffHandler": "events",
+    "HeartbeatAlert": "heartbeat_alerts", "HeartbeatAlertLog": "heartbeat_alerts",
+    "OpenClawBridge": "holder",
+    "OpenClawLifecycle": "lifecycle", "OpenClawStatus": "lifecycle",
+    "RegistrationResult": "mcp_registration", "KenningMcpRegistrar": "mcp_registration",
+    "NotificationDispatcher": "notifications", "NotificationResult": "notifications",
+    "SystemStatusReport": "system_status", "SystemStatusReporter": "system_status",
+    "PersonaBundle": "persona", "PersonaFile": "persona", "PersonaLoader": "persona",
+    "PromptMode": "persona", "default_workspace_dir": "persona",
+    "WorkspaceWriter": "workspace", "WriteResult": "workspace",
+}
 
 __all__ = [
     # Browser tool (Phase 6)
@@ -141,14 +111,15 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    # PEP 562: resolve the browser-tool names lazily so the automation stack is
-    # imported only when actually accessed -- never at package-import / boot
-    # time, where the anticheat import firewall would (correctly) refuse it.
-    if name in _LAZY_BROWSER_NAMES:
-        from kenning.openclaw_bridge import browser as _browser
-        return getattr(_browser, name)
+    # PEP 562: resolve every public name lazily from its submodule, so neither a
+    # package import nor a submodule import (e.g. persona, for the LLM system
+    # prompt) eager-loads the bridge runtime or the browser-automation stack.
+    sub = _LAZY.get(name)
+    if sub is not None:
+        import importlib
+        return getattr(importlib.import_module(f"kenning.openclaw_bridge.{sub}"), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__():
-    return sorted(set(globals()) | _LAZY_BROWSER_NAMES)
+    return sorted(set(globals()) | set(_LAZY))

@@ -65,22 +65,19 @@ from kenning.transcription import (
 )
 from kenning.tts import make_tts_engine  # noqa: F401 — kept import-time wired
 from kenning.utils.logging import get_logger
-from kenning.coding import (
-    CodingTaskRunner,
-    CodingVoiceController,
-    ProjectRegistry,
-    ProjectResolver,
-    KenningMCPServer,
-)
-from kenning.coding.coordinator import ConversationCoordinator
-from kenning.coding.narration import StatusNarrator
-from kenning.coding.voice import VoiceResponse as _VoiceResponse
+# kenning.coding (+ its mcp_server / coordinator / narration / voice submodules,
+# and the OpenClaw bridge they transitively pull) is imported LAZILY inside the
+# GATED coding load-methods below -- NOT at module top -- so a LEAN GAMING BOOT
+# never loads the coding stack into RAM (anticheat surface). The boot
+# _audit_anticheat_posture lean canary asserts it stays out. See
+# feedback-no-default-load-anticheat.
 
 
-def _voice_text(text: str) -> _VoiceResponse:
+def _voice_text(text: str) -> "VoiceResponse":   # noqa: F821 (lazy; PEP 563 str)
     """Wrap a plain string in a VoiceResponse so it can flow through
     :meth:`Orchestrator._handle_capability_response`."""
-    return _VoiceResponse(text=text, handled=True)
+    from kenning.coding.voice import VoiceResponse
+    return VoiceResponse(text=text, handled=True)
 
 from kenning.uncertainty import apply as apply_uncertainty
 from kenning.conversational_ack import (
@@ -276,11 +273,12 @@ class Orchestrator:
         # supervisor immediately re-routes. Fail-open: bus unavailable
         # or import error leaves the cache alive (manual invalidation
         # still works).
-        try:
-            from kenning.coding.project_introspect import install_bus_invalidator
-            install_bus_invalidator()
-        except Exception as e:                                      # noqa: BLE001
-            logger.debug("project_introspect bus invalidator init: %s", e)
+        if not self._skip_for_lean_gaming("barebones_skip_coding"):
+            try:
+                from kenning.coding.project_introspect import install_bus_invalidator
+                install_bus_invalidator()
+            except Exception as e:                                  # noqa: BLE001
+                logger.debug("project_introspect bus invalidator init: %s", e)
 
         # 2026-05-26 (openclaw-clawhub catalog wiring) -- materialise
         # the 5 KENNING_DEFAULT_PINS into the workdir lockfile at
@@ -473,21 +471,26 @@ class Orchestrator:
                 len(self.safety_validator.rules),
                 self.safety_validator.policy.enabled,
             )
-            # Verify the tamper-evident audit chain at startup. Read-only +
-            # fail-open: a broken chain only WARNs (never blocks boot) so the
-            # operator sees tampering/corruption without losing the session.
+            # Heal + verify the tamper-evident audit chain at startup. An
+            # unclean shutdown (kill between record()'s write and fsync) leaves
+            # a truncated final line that breaks the chain; repair_if_needed()
+            # truncates only that never-committed tail (archiving, never
+            # deleting, if nothing is salvageable). Fail-open: never blocks boot.
             try:
                 audit_log = getattr(self.safety_validator, "audit_log", None)
                 if audit_log is not None:
-                    ok, detail = audit_log.verify_chain()
-                    if not ok:
+                    verdict = audit_log.repair_if_needed()
+                    if verdict == "repaired":
+                        logger.info(
+                            "safety audit log repaired: truncated a partial/"
+                            "corrupt tail from a prior unclean shutdown; chain "
+                            "intact from genesis")
+                    elif verdict == "restarted":
                         logger.warning(
-                            "safety audit chain integrity check FAILED (%s) -- "
-                            "the audit log may have been tampered with or "
-                            "truncated", detail,
-                        )
+                            "safety audit log had no valid prefix -- archived as "
+                            ".corrupt.<ts> and restarted the chain from genesis")
             except Exception as e2:                                  # noqa: BLE001
-                logger.debug("audit chain verify skipped (%s)", e2)
+                logger.debug("audit chain repair skipped (%s)", e2)
         except Exception as e:
             self.safety_validator = None
             logger.warning(
@@ -590,6 +593,7 @@ class Orchestrator:
         # in PARALLEL with the rest of boot. No-op when disabled / backend=lexical
         # / venv missing; fail-open (the router falls back to the lexical backend).
         self._embedder_sidecar_proc = None
+        self._embedder_sidecar_reuse_pid = None   # a deliberately-reused sidecar we still OWN for cleanup
         try:
             self._start_embedder_sidecar()
         except Exception as e:                                       # noqa: BLE001
@@ -679,13 +683,16 @@ class Orchestrator:
         # gated by web_search.searxng.autostart_docker_on_boot.
         try:
             from kenning.config import get_config
-            from kenning.lifecycle.docker_startup import ensure_docker_running
 
             _cfg = get_config()
             _sx = _cfg.web_search.searxng
-            if _cfg.web_search.enabled and getattr(
+            if self._skip_for_lean_gaming("barebones_skip_docker_autostart"):
+                logger.info("lean gaming boot: Docker autostart skipped "
+                            "(web search is not used while gaming)")
+            elif _cfg.web_search.enabled and getattr(
                 _sx, "autostart_docker_on_boot", False,
             ):
+                from kenning.lifecycle.docker_startup import ensure_docker_running
                 ensure_docker_running(
                     base_url=_sx.base_url,
                     enabled=True,
@@ -721,12 +728,17 @@ class Orchestrator:
             except Exception as e:                                      # noqa: BLE001
                 logger.debug("Reranker warmup skipped (%s)", e)
 
-        try:
-            threading.Thread(
-                target=_warm_reranker, name="reranker-warm", daemon=True,
-            ).start()
-        except Exception as e:                                          # noqa: BLE001
-            logger.debug("Reranker warmup thread skipped (%s)", e)
+        if self._skip_for_lean_gaming("barebones_skip_reranker_warmup"):
+            logger.info("lean gaming boot: cross-encoder reranker warmup skipped "
+                        "(RAG retrieval + web-search ranking are off while gaming;"
+                        " it lazy-loads on demand if ever needed)")
+        else:
+            try:
+                threading.Thread(
+                    target=_warm_reranker, name="reranker-warm", daemon=True,
+                ).start()
+            except Exception as e:                                      # noqa: BLE001
+                logger.debug("Reranker warmup thread skipped (%s)", e)
         self.llm = LLMEngine(memory=self.memory)
         # Latency hygiene: warm the LLM so the first real turn doesn't pay the
         # cold-context prefill (~100-200 ms of TTFT shaved off the user's first
@@ -929,6 +941,14 @@ class Orchestrator:
         # dependencies) so always-on -- gating happens at use site
         # via ``is_conversational_ack_eligible``.
         self.conv_ack_source = ConversationalAckSource()
+        # GamingModeManager is HOISTED here (cheap, no model load; builds fine
+        # with client=None) so the startup gaming auto-engage finds it via
+        # self.gaming_mode_manager EVEN WHEN the coding stack is skipped in a lean
+        # gaming boot. It used to be born INSIDE coding_voice -> skipping
+        # coding_voice would null the manager and silently disable the ENTIRE
+        # gaming engage (LLM->3B, Kokoro device, reranker-free, anticheat hooks).
+        # CodingVoiceController now reuses THIS instance.
+        self.gaming_mode_manager = self._load_gaming_mode_manager_if_enabled()
         self.mcp_server = self._load_mcp_server_if_enabled()
         self.coding_coordinator = self._load_coding_coordinator_if_enabled()
         # Phase 3.5: OpenClaw bridge holder. None when openclaw.enabled
@@ -1190,14 +1210,50 @@ class Orchestrator:
             self._audit_anticheat_posture()
         except Exception as e:                                        # noqa: BLE001
             logger.debug("anticheat posture self-audit skipped (%s)", e)
-        # Build the semantic command router NOW (end of boot) so its embedding
-        # backend connects to the sidecar that has been loading in PARALLEL since
-        # early boot -- the router is ready before the first command (no first-
-        # command latency) and falls back to lexical if the sidecar isn't up.
-        # Fail-open; never blocks boot.
+        # Build the semantic command router NOW (end of boot). REQUIREMENT: the
+        # HYBRID (embedding) backend must come up -- lexical-only is a failure,
+        # not an acceptable default. If the first build came up lexical (sidecar
+        # slow/dead), respawn the sidecar ONCE + rebuild. Fail-open; never blocks
+        # boot beyond the single bounded retry.
         try:
-            from kenning.audio.command_router import get_command_router
-            get_command_router()
+            from kenning.audio.command_router import (
+                get_command_router, reset_command_router)
+
+            def _using_emb(r):
+                return bool(r and getattr(r.backend, "using_embedding",
+                                          lambda: False)())
+
+            router = get_command_router()
+            if router is not None and not _using_emb(router):
+                logger.error("command router built WITHOUT embedding "
+                             "(lexical-only) -- respawning the sidecar + "
+                             "rebuilding the router (one-shot)")
+                try:
+                    self._kill_embedder_sidecar()
+                except Exception:                                     # noqa: BLE001
+                    pass
+                self._start_embedder_sidecar()
+                import time as _t
+                from kenning.audio._router_backends import EmbeddingBackend
+                from kenning.config import get_config as _gc2
+                _rc = getattr(_gc2(), "semantic_router", None)
+                _host = getattr(_rc, "sidecar_host", "127.0.0.1") if _rc else "127.0.0.1"
+                _port = int(getattr(_rc, "sidecar_port", 8772)) if _rc else 8772
+                _eb = EmbeddingBackend(host=_host, port=_port)
+                _deadline = _t.monotonic() + 45.0
+                while _t.monotonic() < _deadline:
+                    if _eb.available():
+                        break
+                    _t.sleep(1.5)
+                reset_command_router()
+                router = get_command_router()
+                if _using_emb(router):
+                    logger.info("command router REBUILT with embedding (hybrid) "
+                                "after sidecar respawn")
+                else:
+                    logger.error("EMBEDDING UNAVAILABLE after respawn -- semantic "
+                                 "router is lexical-only this session (check the "
+                                 "embedder sidecar venv / GPU)")
         except Exception as e:                                        # noqa: BLE001
             logger.debug("semantic command router warmup skipped (%s)", e)
 
@@ -1216,12 +1272,31 @@ class Orchestrator:
             logger.info("embedder sidecar: not needed (backend=lexical or disabled)")
             return
         import os
-        from kenning.audio._router_backends import EmbeddingBackend
         host = getattr(rcfg, "sidecar_host", "127.0.0.1")
         port = int(getattr(rcfg, "sidecar_port", 8772))
-        if EmbeddingBackend(host=host, port=port).available():
-            logger.info("embedder sidecar already running on %s:%d -- reusing", host, port)
-            return
+        model = getattr(rcfg, "sidecar_model", "google/embeddinggemma-300m")
+        backend = getattr(rcfg, "sidecar_backend", "sentence_transformers")
+        pidfile = getattr(rcfg, "sidecar_pidfile_path", "") or None
+        # SINGLETON ENFORCEMENT: a boot-time sweep reaps any orphan/duplicate on
+        # the port (e.g. one left by a force-killed prior Ultron whose in-process
+        # cleanup never ran) + verifies ownership via a pidfile BEFORE we spawn.
+        if getattr(rcfg, "sidecar_orphan_sweep_enabled", True):
+            try:
+                from kenning.subprocess import sidecar_lock
+                verdict, owned_pid = sidecar_lock.sweep(host, port, model, path=pidfile)
+                if verdict == "reuse":
+                    self._embedder_sidecar_reuse_pid = owned_pid
+                    logger.info("embedder sidecar already running on %s:%d "
+                                "(pid=%s, model OK) -- reusing + owning it",
+                                host, port, owned_pid)
+                    return
+            except Exception as e:                                   # noqa: BLE001
+                logger.debug("embedder sidecar sweep skipped (%s)", e)
+        else:
+            from kenning.audio._router_backends import EmbeddingBackend
+            if EmbeddingBackend(host=host, port=port).available():
+                logger.info("embedder sidecar already running on %s:%d -- reusing", host, port)
+                return
         py = getattr(rcfg, "sidecar_python", "")
         if not py or not os.path.exists(py):
             logger.warning("embedder sidecar venv python missing (%s) -> router "
@@ -1251,16 +1326,84 @@ class Orchestrator:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         self._embedder_sidecar_proc = proc
+        # Record ownership so the NEXT boot's sweep can verify + reap this exact
+        # process even if THIS Ultron is force-killed (no in-process cleanup runs).
+        try:
+            from kenning.subprocess import sidecar_lock
+            sidecar_lock.write(proc.pid, port, model, backend, path=pidfile)
+        except Exception:                                            # noqa: BLE001
+            pass
         zk = getattr(self, "_zombie_killer", None)
         if zk is not None:
             try:
-                zk.register(proc.pid, "embedder-sidecar", persistent=True)
+                # NOT persistent: a finite (~1h) reaper backstop for a
+                # crash-orphaned sidecar -- never auto-killed in a normal gaming
+                # session, and shutdown() reaps it explicitly first anyway.
+                zk.register(proc.pid, "embedder-sidecar",
+                            persistent=False, hard_timeout_s=3600.0)
             except Exception:                                        # noqa: BLE001
                 pass
         logger.info("embedder sidecar spawned (pid=%s) model=%s backend=%s on "
                     "%s:%d -- ISOLATED venv, model NOT loaded into this process",
-                    proc.pid, getattr(rcfg, "sidecar_model", "?"),
-                    getattr(rcfg, "sidecar_backend", "?"), host, port)
+                    proc.pid, model, backend, host, port)
+
+    def _kill_embedder_sidecar(self) -> None:
+        """Reap the embedder sidecar process TREE (launcher shim -> embedder
+        child) on shutdown. Resolves the pid from the spawned Popen OR a
+        reused-but-owned sidecar; UNREGISTERS from the ZombieKiller FIRST (so the
+        reaper can't race the kill), tree-kills it, and clears the pidfile.
+        Never raises -- cleanup must not block exit."""
+        pid = None
+        proc = getattr(self, "_embedder_sidecar_proc", None)
+        if proc is not None and getattr(proc, "pid", None):
+            pid = proc.pid
+        elif getattr(self, "_embedder_sidecar_reuse_pid", None):
+            pid = self._embedder_sidecar_reuse_pid
+        if not pid:
+            return
+        try:
+            zk = getattr(self, "_zombie_killer", None)
+            if zk is not None:
+                try:
+                    zk.unregister(pid)
+                except Exception:                                    # noqa: BLE001
+                    pass
+            from kenning.subprocess.kill_tree import kill_process_tree
+            res = kill_process_tree(int(pid), grace_seconds=5.0)
+            logger.info("embedder sidecar reaped (pid=%s killed=%s)",
+                        pid, getattr(res, "killed", None))
+            try:
+                from kenning.config import get_config
+                from kenning.subprocess import sidecar_lock
+                rcfg = getattr(get_config(), "semantic_router", None)
+                pidfile = (getattr(rcfg, "sidecar_pidfile_path", "") or None) if rcfg else None
+                sidecar_lock.clear(path=pidfile)
+            except Exception:                                        # noqa: BLE001
+                pass
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("embedder sidecar reap skipped (%s)", e)
+        finally:
+            self._embedder_sidecar_proc = None
+            self._embedder_sidecar_reuse_pid = None
+
+    def _skip_for_lean_gaming(self, flag: str) -> bool:
+        """True when this is a LEAN GAMING-startup boot AND the named barebones
+        skip flag is on -- i.e. this non-essential subsystem must NOT load /
+        import / touch RAM (shrinking the anticheat surface).
+
+        Gated on the CONFIG INTENT ``gaming_mode.engage_at_startup`` -- NOT the
+        runtime ``is_gaming_mode_active()`` (False throughout __init__) and NOT
+        ``anticheat_active()`` (a non-gaming anticheat-pinned dev boot must still
+        load coding/search). Lean gaming boot is the permanent default; every
+        skip is individually toggleable. Fail-closed to False (keep the
+        subsystem) on any error -- never skip something by accident."""
+        try:
+            from kenning.config import get_config
+            gm = get_config().gaming_mode
+            return bool(getattr(gm, "engage_at_startup", False)
+                        and getattr(gm, flag, True))
+        except Exception:                                            # noqa: BLE001
+            return False
 
     def _start_dialog_poller(self) -> None:
         """Start the UIA DialogPoller -- UNLESS anticheat-safe mode is active.
@@ -1356,13 +1499,47 @@ class Orchestrator:
                 "installed" if firewall_ok else "off",
                 "running" if poller_running else "not started",
             )
+        # LEAN GAMING BOOT canary (2026-06-15): when gaming is the startup intent,
+        # the non-essential subsystems must NOT have loaded -- PROVE it against
+        # sys.modules every boot so a lean-boot gate regression is visible in the
+        # log immediately (the user's "nothing unnecessary even in RAM" rule).
+        try:
+            from kenning.config import get_config as _gc_lean
+            lean = bool(getattr(_gc_lean().gaming_mode, "engage_at_startup", False))
+        except Exception:                                            # noqa: BLE001
+            lean = False
+        if lean:
+            # Check the RUNTIME-heavy modules, not lightweight necessary leaves:
+            # the LLM loads kenning.openclaw_bridge.persona (workspace system
+            # prompt) which is fine, but the bridge RUNTIME (holder = gateway +
+            # threads) and the coding/MCP/evolution/reranker stacks must stay out.
+            heavy = [m for m in (
+                "kenning.openclaw_bridge.holder", "kenning.coding.mcp_server",
+                "kenning.coding.voice", "kenning.evolution.service",
+                "sentence_transformers",
+            ) if m in _sys.modules]
+            if heavy:
+                logger.warning(
+                    "LEAN BOOT CANARY: gaming-startup boot but non-essential "
+                    "modules are LOADED=%s -- a lean-boot gate regressed; these "
+                    "must never enter RAM while gaming (anticheat surface).", heavy)
+            else:
+                logger.info(
+                    "lean boot OK | non-essential subsystems "
+                    "(coding/MCP/OpenClaw/evolution/reranker) NOT loaded -- only "
+                    "core relay + Spotify + voice in RAM")
 
     def _load_mcp_server_if_enabled(self):
         """Construct + start the MCP server (Phase 1+). Failures degrade
         silently -- the coding pipeline can run without MCP, just without
         the supervisor's clarification round-trip."""
+        if self._skip_for_lean_gaming("barebones_skip_coding"):
+            logger.info("lean gaming boot: coding MCP server skipped (port 19761 "
+                        "+ SSE thread not started)")
+            return None
         if not (settings.CODING_ENABLED and settings.CODING_MCP_ENABLED):
             return None
+        from kenning.coding import KenningMCPServer   # lazy: keeps coding out of a lean boot
         try:
             # Phase 7: pass the per-session audit dir so SessionStore
             # auto-logs every state change to logs/sessions/<id>.jsonl.
@@ -1397,6 +1574,7 @@ class Orchestrator:
         responder hooks."""
         if self.mcp_server is None:
             return None
+        from kenning.coding.coordinator import ConversationCoordinator  # lazy
         try:
             renderer = None
             try:
@@ -2987,7 +3165,9 @@ class Orchestrator:
         which makes the skills hook a no-op (matches the pre-batch-2
         voice baseline).
         """
-
+        if self._skip_for_lean_gaming("barebones_skip_skills"):
+            logger.info("lean gaming boot: skills registry skipped")
+            return
         try:
             from kenning.config import PROJECT_ROOT, get_config
 
@@ -3050,6 +3230,9 @@ class Orchestrator:
         every per-turn evolution hook (record_turn / autonomous cycle /
         temperament) a zero-cost no-op -- the voice baseline is unchanged.
         """
+        if self._skip_for_lean_gaming("barebones_skip_evolution"):
+            logger.info("lean gaming boot: evolution service skipped")
+            return None
         try:
             from kenning.config import PROJECT_ROOT, get_config
 
@@ -3380,7 +3563,9 @@ class Orchestrator:
 
         Fail-open: any error logs WARN and leaves the singleton unset.
         """
-
+        if self._skip_for_lean_gaming("barebones_skip_events"):
+            logger.info("lean gaming boot: events store skipped")
+            return
         try:
             from kenning.config import PROJECT_ROOT, get_config
 
@@ -3591,6 +3776,11 @@ class Orchestrator:
         so the bridge's :class:`NotificationDispatcher` knows whether
         Telegram pings are enabled.
         """
+        if self._skip_for_lean_gaming("barebones_skip_openclaw"):
+            logger.info("lean gaming boot: OpenClaw bridge skipped (gateway probe "
+                        "+ MCP-registration retry thread + voice-handoff receiver "
+                        "not started; kenning.openclaw_bridge not imported)")
+            return None
         from kenning.config import get_config
         from kenning.openclaw_bridge import OpenClawBridge
 
@@ -3629,8 +3819,17 @@ class Orchestrator:
         a :class:`CodingVoiceController` for the main loop to call.
         Failures degrade silently -- coding is optional.
         """
+        if self._skip_for_lean_gaming("barebones_skip_coding"):
+            logger.info("lean gaming boot: CodingVoiceController + ProjectIndex + "
+                        "Supervisor (repo_map/architect) skipped")
+            return None
         if not settings.CODING_ENABLED:
             return None
+        # lazy: keeps the coding stack out of a lean gaming boot
+        from kenning.coding import (
+            CodingTaskRunner, CodingVoiceController, ProjectRegistry,
+            ProjectResolver)
+        from kenning.coding.narration import StatusNarrator
         try:
             # Phase 5: wire the status narrator + shared session store
             # into the runner so progress queries get delta-aware,
@@ -3691,8 +3890,10 @@ class Orchestrator:
                 openclaw_bridge=self.openclaw_bridge,
                 # V1-gap A1 — gaming-mode manager (None when disabled
                 # or no bridge client). Routes GAMING_MODE intents to
-                # the OpenClawDispatcher's plugin enable/disable path.
-                gaming_mode_manager=self._load_gaming_mode_manager_if_enabled(),
+                # the OpenClawDispatcher's plugin enable/disable path. Reuses the
+                # HOISTED self.gaming_mode_manager (built in __init__) so the
+                # startup engage works even when coding_voice is skipped.
+                gaming_mode_manager=self.gaming_mode_manager,
                 # 2026-05-22 supervisor stack -- None when disabled or
                 # when construction failed (controller falls through
                 # to legacy ProjectResolver path).
@@ -4438,7 +4639,13 @@ class Orchestrator:
             default_silent_on_uncertain=addr_cfg.default_uncertain_to_not_addressed,
             log_path=resolve_path(addr_cfg.log_path),
             zero_shot_model_name=addr_cfg.zero_shot_model,
-            load_zero_shot_eagerly=addr_cfg.load_eagerly,
+            # Lean gaming boot: KEEP the addressee classifier (it is on the
+            # warm-follow-up hot path) but DEFER the ~300MB flan-t5 model load
+            # until an ambiguous follow-up actually needs it (rare while gaming;
+            # relay commands bypass the classifier entirely).
+            load_zero_shot_eagerly=(
+                addr_cfg.load_eagerly
+                and not self._skip_for_lean_gaming("barebones_lazy_zero_shot_addressee")),
             recent_turns_provider=recent_turns_provider,
             zero_shot_addressed_min_confidence=addr_cfg.zero_shot_addressed_min_confidence,
         )
@@ -4487,6 +4694,9 @@ class Orchestrator:
         circuits when this returns None. So flipping the flag off
         recovers byte-for-byte legacy orchestrator behaviour.
         """
+        if self._skip_for_lean_gaming("barebones_skip_summarizer"):
+            logger.info("lean gaming boot: background summarizer skipped")
+            return None
         try:
             from kenning.config import get_config
             cfg = get_config().memory.background_summary
@@ -4756,6 +4966,13 @@ class Orchestrator:
                 poller.stop()
             except Exception:
                 pass
+        # Reap the embedder sidecar process TREE BEFORE stopping the reaper (so
+        # unregister() can't race a concurrent sweep) and BEFORE this process
+        # exits (so the loopback 8772 socket is released cleanly, no orphan).
+        try:
+            self._kill_embedder_sidecar()
+        except Exception:                                            # noqa: BLE001
+            pass
         # Stop the subprocess reaper thread so the process exits cleanly.
         killer = getattr(self, "_zombie_killer", None)
         if killer is not None:

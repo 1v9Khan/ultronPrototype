@@ -28,11 +28,6 @@ from kenning.coding.intent import (
     classify as classify_intent,
     derive_project_name,
 )
-from kenning.coding.mcp_server import (
-    KenningMCPServer,
-    remove_mcp_config,
-    write_mcp_config,
-)
 from kenning.coding.narration import NarrationDelta, StatusNarrator
 from kenning.coding.projections import (
     AdjustmentContextProjection,
@@ -76,11 +71,29 @@ from kenning.coding.templates import (
     TemplateError,
     TemplateRenderer,
 )
-from kenning.coding.voice import (
-    CapabilityVoiceController,
-    CodingVoiceController,
-    VoiceResponse,
-)
+# LAZY (PEP 562): the mcp_server + voice submodules are the heavy ones --
+# mcp_server pulls the SSE/server stack and voice pulls the OpenClaw dispatcher
+# (-> kenning.openclaw_bridge). Importing the kenning.coding PACKAGE (e.g. the
+# GamingModeManager chain does, transitively) must NOT drag those into RAM in a
+# lean gaming boot. They resolve on first ACCESS, so the gated coding load-paths
+# (non-gaming) still get them via `from kenning.coding import X`.
+_LAZY = {
+    "KenningMCPServer": "mcp_server",
+    "remove_mcp_config": "mcp_server",
+    "write_mcp_config": "mcp_server",
+    "CapabilityVoiceController": "voice",
+    "CodingVoiceController": "voice",
+    "VoiceResponse": "voice",
+}
+
+
+def __getattr__(name):
+    sub = _LAZY.get(name)
+    if sub is not None:
+        import importlib
+        return getattr(importlib.import_module(f"kenning.coding.{sub}"), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "AdjustmentRecord",
