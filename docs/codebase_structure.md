@@ -3550,11 +3550,16 @@ byte-for-byte restored when it closes — zero residual resources.
   orchestrator wiring, reload-signal semantics incl. stale-file
   immunity).
 
-#### `spotify/` (NEW 2026-06-12 — voice playback control)
+#### `spotify/` (NEW 2026-06-12 — voice playback control; EXPANDED 2026-06-14)
 
-Voice-driven Spotify control ("play despacito", "skip", "pause the
-music", "what's playing", "turn it up", "play my focus playlist",
-"queue blinding lights"). Driven by `spotify` config (default ON).
+Comprehensive hands-free Spotify control for streaming/gaming ("play
+despacito", "skip", "pause the music", "what's playing", "turn it up",
+"play my focus playlist", "queue blinding lights", "play californication
+next", "mute", "restart the song", "like this song", "shuffle off",
+"make the volume 40"). Driven by `spotify` config (default ON) and
+**ungated by gaming / anticheat mode** — the dispatch only checks
+`spotify.enabled`, so full music control stays live in a barebones
+gaming session. Web API over HTTPS only: no GPU, no LLM, anticheat-safe.
 
 - `auth.py`: credentials load from a GITIGNORED file OUTSIDE the repo
   (`spotify.credentials_path`, default `~/.kenning/spotify.json` —
@@ -3567,26 +3572,43 @@ music", "what's playing", "turn it up", "play my focus playlist",
 - `client.py`: `SpotifyClient` Web-API wrapper (injectable
   `request_fn`) — `now_playing` / `devices` / `ensure_device` (transfers
   to a device when none active) / `resume` / `pause` / `next_track` /
-  `previous_track` / `set_volume` / `set_shuffle` / `set_repeat` /
-  `search_first` / `play_query` (track plays the song; artist/album/
-  playlist plays the context) / `queue_query`. 401/403 → a clear
-  re-authorize message; 404/no-device → "open Spotify on a device".
-- `voice.py`: `match_spotify_command` strict matcher (play/queue +
-  transport/volume/shuffle/repeat; "play X by Y" folds the artist into
-  the query; "on spotify" stripped) → `handle_spotify_command` →
-  spoken line; fail-soft on auth/API errors.
+  `previous_track` / `set_volume` / `current_volume` / `set_shuffle` /
+  `set_repeat` / `search_first` / `play_query` (track plays the song;
+  artist/album/playlist plays the context) / `queue_query` / `seek`
+  (0 = restart) / `save_current_track` + `unsave_current_track` (add or
+  remove the playing track from Liked Songs, `user-library-modify`).
+  401/403 → a clear re-authorize message; 404/no-device → "open Spotify
+  on a device".
+- `voice.py`: `match_spotify_command` — a WIDE-but-strict regex set
+  (same discipline as the relay matcher) covering every action with many
+  natural phrasings: play / queue / pause / resume / next / previous /
+  restart / now_playing / volume up·down·set / mute / unmute / shuffle /
+  repeat / like / unlike. Order-sensitive subtleties: "play X next" →
+  queue (not play), bare "play" / "play the music" → resume, "throw on
+  X" → play while "throw X in the queue" → queue, "make the volume 40"
+  (no "to/at") → volume_set. Replies live in `_REPLIES` — Ultron's cold
+  machine register, varied per call via `random.choice`. Dynamic content
+  (track name, volume %) built in `handle_spotify_command`; mute caches
+  `client._premute_vol` so unmute restores the prior level. Fail-soft on
+  auth/API errors.
 - Orchestrator: `_maybe_handle_spotify` short-circuit placed AFTER
-  run/launch + app-launch (so "play the calculator" wins over a song);
-  `_get_spotify_client` lazily builds + caches the client; a missing/
-  unauthorized credentials state speaks a setup hint, never crashes.
+  run/launch + app-launch (so "play the calculator" wins over a song)
+  and BEFORE the relay path; gated ONLY by `spotify.enabled` (NOT by
+  gaming/anticheat), so music control is always live. `_get_spotify_client`
+  lazily builds + caches the client; a missing/unauthorized credentials
+  state speaks a setup hint, never crashes.
 - `scripts/spotify_setup.py`: one-time browser OAuth (tiny localhost
   server catches the redirect, exchanges the code, saves the refresh
   token). Needs Spotify Premium + the redirect URI registered in the
   app dashboard.
-- Tests: `tests/spotify/test_spotify.py` (58 — auth refresh/cache/
+- Tests: `tests/spotify/test_spotify.py` (129 — auth refresh/cache/
   failure, client routes incl. search-then-play + device transfer +
-  volume clamp, the full matcher matrix + negatives, dispatch incl.
-  auth/no-device error messages, orchestrator wiring; all HTTP faked).
+  volume clamp + seek + save/unsave, the full expanded matcher matrix
+  incl. value checks + the routing subtleties + negatives, dispatch
+  incl. mute/unmute round-trip + restart + like/unlike + auth/no-device
+  error messages, orchestrator wiring; all HTTP faked).
+  `scripts/relay_test/spotify_matrix.py` is a 183-case manual command
+  matrix (every action × phrasings + negatives) for quick regression.
 
 #### `src/kenning/audio/relay_speech.py` (Valorant teammate-relay)
 
