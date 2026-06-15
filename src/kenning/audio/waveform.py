@@ -152,11 +152,13 @@ def _load_pil_font(family: str, size: int):
 
 
 def _nameplate_frames(W, H, text, font_family, *, plate_fill, accent_rgb,
-                      core_idle, neon_red, buckets):
+                      core_idle, neon_red, buckets, plate_alpha=150):
     """Render the ULTRON plate as ``buckets`` RGBA PIL frames from idle (calm,
     readable) to full speech (bright neon + soft Gaussian bloom). The glow is a
     real blur -> rounded, soft, particle-like halo (like a neon tube), in the
-    SAME red the glyphs light up to. Returns a list of PIL.Image (RGBA)."""
+    SAME red the glyphs light up to. The plate itself is a SEMI-TRANSPARENT
+    backing (``plate_alpha``) -- a smoked-glass panel that lifts the glyphs off
+    a busy game without fully blocking it. Returns a list of PIL.Image (RGBA)."""
     from PIL import Image, ImageDraw, ImageFilter
 
     pad = W * 0.085
@@ -168,7 +170,7 @@ def _nameplate_frames(W, H, text, font_family, *, plate_fill, accent_rgb,
     left = (px0 + px1) / 2.0 - inner_w / 2.0
     ty = (py0 + py1) / 2.0
     xs = [left + (i + 0.5) * (inner_w / n) for i in range(len(text))]
-    plate_rgba = (*plate_fill, 255)
+    plate_rgba = (*plate_fill, int(plate_alpha))      # semi-transparent backing
     accent_rgba = (*accent_rgb, 255)
     nr = neon_red
     sw = max(1, int(H * 0.04))            # fatten the glow source so blur has mass
@@ -603,6 +605,7 @@ class _RenderState:
         self.drag_x = 0
         self.drag_y = 0
         self.glow_items: list = []
+        self.bar_outline_items: list = []   # black underlay -> crisp bar edges
         self.bar_items: list = []
         self.core = None
         # Nameplate (ULTRON): a dark plate (contrast over gameplay) with a REAL
@@ -613,7 +616,10 @@ class _RenderState:
         # if PIL is unavailable.
         self.text = (nameplate_text or "").strip()
         self.font_family = nameplate_font or "Bahnschrift"
-        self.PLATE_FILL = (22, 22, 30)    # distinct from chroma -> opaque plate
+        # Smoked-glass nameplate: transparent BLACK so the panel reads clearly
+        # over any game background without fully blocking it.
+        self.PLATE_FILL = (0, 0, 0)       # transparent black (alpha below)
+        self.PLATE_ALPHA = 150            # ~59% -- semi-clear, still legible
         self.CORE_IDLE = (230, 222, 225)  # calm + readable when not speaking
         self.NEON_RED = (255, 88, 98)     # glyphs light up THIS; glow is the SAME red
         self.cur_glow = 0.0
@@ -629,13 +635,20 @@ class _RenderState:
         for _ in range(3):
             self.glow_items.append(
                 c.create_oval(0, 0, 0, 0, outline=self.bg, width=2))
-        # Radial bars.
+        # Radial bars: a black underlay line (slightly wider, drawn FIRST so it
+        # sits behind) gives every neon bar a thin black outline -> the energy
+        # reads crisply over busy gameplay for stream viewers.
+        for _ in range(self.bars):
+            self.bar_outline_items.append(
+                c.create_line(0, 0, 0, 0, fill="#000000", width=5,
+                              capstyle="round"))
         for _ in range(self.bars):
             self.bar_items.append(
                 c.create_line(0, 0, 0, 0, fill=self.bg, width=3,
                               capstyle="round"))
-        # Pulsing core.
-        self.core = c.create_oval(0, 0, 0, 0, fill=self.bg, outline="")
+        # Pulsing core (thin black rim so it pops off the game behind it).
+        self.core = c.create_oval(0, 0, 0, 0, fill=self.bg,
+                                  outline="#000000", width=2)
         # ---- Nameplate ----
         if self.plate_h > 0 and self.text:
             try:
@@ -657,7 +670,7 @@ class _RenderState:
             self.size, self.plate_h, self.text, self.font_family,
             plate_fill=self.PLATE_FILL, accent_rgb=self.accent_rgb,
             core_idle=self.CORE_IDLE, neon_red=self.NEON_RED,
-            buckets=self._glow_buckets)
+            buckets=self._glow_buckets, plate_alpha=self.PLATE_ALPHA)
         self.plate_imgs = [ImageTk.PhotoImage(f) for f in frames]
         cx = self.size / 2.0
         cy = self.plate_top + self.plate_h / 2.0
@@ -717,6 +730,9 @@ class _RenderState:
             col = _rgb_to_hex(col_rgb)
             # Loud bars get a touch thicker -> the energy reads as "fatter".
             bw = max(2, int(self.size * (0.011 + 0.006 * min(1.0, amp))))
+            ow = bw + max(2, int(self.size * 0.006))   # black outline, a bit wider
+            c.coords(self.bar_outline_items[i], x0, y0, x1, y1)
+            c.itemconfigure(self.bar_outline_items[i], width=ow)
             c.coords(self.bar_items[i], x0, y0, x1, y1)
             c.itemconfigure(self.bar_items[i], fill=col, width=bw)
         # Pulsing core: snappier swell + a hotter centre that flashes toward

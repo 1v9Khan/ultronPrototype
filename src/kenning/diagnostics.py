@@ -47,3 +47,25 @@ def audio_diagnostics_enabled() -> bool:
         return bool(getattr(diag, "spoken_audio_logging", False))
     except Exception:  # noqa: BLE001
         return False
+
+
+def reset_for_new_session() -> None:
+    """Clear the live sentinel at startup so EVERY boot defaults to diagnostics
+    OFF. Testing mode is then an explicit, post-boot opt-in (the operator
+    re-touches the sentinel) -- a manual restart never silently keeps the
+    monitoring on. Fail-open. Called once from the orchestrator at boot."""
+    try:
+        _SENTINEL.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def enable_for_testing() -> None:
+    """Turn diagnostics ON for the current session (post-boot, live). Used by
+    the operator when actively analyzing; checked per-utterance so it takes
+    effect immediately with no restart."""
+    try:
+        _SENTINEL.parent.mkdir(parents=True, exist_ok=True)
+        _SENTINEL.touch()
+    except Exception:  # noqa: BLE001
+        pass

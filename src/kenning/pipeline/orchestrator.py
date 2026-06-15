@@ -229,6 +229,16 @@ class Orchestrator:
             log_effective_config()
         except Exception as e:                                      # noqa: BLE001
             logger.warning("effective-config log failed: %s", e)
+        # DIAGNOSTICS DEFAULT-OFF (2026-06-14): clear the live diagnostics
+        # sentinel at every boot so spoken-audio monitoring NEVER auto-persists
+        # across a restart. Testing mode is an explicit post-boot opt-in
+        # (the operator re-touches ~/.kenning/audio_diagnostics_on); a manual
+        # restart always comes up with monitoring OFF.
+        try:
+            from kenning.diagnostics import reset_for_new_session
+            reset_for_new_session()
+        except Exception as e:                                      # noqa: BLE001
+            logger.debug("diagnostics reset skipped (%s)", e)
 
         # 2026-05-22 -- session-scoped fail-open counter. Tracks
         # how many fail-open paths fired during the session

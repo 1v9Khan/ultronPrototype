@@ -1968,7 +1968,7 @@ For the current decisions and Foundation phase status see
 │       │   ├── wake_word.py        ← openWakeWord (custom ultron.onnx default + kenning; per-word thresholds + min_consecutive_frames consecutive-frame gate; reload_for_word hot-swap)
 │       │   ├── broadcast.py        ← BroadcastSink: daemon tee of ALL Kenning speech (normal + relay) to audio.broadcast_device for an isolated OBS capture source (drop-oldest, mono→stereo, zero speaker-path latency); name-parametrized so a 2nd instance backs the local monitor
 │       │   ├── monitor.py          ← Local monitor: reuses BroadcastSink to tee RELAY callouts to the user's OWN default output (audio.output_device, None→system default) so they hear their own callouts (relay otherwise plays only on the mic B-bus + OBS); gated by relay_speech.echo_to_user read LIVE per callout (GUI toggle hot-applies, no re-synth)
-│       │   └── waveform.py         ← WaveformSink: borderless Tk overlay (radial waveform + glowing PIL nameplate, downward-suppressed bars, hide-behind that OBS still captures, green chroma); off by default, fail-open
+│       │   └── waveform.py         ← WaveformSink: borderless Tk overlay (radial waveform + glowing PIL nameplate, downward-suppressed bars, hide-behind that OBS still captures, green chroma); fed by ALL speech via _broadcast_submit/_viz_submit; 2026-06-14 polish: tightened pulse (r_max 0.46→0.40), travelling shimmer + white-hot peaks + dynamic bar width + arc-reactor core, BLACK outlines on bars + core rim (pop off gameplay), SMOKED-GLASS nameplate (transparent-black plate, alpha 150) + neon/Gaussian glow driven by target_level (every clip); fail-open
 │       │
 │       ├── addressing/             ← Phase 2 addressing classifier (CPU)
 │       │   ├── classifier.py       ← AddressingClassifier (rule + zero-shot dispatcher)
@@ -3513,6 +3513,19 @@ process).
   can't silently unblock input/capture, and the user hears their own
   callouts). The team relay + Spotify path import nothing OS-interacting
   (pinned by subprocess tests) → the well-trodden voice-changer class.
+- **Diagnostics monitoring is also kept-out-by-default** (same discipline):
+  the verbose `SPOKEN(...)` text logs + the per-utterance `SPOKEN-BLIP`
+  analysis (final-vs-raw-Kokoro divergence) in `tts/kokoro_engine.py` and the
+  `output_quality` watcher are ALL gated by
+  `kenning.diagnostics.audio_diagnostics_enabled()` (sentinel
+  `~/.kenning/audio_diagnostics_on` OR a config flag) — when off, the
+  `output_quality` module is NEVER imported (`tests/test_diagnostics_gating.py`).
+  It only ever touches Kenning's OWN buffers/log (anticheat-neutral), but stays
+  out of RAM by default. `Orchestrator.__init__` calls
+  `diagnostics.reset_for_new_session()` so the sentinel is cleared on EVERY
+  boot (a restart always comes up OFF); the operator re-enables post-boot only
+  while testing. The waveform OVERLAY's analysis is SEPARATE (its own
+  `analyze_clip` for rendering) and allowed.
 - Tests: `tests/safety/test_anticheat.py` (72) — incl. an **AST audit
   test** that re-parses every guarded source file and fails if ANY guard
   is refactored away; `test_no_ban_class_apis_anywhere_in_source` (zero
