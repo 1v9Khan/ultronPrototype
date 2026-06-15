@@ -26,7 +26,12 @@ import threading
 import time
 from typing import Optional
 
-from kenning.ptt.backends import NullPttBackend, PttBackend, SerialHidPttBackend
+from kenning.ptt.backends import (
+    NullPttBackend,
+    PttBackend,
+    SerialHidPttBackend,
+    find_arduino_port,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,22 +168,29 @@ class PttController:
                 self._cv.wait(timeout=self._hb)
 
 
-def build_ptt_controller(config=None) -> PttController:
+def build_ptt_controller(config=None, *, enabled=None, serial_port=None) -> PttController:
     """Construct a :class:`PttController` from config. Always returns a controller
     (never None). Fail-safe selection of the backend:
 
-      * PTT disabled, or no ``serial_port`` configured, or the device can't be
-        opened  ->  :class:`NullPttBackend` (completely inert).
+      * PTT disabled, or no Arduino found, or the device can't be opened
+        ->  :class:`NullPttBackend` (completely inert).
       * PTT enabled AND the serial device opens  ->  :class:`SerialHidPttBackend`.
 
-    There is NO path to an in-process input backend -- if the hardware isn't
-    ready, PTT stays off.
+    ``enabled`` / ``serial_port`` override the config values when given -- the
+    orchestrator passes the env-resolved ``settings.PUSH_TO_TALK_*`` so the
+    ``KENNING_PTT_*`` env vars take precedence over ``config.yaml`` (matching the
+    settings.py override convention). There is NO path to an in-process input
+    backend -- if the hardware isn't ready, PTT stays off.
     """
     if config is None:
         from kenning.config import get_config
 
         config = get_config()
     ptt = getattr(config, "push_to_talk", None)
+    if enabled is None:
+        enabled = bool(getattr(ptt, "enabled", False)) if ptt else False
+    if serial_port is None:
+        serial_port = (getattr(ptt, "serial_port", "") if ptt else "")
 
     def _mk(backend: PttBackend) -> PttController:
         return PttController(
@@ -189,16 +201,22 @@ def build_ptt_controller(config=None) -> PttController:
             max_hold_seconds=float(getattr(ptt, "max_hold_seconds", 8.0)) if ptt else 8.0,
         )
 
-    if not (ptt and bool(getattr(ptt, "enabled", False))):
+    if not enabled:
         return _mk(NullPttBackend())
 
-    port = (getattr(ptt, "serial_port", "") or "").strip()
-    if not port:
-        logger.warning(
-            "push-to-talk ENABLED but no serial_port configured -- PTT INERT "
-            "(no synthetic-input fallback). Set push_to_talk.serial_port.",
-        )
-        return _mk(NullPttBackend())
+    port = (str(serial_port or "")).strip()
+    if port.lower() == "auto" or not port:
+        detected = find_arduino_port()
+        if detected:
+            logger.info("push-to-talk: auto-detected Arduino on %s", detected)
+            port = detected
+        else:
+            logger.warning(
+                "push-to-talk ENABLED but no Arduino auto-detected -- PTT INERT "
+                "(no synthetic-input fallback). Plug it in or set "
+                "push_to_talk.serial_port to a COM port.",
+            )
+            return _mk(NullPttBackend())
 
     baud = int(getattr(ptt, "baud", 9600))
     backend = SerialHidPttBackend(port, baud)

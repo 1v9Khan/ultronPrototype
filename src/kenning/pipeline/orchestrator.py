@@ -1229,7 +1229,10 @@ class Orchestrator:
         # push_to_talk.enabled; never imports a synthetic-input lib.
         try:
             from kenning.ptt import build_ptt_controller
-            self._ptt = build_ptt_controller()
+            self._ptt = build_ptt_controller(
+                enabled=settings.PUSH_TO_TALK_ENABLED,
+                serial_port=settings.PUSH_TO_TALK_SERIAL_PORT,
+            )
         except Exception as e:                                       # noqa: BLE001
             logger.debug("push-to-talk init failed (%s); PTT disabled", e)
             self._ptt = None

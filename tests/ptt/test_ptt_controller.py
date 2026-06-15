@@ -203,9 +203,50 @@ def test_factory_disabled_returns_inert():
     assert c.available is False
 
 
-def test_factory_enabled_without_port_returns_inert():
-    c = build_ptt_controller(_Cfg(_PttCfg(enabled=True, serial_port="")))
+def test_factory_explicit_bad_port_returns_inert():
+    # An explicit, non-existent COM port must fail SAFE (inert) -- never fall
+    # back to in-process input.
+    c = build_ptt_controller(_Cfg(_PttCfg(enabled=True, serial_port="COM_NOPE_ZZZ")))
     assert c.available is False
+
+
+def test_factory_auto_with_no_device_returns_inert(monkeypatch):
+    import kenning.ptt.controller as ctrl
+    monkeypatch.setattr(ctrl, "find_arduino_port", lambda *a, **k: None)
+    c = build_ptt_controller(_Cfg(_PttCfg(enabled=True, serial_port="auto")))
+    assert c.available is False
+
+
+# -- auto-detect by USB VID/PID ----------------------------------------------
+
+class _FakePort:
+    def __init__(self, device, vid, pid):
+        self.device, self.vid, self.pid = device, vid, pid
+
+
+def test_find_arduino_prefers_exact_vid_pid(monkeypatch):
+    import serial.tools.list_ports as lp
+    from kenning.ptt import backends
+    monkeypatch.setattr(lp, "comports", lambda: [
+        _FakePort("COM1", 0x1234, 0x0001),
+        _FakePort("COM7", 0x2341, 0x8036),   # Leonardo sketch
+    ])
+    assert backends.find_arduino_port() == "COM7"
+
+
+def test_find_arduino_falls_back_to_vid(monkeypatch):
+    import serial.tools.list_ports as lp
+    from kenning.ptt import backends
+    # Arduino VID but bootloader PID (0x0036) -> no exact match, VID fallback.
+    monkeypatch.setattr(lp, "comports", lambda: [_FakePort("COM9", 0x2341, 0x0036)])
+    assert backends.find_arduino_port() == "COM9"
+
+
+def test_find_arduino_none_when_absent(monkeypatch):
+    import serial.tools.list_ports as lp
+    from kenning.ptt import backends
+    monkeypatch.setattr(lp, "comports", lambda: [_FakePort("COM1", 0x1234, 0x0001)])
+    assert backends.find_arduino_port() is None
 
 
 if __name__ == "__main__":  # pragma: no cover

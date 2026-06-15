@@ -3840,8 +3840,10 @@ class PushToTalkConfig(_Strict):
     """
     # Master switch. Default OFF (no hardware assumed; binding no-default rule).
     enabled: bool = False
-    # Serial (COM) port of the microcontroller, e.g. "COM5". Empty -> inert.
-    serial_port: str = ""
+    # Serial (COM) port of the microcontroller. "auto" (default) detects the
+    # Arduino by USB VID/PID so a drifting COM assignment never breaks it; or
+    # pin an explicit port like "COM5". Empty also auto-detects.
+    serial_port: str = "auto"
     baud: int = Field(default=9600, ge=1200, le=2_000_000)
     # The in-game TEAM-voice PTT key the microcontroller holds. Informational on
     # the host side (the firmware presses this key); set your Valorant team-PTT

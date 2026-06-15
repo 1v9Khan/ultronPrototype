@@ -28,6 +28,34 @@ CMD_DOWN = b"D"
 CMD_UP = b"U"
 CMD_HEARTBEAT = b"H"
 
+# USB identity of an Arduino Leonardo: VID = Arduino LLC, PID = the running
+# sketch (the bootloader is 0x0036). Used for "auto" port detection so a
+# drifting Windows COM assignment (the port can change across flashes/replugs)
+# doesn't break PTT.
+ARDUINO_VIDS = (0x2341,)
+LEONARDO_SKETCH_PIDS = (0x8036,)
+
+
+def find_arduino_port(vids=ARDUINO_VIDS, pids=LEONARDO_SKETCH_PIDS):
+    """Return the COM port of a connected Arduino by USB VID/PID, or None.
+
+    Prefers an exact VID+PID match (Leonardo sketch = 2341:8036), then falls
+    back to any port with a matching VID. Imports pyserial lazily so the package
+    stays import-clean when PTT is off; returns None if pyserial is unavailable
+    or nothing matches (caller then stays inert -- never a fallback to input)."""
+    try:
+        from serial.tools import list_ports  # noqa: PLC0415
+        ports = list(list_ports.comports())
+    except Exception:  # noqa: BLE001 - fail-safe: no detection
+        return None
+    for p in ports:
+        if p.vid in vids and (not pids or p.pid in pids):
+            return p.device
+    for p in ports:
+        if p.vid in vids:
+            return p.device
+    return None
+
 
 class PttBackend:
     """Interface for a push-to-talk key asserter. ``available`` is False unless a

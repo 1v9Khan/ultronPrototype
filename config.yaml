@@ -164,7 +164,7 @@ audio:
 # is completely inert. To arm: flash the firmware, set enabled + serial_port.
 push_to_talk:
   enabled: false             # master switch. Env: KENNING_PTT_ENABLED
-  serial_port: ""            # e.g. "COM5". Empty -> inert. Env: KENNING_PTT_SERIAL_PORT
+  serial_port: "auto"        # "auto" -> detect Arduino by USB id; or "COM5". Env: KENNING_PTT_SERIAL_PORT
   baud: 9600
   key: "v"                   # the in-game team-PTT key the device holds (match your bind + firmware)
   lead_ms: 120               # hold the key this long BEFORE audio (open the channel; no clipped first phoneme)

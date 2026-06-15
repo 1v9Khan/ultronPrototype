@@ -20,13 +20,19 @@ controller holds a :class:`NullPttBackend` and is completely inert.
 See :mod:`kenning.ptt.backends` (the serial/null backends) and
 :mod:`kenning.ptt.controller` (the press/heartbeat/release state machine).
 """
-from kenning.ptt.backends import NullPttBackend, PttBackend, SerialHidPttBackend
+from kenning.ptt.backends import (
+    NullPttBackend,
+    PttBackend,
+    SerialHidPttBackend,
+    find_arduino_port,
+)
 from kenning.ptt.controller import PttController, build_ptt_controller
 
 __all__ = [
     "PttBackend",
     "NullPttBackend",
     "SerialHidPttBackend",
+    "find_arduino_port",
     "PttController",
     "build_ptt_controller",
 ]
