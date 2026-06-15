@@ -3706,7 +3706,13 @@ def build_relay_line(
         name = getattr(command, "addressee", "team")
         prefix = f"{name}, " if name and name != "team" else ""
         line = pick_line(DEFAULT_CALM_LINES, recent_lines=recent_lines)
-        return _cap_line(line.format(name=prefix), max_chars)
+        # The calm lines are templated '{name}<lowercase>' so a named vocative
+        # reads 'Jett, an elevated...'; with no name (team) the lead must be
+        # re-capitalised ('an elevated...' -> 'An elevated...').
+        out = line.format(name=prefix)
+        if not prefix and out:
+            out = out[0].upper() + out[1:]
+        return _cap_line(out, max_chars)
 
     # Identity question ('are you an AI / bot / soundboard / streamer?') ->
     # a VARIED curated Ultron declaration (the 3B otherwise soundboards the same
