@@ -160,7 +160,9 @@ def test_engage_actually_invokes_llm_swap(stub_config):
     assert llm.reload_calls == ["llama-3.2-3b-abliterated"]
 
 
-def test_engage_actually_moves_tts_to_cpu(stub_config):
+def test_engage_moves_tts_to_engage_device(stub_config):
+    # Default keeps Kokoro on the GPU while gaming (snappy callouts + frees the
+    # CPU for capture/STT); the 3B LLM on CPU is the VRAM saver, not the voice.
     tts = _StubTTS()
     deps = GamingEngageDeps(tts=tts)
 
@@ -169,7 +171,17 @@ def test_engage_actually_moves_tts_to_cpu(stub_config):
             pass
     _run(_drain())
 
-    assert tts.device_calls == ["cpu"]
+    assert tts.device_calls == ["cuda"]
+
+    # And it honours an explicit override (e.g. force CPU).
+    tts2 = _StubTTS()
+    deps2 = GamingEngageDeps(tts=tts2, tts_kokoro_engage_device="cpu")
+
+    async def _drain2():
+        async for _ in gaming_engage_iterator(deps2):
+            pass
+    _run(_drain2())
+    assert tts2.device_calls == ["cpu"]
 
 
 def test_engage_actually_unloads_vlm(stub_config):
@@ -239,7 +251,7 @@ def test_engage_llm_swap_failure_does_not_stop_state_machine(stub_config):
     # LLM swap was attempted but failed.
     assert llm.reload_calls == ["llama-3.2-3b-abliterated"]
     # Subsequent stages still ran.
-    assert tts.device_calls == ["cpu"]
+    assert tts.device_calls == ["cuda"]
     assert vlm.unload_calls == 1
 
 
@@ -263,7 +275,7 @@ def test_engage_llm_exception_does_not_stop_state_machine(stub_config):
             pass
     _run(_drain())
 
-    assert tts.device_calls == ["cpu"]
+    assert tts.device_calls == ["cuda"]
     assert vlm.unload_calls == 1
 
 
@@ -288,7 +300,7 @@ def test_engage_stt_failure_does_not_stop_state_machine(stub_config):
     _run(_drain())
 
     # Later stages still ran despite STT failure.
-    assert tts.device_calls == ["cpu"]
+    assert tts.device_calls == ["cuda"]
     assert vlm.unload_calls == 1
 
 
