@@ -164,7 +164,10 @@ audio:
 # is completely inert. To arm: flash the firmware, set enabled + serial_port.
 push_to_talk:
   enabled: false             # master switch. Env: KENNING_PTT_ENABLED
-  serial_port: "auto"        # "auto" -> detect Arduino by USB id; or "COM5". Env: KENNING_PTT_SERIAL_PORT
+  backend: "auto"            # "auto" (HID-only first, then serial) | "rawhid" | "serial"
+  hid_vid: 0x1209            # HID-only device USB VID (pid.codes open hardware)
+  hid_usage_page: 0xFFC0     # vendor Raw-HID command collection (matches firmware/leonardo_ptt_hid)
+  serial_port: "auto"        # legacy serial device: "auto" -> detect by USB id; or "COM5". Env: KENNING_PTT_SERIAL_PORT
   baud: 9600
   key: "6"                   # the in-game team-PTT key the device holds (match your bind + firmware)
   lead_ms: 120               # hold the key this long BEFORE audio (open the channel; no clipped first phoneme)

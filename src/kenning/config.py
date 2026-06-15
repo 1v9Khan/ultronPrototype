@@ -3840,9 +3840,19 @@ class PushToTalkConfig(_Strict):
     """
     # Master switch. Default OFF (no hardware assumed; binding no-default rule).
     enabled: bool = False
-    # Serial (COM) port of the microcontroller. "auto" (default) detects the
-    # Arduino by USB VID/PID so a drifting COM assignment never breaks it; or
-    # pin an explicit port like "COM5". Empty also auto-detects.
+    # Transport to the device. "auto" (default) tries the HARDENED HID-only
+    # device first (vendor Raw-HID, no COM port), then the legacy serial/CDC
+    # device. "rawhid" or "serial" pin one. The host writes bytes ONLY either way
+    # (HID output reports or serial), never synthetic input.
+    backend: str = "auto"
+    # -- HID-only device (no COM port; the hardened build) --
+    # USB VID + vendor usage page of the Raw-HID command collection. Defaults
+    # match firmware/leonardo_ptt_hid (pid.codes 0x1209 + usage page 0xFFC0).
+    hid_vid: int = Field(default=0x1209, ge=0, le=0xFFFF)
+    hid_usage_page: int = Field(default=0xFFC0, ge=0, le=0xFFFF)
+    # -- legacy serial/CDC device --
+    # Serial (COM) port. "auto" detects the Arduino by USB VID/PID so a drifting
+    # COM assignment never breaks it; or pin an explicit port like "COM5".
     serial_port: str = "auto"
     baud: int = Field(default=9600, ge=1200, le=2_000_000)
     # The in-game TEAM-voice PTT key the microcontroller holds. Informational on

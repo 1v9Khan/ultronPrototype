@@ -15,6 +15,7 @@ from kenning.ptt.backends import (
     CMD_UP,
     NullPttBackend,
     PttBackend,
+    RawHidPttBackend,
     SerialHidPttBackend,
 )
 from kenning.ptt.controller import PttController, build_ptt_controller
@@ -185,6 +186,11 @@ def test_serial_backend_write_error_disables_fail_safe():
 class _PttCfg:
     def __init__(self, **kw):
         self.enabled = kw.get("enabled", False)
+        # default to the serial path so the legacy-path tests stay deterministic
+        # regardless of any real HID device plugged into the test machine.
+        self.backend = kw.get("backend", "serial")
+        self.hid_vid = kw.get("hid_vid", 0x1209)
+        self.hid_usage_page = kw.get("hid_usage_page", 0xFFC0)
         self.serial_port = kw.get("serial_port", "")
         self.baud = kw.get("baud", 9600)
         self.heartbeat_ms = kw.get("heartbeat_ms", 50)
@@ -247,6 +253,116 @@ def test_find_arduino_none_when_absent(monkeypatch):
     from kenning.ptt import backends
     monkeypatch.setattr(lp, "comports", lambda: [_FakePort("COM1", 0x1234, 0x0001)])
     assert backends.find_arduino_port() is None
+
+
+# -- raw-HID backend (the hardened HID-only device) --------------------------
+
+def test_rawhid_backend_writes_one_byte_reports():
+    writes: list[bytes] = []
+
+    class _FakeHid:
+        def write(self, data):
+            writes.append(bytes(data))
+            return len(data)
+
+        def close(self):
+            pass
+
+    b = RawHidPttBackend(0x1209, 0xFFC0, open_hid=lambda v, p, u: _FakeHid())
+    assert b.available is True
+    b.press()
+    b.heartbeat()
+    b.release()
+    # Each report is report-id 0 + a 64-byte report; byte[1] carries the command.
+    assert [w[1] for w in writes] == [ord("D"), ord("H"), ord("U")]
+    assert all(len(w) == 65 for w in writes)
+    b.close()
+    assert writes[-1][1] == ord("U")    # close emits a best-effort release
+
+
+def test_rawhid_backend_open_failure_is_inert():
+    b = RawHidPttBackend(
+        0x1209, 0xFFC0,
+        open_hid=lambda v, p, u: (_ for _ in ()).throw(OSError("no device")),
+    )
+    assert b.available is False
+    b.press()
+    b.heartbeat()
+    b.close()       # must not raise
+
+
+def test_rawhid_backend_write_error_disables_fail_safe():
+    class _Flaky:
+        def __init__(self):
+            self.n = 0
+
+        def write(self, d):
+            self.n += 1
+            if self.n > 1:
+                raise OSError("unplugged mid-match")
+            return len(d)
+
+        def close(self):
+            pass
+
+    b = RawHidPttBackend(0x1209, 0xFFC0, open_hid=lambda v, p, u: _Flaky())
+    assert b.available is True
+    b.press()           # ok
+    b.heartbeat()       # raises internally -> disables, swallowed
+    assert b.available is False
+    b.release()         # now a no-op
+
+
+# -- backend selection in the factory ----------------------------------------
+
+def test_factory_auto_prefers_rawhid(monkeypatch):
+    import kenning.ptt.controller as ctrl
+
+    class _Hid:
+        available = True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ctrl, "RawHidPttBackend", lambda *a, **k: _Hid())
+    c = build_ptt_controller(_Cfg(_PttCfg(enabled=True, backend="auto")))
+    assert c.available is True
+
+
+def test_factory_auto_falls_back_to_serial_then_inert(monkeypatch):
+    import kenning.ptt.controller as ctrl
+
+    class _NoHid:
+        available = False
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ctrl, "RawHidPttBackend", lambda *a, **k: _NoHid())
+    monkeypatch.setattr(ctrl, "find_arduino_port", lambda *a, **k: None)
+    c = build_ptt_controller(_Cfg(_PttCfg(enabled=True, backend="auto", serial_port="auto")))
+    assert c.available is False     # no HID, no serial -> inert
+
+
+def test_factory_serial_kind_never_tries_rawhid(monkeypatch):
+    import kenning.ptt.controller as ctrl
+    called = {"hid": False}
+
+    class _Hid:
+        available = True
+
+        def close(self):
+            pass
+
+    def _mk(*a, **k):
+        called["hid"] = True
+        return _Hid()
+
+    monkeypatch.setattr(ctrl, "RawHidPttBackend", _mk)
+    monkeypatch.setattr(ctrl, "find_arduino_port", lambda *a, **k: None)
+    c = build_ptt_controller(_Cfg(_PttCfg(enabled=True, backend="serial")))
+    assert called["hid"] is False
+    assert c.available is False
 
 
 if __name__ == "__main__":  # pragma: no cover

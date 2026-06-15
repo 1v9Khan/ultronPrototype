@@ -27,8 +27,11 @@ import time
 from typing import Optional
 
 from kenning.ptt.backends import (
+    HID_PTT_USAGE_PAGE,
+    HID_PTT_VID,
     NullPttBackend,
     PttBackend,
+    RawHidPttBackend,
     SerialHidPttBackend,
     find_arduino_port,
 )
@@ -204,6 +207,33 @@ def build_ptt_controller(config=None, *, enabled=None, serial_port=None) -> PttC
     if not enabled:
         return _mk(NullPttBackend())
 
+    backend_kind = str((getattr(ptt, "backend", "auto") if ptt else "auto") or "auto").strip().lower()
+
+    # RAW HID path (the HARDENED HID-only device -- no COM port). Tried first
+    # under "auto" since that device has no serial port to find.
+    if backend_kind in ("auto", "rawhid"):
+        vid = int(getattr(ptt, "hid_vid", HID_PTT_VID)) if ptt else HID_PTT_VID
+        upage = int(getattr(ptt, "hid_usage_page", HID_PTT_USAGE_PAGE)) if ptt else HID_PTT_USAGE_PAGE
+        hid_backend = RawHidPttBackend(vid, upage)
+        if hid_backend.available:
+            logger.info(
+                "push-to-talk ARMED via external USB-HID (raw HID, vid=%#06x) "
+                "-- host writes HID reports ONLY, no synthetic input", vid,
+            )
+            return _mk(hid_backend)
+        try:
+            hid_backend.close()
+        except Exception:  # noqa: BLE001
+            pass
+        if backend_kind == "rawhid":
+            logger.warning(
+                "push-to-talk ENABLED (rawhid) but no vendor HID device found "
+                "-- PTT INERT (no synthetic-input fallback).",
+            )
+            return _mk(NullPttBackend())
+        logger.info("push-to-talk: no raw-HID device found; trying serial...")
+
+    # SERIAL path (legacy CDC device with a COM port).
     port = (str(serial_port or "")).strip()
     if port.lower() == "auto" or not port:
         detected = find_arduino_port()
@@ -212,9 +242,9 @@ def build_ptt_controller(config=None, *, enabled=None, serial_port=None) -> PttC
             port = detected
         else:
             logger.warning(
-                "push-to-talk ENABLED but no Arduino auto-detected -- PTT INERT "
-                "(no synthetic-input fallback). Plug it in or set "
-                "push_to_talk.serial_port to a COM port.",
+                "push-to-talk ENABLED but no PTT device auto-detected (raw-HID or "
+                "serial) -- PTT INERT (no synthetic-input fallback). Plug it in or "
+                "set push_to_talk.serial_port to a COM port.",
             )
             return _mk(NullPttBackend())
 

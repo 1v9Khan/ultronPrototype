@@ -11,9 +11,18 @@ one-byte commands the external microcontroller understands:
 
 The firmware presses a real USB-HID key on ``D``, releases on ``U``, and -- as a
 hardware failsafe -- auto-releases if it stops receiving bytes for its deadman
-window (so a host crash mid-hold cannot jam the mic open). Nothing here imports
-or calls any synthetic-input library; pyserial is the only third-party import and
-it is not on any anticheat block list.
+window (so a host crash mid-hold cannot jam the mic open).
+
+Two transports, same protocol:
+  * :class:`SerialHidPttBackend` -- the legacy device exposes a CDC serial (COM)
+    port; commands are ``serial.write(byte)`` (pyserial).
+  * :class:`RawHidPttBackend` -- the HARDENED device has NO COM port; it exposes
+    a vendor Raw-HID collection, and commands are HID OUTPUT reports (hidapi).
+    Writing an HID output report is DEVICE I/O -- sending bytes TO a peripheral --
+    NOT synthetic input injection (no LLKHF_INJECTED, not the quarantined SendInput
+    surface). Both pyserial and hidapi are benign leaf deps, on no block list.
+
+Nothing here imports or calls any synthetic-input library.
 """
 from __future__ import annotations
 
@@ -54,6 +63,33 @@ def find_arduino_port(vids=ARDUINO_VIDS, pids=LEONARDO_SKETCH_PIDS):
     for p in ports:
         if p.vid in vids:
             return p.device
+    return None
+
+
+# USB identity of the HARDENED HID-only device (no CDC/COM port): a custom
+# open-hardware VID (pid.codes 0x1209) + the vendor Raw-HID collection used for
+# the command channel (usage page in the 0xFF00-0xFFFF vendor range). The device
+# presents as a plain keyboard + this vendor collection -- like any commercial
+# gaming keyboard with a config interface.
+HID_PTT_VID = 0x1209
+HID_PTT_USAGE_PAGE = 0xFFC0
+
+
+def find_hid_ptt_device(vid=HID_PTT_VID, usage_page=HID_PTT_USAGE_PAGE, pid=None):
+    """Return the hidapi device path of the PTT vendor HID collection, or None.
+
+    Matches on USB VID + the vendor usage page (the Raw-HID command channel), NOT
+    the keyboard collection. Imports hidapi lazily so the package stays
+    import-clean when PTT is off; returns None if hidapi is unavailable or nothing
+    matches. Writing to this path is DEVICE I/O, not synthetic input."""
+    try:
+        import hid  # noqa: PLC0415
+        devices = hid.enumerate(vid, pid or 0)
+    except Exception:  # noqa: BLE001 - fail-safe: no detection
+        return None
+    for d in devices:
+        if d.get("usage_page") == usage_page:
+            return d.get("path")
     return None
 
 
@@ -178,5 +214,102 @@ class SerialHidPttBackend(PttBackend):
                 pass
             try:
                 ser.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+class RawHidPttBackend(PttBackend):
+    """Drives the HARDENED HID-only device via hidapi HID OUTPUT reports (no COM
+    port). Writing an HID output report is DEVICE I/O -- bytes sent TO a
+    peripheral -- NOT synthetic input: it sets no LLKHF_INJECTED flag and is not
+    the quarantined SendInput surface. Same fail-safe contract as the serial
+    backend: any open/write error disables the backend; it never raises and never
+    falls back to in-process input."""
+
+    def __init__(
+        self,
+        vid: int = HID_PTT_VID,
+        usage_page: int = HID_PTT_USAGE_PAGE,
+        *,
+        pid: Optional[int] = None,
+        down: bytes = CMD_DOWN,
+        up: bytes = CMD_UP,
+        heartbeat: bytes = CMD_HEARTBEAT,
+        open_hid: Optional[Callable[..., object]] = None,
+    ) -> None:
+        self._down, self._up, self._hb = down, up, heartbeat
+        self._lock = threading.Lock()
+        self._dev = None
+        self._ok = False
+        try:
+            if open_hid is not None:
+                # Test seam: inject a fake hid device without hidapi.
+                self._dev = open_hid(vid, pid, usage_page)
+            else:
+                # Lazy import: hidapi (module name ``hid``) -- device I/O, NOT an
+                # input-injection lib, not on the anticheat block list, only
+                # pulled in when PTT is actually armed.
+                import hid  # noqa: PLC0415
+
+                path = None
+                for d in hid.enumerate(vid, pid or 0):
+                    if d.get("usage_page") == usage_page:
+                        path = d.get("path")
+                        break
+                if path is None:
+                    raise OSError(
+                        "no vendor HID collection (vid=%#06x usage_page=%#06x)"
+                        % (vid, usage_page)
+                    )
+                self._dev = hid.device()
+                self._dev.open_path(path)
+            self._ok = self._dev is not None
+        except Exception as e:  # noqa: BLE001 - fail-safe: unavailable, never raise
+            logger.warning(
+                "push-to-talk HID open failed (vid=%#06x): %s -- PTT will not fire",
+                vid, e,
+            )
+            self._dev = None
+            self._ok = False
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        return self._ok
+
+    def press(self) -> None:
+        self._report(self._down)
+
+    def release(self) -> None:
+        self._report(self._up)
+
+    def heartbeat(self) -> None:
+        self._report(self._hb)
+
+    def _report(self, cmd: bytes) -> None:
+        # report id 0 + a 64-byte report; byte 0 carries the command.
+        packet = bytes([0x00, cmd[0]]) + b"\x00" * 63
+        with self._lock:
+            if not self._ok or self._dev is None:
+                return
+            try:
+                self._dev.write(packet)
+            except Exception as e:  # noqa: BLE001 - fail-safe: disable, don't raise
+                logger.warning(
+                    "push-to-talk HID write failed (%s) -- disabling PTT", e,
+                )
+                self._ok = False
+
+    def close(self) -> None:
+        with self._lock:
+            dev = self._dev
+            self._dev = None
+            self._ok = False
+        if dev is not None:
+            try:
+                dev.write(bytes([0x00, self._up[0]]) + b"\x00" * 63)  # release
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                dev.close()
             except Exception:  # noqa: BLE001
                 pass

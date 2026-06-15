@@ -23,8 +23,10 @@ See :mod:`kenning.ptt.backends` (the serial/null backends) and
 from kenning.ptt.backends import (
     NullPttBackend,
     PttBackend,
+    RawHidPttBackend,
     SerialHidPttBackend,
     find_arduino_port,
+    find_hid_ptt_device,
 )
 from kenning.ptt.controller import PttController, build_ptt_controller
 
@@ -32,7 +34,9 @@ __all__ = [
     "PttBackend",
     "NullPttBackend",
     "SerialHidPttBackend",
+    "RawHidPttBackend",
     "find_arduino_port",
+    "find_hid_ptt_device",
     "PttController",
     "build_ptt_controller",
 ]

@@ -21,14 +21,15 @@ Deliberately NOT blocked (analyzed, categorically safe):
 * ``psutil`` self-management (killing Kenning's OWN child process tree,
   raising Kenning's OWN priority) -- never opens a foreign process handle
   beyond shell-level metadata.
-* Auto push-to-talk via an EXTERNAL USB-HID microcontroller over serial
-  (``kenning.ptt``). The host writes bytes to a COM port (pyserial /
-  user-mode WriteFile -- the same surface Arduino IDE / OBS serial plugins
-  / RGB software use); the physical keypress is produced by the peripheral,
-  which enumerates as a real USB keyboard with NO injected flag. This is
-  NOT ``SendInput``/``keybd_event``/a global hook/raw-input registration --
-  the injection happens in external hardware, not this process. The host
-  NEVER does synthetic input and NEVER falls back to it (fail-safe off).
+* Auto push-to-talk via an EXTERNAL USB-HID microcontroller (``kenning.ptt``).
+  The host only sends bytes TO the peripheral -- either over a serial COM
+  port (pyserial) or as HID OUTPUT reports to a vendor collection (hidapi);
+  both are DEVICE I/O (the same surface Arduino IDE / OBS serial plugins /
+  RGB-keyboard config software use), NOT ``SendInput``/``keybd_event``/a
+  global hook/raw-input registration. The physical keypress is produced by
+  the peripheral, which enumerates as a real USB keyboard with NO injected
+  flag -- the injection happens in external hardware, not this process. The
+  host NEVER does synthetic input and NEVER falls back to it (fail-safe off).
 * LLM / web search / memory / evolution (no OS interaction at all).
 
 Enforcement is BELT-AND-SUSPENDERS, three layers:
