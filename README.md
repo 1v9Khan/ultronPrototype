@@ -43,7 +43,7 @@
 | 🔊 &nbsp;`"kenning, repeat to my team watermelon"` | The soundboard check — when teammates ask you to say a specific word to prove a human's on comms, Ultron speaks the **exact** phrase verbatim (no LLM, any literal word) in his trained voice |
 | 🎛️ &nbsp;`"kenning, pull up your settings"` | Spawns a detached dark-theme control panel → edit knobs at a glance → every toggle hot-applies live (no restart) → CLOSE leaves zero residue |
 | 🎵 &nbsp;`"kenning, play some Daft Punk"` | Full hands-free Spotify control by voice — play / queue / "play X next" / pause / resume / skip / previous / restart / "what's playing" / volume up·down·"set it to 40"·"lower it by 10%" / mute·unmute / shuffle / repeat / like·unlike — understanding dozens of natural phrasings, with confirmations in Ultron's cold machine register. Web API over HTTPS only (no GPU, no LLM) so it stays live **even in gaming/anticheat mode** |
-| 🛡️ &nbsp;`"kenning, engage gaming mode"` | Frees VRAM/Docker **and** hard-disables every desktop-interaction surface (input, capture, windows) — kernel-anticheat-safe; voice + team relay stay live |
+| 🛡️ &nbsp;`"kenning, engage gaming mode"` | Frees VRAM/Docker **and** keeps every desktop-interaction surface (input injection, screen capture, UIA, windows) **entirely out of RAM** — not just call-blocked but never imported (pinned by clean-subprocess tests + a boot posture self-audit); zero foreign-process memory reads / injection / hooks / raw-input anywhere in source. Default-ON and safe-by-default. Only shared-mode audio (the team relay + Spotify, the well-trodden voice-changer class) stays live — kernel-anticheat-safe (Vanguard/EAC/BattlEye) |
 
 ---
 

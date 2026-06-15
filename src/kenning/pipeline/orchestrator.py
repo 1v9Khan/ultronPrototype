@@ -444,17 +444,7 @@ class Orchestrator:
         # Default ON so the wiring shipped this session actually runs;
         # operators can short-circuit by stopping the singleton at
         # runtime via :func:`kenning.desktop.dialog_poller.set_dialog_poller(None)`.
-        try:
-            from kenning.desktop.dialog_poller import get_dialog_poller
-            self._dialog_poller = get_dialog_poller()
-            self._dialog_poller.start()
-            logger.info("DialogPoller daemon started")
-        except Exception as e:                                       # noqa: BLE001
-            self._dialog_poller = None
-            logger.warning(
-                "DialogPoller startup skipped (%s); "
-                "dialog auto-handler will not receive events", e,
-            )
+        self._start_dialog_poller()
         # Anticheat-safe mode surface hooks (2026-06-11): activating the
         # mode must physically STOP running desktop subsystems, not just
         # gate their calls -- the UIA dialog-poller thread keeps polling
@@ -476,11 +466,19 @@ class Orchestrator:
             def _anticheat_capture_singletons(active: bool) -> None:
                 if not active:
                     return  # rebuilt lazily on next (post-mode) use
-                from kenning.desktop.capture import set_screen_capture
-                from kenning.desktop.sequence import set_sequence_runner
+                # NEVER import the desktop stack just to clear singletons -- that
+                # import would pull pyautogui + mss into RAM under anticheat. Only
+                # release them if the modules are ALREADY loaded (i.e. desktop was
+                # used before the mode flip); if anticheat is on from boot they
+                # were never loaded and there is nothing to clear.
+                import sys as _sys
 
-                set_screen_capture(None)
-                set_sequence_runner(None)
+                cap = _sys.modules.get("kenning.desktop.capture")
+                if cap is not None:
+                    cap.set_screen_capture(None)
+                seq = _sys.modules.get("kenning.desktop.sequence")
+                if seq is not None:
+                    seq.set_sequence_runner(None)
 
             register_surface_hook("dialog_poller", _anticheat_dialog_poller)
             register_surface_hook(
@@ -1089,6 +1087,91 @@ class Orchestrator:
                         "available")
         except Exception as e:                                       # noqa: BLE001
             logger.warning("gaming mode startup engage failed: %s", e)
+        # ANTICHEAT POSTURE SELF-AUDIT (2026-06-14): last boot step. Leaves an
+        # auditable line every restart proving the OS-interaction stack is not in
+        # RAM while anticheat-safe mode is active -- and a LOUD warning if it is
+        # (a regression canary). Fail-open: never blocks boot.
+        try:
+            self._audit_anticheat_posture()
+        except Exception as e:                                        # noqa: BLE001
+            logger.debug("anticheat posture self-audit skipped (%s)", e)
+
+    def _start_dialog_poller(self) -> None:
+        """Start the UIA DialogPoller -- UNLESS anticheat-safe mode is active.
+
+        ANTICHEAT HARDENING (2026-06-14): importing
+        ``kenning.desktop.dialog_poller`` pulls the ENTIRE desktop-automation
+        stack into RAM via the package ``__init__`` -- pyautogui (SendInput
+        injection), mss (GDI screen capture), pywinauto (UIA). Under anticheat-
+        safe mode we keep that stack ENTIRELY OUT of the process: never imported,
+        never a running thread -- not merely call-gated. So skip the poller
+        outright when the mode is active; a kernel anticheat then observes zero
+        input/capture/UIA surface at all. (This is the ONLY boot-time importer of
+        ``kenning.desktop`` -- pinned by tests -- so gating it here is sufficient
+        to keep the whole stack cold.)
+        """
+        from kenning.safety.anticheat import anticheat_active
+
+        if anticheat_active():
+            self._dialog_poller = None
+            logger.info(
+                "DialogPoller NOT started + desktop-automation stack NOT loaded "
+                "(pyautogui / mss / pywinauto kept out of RAM): anticheat-safe "
+                "mode active"
+            )
+            return
+        try:
+            from kenning.desktop.dialog_poller import get_dialog_poller
+
+            self._dialog_poller = get_dialog_poller()
+            self._dialog_poller.start()
+            logger.info("DialogPoller daemon started")
+        except Exception as e:                                       # noqa: BLE001
+            self._dialog_poller = None
+            logger.warning(
+                "DialogPoller startup skipped (%s); "
+                "dialog auto-handler will not receive events", e,
+            )
+
+    def _audit_anticheat_posture(self) -> None:
+        """Log the live anticheat posture for per-restart auditability.
+
+        Under anticheat-safe mode the input-injection / screen-capture / UIA
+        stack must NOT be loaded in this process. This walks ``sys.modules`` for
+        those libraries and the ``kenning.desktop`` package and logs the result.
+        If the mode is active but any of them are loaded, it logs a WARNING (a
+        loud regression canary) rather than failing -- the guards still block
+        every CALL, but a loaded module is a footprint we want to know about.
+        """
+        import sys as _sys
+        from kenning.safety.anticheat import anticheat_active
+
+        active = anticheat_active()
+        # The libraries a kernel anticheat-conscious build must keep cold:
+        # input injection (pyautogui/SendInput), screen capture (mss/pyscreeze/
+        # dxcam), UI automation (pywinauto/uiautomation), input hooks (pynput).
+        risky = [m for m in (
+            "pyautogui", "mss", "pyscreeze", "dxcam",
+            "pywinauto", "uiautomation", "pynput",
+        ) if m in _sys.modules]
+        desktop_loaded = "kenning.desktop" in _sys.modules
+        poller = getattr(self, "_dialog_poller", None)
+        poller_running = bool(poller is not None and getattr(poller, "running", False))
+        if active and (risky or desktop_loaded or poller_running):
+            logger.warning(
+                "ANTICHEAT POSTURE CANARY: mode ACTIVE but OS-interaction "
+                "footprint present -- libs=%s kenning.desktop=%s poller=%s. "
+                "Calls are still hard-blocked, but investigate this load path.",
+                risky or "none", desktop_loaded, poller_running,
+            )
+        else:
+            logger.info(
+                "anticheat posture OK | mode=%s | input/capture/UIA libs "
+                "loaded=%s | kenning.desktop loaded=%s | dialog poller=%s",
+                "ACTIVE" if active else "off",
+                risky or "none", desktop_loaded,
+                "running" if poller_running else "not started",
+            )
 
     def _load_mcp_server_if_enabled(self):
         """Construct + start the MCP server (Phase 1+). Failures degrade

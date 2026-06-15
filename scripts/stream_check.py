@@ -13,8 +13,11 @@ It exercises the REAL production audio paths -- it does NOT load the assistant:
   2. TEAM feed        -> the relay play_to_device path (relay_speech.output_device),
      i.e. "Voicemeeter Input" -> route that strip to bus B1 -> select
      "Voicemeeter Out B1" as Kenning's mic in your game.  Team callouts ONLY.
-  3. DEFAULT output   -> what YOU hear; unchanged.
-  4. MIC (input)      -> the device you talk to Kenning on; must be untouched.
+  3. DEFAULT output   -> what YOU hear (normal conversation goes here directly).
+  4. LOCAL MONITOR    -> the relay/team callout teed to your DEFAULT output too
+     (kenning.audio.monitor, gated by relay_speech.echo_to_user) so you hear
+     your OWN callouts -- relay otherwise only reaches the mic + OBS.
+  5. MIC (input)      -> the device you talk to Kenning on; must be untouched.
 
 A short, quiet tone is played to each OUTPUT device so you can watch the
 meters. The mic is only resolved, never opened. Exit 0 = all paths OK.
@@ -104,7 +107,7 @@ def main() -> int:
         print("      FAIL relay play_to_device returned no playback.")
 
     # -- 3. DEFAULT output (what you hear) --------------------------------
-    print("\n[3/3] DEFAULT output (you hear this) ...")
+    print("\n[3/4] DEFAULT output (you hear this) ...")
     try:
         stream = sd.OutputStream(samplerate=sr, channels=2, dtype="int16",
                                  device=default_idx)
@@ -117,7 +120,23 @@ def main() -> int:
         ok = False
         print(f"      FAIL default output: {e}")
 
-    # -- 4. MIC independence ----------------------------------------------
+    # -- 4. LOCAL MONITOR: relay teed to your default output --------------
+    print("\n[4/4] LOCAL MONITOR via kenning.audio.monitor (relay -> you) ...")
+    if not getattr(cfg.relay_speech, "echo_to_user", False):
+        print("      SKIP relay_speech.echo_to_user is OFF (monitor disabled).")
+    else:
+        from kenning.audio import monitor as _mon
+        _mon.maybe_submit(tone(sr, 550.0), sr)   # reads echo_to_user live
+        time.sleep(0.8)
+        armed = getattr(_mon.get_monitor_sink(), "_resolved_index", None)
+        if armed == default_idx:
+            print(f"      OK  relay callouts also play to your default idx {armed}.")
+        else:
+            ok = False
+            print(f"      WARN monitor armed idx={armed}, expected {default_idx}.")
+        _mon.get_monitor_sink().close()
+
+    # -- 5. MIC independence ----------------------------------------------
     print("\nMic check: input device resolved but NEVER opened/changed by any "
           "of the above (outputs only).")
     if mic_idx is None:

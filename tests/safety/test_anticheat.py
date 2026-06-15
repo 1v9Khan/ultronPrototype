@@ -480,5 +480,121 @@ def test_gaming_mode_config_defaults() -> None:
     from kenning.config import GamingModeConfig
 
     cfg = GamingModeConfig()
-    assert cfg.anticheat_safe_mode is False
+    # Safe-by-default: the desktop-interaction hard block defaults ON so a lost
+    # or reset config can never silently unblock input/capture in a game.
+    assert cfg.anticheat_safe_mode is True
     assert cfg.anticheat_with_gaming_mode is True
+
+
+# ---------------------------------------------------------------------------
+# NEVER-LOAD guarantee: under anticheat the input/capture/UIA stack must not
+# even be imported into RAM (not merely call-gated). Proven in a CLEAN
+# subprocess so suite-wide import pollution can't mask a regression.
+# ---------------------------------------------------------------------------
+
+import subprocess  # noqa: E402
+import sys as _sys  # noqa: E402
+import textwrap  # noqa: E402
+
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_probe(body: str) -> subprocess.CompletedProcess:
+    code = (
+        "import sys; sys.path[:0] = [r%r, r%r]\n" % (
+            str(_ROOT / "src"), str(_ROOT))
+    ) + textwrap.dedent(body)
+    return subprocess.run(
+        [_sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=180, cwd=str(_ROOT),
+    )
+
+
+def test_anticheat_keeps_desktop_stack_out_of_ram() -> None:
+    """Boot the dialog-poller path with anticheat active (shipped config) and
+    assert pyautogui / mss / pywinauto / kenning.desktop were NEVER imported."""
+    proc = _run_probe(
+        """
+        import sys
+        from kenning.safety.anticheat import anticheat_active
+        assert anticheat_active(), "expected anticheat active from shipped config"
+        from kenning.pipeline.orchestrator import Orchestrator
+        o = Orchestrator.__new__(Orchestrator)
+        o._start_dialog_poller()
+        assert o._dialog_poller is None, "dialog poller started under anticheat"
+        risky = [m for m in (
+            "pyautogui", "mss", "pyscreeze", "pywinauto", "uiautomation",
+            "dxcam", "pynput",
+        ) if m in sys.modules]
+        assert not risky, "OS-interaction libs loaded under anticheat: %r" % risky
+        assert "kenning.desktop" not in sys.modules, "kenning.desktop loaded"
+        o._audit_anticheat_posture()   # must log OK, not raise
+        print("PROBE_PASS")
+        """
+    )
+    assert "PROBE_PASS" in proc.stdout, (
+        f"probe failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+    )
+
+
+def test_relay_path_does_not_import_desktop_stack() -> None:
+    """The team relay is pure audio (synthesize -> play_to_device + tees). Loading
+    it must not drag in any input/capture/UIA surface -- the voice-changer class."""
+    proc = _run_probe(
+        """
+        import sys
+        import kenning.audio.relay_speech      # the relay pipeline
+        import kenning.audio.monitor           # the local monitor tee
+        import kenning.spotify.voice           # spotify control
+        risky = [m for m in (
+            "pyautogui", "mss", "pyscreeze", "pywinauto", "uiautomation",
+            "dxcam", "pynput",
+        ) if m in sys.modules]
+        assert not risky, "relay/spotify path pulled in: %r" % risky
+        assert "kenning.desktop" not in sys.modules, "relay pulled in kenning.desktop"
+        print("PROBE_PASS")
+        """
+    )
+    assert "PROBE_PASS" in proc.stdout, (
+        f"probe failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+    )
+
+
+def test_start_dialog_poller_runs_when_anticheat_off(monkeypatch) -> None:
+    """With anticheat OFF the poller path is taken (regression: the gate must not
+    wedge the poller permanently off)."""
+    from kenning.pipeline import orchestrator as orch_mod
+
+    set_anticheat_active(False)
+    started = {"n": 0}
+
+    class _FakePoller:
+        running = False
+
+        def start(self):
+            started["n"] += 1
+
+    import kenning.desktop.dialog_poller as dp
+    monkeypatch.setattr(dp, "get_dialog_poller", lambda: _FakePoller())
+    o = orch_mod.Orchestrator.__new__(orch_mod.Orchestrator)
+    o._start_dialog_poller()
+    assert started["n"] == 1 and o._dialog_poller is not None
+
+
+def test_posture_audit_canary_fires_when_risky_module_loaded(
+    monkeypatch, caplog,
+) -> None:
+    """If a risky lib is somehow loaded while anticheat is active, the boot audit
+    must log a loud CANARY warning (so a future regression is visible)."""
+    import types
+    from kenning.pipeline import orchestrator as orch_mod
+
+    monkeypatch.setitem(_sys.modules, "pynput", types.ModuleType("pynput"))
+    set_anticheat_active(True, "test")
+    try:
+        o = orch_mod.Orchestrator.__new__(orch_mod.Orchestrator)
+        with caplog.at_level("WARNING"):
+            o._audit_anticheat_posture()
+    finally:
+        set_anticheat_active(False)
+    assert any("ANTICHEAT POSTURE CANARY" in r.message for r in caplog.records)

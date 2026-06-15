@@ -3490,11 +3490,35 @@ process).
   Desktop stopped via `toggle_docker`), nothing anticheat-adjacent is
   RUNNING while the mode is active — the only live surfaces are
   shared-mode audio, the LLM, and file/network IO.
-- Tests: `tests/safety/test_anticheat.py` (55) — incl. an **AST audit
-  test** that re-parses every guarded source file and fails if ANY of
-  the 49 guards is ever refactored away, representative
-  raise-before-OS-touch checks, the validator pre-check + audit, the
-  toggle matrix, and the gaming-mode tie-in with opt-out.
+- **NEVER-LOAD hardening (2026-06-14):** beyond stopping running
+  surfaces, the OS-interaction stack is kept ENTIRELY OUT of RAM under
+  anticheat — never imported, not merely call-gated. The ONLY boot-time
+  importer of `kenning.desktop` was the UIA `DialogPoller`
+  (importing it pulls the whole package `__init__` → pyautogui/SendInput
+  + mss/GDI-capture + pywinauto/UIA into the process). `Orchestrator.
+  _start_dialog_poller()` now SKIPS it outright when `anticheat_active()`
+  (boot log: "desktop-automation stack NOT loaded … kept out of RAM"),
+  and the capture-singleton hook clears via `sys.modules.get(...)` so it
+  never IMPORTS the stack just to release it. A boot-time
+  `_audit_anticheat_posture()` self-check logs every restart that
+  pyautogui/mss/pywinauto/`kenning.desktop` are unloaded (and a loud
+  `ANTICHEAT POSTURE CANARY` WARNING if any are present while active).
+  `gaming_mode.anticheat_safe_mode` + `relay_speech.echo_to_user` now
+  default True at the dataclass level (safe-by-default: a lost config
+  can't silently unblock input/capture, and the user hears their own
+  callouts). The team relay + Spotify path import nothing OS-interacting
+  (pinned by subprocess tests) → the well-trodden voice-changer class.
+- Tests: `tests/safety/test_anticheat.py` (72) — incl. an **AST audit
+  test** that re-parses every guarded source file and fails if ANY guard
+  is refactored away; `test_no_ban_class_apis_anywhere_in_source` (zero
+  OpenProcess / Read·WriteProcessMemory / CreateRemoteThread /
+  VirtualAllocEx / SetWindowsHookEx / RegisterRawInputDevices / Nt* /
+  pynput / dxcam / ImageGrab in src outside the defense regexes); **two
+  clean-subprocess probes** proving the desktop stack stays unloaded
+  under anticheat boot and that the relay/monitor/spotify path imports
+  none of it; the boot posture-audit canary; representative
+  raise-before-OS-touch checks; the validator pre-check + audit; the
+  toggle matrix; and the gaming-mode tie-in with opt-out.
 
 #### `settings_gui/` (NEW 2026-06-11 — voice-launched control panel)
 

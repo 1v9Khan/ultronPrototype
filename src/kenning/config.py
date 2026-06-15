@@ -2960,7 +2960,13 @@ class GamingModeConfig(_Strict):
     # to gaming-mode engage/disengage automatically; the voice toggle
     # ("enable anticheat mode") works any time;
     # ``anticheat_safe_mode: true`` pins it permanently on.
-    anticheat_safe_mode: bool = False
+    # SAFE-BY-DEFAULT (2026-06-14): defaults to True so the desktop-interaction
+    # hard block holds even if config.yaml is ever lost/reset -- a misconfigured
+    # or missing config can never silently UNblock input injection / screen
+    # capture / window automation while the user is in a kernel-anticheat game.
+    # (The unit sweep stays hermetic: conftest disables the CONFIG pin via
+    # set_config_pin_enabled(False), so desktop tests still run.)
+    anticheat_safe_mode: bool = True
     anticheat_with_gaming_mode: bool = True
     # 2026-06-12: engage gaming mode automatically at startup (LLM->CPU 3B,
     # Kokoro TTS->CPU, Parakeet stopped, VLM unloaded) so Kenning boots straight
@@ -3628,7 +3634,9 @@ class RelaySpeechConfig(_Strict):
     # tee of the SAME synthesized clip (kenning.audio.monitor) -- in sync with
     # the mic write, no re-synthesis. Read live per callout, so the settings-
     # GUI "Echo to me" toggle hot-applies on the next callout.
-    echo_to_user: bool = False
+    # Default ON (2026-06-14): the user hears their own team callouts on their
+    # speakers by default (the tee is pure audio playback, anticheat-irrelevant).
+    echo_to_user: bool = True
     # After a relay turn, hold the follow-up listening window open this
     # long (vs the standard ~30 s warm window) so a whole in-game
     # conversation flows without re-waking; relay-matched utterances
