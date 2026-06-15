@@ -1705,6 +1705,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-06-15 | `e3df7d3` | **Semantic command router + embeddinggemma sidecar + turbo STT + anticheat import firewall** (commit e3df7d3). Added an additive similarity-based router beneath the exact matchers (command_router/_router_backends/_command_exemplars) with a hybrid lexical+embedding backend and an OOS abstention gate to the LLM; the embedding model (google/embeddinggemma-300m) runs in an isolated-venv loopback sidecar (scripts/embedder_server.py) so no heavy dep enters the anticheat-pinned main process. Added a pre-routing STT normalizer (command_normalizer + expanded _stt_correct), swapped STT to faster-whisper large-v3-turbo on CUDA with a hallucination filter, added a loader-level anticheat import firewall (safety/import_firewall), a gaming capability-refusal gate, and overlay GPU optimizations. 903 audio+safety tests green; a 6-facet Sonnet audit confirmed no regression. | 903 | (this session) |
 | 2026-06-12 | `2a2a871` | **Wake word SHIPPED + relay 29-agent roster** (supersedes the "wake-word NOT deployed" note in the rename row below). Commits `58120cf` (fallback + dropdown), `c76b597` (agents + harness), `2a2a871` (model + threshold), pushed. **Wake word now LIVE = "kenning"**: `models/openwakeword/kenning.onnx` deployed (v8 from an 11-candidate sweep v1-v11, gitignored like all weights; ~88% recall @ ~1.6% adversarial FAR on synth clips via the runtime frame path). "kenning" is acoustically confusable (kennel/canning/kenneth) so it can't match ultron's 100% at that FAR; v8 (layer 32, 50k steps, recall-favorable auto-tune targets) beat every layer-64 / higher-neg-weight variant. **Fallback is `ultron`, NEVER hey_jarvis** -- `WakeWordDetector._load_model` is now PATH-based (loads the side-by-side custom `ultron.onnx`; a pretrained word only if neither custom ONNX exists). NEW `reload_for_word()` hot-swaps the live model; settings-panel "Wake word" dropdown (kenning/ultron) fires the `wake_word` gui_action. Threshold 0.40 (config + .env, recall-favoring; ultron ~100% there too). `config.py` `WakeWordConfig.fallback_model` default `hey_jarvis` -> `ultron`. **Relay**: `DEFAULT_ADDRESSEE_NAMES` now the full 29-agent VALORANT roster (+ Miks, Veto) + STT homophones (cipher->Cypher, gecko->Gekko, mix->Miks, way lay->Waylay) via `_NAME_CANON`; rephrase prompt lists the roster so the LLM treats the newest agents as teammates. NEW `scripts/relay_test/` (547-command corpus + staged full-pipeline harness: matcher -> rephrase -> audio blip analysis -> ASR-reconstruction-vs-intended -> spoken->STT). NEW `training/compare_wake_models.py` (recall/FAR threshold-sweep tool, auto-discovers `kenning_v*.onnx`). Cleanup: ~2.3 GB of regenerable train clips/features + redundant candidate onnx deleted (test clips + the 17 GB ACAV100M corpus KEPT for retraining). **Sweep 9818 / 39 / 0, ~151 s** + `validate_config` clean. | 9818 | (this session) |
 | 2026-06-12 | `3be01fd` | **Product rename Ultron -> Kenning + relay batch** (3 commits on `def92b5`: relay `760bed6`, rename `55ac95e`, doc-bump `3be01fd`; pushed, main = origin/main). **Rename** (`55ac95e`, 882 files + the relay commit's src moves): case-aware three-way replace (ULTRON/Ultron/ultron -> KENNING/Kenning/kenning) across every tracked file, `git mv` history preserved: `src/ultron/` -> `src/kenning/`, `tts/ultron_filter.py` -> `tts/kenning_filter.py`, `ultronVoiceAudio/` -> `kenningVoiceAudio/`, RVC dir -> `kenning_rvc_voice/` (`Kenning.pth` + `..._Kenning_v2.index`), `scripts/run_ultron_mcp_for_openclaw.py` -> `run_kenning_mcp_for_openclaw.py`, `training/my_model.yaml` -> `training/kenning_model.yaml`. Package import root now `kenning` (pyproject name + console script; `pip install -e .` re-run in main `.venv`). Env `ULTRON_*` -> `KENNING_*`, sentinels `<<KENNING_SUBMIT>>`, MCP prefix `mcp__kenning_coding__`, logger ns `kenning.`, runtime dirs `~/.kenning` + `data/.kenning_instance.lock`, persona "You are Kenning", config `name: kenning`, Kokoro voice "kenning". **External gitignored files updated** (NOT in git; backups kept): `.env` -- 41 `ULTRON_*` vars -> `KENNING_*` + Whisper initial prompt `Ultron.` -> `Kenning.` + prose comments (`.env.pre-kenning.bak`); `~/.openclaw/openclaw.json` -- agent ids `kenning-{test,main,heartbeat,vision}`, apiKey `local-kenning`, MCP server `kenning-mcp`, persona Name Kenning, script path -> `run_kenning_mcp_for_openclaw.py` (`openclaw.json.pre-kenning-bak`); `~/.kenning/{spotify.json,sandbox}` + `.kenning/lock.json` in place. Boot is now `python -m kenning`. Protected/KEPT: repo slug + local dir `ultronPrototype` (real paths), memory filenames `project_ultron_*.md`, archive paths (`I:\Ultron Archive`), telemetry-hash test case variants, `config.yaml` `required_agent_id` history comment. Legacy guards: `install/idempotent.py` `LEGACY_MARKERS` recognizes the old INSTALLED-BY-ULTRON marker; `identity/alias_graph.py` keeps "ultron" RESERVED; `cleanup_stale_processes.py` matches BOTH the new and legacy MCP stub names. **Voice-asset reconciliation** (`2087374`): the rename repointed the XTTS/Parakeet swap-back asset paths + the voice-baseline protection lists to `kenningVoiceAudio/`, but the 18 GB of gitignored runtime assets (two isolated venvs with baked-in absolute paths + the reference WAV) were never physically migrated -- they stay at `ultronVoiceAudio/`. Default boot (Kokoro+Moonshine, loads from `models/kokoro/`) was unaffected, but swap-back pointed at non-existent venvs/WAV and the real voice workshop was left unprotected. Per the user's decision, config.yaml + `config.py` defaults + `xtts_v3.py` fallbacks were repointed at the real `ultronVoiceAudio/` paths (a local runtime-asset path, like the checkout dir; venv baked-in paths intact) while the tracked server scripts stay at `kenningVoiceAudio/` -- all five swap-back paths now resolve to existing files; and the voice-baseline protection (voice_lock, checkpoints exclusions, safety policy files+dirs, submit_review regex, evolution blast_radius) was extended to cover BOTH trees (additive, never shrink). **WAKE-WORD MODEL NOT YET DEPLOYED (OPEN):** config `wake_word.name: kenning`, `model_path: models/openwakeword/kenning.onnx` -- but that file does NOT exist (the dir still holds only `ultron.onnx`), so `WakeWordDetector._load_model` falls back to the `hey_jarvis` pretrained word with a prominent warning (graceful, no crash; `fallback_model: hey_jarvis`). "kenning" is acoustically harder than "ultron" (shared phonemes): 6 candidates (`training/my_custom_model/kenning_v{1,2,3,5,6,7}.onnx`, untracked) all undershot production `ultron.onnx` recall (~66%); best ~48-52% on synthesized clips. Until a candidate clears the bar (or the user accepts the tradeoff) the spoken wake word is effectively "hey jarvis". Recipe `training/kenning_model.yaml` (24k positives, DNN/32/30k, 10 confusable negatives); scorer NEW `training/validate_wake_model.py` (1280-sample frame path, recall>=90% / adversarial-FAR<=8% gate); cross-name check confirmed old/new acoustically disjoint. `WakeWordDetector` is label-agnostic so deployment needs zero code change -- just drop the model at the configured path. **Relay batch** (`760bed6`, +90 tests): exhaustive Valorant callout matcher + semantic glossary in the rephrase prompt, verbatim mode ("word for word" bypasses the LLM), `roast my team` + `tell my team a fun fact` verbatim corpus commands (`data/relay_roasts.txt` seed + `data/relay_fun_facts.txt` 1,014 verified-unique facts), `kill joy` -> Killjoy / `kay o` -> Kayo display canon, context+directive rephrase, profanity preservation, GUI output-device dropdown (dynamic PortAudio enumeration). **Sweep from main: 9807 passed / 39 skipped / 0 failed, ~189 s** + `validate_config` clean. | 9807 | (this session) |
 | 2026-06-12 | `2d79a8e` | **Live-findings fix batch** (7 commits `ab08bf4..2d79a8e` on `9d460da`). Every OPEN live finding from the dogfood close-out fixed: NEW `lifecycle/single_instance.py` single-instance guard (held msvcrt/fcntl byte lock at offset 4096, metadata at offset 0 read unbuffered past Windows mandatory locks, pidfile fallback, refuse-only-on-contention errno classification, NO unlink on release (POSIX lock-after-unlink race), `KENNING_ALLOW_MULTIPLE_INSTANCES` escape; wired in `__main__.main()`, duplicate exits code 3); supervisor `ProjectIndex` borrows ConversationMemory's embedded Qdrant client (`client=` kwarg + owned-only `close()`; ends the every-boot "already accessed by another instance" registry-only fallback); launcher `window_appeared` honesty + post-placement `focus_window` bring-to-front (image-search windows no longer open behind the foreground; honest spoken line on window-timeout); WARM-path streaming STT in `_follow_up_listen` (kills the 108-1188 ms synchronous Moonshine re-transcribe; `_maybe_discard_stt_stream` + `MoonshineEngine.clear_stream_cache` on abort paths so dropped captures never leak); MCP server thread cancel+gather before loop close (the startup asyncio "Task was destroyed" stderr noise on bind failure); capture status-flag/drop accounting (count on audio thread, report from `drain()`); blip-watcher `internal_dropout` two-tier rule + edge-burst-run stripping adjudicated against all 174 live records (remaining findings = misclassified trailing bursts already trimmer-fixed + natural-prosody false positives; `trim_and_fade` untouched); stale XTTS `reference_audio` -> `kenningVoiceAudio/kokoro training audio/` everywhere + ADDITIVE protection-list extensions. Adversarially reviewed (4-dimension parallel pass; all should-fixes applied incl. the release-unlink race + audio-thread logging removal + errno classification + tmp_path test hygiene). Voice baseline contract intact (cold path byte-untouched, structurally test-pinned). | 9713 | (this session) |
@@ -3435,6 +3436,64 @@ config (default ON).
   never spawn analyzer threads or touch the live logs dir; the
   watcher's own tests opt back in.
 
+#### `audio/command_normalizer.py` (NEW 2026-06-15 — pre-routing STT cleanup layer)
+
+Applied BEFORE all matchers. `_strip_leading_junk` strips mis-heard wake
+remnants + filler. `recover_relay_lead` prepends "tell my team"/"tell"
+for bare callouts via callout/agent signal regexes, GATED by
+not-a-callout + Spotify-signal so conversational/music text is left
+alone. `normalize_command(text) -> str` is the entry point; it gates
+conversational + Spotify text OUT of correction so there is ZERO
+over-correction. The orchestrator logs BOTH the raw STT and the
+normalized text (tlog `routing:normalized`).
+
+#### `audio/_stt_correct.py` (EXPANDED 2026-06-15 — Valorant gazetteer + phonetic snap)
+
+A Valorant gazetteer (agents / maps / weapons / abilities / locations /
+terms) compiled to a lower-cased set + a Metaphone phonetic index
+(jellyfish). `_phonetic_fuzzy_snap` (phonetic-class match + rapidfuzz
+Jaro-Winkler >= 0.88, or fuzzy >= 0.92) snaps a mis-heard token to the
+nearest gazetteer term; `_PHRASE_MISHEARS` repairs word-blends
+("ray zombie" -> "Raze on B", "arsova" -> "our Sova", "be main" -> "B
+main"). Context-aware rules disambiguate words that are also English.
+Risky 1:1 maps removed to avoid over-correction.
+
+#### `audio/command_router.py` (NEW 2026-06-15 — semantic command router)
+
+The SEMANTIC COMMAND ROUTER: an additive coarse-decision layer BENEATH
+the exact matchers. `class CommandRouter` prepares each family's
+exemplars once, then `route(text) -> RoutingDecision` does a
+max-aggregated similarity per family and an OOS abstention gate (ABSTAIN
+to the LLM if the top family is the conversational anchor, OR its score
+is below a per-family threshold, OR it does not beat the runner-up by a
+margin, OR it is not a deterministic family). `RoutingDecision` dataclass
+(family / abstained / confidence / margin / reason / scores).
+`get_command_router()` is a lazy, FAIL-OPEN singleton (returns None on
+any build error so a router fault can never break the voice loop). Imports
+no heavy ML.
+
+#### `audio/_router_backends.py` (NEW 2026-06-15 — pluggable similarity backends)
+
+Pluggable similarity backends. `LexicalBackend` (rapidfuzz token-set/WRatio
+fused with a Metaphone phonetic ratio; fully in-process, CPU-light, the
+gaming-safe DEFAULT). `EmbeddingBackend` (a ~10-line urllib client to the
+sidecar; per-turn query cache so each utterance embeds once; `kind=query|document`
+for EmbeddingGemma's asymmetric prompts). `HybridBackend` (fuses lexical +
+embedding by weight; a per-turn failure latch drops to lexical-only after 3
+consecutive failed turns; degrades to lexical transparently when the sidecar is
+down). `get_backend(prefer, *, host, port, emb_weight, wait_seconds)` with a
+cold-boot readiness poll. This module imports ONLY urllib / numpy / rapidfuzz /
+jellyfish — the embedding model never enters the main process.
+
+#### `audio/_command_exemplars.py` (NEW 2026-06-15 — curated router exemplar libraries)
+
+The curated exemplar command libraries, one list per family: team_callout,
+spotify, identity, desktop_refuse, and conversational (the abstention anchor).
+`DETERMINISTIC_FAMILIES = {team_callout, identity, desktop_refuse}` (families
+the router dispatches to a handler); `ABSTAIN_FAMILIES = {conversational}`.
+Spotify is intentionally NOT deterministic (its exact matcher runs first; its
+exemplars exist only so a music command never mis-routes to a callout).
+
 #### `safety/anticheat.py` (NEW 2026-06-11 — anticheat-safe mode)
 
 A process-wide hard kill-switch for every OS-interaction surface,
@@ -3898,6 +3957,13 @@ VAD" rather than misclassifying.
 - `class WhisperEngine` — faster-whisper wrapper, CUDA fp16
   - `transcribe(audio: np.ndarray, language="en") -> str`
   - On failure: returns `""`, logs `WhisperTranscriptionError` to errors.jsonl
+- **2026-06-15:** STT default engine is faster-whisper **large-v3-turbo** on CUDA
+  (`compute_type int8_float16`), with a hallucination filter: a peak gate
+  (returns `""` when the clip is near-silent), a per-segment
+  `no_speech_prob > 0.85` drop, and a `_WHISPER_HALLUCINATIONS` blocklist
+  (`_is_whisper_hallucination`) to stop "thank you"-type transcriptions on
+  non-speech. STT defaults are hardened so the turbo engine always loads at
+  startup.
 
 ### `src/kenning/llm/inference.py`
 
@@ -5044,6 +5110,15 @@ pipeline is unaffected when OpenClaw is unreachable (`fail_open: true`).
   - `_mint_forensic_token(...)` (orchestrator.py:1121) (2026-05-30 wiring pass, openclaw-clawhub T7) — registers an idempotent trusted-caller tuple then mints a short-lived HS256 JWT at the MCP-server start (`mcp:tools`) and gaming-engage (`voice:gaming-engage`, revoke-by-expiry on disengage) boundaries. Forensic / defense-in-depth in the single-user in-process runtime (minter + verifier share the trust boundary, so this is not a hard gate), audit-logged to `data/identity/short_lived_tokens.jsonl`, fail-open (returns None on any error).
   - `_init_report_queue()` (orchestrator.py:1040) + `_maybe_handle_report_concern(user_text)` (orchestrator.py:1059) (2026-05-30 wiring pass, openclaw-clawhub T12) — `_init_report_queue` opens the hash-chained `data/feedback/reports.jsonl` at startup (fail-open). `_maybe_handle_report_concern` runs in the run loop BEFORE routing: `feedback.report_intent.match_report_concern` (strict regex, no LLM round-trip) turns a spoken "log a concern" / "flag that response" into a filed `Report` (target = the prior turn via `_last_response_text`) and speaks an ack; returns True to short-circuit the turn. "report on the weather" does NOT trip it.
 
+- **2026-06-15 router cascade for L0 misses:** normalize (`command_normalizer`)
+  -> existing exact matchers (unchanged) -> semantic router
+  (`get_command_router`) -> LLM fallthrough; `team_callout` routes to the relay
+  (force), `identity` to the greeting, `desktop_refuse` to an in-character
+  anticheat refusal; everything else abstains to the LLM. The orchestrator also
+  installs the import firewall (`install_import_firewall`) at boot before
+  anything else loads, spawns the embedder sidecar (`_start_embedder_sidecar`),
+  and has a gaming capability-refusal gate (`_maybe_refuse_capability_in_gaming`).
+
 **In:** mic input (sounddevice), config.yaml, models on disk.
 **Out:** speaker output (sounddevice), all audit logs.
 
@@ -5464,6 +5539,21 @@ All scripts assume venv active in main checkout (`C:\STC\ultronPrototype`). Work
 **Run:** `python scripts/download_models.py`
 **In:** Hugging Face Hub.
 **Out:** files under `models/`.
+
+### `scripts/embedder_server.py` (NEW 2026-06-15 — embedding sidecar for the semantic router)
+
+The isolated-venv embedding SIDECAR for the semantic router. A stdlib
+`ThreadingHTTPServer` bound to `127.0.0.1` only: `GET /healthz`,
+`POST /embed {texts, kind} -> {vectors}`. Two interchangeable backends by
+env: `sentence_transformers` (default; google/embeddinggemma-300m on GPU,
+run from `C:/STC/ultronVoiceAudio/.venv-embedder` so sentence-transformers
+5.x / transformers 5.x / torch never touch the MAIN venv) and `fastembed`
+(BAAI/bge-small via ONNX). Pure compute — no input/capture/injection — so it
+is anticheat-irrelevant, the same class as OBS/Discord. The orchestrator
+spawns it early at boot (`_start_embedder_sidecar`), reuses a running one on
+restart, and registers it with the zombie-killer.
+**Run:** from the `.venv-embedder` environment: `python scripts/embedder_server.py`
+**Out:** loopback HTTP server; stays in foreground; orchestrator spawns it automatically.
 
 ### `scripts/migrate_embeddings.py`
 
@@ -6420,6 +6510,21 @@ In-model per-phoneme duration shaping for Kokoro/StyleTTS2 — natural, context-
 - **`anticheat_active()` now also honours `testing_mode`** — after checking `_runtime_active`, it imports and calls `is_testing_mode_active()` from `kenning.safety.testing_mode`; if that returns True, `anticheat_active()` returns True. This gives corpus testing the same desktop-automation hard-block as a real gaming session without triggering the config pin path.
 - **`press_key` and `press_hotkey` added to `_BLOCKED_TOOL_EXACT`** — these two tools, which drive `pyautogui.SendInput`, were previously unguarded against the safety validator's `is_blocked_tool` check. Both are now in the frozenset alongside `click`, `type_text`, etc.
 - **`is_blocked_tool` namespaced-dispatcher fix** — `tool_name` values arriving as `openclaw.window_automation` or `desktop.input.press_hotkey` previously fell through all block checks because neither the full name nor the prefix matched. Fix: (1) strip a leading `openclaw.` namespace prefix, then (2) also test the bare final dotted segment (`bare = name.rsplit(".", 1)[-1]`) against both `_BLOCKED_TOOL_EXACT` and `_BLOCKED_TOOL_PREFIXES`. Both the full normalised name and the bare segment are checked so either form blocks.
+
+#### New module: src/kenning/safety/import_firewall.py
+
+### `src/kenning/safety/import_firewall.py` (NEW 2026-06-15 — loader-level anticheat import firewall)
+
+An `AnticheatImportFirewall` registered on `sys.meta_path` that raises
+`ImportError` for a blocklist of desktop/input/capture/browser modules
+(kenning.desktop, pyautogui, mss, dxcam, PIL.ImageGrab, pywinauto,
+pynput, uiautomation, playwright, browser_use, selenium, the openclaw
+browser/desktop bridges) WHILE `anticheat_active()`.
+`install_import_firewall()` runs at orchestrator boot before anything
+else loads; `is_firewall_installed()` is asserted by the boot posture
+canary. This makes the never-load guarantee loader-level: the ban-class
+automation stack cannot be pulled into the anticheat-pinned RAM even by
+a stray lazy import.
 
 #### Changed module: src/kenning/llm/inference.py
 

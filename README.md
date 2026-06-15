@@ -68,7 +68,8 @@
 ### 🎤 Voice pipeline
 - Custom-trained `kenning` / `ultron` wake words (OpenWakeWord), hot-swappable from the settings panel, with **per-word thresholds** + a **consecutive-frame gate** to reject confusables without retraining
 - Silero VAD + **Smart Turn V3** — semantic end-of-turn in ~12 ms
-- Dual-engine STT registry (Moonshine · Parakeet TDT · Whisper)
+- Dual-engine STT registry (Moonshine · Parakeet TDT · **faster-whisper large-v3-turbo** on CUDA); turbo engine includes a hallucination filter (near-silence peak gate + per-segment no_speech_prob drop + `_WHISPER_HALLUCINATIONS` blocklist) and a pre-routing STT normalizer that strips mis-heard wake remnants and recovers bare callout leads before any matcher sees the text
+- **Semantic command router** — a hybrid lexical + embeddinggemma-300m similarity router sits beneath the exact matchers; routes `team_callout` / `identity` / `desktop_refuse` families deterministically and abstains to the LLM for everything else via an OOS gate; the embedding model runs in an isolated-venv loopback sidecar (`scripts/embedder_server.py`) so no heavy ML dep or automation library enters the anticheat-protected main process
 - **Custom fine-tuned voicepack** — Kokoro StyleTTS2 on CUDA
 - **In-model prosody shaping** — scales the model's own pitch / energy / per-phoneme duration curves *before* the decoder for expressive, naturally-paced delivery at **zero added latency** (timbre + reverb preserved)
 - Producer-consumer audio pipeline; clip N+1 synth overlaps clip N playback
