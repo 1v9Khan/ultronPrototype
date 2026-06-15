@@ -250,3 +250,37 @@ class SpotifyClient:
         artists = ", ".join(a.get("name", "") for a in hit.get("artists", []))
         who = f" by {artists}" if artists else ""
         return f"Queued {hit.get('name', query)}{who}."
+
+    # -- seek + library ------------------------------------------------
+
+    def seek(self, position_ms: int = 0) -> None:
+        """Seek within the current track (0 = restart from the beginning)."""
+        self.ensure_device()
+        self._call("PUT", "/me/player/seek",
+                   params={"position_ms": max(0, int(position_ms))},
+                   allow_404=True)
+
+    def _current_item(self) -> Optional[dict]:
+        """Raw currently-playing item (carries id + name + artists), or None."""
+        data = self._call("GET", "/me/player", allow_404=True)
+        if not data or not data.get("item"):
+            return None
+        return data["item"]
+
+    def save_current_track(self) -> str:
+        """Add the currently-playing track to the user's Liked Songs.
+
+        Needs the ``user-library-modify`` scope (in DEFAULT_SCOPES)."""
+        item = self._current_item()
+        if not item or not item.get("id"):
+            return "Nothing is playing to save."
+        self._call("PUT", "/me/tracks", json_body={"ids": [item["id"]]})
+        return f"Saved {item.get('name', 'this track')} to your library."
+
+    def unsave_current_track(self) -> str:
+        """Remove the currently-playing track from the user's Liked Songs."""
+        item = self._current_item()
+        if not item or not item.get("id"):
+            return "Nothing is playing to remove."
+        self._call("DELETE", "/me/tracks", json_body={"ids": [item["id"]]})
+        return f"Removed {item.get('name', 'this track')} from your library."

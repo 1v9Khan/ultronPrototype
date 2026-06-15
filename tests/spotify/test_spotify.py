@@ -340,6 +340,17 @@ class _SpyClient:
     def set_repeat(self, m):
         self.calls.append(("repeat", m))
 
+    def seek(self, ms):
+        self.calls.append(("seek", ms))
+
+    def save_current_track(self):
+        self.calls.append(("save",))
+        return "Saved this track to your library."
+
+    def unsave_current_track(self):
+        self.calls.append(("unsave",))
+        return "Removed this track from your library."
+
 
 def test_handle_play() -> None:
     c = _SpyClient()
@@ -375,6 +386,198 @@ def test_handle_no_device_error() -> None:
 
     line = handle_spotify_command(SpotifyCommand("next"), _Boom())
     assert "device" in line.lower()
+
+
+# ---------------------------------------------------------------------------
+# voice matcher -- expanded actions + phrasings (mute/unmute/restart/like/unlike)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text,action", [
+    # mute / unmute
+    ("mute", "mute"),
+    ("mute the music", "mute"),
+    ("silence the music", "mute"),
+    ("kill the sound", "mute"),
+    ("unmute", "unmute"),
+    ("restore the volume", "unmute"),
+    ("turn the sound back on", "unmute"),
+    # restart
+    ("restart", "restart"),
+    ("start it over", "restart"),
+    ("play it from the beginning", "restart"),
+    ("from the top", "restart"),
+    ("replay this song", "restart"),
+    # like / unlike
+    ("like this song", "like"),
+    ("save this track", "like"),
+    ("heart this", "like"),
+    ("i love this song", "like"),
+    ("thumbs up", "like"),
+    ("add this to my liked songs", "like"),
+    ("unlike this song", "unlike"),
+    ("remove this from my liked songs", "unlike"),
+    ("thumbs down", "unlike"),
+    # more transport phrasings
+    ("hit play", "resume"),
+    ("put it back on", "resume"),
+    ("change the song", "next"),
+    ("a different song", "next"),
+    ("i don't like this song", "next"),
+    ("rewind", "previous"),
+    ("the last track", "previous"),
+    ("crank it up", "volume_up"),
+    ("make it louder", "volume_up"),
+    ("lower the volume", "volume_down"),
+    ("make it quieter", "volume_down"),
+    ("randomize it", "shuffle"),
+    ("mix it up", "shuffle"),
+    ("loop this song", "repeat"),
+    ("put it on repeat", "repeat"),
+])
+def test_match_expanded_actions(text, action) -> None:
+    cmd = match_spotify_command(text)
+    assert cmd is not None, text
+    assert cmd.action == action, text
+
+
+@pytest.mark.parametrize("text,value", [
+    ("shuffle on", 1),
+    ("shuffle", 1),
+    ("enable shuffle", 1),
+    ("shuffle off", 0),
+    ("turn off shuffle", 0),
+    ("stop shuffling", 0),
+])
+def test_match_shuffle_value(text, value) -> None:
+    cmd = match_spotify_command(text)
+    assert cmd is not None and cmd.action == "shuffle" and cmd.value == value, text
+
+
+@pytest.mark.parametrize("text,value", [
+    ("repeat", 1),
+    ("repeat this song", 1),
+    ("turn on repeat", 1),
+    ("loop this", 1),
+    ("repeat off", 0),
+    ("turn off repeat", 0),
+    ("stop repeating", 0),
+    ("stop looping", 0),
+])
+def test_match_repeat_value(text, value) -> None:
+    cmd = match_spotify_command(text)
+    assert cmd is not None and cmd.action == "repeat" and cmd.value == value, text
+
+
+@pytest.mark.parametrize("text,value", [
+    ("set the volume to 50", 50),
+    ("set volume at 30", 30),
+    ("put the volume at 40", 40),
+    ("make the volume 40", 40),
+    ("turn the volume to 80", 80),
+    ("volume 70", 70),
+    ("volume to 30", 30),
+])
+def test_match_volume_set_variants(text, value) -> None:
+    cmd = match_spotify_command(text)
+    assert cmd is not None and cmd.action == "volume_set" and cmd.value == value, text
+
+
+@pytest.mark.parametrize("text", ["play", "play music", "play the music"])
+def test_match_bare_play_is_resume(text) -> None:
+    cmd = match_spotify_command(text)
+    assert cmd is not None and cmd.action == "resume", text
+
+
+@pytest.mark.parametrize("text,arg", [
+    ("play californication next", "californication"),
+    ("play smells like teen spirit next", "smells like teen spirit"),
+])
+def test_match_play_next_is_queue(text, arg) -> None:
+    cmd = match_spotify_command(text)
+    assert cmd is not None and cmd.action == "queue" and cmd.argument == arg, text
+
+
+def test_match_throw_on_is_play_not_queue() -> None:
+    cmd = match_spotify_command("throw on some jazz")
+    assert cmd is not None and cmd.action == "play"
+
+
+# ---------------------------------------------------------------------------
+# client -- seek + library (save/unsave)
+# ---------------------------------------------------------------------------
+
+
+def test_seek_restart() -> None:
+    routes = {
+        ("GET", "/me/player/devices"): _Resp(200, {"devices": [
+            {"id": "d1", "name": "PC", "is_active": True}]}),
+        ("PUT", "/me/player/seek"): _Resp(204),
+    }
+    c, seen = _client(routes)
+    c.seek(0)
+    put = [(m, u, kw) for m, u, kw in seen if m == "PUT" and "/seek" in u]
+    assert put and put[0][2]["params"]["position_ms"] == 0
+
+
+def test_save_current_track() -> None:
+    routes = {
+        ("GET", "/me/player"): _Resp(200, {"item": {"id": "t1", "name": "Song"}}),
+        ("PUT", "/me/tracks"): _Resp(200),
+    }
+    c, seen = _client(routes)
+    line = c.save_current_track()
+    assert "Saved Song" in line
+    assert any(m == "PUT" and "/me/tracks" in u for m, u, _ in seen)
+
+
+def test_save_current_track_nothing_playing() -> None:
+    c, _ = _client({("GET", "/me/player"): _Resp(204)})
+    assert "Nothing is playing" in c.save_current_track()
+
+
+def test_unsave_current_track() -> None:
+    routes = {
+        ("GET", "/me/player"): _Resp(200, {"item": {"id": "t1", "name": "Song"}}),
+        ("DELETE", "/me/tracks"): _Resp(200),
+    }
+    c, seen = _client(routes)
+    line = c.unsave_current_track()
+    assert "Removed Song" in line
+    assert any(m == "DELETE" and "/me/tracks" in u for m, u, _ in seen)
+
+
+# ---------------------------------------------------------------------------
+# dispatch -- expanded actions
+# ---------------------------------------------------------------------------
+
+
+def test_handle_mute_then_unmute_roundtrips_volume() -> None:
+    c = _SpyClient()                       # current_volume() returns 50
+    mute = handle_spotify_command(SpotifyCommand("mute"), c)
+    assert ("vol", 0) in c.calls and getattr(c, "_premute_vol", None) == 50
+    assert mute  # a spoken acknowledgement
+    unmute = handle_spotify_command(SpotifyCommand("unmute"), c)
+    assert ("vol", 50) in c.calls and "50" in unmute
+
+
+def test_handle_restart_seeks_zero() -> None:
+    c = _SpyClient()
+    line = handle_spotify_command(SpotifyCommand("restart"), c)
+    assert ("seek", 0) in c.calls and line
+
+
+def test_handle_like_and_unlike() -> None:
+    c = _SpyClient()
+    assert "Saved" in handle_spotify_command(SpotifyCommand("like"), c)
+    assert "Removed" in handle_spotify_command(SpotifyCommand("unlike"), c)
+    assert ("save",) in c.calls and ("unsave",) in c.calls
+
+
+def test_handle_volume_set_clamps() -> None:
+    c = _SpyClient()
+    line = handle_spotify_command(SpotifyCommand("volume_set", value=140), c)
+    assert ("vol", 140) in c.calls and "100" in line  # spoken value clamped
 
 
 # ---------------------------------------------------------------------------
