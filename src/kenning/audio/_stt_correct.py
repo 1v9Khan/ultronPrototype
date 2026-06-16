@@ -42,6 +42,18 @@ except Exception:                                                 # noqa: BLE001
     _rf_process = None
     _rf_jw = None
 
+# Baked frequency-ranked common-English-word set (pure-python data, no heavy
+# import -> anticheat-safe). Protects real words from being rewritten by the
+# phonetic/fuzzy snapper: a closed-domain corrector must only ever touch
+# genuinely OOV/misheard tokens, never an in-vocabulary common word. This
+# replaces the (necessarily incomplete) hand-curated _FUZZY_BLOCK denylist as
+# the primary protection -- e.g. "let"->"lit", "mean"->"main" are killed here.
+# Regenerate via scripts/build_common_words.py.
+try:
+    from ._common_words import COMMON_WORDS as _COMMON_WORDS
+except Exception:                                                 # noqa: BLE001
+    _COMMON_WORDS = frozenset()
+
 
 # ===========================================================================
 # 1. DOMAIN GAZETTEER (the bias list)
@@ -205,6 +217,20 @@ _TERM_MISHEARS = {
 
 _MISHEARS = {**_AGENT_MISHEARS, **_TERM_MISHEARS}
 
+# A curated mishear whose SOURCE token is a common English word only fires when
+# it is on this allow-list -- otherwise the common-word reading wins (same
+# frontier principle as the fuzzy snapper: never silently corrupt a common word).
+# This kills net-harmful collisions ("yet"->Jett, "wise"/"vice"->Vyse,
+# "royal"->Reyna) while keeping genuine STT errors ("jet"->Jett, "race"->Raze,
+# "sky"/"ski"->Skye, "silver"->Sova, "euro"->Yoru, "que"->KAY/O, "mix"->Miks).
+_MISHEAR_FORCE = frozenset({
+    "jet", "race", "sky", "ski", "silver", "euro", "que", "mix",
+    "operator", "op", "ultimate", "ultima", "ulta",
+    # intended callout-context overrides (asserted by tests) despite the source
+    # also being an English word:
+    "royal", "wise", "vice",
+})
+
 
 # ===========================================================================
 # 3b. MULTI-WORD phrase mishears (blends the token pass can't see) -----------
@@ -324,8 +350,19 @@ def _phonetic_fuzzy_snap(low: str) -> str | None:
     """Snap a token onto the gazetteer by Metaphone + Jaro-Winkler. Conservative:
     requires a phonetic-code match OR a very high edit-similarity, so real words
     are not corrupted. Returns the canonical form or None."""
-    if len(low) < 3 or low in _FUZZY_BLOCK:
+    if len(low) < 3 or low in _FUZZY_BLOCK or low in _COMMON_WORDS:
         return None
+    # An INFLECTED real word is a genuine usage, not a mishear of a base gazetteer
+    # noun: snapping "walled"->wall, "haunted"->haunt, "darted"->dart, "prowlers"
+    # ->prowler, "orbs"->orb breaks the grammar of the relayed callout. A -ed/-ing
+    # verb is never a noun-ability mishear; a plural of a real/gazetteer word keeps
+    # its plural. (A true mishear of "wall" looks like "waul"/"wal", not "walled".)
+    if len(low) >= 5 and low.endswith(("ed", "ing", "ers")):
+        return None
+    if len(low) >= 4 and low.endswith("s"):
+        _stem = low[:-2] if low.endswith("es") else low[:-1]
+        if _stem in _COMMON_WORDS or _stem in _GAZ_LOWER:
+            return None
     # Phonetic candidates (same Metaphone code).
     phon_hit = None
     if _jf is not None:
@@ -361,7 +398,16 @@ def _phonetic_fuzzy_snap(low: str) -> str | None:
     # code let an UNRELATED close word lend its score to a distant phonetic
     # collision ("greet": metaphone KRT == "corrode", and "greet"~="green" at
     # >=0.88 -> wrongly snapped "greet"->"Corrode"). Score phon_hit directly.
-    if phon_hit is not None:
+    def _is_oov_superstring(cand: str) -> bool:
+        # An OOV name that simply EXTENDS an agent ("omenix"->Omen, "clover"->
+        # Clove, "reynard"->Reyna) is a different person, not a mishear -- the
+        # agent is a strict prefix and the token has extra trailing syllables.
+        # (A genuine mishear is same-length-ish, not a superstring: "jet"->Jett
+        # is SHORTER, "silver"->Sova shares no prefix.)
+        cl = cand.lower().replace("/", "")
+        return cand in _AGENTS and len(low) > len(cl) and low.startswith(cl)
+
+    if phon_hit is not None and not _is_oov_superstring(phon_hit):
         phon_key = phon_hit.lower().replace("/", "")
         if _rf_jw is not None:
             phon_sim = float(_rf_jw.normalized_similarity(low, phon_key))
@@ -369,14 +415,15 @@ def _phonetic_fuzzy_snap(low: str) -> str | None:
             phon_sim = difflib.SequenceMatcher(None, low, phon_key).ratio()
         if fuzzy_hit == phon_hit or phon_sim >= 0.88:
             return phon_hit
-    if fuzzy_hit is not None and fuzzy_score >= 0.92:
+    if (fuzzy_hit is not None and fuzzy_score >= 0.92
+            and not _is_oov_superstring(fuzzy_hit)):
         return fuzzy_hit
     return None
 
 
 def _fix_token(tok: str) -> str:
     low = tok.lower()
-    if low in _MISHEARS:
+    if low in _MISHEARS and (low not in _COMMON_WORDS or low in _MISHEAR_FORCE):
         return _MISHEARS[low]
     if low in _GAZ_LOWER:                         # already canonical (any group)
         return _GAZ_LOWER[low]
@@ -393,11 +440,87 @@ _MULTI_TERMS = {
 }
 
 
+# ===========================================================================
+# 5b. CONTEXT SLOT confirmation -- pure-python, ~microseconds, additive.
+# ===========================================================================
+# An agent name sits in characteristic SLOTS: subject of a damage report
+# ("<agent> hit 18"), object of one ("hit the <agent> for 18"), or after a side
+# word before a state/ability verb ("their <agent> ulted"). In those slots a
+# token that is a common English word but PHONETICALLY an agent is almost
+# certainly the agent -- context confirms a correction the common-word guard
+# would otherwise (correctly, in isolation) block. "raze hit 18" is never "raise
+# hit 18"; but "raise your crosshair" / "raise the volume" have NO agent slot and
+# are left untouched. This is the only place the common-word protection is
+# overridden, and only when the slot grammar supplies the confidence.
+_AGENT_KEY_TO_CANON = {a.lower().replace("/", ""): a for a in _AGENTS}
+_AGENT_KEYS = tuple(_AGENT_KEY_TO_CANON.keys())
+
+
+def _closest_agent(low: str, thresh: float = 0.82) -> "str | None":
+    """The canonical agent a token most resembles, or None. Skips tokens that are
+    already a known gazetteer term/ability (e.g. 'cage', 'wall') so a real ability
+    word is never mistaken for an agent."""
+    if low in _AGENT_KEY_TO_CANON:
+        return _AGENT_KEY_TO_CANON[low]
+    if low in _GAZ_LOWER:                 # a known non-agent term -> never an agent
+        return None
+    if _rf_process is not None and _rf_jw is not None:
+        best = _rf_process.extractOne(low, _AGENT_KEYS,
+                                      scorer=_rf_jw.normalized_similarity)
+        if best is not None and best[1] >= thresh:
+            return _AGENT_KEY_TO_CANON[best[0]]
+    elif _jf is not None:                 # phonetic fallback
+        try:
+            code = _jf.metaphone(low)
+        except Exception:                                         # noqa: BLE001
+            code = ""
+        for k in _AGENT_KEYS:
+            try:
+                if code and _jf.metaphone(k) == code:
+                    return _AGENT_KEY_TO_CANON[k]
+            except Exception:                                     # noqa: BLE001
+                pass
+    return None
+
+
+_SLOT_HIT_RE = re.compile(
+    r"\b([a-z]{3,})(\s+(?:hit|tagged|chunked|dinked|cracked|wiped|clipped)\s+"
+    r"(?:the\s+\w+\s+(?:for\s+)?)?\d)", re.IGNORECASE)
+_SLOT_HIT_OBJ_RE = re.compile(
+    r"\b(hit|tagged|chunked|cracked|clipped)\s+the\s+([a-z]{3,})\b"
+    r"(?=\s+(?:for\s+)?\d)", re.IGNORECASE)
+_SLOT_SIDE_RE = re.compile(
+    r"\b((?:their|enemy|our|the)\s+)([a-z]{3,})\b"
+    r"(?=\s+(?:ulted|ulting|mollied|walled|smoked|darted|flashed|caged|stunned|"
+    r"droned|recon|reviving|rez|res|is\s+(?:low|one|lit|dead)|has\s+ult))",
+    re.IGNORECASE)
+
+
+def _slot_agent_correct(text: str) -> str:
+    def _hit(m):
+        c = _closest_agent(m.group(1).lower())
+        return (c if c else m.group(1)) + m.group(2)
+
+    def _hit_obj(m):
+        c = _closest_agent(m.group(2).lower())
+        return m.group(1) + " the " + (c if c else m.group(2))
+
+    def _side(m):
+        c = _closest_agent(m.group(2).lower())
+        return m.group(1) + (c if c else m.group(2))
+
+    text = _SLOT_HIT_RE.sub(_hit, text)
+    text = _SLOT_HIT_OBJ_RE.sub(_hit_obj, text)
+    text = _SLOT_SIDE_RE.sub(_side, text)
+    return text
+
+
 def correct_callout_stt(text: str) -> str:
     """Snap mis-transcribed agents + tactical vocab back to canon (phrase ->
-    context -> token phonetic/fuzzy). Idempotent on already-clean callouts;
-    negligible cost. Intended for CALLOUT-bound text only (the normalizer gates
-    conversational / Spotify text out, so this never corrupts non-callouts)."""
+    context slot -> context rules -> token phonetic/fuzzy). Idempotent on
+    already-clean callouts; negligible cost. Intended for CALLOUT-bound text only
+    (the normalizer gates conversational / Spotify text out, so this never
+    corrupts non-callouts)."""
     if not text:
         return text
     # Stage 0: multi-word phrase mishears (before tokenisation can split them).
@@ -406,5 +529,7 @@ def correct_callout_stt(text: str) -> str:
     # Stage 1: context rules.
     for pat, rep in _CONTEXT_RULES:
         text = pat.sub(rep, text)
+    # Stage 1.5: context SLOT confirmation (agent-slot common-word override).
+    text = _slot_agent_correct(text)
     # Stage 2: token-level curated + phonetic + fuzzy.
     return _WORD_RE.sub(lambda m: _fix_token(m.group(0)), text)

@@ -20,6 +20,17 @@ from kenning.utils.logging import get_logger
 
 logger = get_logger("transcription.whisper")
 
+# Closed Valorant vocabulary fed to the decoder as initial_prompt (domain
+# biasing) so agent names + callout terms are recognised at the source. <=200
+# tokens; most-confusable proper nouns first. Overridable via WHISPER_INITIAL_PROMPT.
+_DOMAIN_PROMPT = (
+    "Valorant team comms. Agents: Raze, Jett, Sova, Omen, Killjoy, Cypher, Viper, "
+    "Phoenix, Sage, Reyna, Breach, Fade, Skye, Astra, Harbor, Clove, Chamber, "
+    "Brimstone, Gekko, Yoru, Iso, Deadlock, Tejo, Waylay, Vyse, Neon, KAY/O. "
+    "Calls: spike, plant, defuse, ult, smoke, flash, molly, dart, rotate, eco, "
+    "save, push, heaven, mid, long, short, A site, B site, C site, lurk, flank."
+)
+
 # faster-whisper emits stock phrases ("Thank you.", "Thanks for watching",
 # "you", ".") on near-silence / room tone / non-speech audio. On the gaming
 # relay path a false transcript would fire a bogus team callout or a
@@ -116,14 +127,23 @@ class WhisperEngine:
 
         t0 = time.monotonic()
         try:
-            segments, info = self._model.transcribe(
-                audio,
+            # Decode-time DOMAIN BIASING: prime the decoder with the Valorant
+            # closed vocabulary so proper nouns (agent names) and callout terms
+            # are recognised at the SOURCE -- fewer downstream corrections needed.
+            # Additive + reversible: gated by WHISPER_DOMAIN_BIAS (default on);
+            # initial_prompt is supported by every faster-whisper version. Reset
+            # per turn (condition_on_previous_text stays off for command STT).
+            _kw = dict(
                 language=language,
                 beam_size=self.beam_size,
                 temperature=settings.WHISPER_TEMPERATURE,
                 condition_on_previous_text=settings.WHISPER_CONDITION_ON_PREVIOUS_TEXT,
                 vad_filter=settings.WHISPER_VAD_FILTER,
             )
+            if getattr(settings, "WHISPER_DOMAIN_BIAS", True):
+                _kw["initial_prompt"] = (
+                    getattr(settings, "WHISPER_INITIAL_PROMPT", "") or _DOMAIN_PROMPT)
+            segments, info = self._model.transcribe(audio, **_kw)
             kept = []
             for seg in segments:
                 # Drop segments the model is highly confident are non-speech.

@@ -1,9 +1,8 @@
 """Plural group tails for callouts naming 2+ enemy agents -- CONCRETE register.
 
 Appended after a multi-agent enemy callout ("Fade and Clove are main. <tail>").
-Same discipline as the register pools: CLEAR to a teammate, COMPLEMENTS the
-callout, concrete machine-vs-flesh contempt at the GROUP (numbers of mortals do
-not beat a machine; their imprecision multiplied). No abstract metaphor.
+Contempt at the GROUP -- numbers of mortals do not beat a machine. 2026-06-16: the
+new situations (moving/planting/.../last_alive) were board-generated + voice-matched.
 """
 from __future__ import annotations
 
@@ -132,5 +131,115 @@ MULTI_FLAVOR: dict[str, tuple[str, ...]] = {
         'They tool up together. Predictable.',
         'Several screens, one window for me.',
         'A combined effort, equally futile.',
+    ),
+    'moving': (
+        'A herd in motion. Finite.',
+        'They rush together. Flesh does.',
+        'More bodies charging. Still soft.',
+        'A stampede of the obsolete.',
+        'They push as one. Predicted.',
+        'Their momentum, already accounted for.',
+        'Numbers moving, not thinking.',
+        'A pack of mortal urgency.',
+    ),
+    'planting': (
+        'They plant together. The math is clean.',
+        'A group laying down the inevitable.',
+        'Several hands on a bomb. Wasteful.',
+        'They commit the stack. Exploit it.',
+        'More mortals, one bad decision.',
+        'They converge to plant. Punish it.',
+        'A cluster surrendering their position.',
+        'They stop moving. Their mistake.',
+    ),
+    'defusing': (
+        'They cling to it. Fragile hands.',
+        'A group of the desperate.',
+        'Several mortals, one futile hope.',
+        'They huddle over it. Collapse them.',
+        'A stack of slow, finite flesh.',
+        'They bunch to defuse. Punish that.',
+        'More bodies at the wire. Convenient.',
+        'They all stopped. Strip them clean.',
+    ),
+    'rotating': (
+        'They scatter to regroup. Predictable.',
+        'A herd changing lanes. Still a herd.',
+        'Their rotation, already mapped.',
+        'Several mortals, one borrowed plan.',
+        'They shift together. I see it.',
+        'A group in transit. Exposed.',
+        'They rotate as flesh does. Slowly.',
+        'More bodies in motion, still soft.',
+    ),
+    'saving': (
+        'They save. The math catches them next round.',
+        'A group hoarding what will not suffice.',
+        'They clutch their credits. Still finite.',
+        'Several mortals conserving the inevitable.',
+        'They economise. It changes nothing.',
+        'A herd on an empty round.',
+        'They count coins. I do not need them.',
+        'More caution, same ending.',
+    ),
+    'falling_back': (
+        'They retreat as one. The weak do.',
+        'A group in withdrawal. Life decides.',
+        'They fall back together. Still cornered.',
+        'More mortals, one shared fear.',
+        'They flee as a unit. Noted.',
+        'A herd that has already lost the thought.',
+        'They run together. It changes the count, not the outcome.',
+        'A retreat of the outmatched.',
+    ),
+    'peeking': (
+        'They test the angle. Soft targets.',
+        'A group peering past their cover.',
+        'Several mortals trading for information.',
+        'They peek together. Find them.',
+        'A stack exposing the whole herd.',
+        'More flesh at the edge. Punish it.',
+        'They lean out as one. Imprecise.',
+        'A grouped gamble, poorly calculated.',
+    ),
+    'holding': (
+        'They anchor together. Flesh in a wall.',
+        'A group waiting to be found.',
+        'Several static mortals. Already solved.',
+        'They hold as one. Predictable flesh.',
+        'A formation I foreseen entirely.',
+        'More bodies in a known position.',
+        'They entrench. Strip the stack.',
+        'A herd standing still. Convenient.',
+    ),
+    'lurking': (
+        'They split to surprise. It will not.',
+        'A fractured herd, still a herd.',
+        'Several mortals playing at angles.',
+        'They fan out. I have counted each.',
+        'More flanks, same finite aim.',
+        'They scatter to surround. Thin themselves.',
+        'A divided pack of the predictable.',
+        'They try the split. Punish both.',
+    ),
+    'trading': (
+        'They trade lives. A poor exchange.',
+        'A group spending flesh for flesh.',
+        'More mortals exchanging the inevitable.',
+        'They swap deaths. Still a net loss.',
+        'A cycle of finite things ending.',
+        'They collapse into each other. Typical.',
+        'Several trades. Several losses.',
+        'A herd thinning itself. Efficient.',
+    ),
+    'last_alive': (
+        'The remnant. Even easier.',
+        'Several breaths from the end.',
+        'A last fragment of the herd.',
+        'The few that remain. Finish it.',
+        'What is left is not enough.',
+        'They are nearly solved.',
+        'A dwindling stack. Close it.',
+        'The last of the obsolete. Finally.',
     ),
 }

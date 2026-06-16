@@ -199,6 +199,11 @@ def run(stage: str, limit: int | None, run_tag: str,
     need_stt = stage in {"asr", "full"}
 
     from kenning.audio.relay_speech import match_relay_command, build_relay_line
+    # 2026-06-15: normalize FIRST, mirroring the live orchestrator
+    # (normalize_command -> match_relay_command), so the harness exercises the
+    # REAL routing the user gets (verbatim/greeting/possessive/disfluency/
+    # reported-question/STT-correction) instead of the bare matcher on raw text.
+    from kenning.audio.command_normalizer import normalize_command
 
     llm = tts = stt = None
     if need_llm:
@@ -253,7 +258,7 @@ def run(stage: str, limit: int | None, run_tag: str,
                 heard_in = _spoken_then_stt(tts, stt, case.text) or case.text
                 rec["stt_in"] = heard_in
 
-            cmd = match_relay_command(heard_in)
+            cmd = match_relay_command(normalize_command(heard_in))
             rec["matched"] = cmd is not None
             rec["fails"] += [f"matcher: {x}" for x in score_matcher(case, cmd)]
 

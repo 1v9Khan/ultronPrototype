@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 
 from kenning.audio._stt_correct import _AGENTS, correct_callout_stt
+from kenning.audio._relay_intent import relay_intent_ok
 
 # ---------------------------------------------------------------------------
 # 1. Leading junk: misheard wake word + conversational filler.
@@ -50,7 +51,10 @@ _WAKE_HOMOPHONES = (
 _FILLER = (
     r"hey|ok|okay|um+|uh+|er+|hmm+|so|well|yeah|yep|yup|now|and|then|"
     r"please|alright|right|i\s+mean|i\s+think|i\s+hope|i\s+guess|i\s+wanna|"
-    r"i\s+want\s+to|let'?s\s+see|you\s+know|basically|just"
+    r"i\s+want\s+to|let'?s\s+see|you\s+know|basically|just|"
+    # conversational address-fillers that leak before a relay lead ("bro relay X",
+    # "dude tell them Y", "yo call out Z") -- safe to strip from the front.
+    r"bro|bruh|dude|homie|fam|bud|buddy|guys|yo"
 )
 # "like" is filler ("like, tell my team X") BUT also the Spotify verb
 # ("like this song" / "like it"). Strip it as filler ONLY when it is NOT
@@ -69,6 +73,82 @@ def _strip_leading_junk(s: str) -> str:
     """Strip a leading wake-remnant / filler run. Never empties the string."""
     out = _LEADING_JUNK.sub("", s, count=1).lstrip()
     return out if out else s
+
+
+# Self-correction disfluency: "tell my -- no wait, tell the whole team to X" /
+# "relay to Raze -- wait the whole team -- everyone go B" -- the streamer
+# corrects themselves mid-utterance. Take the text AFTER the LAST correction
+# marker (the intended final command). The markers are speech self-corrections,
+# NOT tactical words ("rotate B NOT A" keeps its "not"; "wait for the molly"
+# keeps its "wait" -- only "-- wait" / "no wait" / "scratch that" trigger).
+# Explicit self-correction CUES. The PRESENCE of one marks the utterance as a
+# repair; only THEN do we also treat the bare em-dash "--" (which the streamer/
+# corpus uses as a self-interruption) as a correction boundary. We never key off
+# bare "no" / "wait" / "not" alone -- those are tactical ("rotate B NOT A",
+# "wait for the molly") and must survive.
+_DISFLUENCY_CUE_RE = re.compile(
+    r"(?:--+\s*(?:no\s+)?wait\b|\bno\s+wait\b|\bno\s+no\b|\bscratch\s+that\b"
+    r"|\bnever\s*mind\b|\bforget\s+it\b|\bactually\s+no\b|\bor\s+rather\b"
+    r"|\bi\s+mean\b|--+\s*no\b|--+\s*actually\b|\blet\s+me\s+rephrase\b"
+    r"|--+\s*to\s+(?:all|the)\b)",
+    re.IGNORECASE,
+)
+# Boundaries to split on once the utterance is flagged as a repair: every cue
+# above PLUS bare "--". Keep the segment after the LAST boundary (the final
+# intended command). Ordered so multi-word cues match before the bare dash.
+_DISFLUENCY_SPLIT_RE = re.compile(
+    r"(?:--+\s*(?:no\s+)?wait\b|\bno\s+wait\b|\bno\s+no\b|\bscratch\s+that\b"
+    r"|\bnever\s*mind\b|\bforget\s+it\b|\bactually\s+no\b|\bor\s+rather\b"
+    r"|\bi\s+mean\b|--+\s*to\s+(?:all|the)\s+\w+|--+\s*actually\b|--+\s*no\b"
+    r"|--+)"
+    r"[\s,.:;\-]*",
+    re.IGNORECASE,
+)
+
+
+def _resolve_disfluency(s: str) -> str:
+    """Resolve a mid-utterance self-correction to its FINAL intended command,
+    preserving the relay lead. "call out Iso contract -- wait shield -- Double
+    Tap, he has shield up" -> "tell my team Double Tap, he has shield up". Only
+    fires when an explicit correction cue is present, so ordinary callouts (incl.
+    tactical "rotate B not A" / "wait for the molly") are never touched."""
+    if not _DISFLUENCY_CUE_RE.search(s):
+        return s
+    ms = list(_DISFLUENCY_SPLIT_RE.finditer(s))
+    if not ms:
+        return s
+    tail = s[ms[-1].end():].strip(" ,.;:-")
+    if len(tail.split()) < 2:
+        return s  # final repair too short to stand alone -> keep original
+    # Preserve a leading relay verb the correction chain dropped, so the repair
+    # stays routable as a relay rather than a bare fragment the gate rejects.
+    if (_HAS_RELAY_LEAD.match(s) and not _HAS_RELAY_LEAD.match(tail)
+            and not _TEAM_LEAD.match(tail)):
+        return "tell my team " + tail
+    return tail
+
+
+# "relay to my Tejo: X" / "tell our Sova: X" -- a possessive before a ROSTER
+# agent breaks the named-addressee matcher (it expects "relay to Tejo"). Strip
+# the my/our before a real agent name (closed vocab, so an arbitrary name is
+# never touched). Handles repeated "... my Sova and my Fade ...".
+_POSSESSIVE_NAME_RE = re.compile(
+    r"\b(to|tell|ask|warn|remind|relay\s+to)\s+(?:my|our)\s+"
+    r"(?P<name>" + "|".join(
+        sorted((re.escape(a.replace("/", "")) for a in _AGENTS),
+               key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_possessive_names(s: str) -> str:
+    # First pass handles "<verb> to my Sova"; a global pass catches "and my Fade".
+    s = _POSSESSIVE_NAME_RE.sub(lambda m: f"{m.group(1)} {m.group('name')}", s)
+    return re.sub(
+        r"\band\s+(?:my|our)\s+(" + "|".join(
+            sorted((re.escape(a.replace("/", "")) for a in _AGENTS),
+                   key=len, reverse=True)) + r")\b",
+        lambda m: f"and {m.group(1)}", s, flags=re.IGNORECASE)
 
 
 # STT mis-hears the verbatim verb "repeat" as "Pete"/"Heat"/"repeete" when it
@@ -311,6 +391,37 @@ _AGENT_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 
+# First-person musing / self-narration that merely MENTIONS relaying or a callout
+# keyword -- "I should tell them to eco", "honestly should I be asking my team to
+# push", "every time I tell them to flank someone dies", "for the viewers at
+# home: my team needs someone to tell them to eco". The streamer is thinking out
+# loud, NOT issuing a relay. Zero-cost fast-path before the semantic gate (and the
+# fallback when the sidecar is down). Start-anchored + first-person-modal so real
+# self-status callouts ("I'm planting", "I died", "I'm low", "I need a drop",
+# "I got one") are NEVER gated; the directive forms ("I want/need you to ...") are
+# owned by _WANT_TEAM and excluded here.
+_NARRATION_MUSING_RE = re.compile(
+    r"^\s*"
+    r"(?:(?:honestly|hold\s+on|wait|look|listen|i\s+mean|by\s+all\s+rights|"
+    r"for\s+(?:the\s+)?(?:viewers|stream|chat|clip)(?:\s+at\s+home)?|"
+    r"just\s+narrating|i'?m\s+narrating[^,:]*)[,:\s-]+)*"
+    r"(?:"
+    r"i\s+(?:should|shouldn'?t|wish|wished|can'?t|cannot|could|couldn'?t|would|"
+    r"always|never|keep|kept|forget|forgot|hate\s+(?:when|that|how)|"
+    r"love\s+(?:when|that|how)|was\s+(?:going|about|thinking)|"
+    r"asked\s+(?:my\s+team|them|the\s+squad)|"
+    r"'?m\s+the\s+(?:person|type|kind|one)|'?m\s+always)"
+    r"\b"
+    r"|should\s+i\b|shouldn'?t\s+i\b|do\s+i\b|why\s+do\s+i\b|when\s+do\s+i\b|"
+    r"how\s+do\s+i\b|am\s+i\s+(?:supposed|the\s+only)\b"
+    r"|if\s+only\s+i\b|every\s+time\s+i\b|whenever\s+i\b"
+    r"|not\s+sure\s+(?:if|whether)\b|there'?s\s+no\s+point\b"
+    r"|my\s+(?:biggest|whole|main|only)\s+(?:problem|issue|thing|"
+    r"improvement|weakness|habit|flaw)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def recover_relay_lead(text: str) -> str:
     """Prepend the canonical "tell my team ..." lead when a clipped TEAM CALLOUT
@@ -334,6 +445,11 @@ def recover_relay_lead(text: str) -> str:
     if mw:
         rest = mw.group(1).strip()
         if rest:
+            # "I want to tell my team X" is a relay intent -- UNLESS it's futility
+            # musing ("...but they'll just stick it anyway", "...but I'm not sure").
+            # Veto via the semantic gate (fail-open keeps today's behavior).
+            if _NARRATION_MUSING_RE.match(rest) or relay_intent_ok(rest) is False:
+                return text
             return "tell my team " + rest
     # Trailing relay command ("Viper wall is up, tell my team.") -> strip the
     # tail and prepend the canonical lead so the payload isn't duplicated.
@@ -355,7 +471,17 @@ def recover_relay_lead(text: str) -> str:
         return "tell " + s
     if _CALLOUT_SIGNAL.search(s) or _AGENT_SIGNAL.search(s):
         # Bare callout with no addressee at all ("there's a Jett A main",
-        # "Chamber holding long", "I'm planting") -> address the team.
+        # "Chamber holding long", "I'm planting") -> address the team. BUT a
+        # callout keyword alone is not enough: narration ("I should tell them to
+        # eco"), banter/analysis at Ultron ("their Sage rez'd, how much does that
+        # cost"), a question for advice ("push or hold"), or Marvel/identity talk
+        # also contain these keywords. Veto those before attaching the team lead.
+        if _NARRATION_MUSING_RE.match(s):
+            return text  # first-person self-narration -> conversational
+        verdict = relay_intent_ok(s)
+        if verdict is False:
+            return text  # semantic relay-intent gate vetoed -> conversational
+        # verdict True (relay) or None (sidecar down -> keep keyword behavior)
         return "tell my team " + s
     return text
 
@@ -389,6 +515,11 @@ def normalize_command(text: str) -> str:
     _wfw = _WORD_FOR_WORD.match(s)
     if _wfw and _wfw.group(1).strip():
         s = "say exactly to my team " + _wfw.group(1).strip()
+    # Resolve a mid-utterance self-correction to its final intent, and strip a
+    # possessive before a roster agent ("relay to my Sova" -> "relay to Sova"),
+    # both BEFORE routing.
+    s = _resolve_disfluency(s)
+    s = _strip_possessive_names(s)
     # ZERO-MISTAKES GATE: conversational / Spotify / identity / desktop commands
     # are left VERBATIM -- the aggressive Valorant vocab correction (phonetic +
     # fuzzy) runs ONLY on callout-bound text, so a question or a song title is

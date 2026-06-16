@@ -173,6 +173,19 @@ def get_command_router() -> Optional[CommandRouter]:
     return _router
 
 
+def get_embedding_backend():
+    """Return the shared EmbeddingBackend (the sidecar client) used by the router,
+    or None when the sidecar/router is unavailable. Used by the relay flavor layer
+    for SEMANTIC tail selection -- it shares the router's per-turn embed cache, so a
+    tail-select query reuses an already-computed vector when possible. Fail-soft:
+    never raises; None -> the caller uses its deterministic anti-repeat picker."""
+    try:
+        r = get_command_router()
+        return getattr(getattr(r, "backend", None), "emb", None) if r else None
+    except Exception:                                             # noqa: BLE001
+        return None
+
+
 def reset_command_router() -> None:
     """Drop the cached router so the next get_command_router() REBUILDS it.
 

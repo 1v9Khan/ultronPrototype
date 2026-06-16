@@ -648,9 +648,14 @@ _CRITICIZE_NAME = "|".join(
     re.escape(n.strip().lower()).replace(r"\ ", r"\s+")
     for n in DEFAULT_ADDRESSEE_NAMES if n.strip()
 )
+# NOTE: "call out" is deliberately NOT a criticism verb -- in Valorant it is the
+# primary RELAY/callout verb ("call out their Breach has flashpoint", "call out
+# Gekko wingman defusing"). Including it inverted 105/106 factual callouts into
+# criticisms of the named agent (even "our Breach"/"our Deadlock"). Criticism
+# requires an explicit critique verb below.
 _CRITICIZE_RE = re.compile(
     rf"^(?:please\s+)?(?:criticize|criticise|critique|rip\s+into|tear\s+into|"
-    rf"chew\s+out|call\s+out|flame|roast)[\s,]+"
+    rf"chew\s+out|flame|roast)[\s,]+"
     rf"(?:my\s+|our\s+|the\s+)?(?P<name>{_CRITICIZE_NAME})(?:'s)?\b.*$",
     re.IGNORECASE,
 )
@@ -967,6 +972,9 @@ def _match_context_directive(
             len(context.split()) >= 3
             and _CONTEXT_VERB_RE.search(context)
             and not _FIRST_PERSON_TO_YOU_RE.match(context)
+            # the asker must be a teammate -- "my boy said you're a filter,
+            # respond" / "my dad said ..., respond" are conversational, not relays
+            and _asker_is_teammate(context, vocabulary)
         ):
             return RelayCommand(
                 payload="", raw_text=raw_text,
@@ -975,6 +983,33 @@ def _match_context_directive(
                 directive=m.group("directive"),
             )
     return None
+
+
+_REPORTED_ASKER_RE = re.compile(
+    r"^\s*(?:my\s+|our\s+|the\s+|a\s+)?(?P<w1>[A-Za-z]+)(?:'s\s+(?P<w2>[A-Za-z]+))?",
+    re.IGNORECASE,
+)
+_TEAMMATE_SUBJECT_RE = re.compile(
+    r"^(?:team|teammates?|squad|guys|boys|crew|mates|everyone|someone|somebody|"
+    r"anyone|anybody|igl|duo)$", re.IGNORECASE)
+
+
+def _asker_is_teammate(context: str, vocabulary: Sequence[str]) -> bool:
+    """True iff the SUBJECT of a reported clause is a teammate (a roster agent
+    or a team word) -- "Jett asked ...", "team asked ...", "my teammate is
+    wondering ...". A non-teammate asker -- "my dad wants to know who you are",
+    "my teammate's SISTER wants to know", "genuinely curious what you are" -- is
+    the USER talking to Ultron (conversational), never a relay. Handles the
+    "X's Y" possessive (the head noun Y is the asker)."""
+    m = _REPORTED_ASKER_RE.match(context or "")
+    if not m:
+        return False
+    subj = (m.group("w2") or m.group("w1") or "").lower()
+    if not subj:
+        return False
+    return bool(_TEAMMATE_SUBJECT_RE.match(subj)) or subj in {
+        n.lower() for n in vocabulary
+    }
 
 
 def _match_reported_question(
@@ -989,6 +1024,8 @@ def _match_reported_question(
     first-person-to-you instructions, and for anything lacking a question object.
     """
     s = _TEAM_LEAD_STRIP_RE.sub("", cleaned, count=1).strip()
+    if not _asker_is_teammate(s, vocabulary):
+        return None  # asker isn't a teammate -> conversational, not a relay
     if _DIRECTIVE_TAIL_RE.search(s):
         return None  # explicit directive -> the directive path owns it
     if _FIRST_PERSON_TO_YOU_RE.match(s):
@@ -1003,6 +1040,49 @@ def _match_reported_question(
         addressee=_addressee_from_context(context, vocabulary),
         compose=True, context=context, directive="respond",
     )
+
+
+# Tactical imperative directives with NO explicit relay lead -- a streamer barks
+# an order the team must act on: "let the nanoswarm die then defuse", "let him
+# cook", "let's default", "let wingman plant", "get on that defuse", "get a smoke
+# for retake". Relayed as the literal directive (a LATE fallback so every
+# explicit relay/named/ask form wins first). EXCLUDES "let me ..." (the user
+# talking to Ultron) and conversational "let's see / think".
+# "let's <action>" + "get <object> <...>" carry no addressee ambiguity:
+_LETS_GET_RE = re.compile(
+    r"^(?:let'?s\s+(?!see\b|think\b|find\s+out\b)\S+"
+    r"|get\s+(?:on|onto|a|an|the|that|to|in|out|ready|some|up|back|down)\s+\S+)",
+    re.IGNORECASE,
+)
+# "let <subject> <action>" -- the subject must be a GENERIC pronoun/term (below)
+# or a real ROSTER agent (checked against the live vocabulary). An OOV name --
+# "let Lauren know to watch the lurk" -- must NOT relay (oov-safety: the relay
+# roster never includes arbitrary names, and a stray name could leak).
+_LET_SUBJECT_RE = re.compile(
+    r"^let\s+(?!me\b)(?:my\s+|our\s+)?(?P<subj>[A-Za-z'/]+)\s+\S+", re.IGNORECASE)
+_LET_GENERIC_SUBJECT_RE = re.compile(
+    r"^(?:the|a|an|him|her|them|it|us|everyone|anyone|anybody|somebody|someone|"
+    r"wingman|team|teammates?|squad|guys|boys|crew)$", re.IGNORECASE)
+
+
+def _match_imperative_directive(
+    cleaned: str, raw_text: str, vocabulary: Sequence[str],
+) -> Optional["RelayCommand"]:
+    """A tactical imperative order with no explicit relay lead -> literal relay.
+
+    "let the nano die then defuse", "let's default", "get on that defuse", "let
+    wingman plant". Excludes "let me ..." and "let <OOV-name> know" (only generic
+    subjects and roster agents relay)."""
+    ok = bool(_LETS_GET_RE.match(cleaned))
+    if not ok:
+        m = _LET_SUBJECT_RE.match(cleaned)
+        if m:
+            subj = m.group("subj").strip(",.!?'").lower()
+            ok = (bool(_LET_GENERIC_SUBJECT_RE.match(subj))
+                  or subj in {n.lower() for n in vocabulary})
+    if ok and len(cleaned.split()) >= 2 and _payload_has_content(cleaned):
+        return RelayCommand(payload=cleaned, raw_text=raw_text)
+    return None
 
 
 def match_relay_command(
@@ -1197,6 +1277,13 @@ def match_relay_command(
                            payload, re.IGNORECASE))
         if not bad and _payload_has_content(payload):
             return RelayCommand(payload=payload, raw_text=text, verbatim=verbatim)
+
+    # Tactical imperative directive ("let the nano die then defuse", "let's
+    # default", "get on that defuse") with no explicit lead -> relay the literal
+    # order to the team. LAST so every explicit form above wins first.
+    imperative = _match_imperative_directive(cleaned, text, vocabulary)
+    if imperative is not None:
+        return imperative
     return None
 
 
@@ -2457,6 +2544,31 @@ try:
     from kenning.audio._multi_flavor import MULTI_FLAVOR as _MULTI_FLAVOR
 except Exception:                                                # noqa: BLE001
     _MULTI_FLAVOR = {}
+#: Tail schema: TailEntry coercion + the deep situation taxonomy / tag folding.
+#: Fail-soft so the relay path still works if the schema module is unavailable.
+try:
+    from kenning.audio._tail_schema import (
+        entries as _tail_entries, situation_for_payload as _situation_for_payload,
+        build_active_tags as _build_active_tags,
+    )
+except Exception:                                                # noqa: BLE001
+    def _tail_entries(pool):  # type: ignore
+        from types import SimpleNamespace
+        return [SimpleNamespace(text=str(x), tags=frozenset())
+                if not hasattr(x, "text") else x for x in pool]
+
+    def _situation_for_payload(_p):  # type: ignore
+        return None
+
+    def _build_active_tags(**_k):  # type: ignore
+        return frozenset()
+#: Semantic tail SELECTOR (embedder sidecar). Fail-open: returns None -> caller
+#: uses the deterministic _pick_flavor. No-op stub if the module is unavailable.
+try:
+    from kenning.audio._tail_selector import select_tail as _select_tail
+except Exception:                                                # noqa: BLE001
+    def _select_tail(*_a, **_k):  # type: ignore
+        return None
 #: register -> per-agent situation key (only the ENEMY-facing registers map; an
 #: order/self line is never about an enemy agent so it gets no contempt tail).
 _REGISTER_SITUATION = {"enemy": "spotted", "ult": "ult",
@@ -2513,32 +2625,100 @@ def _ctx_candidates(register: str, *, ability: Optional[str] = None,
     return out
 
 
+_ULT_KW_RE = re.compile(r"\b(?:ult|ulted|ulting|ultimate|ultis?)\b", re.IGNORECASE)
+
+
+def _situation_for(register: str, payload: Optional[str]) -> Optional[str]:
+    """Coarse register -> the FINE enemy situation. An explicit ULT marker
+    (ult/ulted/ultimate) LIFTS the situation to 'ult' regardless of how the snap
+    classified the register, so an enemy-agent ult callout ("their Viper ulted B")
+    reaches the agent's curated ULT pool (her Pit) -- not the utility pool. The
+    enemy 'spotted' base is otherwise refined by the callout's action words;
+    damaged/utility carry their sub-context in TAGS. (Named-ult lexicon -- "Viper
+    pit", "Jett blade storm" -- is added in the routing-hierarchy phase.)"""
+    if payload and _ULT_KW_RE.search(payload):
+        return "ult"
+    base = _REGISTER_SITUATION.get(register)
+    if base == "spotted":
+        return _situation_for_payload(payload) or "spotted"
+    return base
+
+
+def _tier_filter(ents: Sequence, active: "frozenset[str]") -> list[str]:
+    """4-tier progressive tag filter WITHIN an already-correct (agent,situation)
+    cell. A tail's tags must be SATISFIED by the callout's active tags; a tagless
+    base tail always survives. Each tier needs >=3 survivors, else relax. Returns
+    the candidate tail TEXTS. Inert on a tagless pool (everything passes T1)."""
+    if not active:
+        return [e.text for e in ents]
+    # T1: tags subset of active (drops MIS-matched specific tails, keeps base +
+    #     correctly-matched specific tails).
+    t1 = [e for e in ents if e.tags <= active]
+    if len(t1) >= 3:
+        return [e.text for e in t1]
+    # T2: share the single most-specific active tag (ability > dmg > loc), + base.
+    for pref in ("ability:", "dmg:", "loc:"):
+        tag = next((t for t in active if t.startswith(pref)), None)
+        if tag:
+            t2 = [e for e in ents if tag in e.tags or not e.tags]
+            if len(t2) >= 3:
+                return [e.text for e in t2]
+    # T3: tagless base tails (the deterministic floor, always populated).
+    t3 = [e for e in ents if not e.tags]
+    if len(t3) >= 3:
+        return [e.text for e in t3]
+    # T4: the whole cell.
+    return [e.text for e in ents]
+
+
 def _flavor_ctx(callout: str, register: str,
                 recent_lines: Optional[Sequence[str]], *,
                 agents: Sequence[str] = (), ability: Optional[str] = None,
-                loc: Optional[str] = None, count: Optional[str] = None) -> str:
+                loc: Optional[str] = None, count: Optional[str] = None,
+                payload: Optional[str] = None) -> str:
     """Append an owner-aware, contextually-tied Ultron tail to ``callout``.
 
-    The tail is ALWAYS selected for what the callout actually said:
-      * ONE named enemy agent -> that agent's situational pool is the SOLE source
-        (character-specific, e.g. a Neon-ult line about her speed) -- never diluted
-        by the generic pool;
-      * TWO+ named enemy agents -> the multi-agent situational pool (plural);
-      * NO named agent -> location/count contextual templates (heavily weighted)
-        then the generic register pool.
+    Two-stage HYBRID selection (board 2026-06-16):
+      * COARSE ROUTE: register + payload -> the fine enemy situation; ONE named
+        enemy agent -> AGENT_FLAVOR[agent][situation] (sole source; falls back to
+        the agent's 'spotted' pool if that finer situation has no content yet, so
+        a new situation never regresses to the generic pool). TWO+ -> _multi_flavor.
+      * FINE-SELECT: a 4-tier TAG filter (loc/dmg/ability) narrows the cell to the
+        tails that FIT this exact callout, then _pick_flavor (anti-repeat) chooses.
+      * NO named agent -> location/count contextual templates + generic register pool.
     """
-    sit = _REGISTER_SITUATION.get(register)
+    sit = _situation_for(register, payload)
+    active = _build_active_tags(loc=loc, count=count, payload=payload,
+                                ability=ability)
     if sit and agents:
         if len(agents) == 1:
-            ac = list(_AGENT_FLAVOR.get(agents[0], {}).get(sit, ()))
+            cell = _AGENT_FLAVOR.get(agents[0], {})
+            pool = cell.get(sit) or cell.get("spotted") or ()
+            pk = "agent"
         else:
-            ac = list(_MULTI_FLAVOR.get(sit, ()))
-        if ac:                                   # agent-specific is the sole source
-            return _join_tail(callout, _pick_flavor(ac, recent_lines))
+            pool = _MULTI_FLAVOR.get(sit) or _MULTI_FLAVOR.get("spotted") or ()
+            pk = "multi"
+        if pool:
+            cands = _tier_filter(_tail_entries(pool), active)
+            if cands:
+                # LATENCY: a curated/tag-filtered cell is small and already a tight
+                # fit -- LRU rotation is as good as a cosine re-rank, so SKIP the
+                # embed entirely (no sidecar call) for small cells. The semantic
+                # selector only earns its cost on a large ambiguous pool.
+                if len(cands) < 5:
+                    return _join_tail(callout, _pick_flavor(cands, recent_lines))
+                chosen = _select_tail(
+                    cands, recent_lines,
+                    agent=(agents[0] if len(agents) == 1 else None),
+                    situation=sit, active_tags=active, pool_kind=pk)
+                return _join_tail(callout,
+                                  chosen or _pick_flavor(cands, recent_lines))
     ctx = _ctx_candidates(register, ability=ability, loc=loc, count=count)
     pool = list(_REGISTER_POOL.get(register, _FLAVOR_ENEMY))
     cands = ctx * 4 + pool if ctx else pool      # fact-templates dominate when present
-    return _join_tail(callout, _pick_flavor(cands, recent_lines))
+    chosen = _select_tail(cands, recent_lines, situation=register,
+                          active_tags=active, pool_kind="generic")
+    return _join_tail(callout, chosen or _pick_flavor(cands, recent_lines))
 
 
 def _payload_flavor_facts(p: str) -> dict:
@@ -2558,6 +2738,9 @@ def _payload_flavor_facts(p: str) -> dict:
                      if l.lower() not in {"a", "an", "the"}), None),
         "ability": next(iter(sorted(abils)), None),
         "count": next(iter(sorted(nums)), None),
+        # the raw payload -> the finer situation (planting/lurking/...) + damage
+        # level are derived from its action words / hp in _flavor_ctx.
+        "payload": p or "",
     }
 
 
@@ -3026,6 +3209,28 @@ def _as_snap_callout(
     ap = _as_agent_position(p)
     if ap is not None:
         return fe(ap)
+
+    # --- I-damaged-an-enemy: 'I hit the Sova for 99', 'I tagged the Jett for 88',
+    #     'I cracked the Reyna for 70' -> the OBJECT is the damaged enemy agent
+    #     (the subject 'I' is the user). Routes to the agent's damaged pool with
+    #     the right damage-level tag (99 -> one_shot), so the tail is about THAT
+    #     character bleeding -- not a literal echo with no flavor. ---
+    m = re.match(r"^i\s+(?:hit|tagged|chunked|cracked|dinked|hurt|wiped|shot|"
+                 r"sprayed|caught|clipped|tapped|bodied)\s+(?:the\s+|their\s+)?"
+                 r"(?P<a>[A-Za-z/]+)\s+(?:for\s+)?(?P<n>\d{1,3})\b"
+                 r"(?:[\s,]+(?P<loc>.+))?$", p, re.IGNORECASE)
+    if m:
+        ag = _canon_agent(m.group("a"))
+        if ag:
+            loc = re.sub(r"^(?:in|at|through)\s+", "",
+                         (m.group("loc") or "").strip().rstrip(".!?,;:"),
+                         flags=re.IGNORECASE).strip()
+            n = m.group("n")
+            if not loc:
+                return flav(f"Hit the {ag} for {n}.", _FLAVOR_DAMAGE)
+            if len(loc.split()) <= 5:
+                return flav(f"Hit the {ag} for {n}, {loc}.", _FLAVOR_DAMAGE)
+            return None
 
     # --- damage: '<agent> hit <n>' (+ optional short trailing location:
     #     'Vyse hit 84 in C main', 'Omen hit 44 through B smoke') ---
