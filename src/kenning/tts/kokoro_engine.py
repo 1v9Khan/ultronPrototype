@@ -941,13 +941,24 @@ class KokoroSpeech:
         # used to concatenate them with ZERO gap, so a relay callout ran straight
         # into its flavor tail ("Sova has ult.Three blasts for the slow.") -- the
         # end of the line and the start of the tail blended together (reported
-        # live). The streaming playback path already inserts ~180 ms between
-        # sentences; mirror that here for the single-clip path (relay lines,
-        # greet/identity set-pieces) so multi-sentence clips have a clean breath
-        # between sentences. Single-sentence callouts are untouched (no gap).
+        # live). Insert a FULL PERIOD-length gap between sentences in this
+        # single-clip path (relay lines, greet/identity set-pieces): the callout
+        # and its flavor tail are always two SEPARATE sentences, so the boundary
+        # must read like a period, not a rushed comma (the prior 160 ms still
+        # slurred). A multi-FACT callout ("two A, one heaven") joins its facts
+        # internally with commas -> ONE Kokoro sentence -> NO gap, so it still
+        # flows; only the real sentence boundary (the tail) gets the pause. Honors
+        # KENNING_TTS_SENTENCE_PAUSE_MS (the user's period-pause setting).
         if len(audio_chunks) > 1:
+            import os as _os
+            try:
+                _gap_ms = int(_os.getenv("KENNING_TTS_SENTENCE_PAUSE_MS", "320")
+                              or 320)
+            except Exception:                                 # noqa: BLE001
+                _gap_ms = 320
+            _gap_ms = max(60, min(_gap_ms, 1000))             # sane clamp
             gap = np.zeros(
-                int(self._sample_rate * 0.16), dtype=np.float32,
+                int(self._sample_rate * (_gap_ms / 1000.0)), dtype=np.float32,
             )
             spaced: list[np.ndarray] = []
             for i, ch in enumerate(audio_chunks):

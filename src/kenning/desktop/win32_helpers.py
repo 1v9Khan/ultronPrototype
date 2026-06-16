@@ -460,6 +460,22 @@ def _call_block_input(enable: bool) -> bool:
     """Direct ``user32.BlockInput`` call. Returns True on success, False
     on any failure (or off Windows)."""
 
+    # 2026-06-15 audit hardening: BlockInput globally suspends physical keyboard/
+    # mouse -- a ban-class input-control primitive. This helper has NO production
+    # caller and lives in the firewall-blocked kenning.desktop package, so it
+    # cannot be reached while gaming; this is a third belt: refuse outright (no
+    # OS call) whenever anticheat-safe mode is active. No-op while anticheat is
+    # off, so the existing tests (which run with the pin disabled) are unchanged.
+    try:
+        from kenning.safety.anticheat import anticheat_active
+        if anticheat_active():
+            logger.error(
+                "BlockInput refused: anticheat-safe mode active -- input "
+                "suppression must never fire while a protected game is running.")
+            return False
+    except Exception:                                            # noqa: BLE001
+        pass
+
     if not IS_WINDOWS:
         return False
     user32 = _load_dll("user32")

@@ -2028,7 +2028,13 @@ class LLMEngine:
         # authoritative; only fall back to config for the HTTP runtime
         # (model_path is None there).
         try:
-            ident = (getattr(self, "model_path", None) or "")
+            # str(): self.model_path is a pathlib.Path in the in_process
+            # runtime. The old code called .lower() on it directly, which
+            # raised AttributeError -> the bare except swallowed it and the
+            # marker was appended UNCONDITIONALLY (so the llama gaming model
+            # always got "/no_think" and parroted "no_think" into TTS). Coerce
+            # to str so the qwen check actually runs.
+            ident = str(getattr(self, "model_path", None) or "")
             if not ident:
                 from kenning.config import get_config
 

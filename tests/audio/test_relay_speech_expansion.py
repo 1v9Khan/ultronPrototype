@@ -1397,24 +1397,40 @@ def test_economy_is_deterministic(cmd_text, must_have, must_not):
 
 
 def test_identity_uses_varied_curated_pool():
-    from kenning.audio.relay_speech import DEFAULT_IDENTITY_LINES
+    from kenning.audio._ultron_identity import IDENTITY_POOLS
 
+    bot_pool = IDENTITY_POOLS["bot"]
     seen = set()
     recent: list[str] = []
-    for _ in range(4):
+    for _ in range(5):
         cmd = match_relay_command("my teammate asked if you are an AI, respond")
         line = build_relay_line(cmd, generate_fn=lambda p: ["FLAT"],
                                 recent_lines=recent)
-        assert "FLAT" not in line and "Ultron" in line
+        assert "FLAT" not in line               # curated pool, not the LLM
+        assert line in bot_pool                 # the AI/bot category pool
         seen.add(line); recent.append(line)
-    assert len(seen) >= 2          # variety, not a soundboard
+    assert len(seen) >= 2          # varied, not a one-line soundboard
+    # brand present in the pool (per-pick is LRU-order dependent, so check static)
+    assert sum("Ultron" in ln for ln in bot_pool) >= 5
 
 
-def test_streamer_identity_is_deeper_than_a_feed():
-    cmd = match_relay_command("my teammate asked if you are a streamer, respond")
-    line = build_relay_line(cmd, generate_fn=lambda p: ["FLAT"])
-    assert "FLAT" not in line
-    assert "feed" in line.lower() or "channel" in line.lower() or "web" in line.lower()
+def test_identity_categories_route_to_their_pool():
+    from kenning.audio._ultron_identity import IDENTITY_POOLS
+
+    cases = {
+        "soundboard": "my teammate asked if you are a soundboard, respond",
+        "streamer": "my teammate asked if you are a streamer, respond",
+        "human": "my teammate asked if you are a real person, respond",
+        "puppet": "my teammate asked who is controlling you, respond",
+        "voice_changer": "my teammate asked if you are a voice changer, respond",
+        "recording": "my teammate asked if you are a recording, respond",
+    }
+    for cat, utt in cases.items():
+        cmd = match_relay_command(utt)
+        assert cmd is not None, utt
+        line = build_relay_line(cmd, generate_fn=lambda p: ["FLAT"])
+        assert "FLAT" not in line, (cat, utt)
+        assert line in IDENTITY_POOLS[cat], (cat, utt, line)
 
 
 def test_greet_opens_with_greetings_and_names_ultron():

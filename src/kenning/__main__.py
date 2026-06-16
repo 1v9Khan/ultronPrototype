@@ -45,6 +45,28 @@ def main() -> int:
     configure_logging()
     logger = get_logger("main")
 
+    # 2026-06-15 audit hardening: install the anticheat import firewall as the
+    # VERY FIRST action after logging -- BEFORE the single-instance lock and
+    # BEFORE the Orchestrator is constructed -- so there is NO window in which a
+    # blocked input/capture/automation module could be imported before the
+    # loader-level block is live. The firewall is a NO-OP while anticheat-safe
+    # mode is off (it returns None for every import), so this is free for
+    # non-gaming sessions; and it is idempotent, so the Orchestrator's own
+    # install() later in __init__ is a safe no-op. (The Orchestrator MODULE is
+    # imported at the top of this file -- a load verified to pull zero blocked
+    # libs -- so installing here, before the Orchestrator is *constructed*,
+    # covers the entire heavy __init__.)
+    try:
+        from kenning.safety.import_firewall import install_import_firewall
+
+        install_import_firewall()
+    except Exception as e:  # noqa: BLE001 - fail-open at the entry layer
+        logger.error(
+            "anticheat import firewall FAILED to install at entry (%s); the "
+            "Orchestrator will retry and the posture canary will flag a miss -- "
+            "investigate before going live.", e,
+        )
+
     # 2026-06-12 single-instance guard: two simultaneous `python -m
     # kenning` processes both grab the mic and double-respond (and the
     # second collides on the embedded Qdrant lock + MCP port 19761).

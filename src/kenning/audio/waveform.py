@@ -152,13 +152,15 @@ def _load_pil_font(family: str, size: int):
 
 
 def _nameplate_frames(W, H, text, font_family, *, plate_fill, accent_rgb,
-                      core_idle, neon_red, buckets, plate_alpha=150):
+                      core_idle, neon_red, buckets, plate_alpha=255):
     """Render the ULTRON plate as ``buckets`` RGBA PIL frames from idle (calm,
     readable) to full speech (bright neon + soft Gaussian bloom). The glow is a
     real blur -> rounded, soft, particle-like halo (like a neon tube), in the
-    SAME red the glyphs light up to. The plate itself is a SEMI-TRANSPARENT
-    backing (``plate_alpha``) -- a smoked-glass panel that lifts the glyphs off
-    a busy game without fully blocking it. Returns a list of PIL.Image (RGBA)."""
+    SAME red the glyphs light up to. The plate is an OPAQUE dark backing
+    (``plate_alpha`` fully opaque by default): a PARTIAL alpha gets faked by
+    compositing against the green chroma window bg, tinting the panel green so
+    OBS's chroma key removes it -- an opaque neutral fill survives the key and
+    still reads as smoked glass. Returns a list of PIL.Image (RGBA)."""
     from PIL import Image, ImageDraw, ImageFilter
 
     pad = W * 0.085
@@ -520,7 +522,8 @@ class WaveformSink:
             canvas.pack(fill="both", expand=True)
 
             state = _RenderState(canvas, size, plate_h, self._bars, self._accent,
-                                 self._bg, plate_text, self._nameplate_font)
+                                 self._bg, plate_text, self._nameplate_font,
+                                 fps=self._fps)
             state.build()
 
             # Drag the window by grabbing the visualizer; right-click closes.
@@ -576,7 +579,8 @@ class _RenderState:
     """Holds the pre-created Canvas items and eases them toward each frame."""
 
     def __init__(self, canvas, size: int, plate_h: int, bars: int, accent: str,
-                 bg: str, nameplate_text: str = "", nameplate_font: str = "Bahnschrift") -> None:
+                 bg: str, nameplate_text: str = "", nameplate_font: str = "Bahnschrift",
+                 fps: int = 60) -> None:
         self.canvas = canvas
         self.size = size
         self.plate_h = plate_h
@@ -601,23 +605,19 @@ class _RenderState:
         self.plate_top = int(round(size * 0.82))
         self.cur_level = 0.0
         self.cur_bands = np.zeros(bars, dtype=np.float32)
-        self.angle = 0.0   # breath/shimmer clock -- always advances (idle pulse)
-        self.spin = 0.0     # bar-ring rotation -- frozen at idle (see render)
+        self.angle = 0.0    # breath/shimmer clock -- always advances
+        self.spin = 0.0     # bar-ring rotation -- ALWAYS advances (continuous spin)
+        # Motion is tuned as per-frame steps against a 30 fps reference; scale
+        # the steps by the real fps so the spin + breath run at the SAME speed
+        # whether the overlay redraws at 30 or 60. A higher fps then just makes
+        # the identical motion smoother, never faster.
+        self._mscale = 30.0 / float(max(1, fps))
         self.drag_x = 0
         self.drag_y = 0
         self.glow_items: list = []
         self.bar_outline_items: list = []   # black underlay -> crisp bar edges
         self.bar_items: list = []
         self.core = None
-        # Render change-detection: only push a canvas.coords/itemconfigure when
-        # the PIXEL-ROUNDED value actually changed, so the desktop compositor
-        # redraws only what moved. Tk snaps lines/ovals to pixels anyway, so
-        # rounding is visually identical -- but the slow idle breath now crosses
-        # a pixel boundary only a few times/sec instead of mutating every frame,
-        # collapsing idle GPU compositing from ~60 redraws/s to a handful. Keyed
-        # by canvas item id.
-        self._coords_cache: dict = {}
-        self._cfg_cache: dict = {}
         # Nameplate (ULTRON): a dark plate (contrast over gameplay) with a REAL
         # Gaussian-blurred neon glow -- a bright tube core + soft, rounded halo
         # in the SAME red the glyphs light up to -- pre-rendered with PIL at N
@@ -626,10 +626,15 @@ class _RenderState:
         # if PIL is unavailable.
         self.text = (nameplate_text or "").strip()
         self.font_family = nameplate_font or "Bahnschrift"
-        # Smoked-glass nameplate: transparent BLACK so the panel reads clearly
-        # over any game background without fully blocking it.
-        self.PLATE_FILL = (0, 0, 0)       # transparent black (alpha below)
-        self.PLATE_ALPHA = 150            # ~59% -- semi-clear, still legible
+        # Smoked-glass nameplate -- OPAQUE dark panel. It MUST be opaque because
+        # the overlay is captured via an OBS CHROMA KEY: a semi-transparent fill
+        # is faked by Tk compositing the panel against the GREEN window bg, which
+        # tints the panel green, so OBS's key then removes it along with the
+        # background (it shows on the desktop popup but VANISHES in OBS). A solid
+        # neutral dark fill (far from the green key) survives the key cleanly and
+        # still reads as smoked glass with the neon glyphs floating on it.
+        self.PLATE_FILL = (22, 18, 28)    # dark smoked charcoal (away from green)
+        self.PLATE_ALPHA = 255            # OPAQUE -> no green bleed, survives key
         self.CORE_IDLE = (230, 222, 225)  # calm + readable when not speaking
         self.NEON_RED = (255, 88, 98)     # glyphs light up THIS; glow is the SAME red
         self.cur_glow = 0.0
@@ -697,24 +702,6 @@ class _RenderState:
             font=(self.font_family, fsize, "bold"),
             fill=_rgb_to_hex(self.CORE_IDLE))
 
-    def _set_coords(self, item, x0, y0, x1, y1) -> None:
-        """canvas.coords ONLY when the pixel-rounded box changed (skip no-ops)."""
-        rc = (round(x0), round(y0), round(x1), round(y1))
-        if self._coords_cache.get(item) != rc:
-            self._coords_cache[item] = rc
-            self.canvas.coords(item, *rc)
-
-    def _set_cfg(self, item, **kw) -> None:
-        """canvas.itemconfigure ONLY for keys whose value changed (skip no-ops)."""
-        cache = self._cfg_cache.get(item)
-        if cache is None:
-            cache = {}
-            self._cfg_cache[item] = cache
-        changed = {k: v for k, v in kw.items() if cache.get(k) != v}
-        if changed:
-            cache.update(changed)
-            self.canvas.itemconfigure(item, **changed)
-
     def render(self, target_level: float, target_bands: np.ndarray) -> None:
         c = self.canvas
         # Ease current -> target (attack fast, release smooth).
@@ -724,17 +711,15 @@ class _RenderState:
             self.cur_bands = np.zeros(self.bars, dtype=np.float32)
         gain = np.where(target_bands > self.cur_bands, 0.6, 0.22)
         self.cur_bands = self.cur_bands + (target_bands - self.cur_bands) * gain
-        # Idle breathing so it's never fully dead on screen. The clock always
-        # advances so the breath pulse + core never freeze. The bar RING spin,
-        # though, only advances while actually speaking: at idle the ring is a
-        # uniform set of breath-height stubs, so freezing the spin is visually
-        # indistinguishable but stops all 48 bars from changing coords (and so
-        # redrawing) 30x/s -- collapsing idle GPU compositing to near zero. The
-        # spin resumes seamlessly the instant Ultron speaks.
-        breath = 0.04 * (0.5 + 0.5 * math.sin(self.angle * 1.7))
-        self.angle += 0.018
-        if self.cur_level > 0.05:   # speaking -> rotate; idle -> frozen (invisible)
-            self.spin += 0.018
+        # Idle breathing so it's never fully dead on screen, plus a CONTINUOUS
+        # ring spin. The spin ALWAYS advances -- a slow drift at rest that speeds
+        # up smoothly while Ultron speaks -- so the overlay stays alive even when
+        # idle. (An earlier optimization froze the spin at idle to save GPU; it
+        # made the overlay look dead and the breathing choppy/low-fps, so it's
+        # restored here. A tiny tkinter canvas costs nothing to spin.)
+        breath = 0.05 * (0.5 + 0.5 * math.sin(self.angle * 1.7))
+        self.angle += 0.018 * self._mscale
+        self.spin += (0.018 + 0.020 * min(1.0, self.cur_level * 2.2)) * self._mscale
         level = max(self.cur_level, breath)
 
         accent, tip, bg = self.accent_rgb, self.tip_rgb, self.bg
@@ -769,18 +754,18 @@ class _RenderState:
             # Loud bars get a touch thicker -> the energy reads as "fatter".
             bw = max(2, int(self.size * (0.011 + 0.006 * min(1.0, amp))))
             ow = bw + max(2, int(self.size * 0.006))   # black outline, a bit wider
-            self._set_coords(self.bar_outline_items[i], x0, y0, x1, y1)
-            self._set_cfg(self.bar_outline_items[i], width=ow)
-            self._set_coords(self.bar_items[i], x0, y0, x1, y1)
-            self._set_cfg(self.bar_items[i], fill=col, width=bw)
+            c.coords(self.bar_outline_items[i], x0, y0, x1, y1)
+            c.itemconfigure(self.bar_outline_items[i], width=ow)
+            c.coords(self.bar_items[i], x0, y0, x1, y1)
+            c.itemconfigure(self.bar_items[i], fill=col, width=bw)
         # Pulsing core: snappier swell + a hotter centre that flashes toward
         # white as he speaks (the "arc reactor" pulse).
         cr = r0 * (0.60 + 0.58 * level)
         core_rgb = _lerp_rgb((40, 12, 16), accent, 0.30 + 0.70 * level)
         if level > 0.55:
             core_rgb = _lerp_rgb(core_rgb, (255, 236, 238), (level - 0.55) * 0.8)
-        self._set_coords(self.core, cx - cr, cy - cr, cx + cr, cy + cr)
-        self._set_cfg(self.core, fill=_rgb_to_hex(core_rgb))
+        c.coords(self.core, cx - cr, cy - cr, cx + cr, cy + cr)
+        c.itemconfigure(self.core, fill=_rgb_to_hex(core_rgb))
         # Glow rings expand with level. Fade from the DARK art_base (not the
         # chroma bg) -> accent, so on a green key background the rings never go
         # olive (un-keyable); only the empty canvas stays pure green.
@@ -792,8 +777,8 @@ class _RenderState:
             # (only pure-green empty canvas is keyed), so no olive bleed.
             shade = _lerp_color(self.accent_rgb, (255, 255, 255),
                                 max(0.0, level - 0.15 * k) * 0.6)
-            self._set_coords(item, cx - gr, cy - gr, cx + gr, cy + gr)
-            self._set_cfg(item, outline=shade)
+            c.coords(item, cx - gr, cy - gr, cx + gr, cy + gr)
+            c.itemconfigure(item, outline=shade)
 
         # ---- Nameplate: swap to the pre-rendered glow image for the current
         # speech level. Fast attack/decay -> a quick neon pulse (brighten fast,

@@ -170,8 +170,8 @@ push_to_talk:
   serial_port: "auto"        # legacy serial device: "auto" -> detect by USB id; or "COM5". Env: KENNING_PTT_SERIAL_PORT
   baud: 9600
   key: "6"                   # the in-game team-PTT key the device holds (match your bind + firmware)
-  lead_ms: 120               # hold the key this long BEFORE audio (open the channel; no clipped first phoneme)
-  release_tail_ms: 150       # keep holding this long AFTER the clip drains (game codec tail)
+  lead_ms: 200               # hold the key this long BEFORE audio (open the channel; never clip the first phoneme). Dead air = imperceptible.
+  release_tail_ms: 300       # keep holding this long AFTER the clip drains (device buffer + game codec tail; never clip the last phoneme). Dead air = imperceptible.
   heartbeat_ms: 50           # keep-alive cadence refreshing the firmware hardware deadman
   max_hold_seconds: 8.0      # host watchdog: force-release if a single hold runs longer than this
 
@@ -1846,7 +1846,7 @@ visualizer:
   enabled: true                # overlay ON for streaming (anticheat-safe: own window only)
   size: 300                  # window px (square)
   bars: 60                   # radial bars
-  fps: 30                    # redraw rate
+  fps: 60                    # redraw rate (60 = smooth spin + breathing)
   bg_color: "#00ff00"        # NEON GREEN chroma-key background -- add a Chroma Key (green) filter in OBS to drop it; the red art + dark nameplate stay
   accent_color: "#e5484d"    # Kenning crimson
   transparent: false         # solid bg (NOT Windows-transparent): OBS window capture renders it as green so you can color-key. (transparent=true shows BLACK in OBS, which won't key.)
@@ -1860,6 +1860,29 @@ visualizer:
   always_on_top: false         # false = BACKGROUND mode: sinks BEHIND your desktop windows (not distracting) while OBS WGC still captures it. Set true to float on top while positioning.
   nameplate_text: "ULTRON"   # stylized name plate below the waveform ("" = off)
   nameplate_font: "Bahnschrift"  # techy font (falls back if not installed)
+
+# ---------------------------------------------------------------------------
+# Stop button — tiny always-on-top, mouse-clickable kill switch.
+# ---------------------------------------------------------------------------
+# Clicking it fires the SAME all-channel cancel as voice "Ultron, stop", but
+# WITHOUT the wake-word watcher (which self-triggers on the monitor-speaker
+# loopback, so that watcher is held off). In-process tkinter, like the
+# visualizer overlay; a button click is an ordinary window message — NOT input
+# monitoring — so it adds nothing to the anticheat surface. Summon/dismiss by
+# voice: "show the stop button" / "hide the stop button".
+stop_button:
+  enabled: true                # allow the voice summon at all (master switch)
+  show_at_startup: false       # true = the window is up the moment Ultron boots
+  width: 120                   # window px (wide)
+  bar_height: 16               # black drag strip on top (grab to reposition)
+  button_height: 36            # the STOP button itself
+  bg_color: "#000000"          # fully black window + bar
+  accent_color: "#e5484d"      # Kenning crimson — button text + 1px border
+  button_fill: "#140709"       # near-black button face (brightens on hover/press)
+  always_on_top: true          # float over the (borderless-windowed) game
+  label: "STOP"
+  x: 60                        # initial top-left position on screen
+  y: 60
 
 # ---------------------------------------------------------------------------
 # Testing mode — mimics gaming/anticheat disabled-functionality on the GPU.

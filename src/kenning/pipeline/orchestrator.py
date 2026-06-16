@@ -1237,6 +1237,43 @@ class Orchestrator:
             logger.debug("push-to-talk init failed (%s); PTT disabled", e)
             self._ptt = None
 
+        # Tiny always-on-top, mouse-clickable "STOP" window. Clicking it fires
+        # the SAME all-channel cancel as voice "Ultron, stop" (_cancel_all_playback)
+        # but WITHOUT the wake-word watcher -- which self-triggers on the
+        # monitor-speaker loopback (hears Ultron's own audio as a wake word and
+        # barge-in-cancels every line), so that watcher is held off. In-process
+        # tkinter like the waveform overlay; a button click is an ordinary window
+        # message, NOT input monitoring, so it adds nothing to the anticheat
+        # surface. Summon/dismiss by voice; optionally auto-shown at boot.
+        # Lightweight (tkinter is imported lazily only when the window is built)
+        # and fully fail-open (no display / no Tk -> it just never appears).
+        self._stop_button = None
+        try:
+            from kenning.audio.stop_button import StopButtonOverlay
+            from kenning.config import get_config
+
+            _sb = get_config().stop_button
+            if getattr(_sb, "enabled", True):
+                self._stop_button = StopButtonOverlay(
+                    on_stop=self._cancel_all_playback,
+                    width=_sb.width,
+                    bar_height=_sb.bar_height,
+                    button_height=_sb.button_height,
+                    bg_color=_sb.bg_color,
+                    accent_color=_sb.accent_color,
+                    button_fill=_sb.button_fill,
+                    always_on_top=_sb.always_on_top,
+                    label=_sb.label,
+                    x=_sb.x,
+                    y=_sb.y,
+                )
+                if getattr(_sb, "show_at_startup", False):
+                    self._stop_button.show()
+                    logger.info("stop button shown at startup")
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("stop button init failed (%s); disabled", e)
+            self._stop_button = None
+
         # SOURCE-OF-TRUTH-AT-BOOT: discard any settings-panel overlay from the
         # previous session so this boot loads the PRISTINE config.yaml + code
         # defaults. This is what guarantees the lean-boot / gaming / anticheat /
@@ -1577,12 +1614,20 @@ class Orchestrator:
         # "keyboard"/"pydirectinput" are here too as a tripwire for the auto-PTT
         # path: PTT must assert keys via an EXTERNAL USB-HID device over serial,
         # so an in-process keypress lib loading is a regression to catch.
-        risky = [m for m in (
-            "pyautogui", "mss", "pyscreeze", "dxcam",
-            "pywinauto", "uiautomation", "pynput",
-            "keyboard", "pydirectinput",
-            "playwright", "browser_use", "selenium",
-        ) if m in _sys.modules]
+        # Derive the tripwire set DIRECTLY from the import-firewall blocklist so
+        # prevent == detect automatically -- any module the firewall refuses is
+        # also a sys.modules canary here, with no second hand-maintained list to
+        # drift (and the literal capture-lib names live only in the carved-out
+        # firewall module). Exclude the kenning.*/ultron.* package PREFIXES --
+        # those are checked separately as desktop_loaded / bridge_loaded below.
+        try:
+            from kenning.safety.import_firewall import blocked_module_names
+            _blocked = blocked_module_names()
+        except Exception:                                            # noqa: BLE001
+            _blocked = ()
+        risky = [m for m in _blocked
+                 if m in _sys.modules
+                 and not m.startswith(("kenning.", "ultron."))]
         desktop_loaded = "kenning.desktop" in _sys.modules
         bridge_loaded = [m for m in (
             "kenning.openclaw_bridge.browser", "kenning.openclaw_bridge.desktop",
@@ -1598,7 +1643,10 @@ class Orchestrator:
         poller_running = bool(poller is not None and getattr(poller, "running", False))
         if active and (risky or desktop_loaded or bridge_loaded
                        or poller_running or not firewall_ok):
-            logger.warning(
+            # ERROR (2026-06-15 audit): a posture regression while gaming is a
+            # safety-critical tripwire, not a soft warning -- make it unmissable
+            # in the boot log. Fail-open is preserved (we do not raise / abort).
+            logger.error(
                 "ANTICHEAT POSTURE CANARY: mode ACTIVE but footprint/posture "
                 "issue -- libs=%s kenning.desktop=%s bridge=%s poller=%s "
                 "import_firewall=%s. Calls are still hard-blocked, but "
@@ -1657,7 +1705,10 @@ class Orchestrator:
                          or getattr(self, "web_executor", None) is not None)):
                 leaked.append("web_search_chain")
             if heavy or leaked:
-                logger.warning(
+                # ERROR (2026-06-15 audit): a lean-boot regression means an
+                # anticheat-surface module entered RAM -- unmissable, not a soft
+                # warning. Fail-open preserved (logged, not raised).
+                logger.error(
                     "LEAN BOOT CANARY: gaming-startup boot but non-essential "
                     "modules/subsystems LOADED -- heavy=%s leaked=%s -- a "
                     "lean-boot gate regressed; these must never enter RAM while "
@@ -2746,6 +2797,38 @@ class Orchestrator:
         closed = close_gui(getattr(self, "_settings_gui_pid", None))
         self._settings_gui_pid = None
         self._speak("Closed." if closed else "The panel isn't open.")
+        return True
+
+    def _maybe_handle_stop_button(self, user_text: str) -> bool:
+        """Voice show/hide for the tiny clickable STOP window. "show the stop
+        button" raises it; "hide the stop button" tears it down. The window is
+        in-process (built lazily on first show) and its button fires the same
+        all-channel cancel as voice "Ultron, stop" -- but via a mouse click, so
+        it never re-introduces the loopback-self-triggering wake watcher. Strict
+        matcher -> ordinary sentences fall through. Fail-open."""
+        try:
+            from kenning.audio.stop_button import match_stop_button_command
+
+            action = match_stop_button_command(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("stop button matcher unavailable: %s", e)
+            return False
+        if action is None:
+            return False
+        sb = getattr(self, "_stop_button", None)
+        if sb is None:
+            self._speak("The stop button isn't available.")
+            return True
+        try:
+            if action == "open":
+                sb.show()
+                self._speak("Stop button is up.")
+            else:
+                sb.hide()
+                self._speak("Hidden.")
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("stop button show/hide failed: %s", e)
+            self._speak("I couldn't move the stop button.")
         return True
 
     def _reclaim_idle_vram(self) -> None:
@@ -5139,6 +5222,15 @@ class Orchestrator:
                 self._settings_gui_pid = None
             except Exception as e:                                  # noqa: BLE001
                 logger.debug("settings panel close on shutdown failed: %s", e)
+        # Tear down the tiny STOP window so its Tk thread exits cleanly with the
+        # process (otherwise the daemon thread is reaped abruptly at exit).
+        _sb = getattr(self, "_stop_button", None)
+        if _sb is not None:
+            try:
+                _sb.close()
+            except Exception as e:                                  # noqa: BLE001
+                logger.debug("stop button close on shutdown failed: %s", e)
+
         # Release + close the push-to-talk link so the team-mic key can never be
         # left held after Ultron exits (the hardware deadman also releases it).
         _ptt = getattr(self, "_ptt", None)
@@ -5828,6 +5920,25 @@ class Orchestrator:
                             follow_up=bool(follow_up_until),
                         )
                         continue
+                    # Stop button: "show the stop button" raises the tiny
+                    # always-on-top clickable kill switch; "hide the stop
+                    # button" tears it down. Strict matcher -> ordinary
+                    # utterances fall through.
+                    if self._maybe_handle_stop_button(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        if _addr_cfg.follow_up_enabled:
+                            follow_up_until = (
+                                self._last_response_finished_monotonic
+                                + _addr_cfg.warm_mode_duration_seconds
+                            )
+                        else:
+                            follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="stop_button",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
                     # Catalog 12 (felo-search T3): intercept an explicit
                     # "research X in depth" / "deep dive on X" request and
                     # run a bounded DeepResearchLoop, then synthesize +
@@ -6023,6 +6134,28 @@ class Orchestrator:
                         )
                         continue
 
+                # LEAN GAMING BOOT: the stop-button voice command ("show / hide
+                # the stop button") lives in the skipped coding_voice block too;
+                # run it here so the clickable kill switch is summonable during a
+                # barebones gaming session. The window is in-process tkinter (no
+                # coding/openclaw imports) and its button fires _cancel_all_playback
+                # -- anticheat-safe (an ordinary window message, not input
+                # monitoring) and loopback-immune (no wake watcher).
+                if self.coding_voice is None:
+                    if self._maybe_handle_stop_button(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        follow_up_until = (
+                            self._last_response_finished_monotonic
+                            + _addr_cfg.warm_mode_duration_seconds
+                            if _addr_cfg.follow_up_enabled else None
+                        )
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="stop_button-lean",
+                            follow_up=bool(follow_up_until),
+                        )
+                        continue
+
                 # LEAN GAMING BOOT: the exact Spotify matcher above lives INSIDE
                 # the coding_voice block, which the lean boot skips -- so music
                 # commands would fall to the router (abstain) and the LLM would
@@ -6111,13 +6244,33 @@ class Orchestrator:
                             # 2026-06-15 routing-isolation: a BARE identity probe
                             # ("who are you", "are you a bot") is the user talking
                             # TO Ultron, not a team intro -- do NOT broadcast it to
-                            # the mic. Let it fall through to the conversational
-                            # path, which now answers in the Ultron persona on the
-                            # DESKTOP output only. (Explicit team intros -- "greet
-                            # my team" / "tell them who you are" -- are matched by
-                            # the deterministic relay sibling above and DO hit the
-                            # mic.)
+                            # the mic; answer on the DESKTOP. (Explicit team intros
+                            # -- "greet my team" / "tell them who you are" -- are
+                            # matched by the deterministic relay sibling above and
+                            # DO hit the mic.)
+                            # A CATEGORY probe (are you a bot / soundboard /
+                            # streamer / a real person / who's controlling you / a
+                            # voice changer / a recording) gets a DISTINCT curated
+                            # answer from the matching ~30-line pool, spoken on the
+                            # desktop. Generic "who/what are you" falls through to
+                            # the persona LLM. Fail-open to the LLM path.
                             _router_consumed = False
+                            try:
+                                from kenning.audio._ultron_identity import (
+                                    IDENTITY_POOLS, classify_identity_question,
+                                )
+                                from kenning.audio.relay_speech import (
+                                    _is_identity_question, pick_line,
+                                )
+                                if _is_identity_question(user_text):
+                                    _cat = classify_identity_question(user_text)
+                                    _pool = (IDENTITY_POOLS.get(_cat)
+                                             if _cat else None)
+                                    if _pool:
+                                        self._speak(pick_line(_pool))
+                                        _router_consumed = True
+                            except Exception as e:                   # noqa: BLE001
+                                logger.debug("identity-pool answer skipped: %s", e)
                         elif not _rd.abstained and _rd.family == "desktop_refuse":
                             # A desktop / automation request the capability
                             # classifier missed. While a protected game is

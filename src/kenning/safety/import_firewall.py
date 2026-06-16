@@ -40,6 +40,14 @@ _BLOCK_PREFIXES = (
     "kenning.desktop",
     "kenning.openclaw_bridge.browser",
     "kenning.openclaw_bridge.desktop",
+    # 2026-06-15 audit: src/ultron/ is a STALE pre-rename mirror of kenning,
+    # never imported by the runtime, but its desktop/browser submodules exist on
+    # disk. Block them too so a stray/accidental import can never load the stale
+    # automation code while gaming. (Its dangerous deps -- pyautogui/mss/etc --
+    # are already blocked by exact name regardless of importer; this is belt-2.)
+    "ultron.desktop",
+    "ultron.openclaw_bridge.browser",
+    "ultron.openclaw_bridge.desktop",
     "playwright",
     "browser_use",
     "selenium",
@@ -55,6 +63,14 @@ _BLOCK_EXACT = frozenset({
     "mss",
     "dxcam",
     "PIL.ImageGrab",
+    # 2026-06-15 audit hardening: input-simulation / global-hook / capture libs
+    # that the canary already watches for but the firewall previously did NOT
+    # refuse at the loader. None are used by any allowed module, so blocking them
+    # is pure defense-in-depth (keeps prevent and detect symmetric).
+    "keyboard",       # global low-level keyboard hook (SetWindowsHookEx)
+    "mouse",          # global low-level mouse hook
+    "pydirectinput",  # SendInput wrapper (DirectInput scancodes)
+    "d3dshot",        # DXGI desktop-duplication screen capture
 })
 
 

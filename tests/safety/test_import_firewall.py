@@ -25,7 +25,11 @@ DANGEROUS = [
     "pyautogui",
     "mss",
     "dxcam",
+    "d3dshot",
     "PIL.ImageGrab",
+    "keyboard",
+    "mouse",
+    "pydirectinput",
     "playwright",
     "playwright.sync_api",
     "browser_use",
@@ -34,6 +38,10 @@ DANGEROUS = [
     "pynput",
     "pyscreeze",
     "uiautomation",
+    # 2026-06-15 audit: the stale src/ultron mirror's desktop/browser submodules.
+    "ultron.desktop",
+    "ultron.desktop.input_control",
+    "ultron.openclaw_bridge.browser",
 ]
 
 BENIGN = [

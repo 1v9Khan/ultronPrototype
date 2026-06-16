@@ -71,6 +71,67 @@ def _strip_leading_junk(s: str) -> str:
     return out if out else s
 
 
+# STT mis-hears the verbatim verb "repeat" as "Pete"/"Heat"/"repeete" when it
+# leads a soundboard relay ("repeat to my team X" -> "Pete to my team X" /
+# "Heat to the team X"). Restore it ONLY when followed by "to"/"after" + an
+# addressee, so a literal name "Pete" or the word "heat" is never rewritten.
+_REPEAT_MISHEAR = re.compile(
+    r"^(\s*)(?:pete|peat|heat|repeet|repete|reet|repeate)\b"
+    r"(?=\s+(?:to|after)\b)",
+    re.IGNORECASE,
+)
+
+# "tell my team word for word X" / "tell the team verbatim X" -- the verbatim
+# marker rides AFTER the addressee. Rewrite to the canonical "say exactly to my
+# team X" so the soundboard/verbatim matcher relays X EXACTLY (no flavor tail).
+_WORD_FOR_WORD = re.compile(
+    r"^\s*(?:tell|say|relay)\s+(?:to\s+)?(?:my\s+|our\s+|the\s+)?"
+    r"(?:team|teammates?|squad|guys|boys|mates|crew)\s+"
+    r"(?:to\s+(?:say|repeat)\s+)?(?:word\s+for\s+word|verbatim|exactly)\b"
+    r"\s*[:,]?\s*(.+)$",
+    re.IGNORECASE,
+)
+
+# A reported QUESTION ("Jett asked about Tony Stark", "my teammate is wondering
+# if you're a bot", "Reyna asked how far the moon is") must NOT be Valorant-vocab
+# corrected (it mangled "Iron Man" -> "Iron main") and must NOT get a "tell my
+# team" callout lead -- it routes to Ultron's in-character ANSWER path. Anchored
+# to the start (subject + reported verb + question word) so a tactical callout
+# that merely contains "asked" is never gated.
+_REPORTED_QUESTION_GATE = re.compile(
+    r"^\s*(?:my\s+|our\s+|the\s+)?\w+(?:\s+\w+)?\s+"
+    r"(?:just\s+|is\s+|are\s+|was\s+|has\s+|been\s+)?"
+    r"(?:asked|asking|asks|wondering|wonders|wondered|curious"
+    r"|wants\s+to\s+know|wanted\s+to\s+know)\s+"
+    r"(?:you\s+|me\s+|us\s+|the\s+team\s+)?"
+    r"(?:about|if|whether|why|how|what|where|when|who|which)\b",
+    re.IGNORECASE,
+)
+
+# Possessive on the team addressee ("my team's X", "tell the squad's X"): the
+# trailing "'s" breaks the relay lead-strip (it relayed "Tell my team's Cypher
+# cage on A" verbatim). Drop it so the addressee is the plain "my team".
+_TEAM_POSSESSIVE = re.compile(
+    r"\b((?:my|our|the)\s+(?:team|teammates?|squad))'s\b",
+    re.IGNORECASE,
+)
+
+
+# A BARE greeting that is the WHOLE utterance ("hello", "hey there", "yo
+# Ultron"). It MUST be left verbatim: it is not a callout, and the aggressive
+# Valorant vocab correction would otherwise snap "hello" onto the callout
+# location "hell" (identical Metaphone code) and then relay-recover it into
+# "tell my team hell" -- so a plain greeting was being broadcast to the team as
+# garbage ("No hell."). Anchored to the END so a real callout that merely OPENS
+# with a greeting ("hey, two on B") is never gated.
+_BARE_GREETING = re.compile(
+    r"^\s*(?:hello+|hi+|hiya|heya|hey+|yo+|sup|wassup|what'?s\s+up|howdy|"
+    r"greetings|good\s+(?:morning|afternoon|evening))"
+    r"(?:[\s,]+(?:there|ultron|everyone|team|guys|all|y'?all))?\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
+
 # ---------------------------------------------------------------------------
 # 2. Relay-lead recovery (the dropped-"tell" fix).
 # ---------------------------------------------------------------------------
@@ -80,6 +141,22 @@ _HAS_RELAY_LEAD = re.compile(
     r"repeat|echo|yell|shout|announce|broadcast|call\s+out|encourage|hype|"
     r"roast|flame|give|share|drop|"
     r"criticize|criticise|critique|rip\s+into|tear\s+into|chew\s+out)\b",
+    re.IGNORECASE,
+)
+
+# "I want my team to X" / "I need the squad to X" / "I wanna tell my team X" --
+# the streamer states the intent to relay with the addressee EMBEDDED in the
+# middle. Without this, recover_relay_lead prepends a SECOND "tell my team" to
+# the whole thing ("tell my team I want my team to rotate to B"), and the relay
+# rephraser then compressed the doubled lead away ALONG WITH the real payload
+# ("Rotate." -- the site was lost). Extract the directive X so the line is just
+# "tell my team X".
+_WANT_TEAM = re.compile(
+    r"^\s*i\s+(?:just\s+)?(?:want|need|wanna|gotta|would\s+like|wish)"
+    r"(?:\s+to)?(?:\s+(?:tell|say|let|warn|remind|inform))?\s+"
+    r"(?:for\s+)?(?:my\s+|our\s+|the\s+)?"
+    r"(?:team|teammates?|squad|boys|guys|mates|crew|everyone|everybody)\b"
+    r"(?:\s+know)?[\s,:]*(.+)$",
     re.IGNORECASE,
 )
 
@@ -251,6 +328,13 @@ def recover_relay_lead(text: str) -> str:
         # matcher AUTHORS an in-character Ultron answer. Do NOT prepend
         # "tell my team" (that would relay the QUESTION literally).
         return text
+    # "I want my team to X" -> "tell my team X" (extract the directive so the
+    # embedded addressee isn't doubled and the payload isn't lost).
+    mw = _WANT_TEAM.match(s)
+    if mw:
+        rest = mw.group(1).strip()
+        if rest:
+            return "tell my team " + rest
     # Trailing relay command ("Viper wall is up, tell my team.") -> strip the
     # tail and prepend the canonical lead so the payload isn't duplicated.
     mt = _TRAILING_RELAY_TAIL.search(s)
@@ -288,14 +372,31 @@ def normalize_command(text: str) -> str:
     way that changes routing)."""
     if not text or not text.strip():
         return text
-    s = _strip_leading_junk(text.strip())
+    raw = text.strip()
+    # A bare greeting is left VERBATIM -- never corrected (so "hello" can't snap
+    # to the location "hell") and never relay-recovered. Checked on the RAW text
+    # BEFORE leading-junk stripping, since "hey" is also a filler word that the
+    # strip would otherwise consume ("hey there" -> "there"). It routes as a
+    # greeting / conversational line, not a team callout.
+    if _BARE_GREETING.match(raw):
+        return raw
+    s = _strip_leading_junk(raw)
+    # Repair a mis-heard verbatim verb + drop a team-addressee possessive BEFORE
+    # routing, so "Pete to my team X" relays X verbatim and "my team's X" strips
+    # its lead cleanly.
+    s = _REPEAT_MISHEAR.sub(r"\1repeat", s, count=1)
+    s = _TEAM_POSSESSIVE.sub(r"\1", s)
+    _wfw = _WORD_FOR_WORD.match(s)
+    if _wfw and _wfw.group(1).strip():
+        s = "say exactly to my team " + _wfw.group(1).strip()
     # ZERO-MISTAKES GATE: conversational / Spotify / identity / desktop commands
     # are left VERBATIM -- the aggressive Valorant vocab correction (phonetic +
     # fuzzy) runs ONLY on callout-bound text, so a question or a song title is
     # never corrupted into agent names. Everything that ISN'T clearly one of
     # those routes is treated as a team callout (the primary wake-addressed use)
     # and gets corrected + lead-recovered.
-    if _NOT_A_CALLOUT.match(s) or _SPOTIFY_SIGNAL.search(s):
+    if (_NOT_A_CALLOUT.match(s) or _SPOTIFY_SIGNAL.search(s)
+            or _REPORTED_QUESTION_GATE.match(s)):
         return s
     s = correct_callout_stt(s)
     s = recover_relay_lead(s)

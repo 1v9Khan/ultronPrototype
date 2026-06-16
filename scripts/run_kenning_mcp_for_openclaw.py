@@ -44,6 +44,33 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / "src"))
 
 
+def _refuse_if_gaming() -> bool:
+    """True (caller should exit) when Ultron's anticheat-safe / gaming mode is
+    active.
+
+    This MCP server is spawned EXTERNALLY by OpenClaw, once per agent-run that
+    needs a Kenning tool -- it is NOT part of Ultron's lean gaming boot. But a
+    Kenning-labeled Python process appearing (and sub-spawning maintenance
+    workers) DURING a kernel-anticheat match is exactly the process footprint
+    the user requires absent. So we hard-refuse to start whenever anticheat-safe
+    mode is active (the config pin is permanently on for this rig, so in
+    practice the OpenClaw<->Kenning bridge is simply unavailable while the
+    anticheat posture is engaged -- a deliberate safety trade). FAIL-CLOSED: if
+    we cannot determine the state, refuse -- the hard rule is that nothing
+    unverified runs while gaming.
+    """
+    try:
+        from kenning.safety.anticheat import anticheat_active
+
+        return bool(anticheat_active())
+    except Exception as e:  # noqa: BLE001 - fail-closed on any uncertainty
+        sys.stderr.write(
+            f"kenning-mcp: could not verify anticheat state ({e}); refusing to "
+            f"start (fail-closed).\n"
+        )
+        return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -58,6 +85,18 @@ def main() -> int:
         help="Print registered tool names + descriptions and exit.",
     )
     args = parser.parse_args()
+
+    # Anticheat hygiene: while the user is in a kernel-anticheat game, refuse to
+    # come up AT ALL -- exit BEFORE importing the tool modules, so not even this
+    # process's imports touch RAM during a match. (--list-tools is a deliberate
+    # registration/introspection action, exempt.)
+    if not args.list_tools and _refuse_if_gaming():
+        sys.stderr.write(
+            "kenning-mcp: anticheat / gaming mode is active -- refusing to start "
+            "the OpenClaw MCP server (nothing OpenClaw-related runs while in a "
+            "match). Disable gaming_mode.anticheat_safe_mode to use it.\n"
+        )
+        return 0
 
     from kenning.openclaw_bridge.mcp_tools import build_server, run_stdio
 

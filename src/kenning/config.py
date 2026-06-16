@@ -3007,7 +3007,13 @@ class GamingModeConfig(_Strict):
     plugins installed and want the voice trigger active.
     """
 
-    enabled: bool = False
+    # SAFE-BY-DEFAULT (2026-06-15 anticheat audit): defaults to True so the
+    # gaming-mode manager is active and ``engage_at_startup`` can fire even if
+    # config.yaml is ever lost/reset. The user runs Ultron exclusively alongside
+    # a kernel-anticheat game, so gaming mode is the intended default posture;
+    # the manager itself loads nothing unsafe (it only swaps LLM/TTS to CPU and
+    # gates the desktop stack). Set false only for a non-gaming deployment.
+    enabled: bool = True
     # 2026-06-11 anticheat-safe mode -- a process-wide hard block on
     # EVERY desktop-interaction surface (input injection, screen
     # capture, pixel/template reads, OCR, UIA, clipboard, dialog /
@@ -3031,7 +3037,12 @@ class GamingModeConfig(_Strict):
     # Kokoro TTS->CPU, Parakeet stopped, VLM unloaded) so Kenning boots straight
     # into the bare-bones, minimal-GPU profile -- no need to say "gaming mode"
     # each session. Pairs with anticheat_safe_mode for a fully gaming-safe boot.
-    engage_at_startup: bool = False
+    # SAFE-BY-DEFAULT (2026-06-15 anticheat audit): defaults to True so a fresh
+    # boot -- even with config.yaml lost/reset -- comes up in the LEAN gaming
+    # profile (the barebones_* skips are gated on this), not the heavy desktop/
+    # coding/openclaw profile. Combined with anticheat_safe_mode=True, first boot
+    # is the locked-down, minimal-surface state with zero settings flipped.
+    engage_at_startup: bool = True
     # 2026-06-12: when gaming mode is active, skip per-turn RAG memory retrieval,
     # the cross-encoder reranker, and the web-search preflight + executor. These
     # are pure GPU/compute savers for a bare-bones speak+relay session; the team
@@ -3765,13 +3776,38 @@ class VisualizerConfig(_Strict):
     enabled: bool = False
     size: int = Field(default=300, ge=120, le=1080)
     bars: int = Field(default=60, ge=8, le=180)
-    fps: int = Field(default=30, ge=10, le=60)
+    fps: int = Field(default=60, ge=10, le=60)   # 60 = smooth spin + breathing
     bg_color: str = "#0b0b10"          # chroma key (keyed out when transparent)
     accent_color: str = "#e5484d"      # Kenning crimson
     transparent: bool = True           # Windows: key out bg_color for an overlay
     always_on_top: bool = True
     nameplate_text: str = "ULTRON"     # stylized plate below the waveform; "" = off
     nameplate_font: str = "Bahnschrift"  # techy face; falls back if unavailable
+
+
+class StopButtonConfig(_Strict):
+    """Tiny always-on-top, mouse-clickable "STOP" window.
+
+    A loopback-immune kill switch: clicking it fires the SAME all-channel cancel
+    as voice "Ultron, stop", but WITHOUT the wake-word watcher (which
+    self-triggers on the monitor-speaker loopback, so that watcher is held off).
+    In-process tkinter (like the waveform overlay); summon/dismiss by voice
+    ("show the stop button" / "hide the stop button"). A button click is an
+    ordinary window message -- NOT input monitoring -- so it adds nothing to the
+    anticheat surface. Fail-open: no display / no Tk -> the window never appears
+    and the voice path is untouched. See kenning/audio/stop_button.py."""
+    enabled: bool = True               # master: allow the voice summon at all
+    show_at_startup: bool = False      # auto-show the window at boot
+    width: int = Field(default=120, ge=72, le=480)
+    bar_height: int = Field(default=16, ge=0, le=80)      # black drag strip
+    button_height: int = Field(default=36, ge=20, le=200)
+    bg_color: str = "#000000"          # fully black window + bar
+    accent_color: str = "#e5484d"      # Kenning crimson (button text + border)
+    button_fill: str = "#140709"       # near-black button face
+    always_on_top: bool = True
+    label: str = "STOP"
+    x: int = Field(default=60, ge=0, le=10000)   # initial top-left position
+    y: int = Field(default=60, ge=0, le=10000)
 
 
 class TestingModeConfig(_Strict):
@@ -3860,11 +3896,15 @@ class PushToTalkConfig(_Strict):
     # bind + the firmware KEY to match.
     key: str = "v"
     # Pre-roll: hold the key this long BEFORE the first audio sample so the
-    # game's transmit channel is open and the first phoneme isn't clipped.
-    lead_ms: int = Field(default=120, ge=0, le=1000)
-    # Keep holding this long AFTER the clip drains (the reverb tail is already in
-    # the buffer; this covers the game's own transmit/codec tail).
-    release_tail_ms: int = Field(default=150, ge=0, le=2000)
+    # game's transmit channel is FULLY open before Ultron starts -- a generous
+    # margin so the first phoneme is NEVER clipped. This is dead air on the mic
+    # (no voice yet), so teammates perceive nothing; only over-clipping matters.
+    lead_ms: int = Field(default=200, ge=0, le=1000)
+    # Keep holding this long AFTER the clip drains -- covers the device's own
+    # buffer drain + the game's transmit/codec tail so the LAST phoneme is never
+    # clipped. Also dead air (silence on an open mic), so it is imperceptible;
+    # only under-holding (a cut-off word) is a real problem.
+    release_tail_ms: int = Field(default=300, ge=0, le=2000)
     # Keep-alive cadence: while held, the host sends a heartbeat byte this often
     # to refresh the firmware's hardware deadman. Must be well under the firmware
     # deadman window (recommend firmware deadman ~= 3-4x this).
@@ -3922,6 +3962,9 @@ class KenningConfig(_Strict):
     semantic_router: SemanticRouterConfig = Field(default_factory=SemanticRouterConfig)
     # Voice waveform overlay window for OBS window-capture (off by default).
     visualizer: VisualizerConfig = Field(default_factory=VisualizerConfig)
+    # Tiny always-on-top, mouse-clickable STOP window -- a loopback-immune
+    # alternative to voice "Ultron, stop". Summon/dismiss by voice.
+    stop_button: StopButtonConfig = Field(default_factory=StopButtonConfig)
     # Testing mode -- mimics gaming/anticheat disabled-functionality (RAG/web/
     # desktop off) on the GPU for fast corpus testing. OFF by default.
     testing_mode: TestingModeConfig = Field(default_factory=TestingModeConfig)

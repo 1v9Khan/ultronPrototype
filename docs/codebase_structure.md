@@ -1705,6 +1705,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-06-15 | (this session) | **Movie-Ultron identity/relay polish + anticheat audit hardening.** Relay/TTS: NEW `audio/_ultron_identity.py` — 7 categorized in-character identity-answer pools (~30 lines each: bot / soundboard / streamer / real-person / puppet / voice-changer / recording) + `classify_identity_question`; relay_speech now routes "X asked about/if Y" (`_match_reported_question`) to an in-character ANSWER even without an explicit "respond", picks identity answers from the category pools, and `_is_identity_question` is broadened (who's-controlling-you / strings / off-switch / pre-recorded). Curated `DEFAULT_CRITICIZE_LINES` replaces the 3B for "criticize `<agent>`". Verbatim family widened ("word for word", `Pete`/`Heat`→repeat, `my team's` stripping). `_stt_correct`: `silver`→Sova, drop "hey-agent"→"Hellagent" blend, protect count words from→"tree". `_join_tail` + a period-length kokoro inter-sentence gap (`KENNING_TTS_SENTENCE_PAUSE_MS`) stop the callout slurring into its flavor tail. "JARVIS"→"Jarvis" (text_hygiene). Fixed a `/no_think` marker leak (`.lower()` on a `Path` raised + was swallowed → marker appended to the llama gaming model, which parroted "no_think"; fixed via `str()`). PTT buffers widened (`lead_ms` 120→200, `release_tail_ms` 150→300). Waveform spin-freeze/change-detection reverted (continuous 60fps spin). NEW `audio/stop_button.py` — a loopback-immune click kill-switch (in-process tkinter STOP window firing `_cancel_all_playback`; `StopButtonConfig`). Anticheat: import-firewall blocklist expanded (`keyboard`/`mouse`/`pydirectinput`/`d3dshot` + stale `ultron.*` mirror prefixes), firewall installed in `__main__` BEFORE the Orchestrator constructs, `GamingModeConfig.enabled`/`engage_at_startup` defaults flipped True (safe-by-default), the posture canary now derives its tripwire from `blocked_module_names()` and both canaries log at ERROR, the OpenClaw MCP runner hard-refuses under anticheat, and the dead `BlockInput` helper refuses while anticheat is active. | (uncommitted) | (this session) |
 | 2026-06-15 | `3447cdb` | **Lean-by-default gaming boot + bulletproof lifecycle** (commits `26d502d`, `3447cdb`). Gaming boots initialize+import ONLY relay+Spotify+core-voice (worker RSS is noisy ~3.5-6 GB so no fixed delta; the clear win is eliminating the ~4-5 GB 4B-on-GPU VRAM boot transient), proven by a `_audit_anticheat_posture` "lean boot OK" sys.modules assertion (canary logs loud WARNING on regression). `coding/` and `openclaw_bridge/` package `__init__` made PEP-562 lazy so importing the package no longer eager-loads heavy submodules. NEW `subprocess/sidecar_lock.py`: pidfile+orphan-sweep (`sweep()` with `reuse`/`killed`/`killed-zombie`/`killed-unknown`/`spawn` verdicts) makes the embedder a singleton and reaps `taskkill /F` orphans at next boot. SIGTERM+atexit+`kill_process_tree` clean shutdown (was SIGINT-only). `AuditLog.repair_if_needed()` self-heals fsync-torn-tail corruption at boot (archives rather than deletes). Never-lexical router: boot respawns+rebuilds if lexical (ERROR), idle `_maybe_recover_embedding()` via `try_recover()`. Direct 3B-CPU LLM load avoids the 4B-on-GPU boot transient. New `barebones_*` flags in `GamingModeConfig` (all default True). `SemanticRouterConfig` gains `sidecar_orphan_sweep_enabled` + `sidecar_pidfile_path`. 903 safety/audio + 906 coding tests green; live boot verified. | 906 | (this session) |
 | 2026-06-15 | `e3df7d3` | **Semantic command router + embeddinggemma sidecar + turbo STT + anticheat import firewall** (commit e3df7d3). Added an additive similarity-based router beneath the exact matchers (command_router/_router_backends/_command_exemplars) with a hybrid lexical+embedding backend and an OOS abstention gate to the LLM; the embedding model (google/embeddinggemma-300m) runs in an isolated-venv loopback sidecar (scripts/embedder_server.py) so no heavy dep enters the anticheat-pinned main process. Added a pre-routing STT normalizer (command_normalizer + expanded _stt_correct), swapped STT to faster-whisper large-v3-turbo on CUDA with a hallucination filter, added a loader-level anticheat import firewall (safety/import_firewall), a gaming capability-refusal gate, and overlay GPU optimizations. 903 audio+safety tests green; a 6-facet Sonnet audit confirmed no regression. | 903 | (this session) |
 | 2026-06-12 | `2a2a871` | **Wake word SHIPPED + relay 29-agent roster** (supersedes the "wake-word NOT deployed" note in the rename row below). Commits `58120cf` (fallback + dropdown), `c76b597` (agents + harness), `2a2a871` (model + threshold), pushed. **Wake word now LIVE = "kenning"**: `models/openwakeword/kenning.onnx` deployed (v8 from an 11-candidate sweep v1-v11, gitignored like all weights; ~88% recall @ ~1.6% adversarial FAR on synth clips via the runtime frame path). "kenning" is acoustically confusable (kennel/canning/kenneth) so it can't match ultron's 100% at that FAR; v8 (layer 32, 50k steps, recall-favorable auto-tune targets) beat every layer-64 / higher-neg-weight variant. **Fallback is `ultron`, NEVER hey_jarvis** -- `WakeWordDetector._load_model` is now PATH-based (loads the side-by-side custom `ultron.onnx`; a pretrained word only if neither custom ONNX exists). NEW `reload_for_word()` hot-swaps the live model; settings-panel "Wake word" dropdown (kenning/ultron) fires the `wake_word` gui_action. Threshold 0.40 (config + .env, recall-favoring; ultron ~100% there too). `config.py` `WakeWordConfig.fallback_model` default `hey_jarvis` -> `ultron`. **Relay**: `DEFAULT_ADDRESSEE_NAMES` now the full 29-agent VALORANT roster (+ Miks, Veto) + STT homophones (cipher->Cypher, gecko->Gekko, mix->Miks, way lay->Waylay) via `_NAME_CANON`; rephrase prompt lists the roster so the LLM treats the newest agents as teammates. NEW `scripts/relay_test/` (547-command corpus + staged full-pipeline harness: matcher -> rephrase -> audio blip analysis -> ASR-reconstruction-vs-intended -> spoken->STT). NEW `training/compare_wake_models.py` (recall/FAR threshold-sweep tool, auto-discovers `kenning_v*.onnx`). Cleanup: ~2.3 GB of regenerable train clips/features + redundant candidate onnx deleted (test clips + the 17 GB ACAV100M corpus KEPT for retraining). **Sweep 9818 / 39 / 0, ~151 s** + `validate_config` clean. | 9818 | (this session) |
@@ -3382,7 +3383,10 @@ TOP of `KokoroSpeech._synthesize` (microseconds; an empty result
 returns a zero clip the playback paths skip), so every spoken surface
 — responses, acks, the team relay — is covered for ANY active model.
 Born from live incidents on the 3B gaming preset: a stage direction
-and a parroted "/no_think" were spoken out loud. Tests:
+and a parroted "/no_think" were spoken out loud. **2026-06-15:** a
+pronunciation pass also normalizes "JARVIS" / "J.A.R.V.I.S" (any
+all-caps or dotted form) → "Jarvis" so the Marvel name is spoken as a
+word, not spelled out letter-by-letter. Tests:
 `tests/tts/test_text_hygiene.py` (verbatim incident shapes + a
 no-model-load short-circuit check).
 
@@ -3454,6 +3458,13 @@ conversational + Spotify text OUT of correction so there is ZERO
 over-correction. The orchestrator logs BOTH the raw STT and the
 normalized text (tlog `routing:normalized`). 2026-06-15 test-drive
 fixes: additional over-correction guards and a phonetic-snap logic fix.
+**Verbatim relay family expansion (2026-06-15):** `_WORD_FOR_WORD` rewrites
+"tell my team word for word X" / "tell the team verbatim X" into the verbatim
+relay form; STT mis-hears of the verbatim verb "repeat" as "Pete"/"Heat"
+(leading a soundboard relay) are restored to "repeat" ONLY when followed by
+"to"/"after" + an addressee (so a literal name "Pete" or the word "heat" is
+never rewritten); and a possessive on the team addressee ("my team's X",
+"the squad's X") has its trailing "'s" stripped so the relay lead-strip works.
 
 #### `audio/_stt_correct.py` (EXPANDED 2026-06-15 — Valorant gazetteer + phonetic snap)
 
@@ -3464,7 +3475,12 @@ Jaro-Winkler >= 0.88, or fuzzy >= 0.92) snaps a mis-heard token to the
 nearest gazetteer term; `_PHRASE_MISHEARS` repairs word-blends
 ("ray zombie" -> "Raze on B", "arsova" -> "our Sova", "be main" -> "B
 main"). Context-aware rules disambiguate words that are also English.
-Risky 1:1 maps removed to avoid over-correction.
+Risky 1:1 maps removed to avoid over-correction. **2026-06-15 additions:**
+`silver`→Sova; a "hey `<agent>`" greeting mis-blended into "Hell`<agent>`"
+("hey Sage"→"Hellsage", "hey Jett"→"Helljet") is dropped; and count words
+(three/four/five/six/won) are protected from corruption to the location
+"tree" — the `tree`→`three` repair is gated to a following push/site token so
+the real location "tree" ("split through tree") and "we won" stay safe.
 
 #### `audio/command_router.py` (NEW 2026-06-15 — semantic command router)
 
@@ -3501,6 +3517,42 @@ spotify, identity, desktop_refuse, and conversational (the abstention anchor).
 the router dispatches to a handler); `ABSTAIN_FAMILIES = {conversational}`.
 Spotify is intentionally NOT deterministic (its exact matcher runs first; its
 exemplars exist only so a music command never mis-routes to a callout).
+
+#### `audio/_ultron_identity.py` (NEW 2026-06-15 — categorized identity-answer pools)
+
+Pure data + classifier for "what are you?" teammate questions. Seven curated
+in-character Ultron answer pools (~30 lines each), one per category:
+`bot` (AI/robot/chatbot/algorithm), `soundboard` (canned clips/voiceboard),
+`streamer` (streaming/stream), `human` (real person/are you real), `puppet`
+(strings/who's controlling you/off-switch/someone behind you), `voice_changer`
+(changing your voice), and `recording` (recorded/playback/pre-recorded/on a
+tape). Exposed via `IDENTITY_POOLS` (the category→pool dict).
+`classify_identity_question(text) -> Optional[str]` detects WHICH category a
+question is about (most-specific category wins; bare "machine" is deliberately
+excluded as too ambiguous in a tactical callout). The CALLER first confirms the
+text is actually an identity question (so a callout merely containing "stream"
+or "machine" never misroutes), then uses the category to pick from the matching
+pool. This module holds NO picking/LRU logic — the picking + anti-repeat LRU
+lives in `relay_speech` (`pick_line` / `_pick_lru`). The effect: a teammate
+asking "are you a bot / a soundboard / a streamer / a real person / …" gets a
+DISTINCT varied in-character answer instead of one generic identity line.
+
+#### `audio/stop_button.py` (NEW 2026-06-15 — loopback-immune click kill-switch)
+
+A tiny in-process, always-on-top, fully-black, mouse-clickable **STOP** window.
+`class StopButtonOverlay` (in-process tkinter, like the waveform overlay — never
+imports the desktop automation stack) renders a small draggable bar + a STOP
+button; clicking it fires the orchestrator's `_cancel_all_playback()` — the SAME
+all-channel cancel (conversational TTS + relay B1 + OBS B3 + monitor mirror) as
+voice "Ultron, stop", but WITHOUT the wake-word watcher (which self-triggers on
+the monitor-speaker loopback, so the click path is the loopback-immune way to
+stop). A button click is an ordinary window message to its OWN window — NOT input
+monitoring/hooking — so it adds nothing to the anticheat surface.
+`match_stop_button_command(text) -> Optional[str]` is the voice matcher
+("show/hide the stop button"); summon/dismiss by voice. Fail-open: no display /
+no Tk → the window never appears and the voice path is untouched. Configured by
+`StopButtonConfig` in `config.py` (`enabled`, `show_at_startup`, geometry +
+colours) / the `stop_button:` block in `config.yaml`.
 
 #### `safety/anticheat.py` (NEW 2026-06-11 — anticheat-safe mode)
 
@@ -3797,6 +3849,7 @@ Converts a user voice command into a line Kenning speaks on a **separate** PortA
 6. **`_RELAY_PATTERNS`** — 13 patterns covering group addressees (`_GROUP` = `my/our/the team/squad/…`), pronoun groups (`_GROUP_PRON` = `them/'em/everyone/the guys/…`), channel forms (`in game chat`), enemy-addressed bravado (`_ENEMY_GROUP`), `call out X`, `relay X`, `relay to my team X`, bare `relay X`, implicit-ask (`ask if anyone…`). Payload extracted; `ask … to` strips leading `to`; `_strip_verbatim_suffix` splits off trailing verbatim demand. Gated by `_payload_has_content`.
 7. **Named-addressee patterns** (`_named_patterns`, LRU-cached per vocabulary key) — `the/my/their <agent>`: `tell <name> X`, `ask <name> X`, `say X to <name>`. `_NAME_CANON` maps STT variants (`kay o`→Kayo, `kill joy`→Killjoy, `cipher`→Cypher, `gecko`→Gekko, `mix`→Miks, `way lay`→Waylay) to display names via `_display_name`.
 8. **Context + directive** (`_match_context_directive`): `"<reported-speech context>, <directive>"`. Context must be ≥ 3 words and contain `_CONTEXT_VERB_RE` (asked/saying/flaming/tilted/roasting/…) and not match `_FIRST_PERSON_TO_YOU_RE`. Literal-payload variant (`_TELL_HIM_TAIL_RE`: `"..., tell him X"`) checked first; then closed-directive-atom tail (`_DIRECTIVE_TAIL_RE`: respond/calm down/clap back/back me up/…). Addressee inferred from single roster name in context via `_addressee_from_context`.
+8b. **Reported question → implicit answer** (`_match_reported_question`, NEW 2026-06-15) — `"X asked about/if Y"` with a question object but no explicit directive (`"Jett asked about Tony Stark"`, `"my teammate is wondering if you're a bot"`) routes to an in-character ANSWER path (`compose=True, directive="respond"`) even without a spoken "respond". Returns None for explicit-directive forms (owned by `_match_context_directive`), first-person-to-you instructions, and anything lacking a `_REPORTED_QUESTION_OBJ_RE` object. The answer itself is authored by `build_relay_line`'s answer path (Marvel topics like Tony Stark / Iron Man in-character, identity-category pools, or general-knowledge facts).
 9. **Open ask** (`_ASK_OPEN_RE`): `ask what my Skye is doing` — only when payload mentions a roster name (single name) or a group reference.
 10. **Bare `say X`** (`_BARE_SAY_RE`, last resort, ≥ 2 words): blocked when payload starts with `something/anything/your/the most…`, targets `stream/chat/viewers`, or contains `you can say/right now/for once/without conditions`.
 
@@ -3811,7 +3864,7 @@ Converts a user voice command into a line Kenning speaks on a **separate** PortA
 2. **Pure morale compose** (compose + no directive + no context + `_is_morale_payload`) → `pick_line(DEFAULT_ENCOURAGEMENT_LINES)`.
 3. **Greet / farewell compose** (compose + directive in `_DIRECTIVE_POOLS`) → `pick_line(_DIRECTIVE_POOLS[directive])`; pools: `greet`, `farewell_win`, `farewell_loss`, `farewell`.
 4. **Calm-down** (`_is_calm_directive` on directive, or `_is_calm_payload` on payload) → `pick_line(DEFAULT_CALM_LINES)` with `{name}` substituted by addressee prefix.
-5. **Identity question** (`_is_identity_question` on context or payload) → `pick_line(DEFAULT_IDENTITY_LINES)` or `DEFAULT_STREAMER_LINES` when `_STREAMER_Q_RE` matches.
+5. **Identity question** (`_is_identity_question` on context or payload) → category-aware answer (2026-06-15): `classify_identity_question` (from `_ultron_identity.py`) picks the category and `pick_line(IDENTITY_POOLS[cat])` serves a varied in-character line (bot / soundboard / streamer / real-person / puppet / voice-changer / recording); falls back to `DEFAULT_IDENTITY_LINES` / `DEFAULT_STREAMER_LINES` when uncategorized. `_is_identity_question` was broadened to catch the who's-controlling-you / strings / off-switch / pre-recorded ("are you a recording / pre-recorded / on a tape") forms.
 6. **Known-fact** (`_as_known_fact`) — checks `_GK_FACTS` (28 curated Q&A pairs covering common 3B errors: first president, moon distance, blood colour, etc.). Returns curated Ultron-voiced answer or None.
 7. **Morale phrase** (`_is_morale_phrase`: `lock in`, `we got this`, `heads up`, etc.) → `pick_line(DEFAULT_ENCOURAGEMENT_LINES)`.
 8. **Consolation / praise** (`_as_consolation_or_praise`): `_CONSOLATION_RE` (`nice try`, `unlucky`, `almost`) → `DEFAULT_CONSOLATION_LINES`; `_PRAISE_RE` (`good half`, `clutch`, `gg`) → `DEFAULT_PRAISE_LINES`.
@@ -3866,12 +3919,13 @@ Converts a user voice command into a line Kenning speaks on a **separate** PortA
 | `DEFAULT_IDENTITY_LINES` | "Are you an AI?" answer (6 lines) |
 | `DEFAULT_STREAMER_LINES` | "Are you a streamer?" answer (3 lines) |
 | `DEFAULT_CALM_LINES` | Clinical calm-down with `{name}` slot (5 lines) |
+| `DEFAULT_CRITICIZE_LINES` | Curated "criticize `<agent>`" lines (NEW 2026-06-15) — replaces the unreliable 3B for the criticize command, served via `pick_line` |
 | `DEFAULT_SAVE_LINES`, `DEFAULT_FORCE_LINES`, `DEFAULT_FULLBUY_LINES` | Economy buy decisions |
 | `DEFAULT_ROAST_LINES` | Seed roast (1 line; user extends `data/relay_roasts.txt`) |
 | `DEFAULT_FUN_FACTS` | Fallback fun facts (3 lines; corpus ships at `data/relay_fun_facts.txt`, 1014+ lines) |
 | `_DIRECTIVE_POOLS` | dict mapping directive key → pool for set-piece composes |
 
-Flavor pools appended to snap callouts via `_pick_flavor` (anti-soundboard, avoids recent 8-line window): `_FLAVOR_ENEMY`, `_FLAVOR_CAREFUL`, `_FLAVOR_ULT`, `_FLAVOR_DAMAGE`, `_FLAVOR_UTILITY`. `_flavored(callout, pool, recent_lines)` appends a picked tag; `_pick_flavor` excludes tags seen in recent output.
+Flavor pools appended to snap callouts via `_pick_flavor` (anti-soundboard, avoids recent 8-line window): `_FLAVOR_ENEMY`, `_FLAVOR_CAREFUL`, `_FLAVOR_ULT`, `_FLAVOR_DAMAGE`, `_FLAVOR_UTILITY`. `_flavored(callout, pool, recent_lines)` appends a picked tag; `_pick_flavor` excludes tags seen in recent output. **Tail spacing (NEW 2026-06-15):** `_join_tail(head, tail)` is the single join helper — it guarantees a sentence terminator between the callout and its flavor tail (so the callout never slurs into the tail), then the TTS path honours it (see the kokoro inter-sentence gap below). Multi-fact callouts still flow as one sentence (the per-fact joins do not add a terminator).
 
 ---
 
@@ -3901,10 +3955,10 @@ Single large format-string injected with `{task}`, `{addressee}`, `{by_name}`, `
 **Playback cancellation + speaker mute (NEW 2026-06-15):**
 - **"Ultron, stop" cancels all channels** — `_cancel_all_playback()` on the orchestrator stops conversational TTS, the relay mic bus (B1), the OBS broadcast (B3), and the monitor mirror at once. `play_to_device` is chunked + `cancel_event`-aware; `BroadcastSink.cancel_current()` aborts the in-flight clip and drains its queue; the interrupt watcher runs for the duration of relay (and conversational) playback.
 - **Stop is ALWAYS available (NEW 2026-06-15)** — the interrupt watcher is no longer gated only on `audio.barge_in_enabled` (held `false` on this box for loopback hygiene). A dedicated `audio.stop_command_enabled` (default `true`, env `KENNING_STOP_COMMAND_ENABLED`) keeps "Ultron, stop" on independently. The single gate `Orchestrator._stop_watcher_enabled()` returns `True` when EITHER flag is set AND the wake + audio infra exist (so bare/test orchestrators never spawn the watcher). It backs all four watcher-start sites (the two conversational paths, the main `run()` turn, and the relay-playback site). Self-trigger from loopback is bounded by the stricter wake gate (0.7 / 3 frames) + `mute_speakers` + relay output living on the virtual B-buses, not the physical mic. GUI knob: «"Ultron, stop" (always on)» in Hearing.
-- **Inter-sentence gap** — single-clip Kokoro synthesis inserts a ~160 ms gap between sentences so a callout does not blend into its flavor tail.
+- **Inter-sentence gap** — single-clip Kokoro synthesis inserts a PERIOD-length gap between sentences (default ~320 ms, env `KENNING_TTS_SENTENCE_PAUSE_MS`) so a callout does not blend into its flavor tail. Paired with `relay_speech._join_tail`, which guarantees the terminator the gap keys off; multi-fact callouts (one sentence) still flow without an added gap.
 - **"Mute my speakers" (`audio.mute_speakers`, default `false`)** — when on, the default-speaker path is silenced: conversational Kokoro output is zeroed and the relay monitor mirror is skipped, while the relay still reaches teammates (B1) and OBS (B3) — for isolating loopback tracks. Read live; the GUI "Mute my speakers (loopback)" knob and its dedicated "APPLY MUTE ONLY" button hot-apply just that one setting.
 
-**Auto push-to-talk (`kenning.ptt`, NEW 2026-06-15, DEFAULT OFF):** Valorant TEAM voice is push-to-talk only, so a relay line only transmits if the team-PTT key is held while it plays. The `kenning.ptt` package holds that key via an **external USB-HID microcontroller** (Arduino Leonardo) over serial — the host writes bytes ONLY, never synthetic input (the anticheat-clean design; see `safety/anticheat.py`'s "Deliberately NOT blocked" list + `tests/safety/test_ptt_import_clean.py`). Pieces: `PttController` (press/heartbeat/release state machine + a host max-hold watchdog + fail-safe swallowing) over a pluggable `PttBackend` — `NullPttBackend` (the default; completely inert, zero latency) or `SerialHidPttBackend` (lazy-imports `pyserial`; one-byte `D`/`U`/`H` protocol; fail-safe → on any serial error it disables, never falls back to in-process input). `build_ptt_controller()` selects the backend from `push_to_talk.*` config (`enabled`, `backend`, `serial_port`, `key`, `lead_ms`, `release_tail_ms`, `heartbeat_ms`, `max_hold_seconds`; env `KENNING_PTT_ENABLED` / `KENNING_PTT_SERIAL_PORT`). The orchestrator constructs `self._ptt` unconditionally (relay-adjacent core, gated only on the flag — never lean-skipped) and calls `_ptt_hold()` as the first line of the relay `play_to_device` try + `_ptt_release()` in its `finally` (so the key releases on a full clip, an "Ultron, stop"/barge cancel, OR an error); `shutdown()` closes it.
+**Auto push-to-talk (`kenning.ptt`, NEW 2026-06-15, DEFAULT OFF):** Valorant TEAM voice is push-to-talk only, so a relay line only transmits if the team-PTT key is held while it plays. The `kenning.ptt` package holds that key via an **external USB-HID microcontroller** (Arduino Leonardo) over serial — the host writes bytes ONLY, never synthetic input (the anticheat-clean design; see `safety/anticheat.py`'s "Deliberately NOT blocked" list + `tests/safety/test_ptt_import_clean.py`). Pieces: `PttController` (press/heartbeat/release state machine + a host max-hold watchdog + fail-safe swallowing) over a pluggable `PttBackend` — `NullPttBackend` (the default; completely inert, zero latency) or `SerialHidPttBackend` (lazy-imports `pyserial`; one-byte `D`/`U`/`H` protocol; fail-safe → on any serial error it disables, never falls back to in-process input). `build_ptt_controller()` selects the backend from `push_to_talk.*` config (`enabled`, `backend`, `serial_port`, `key`, `lead_ms`, `release_tail_ms`, `heartbeat_ms`, `max_hold_seconds`; env `KENNING_PTT_ENABLED` / `KENNING_PTT_SERIAL_PORT`). **2026-06-15:** the dead-air margins were widened (`lead_ms` 120→200, `release_tail_ms` 150→300) so Ultron's relay speech is never clipped at the start/end — pure dead air, imperceptible. The orchestrator constructs `self._ptt` unconditionally (relay-adjacent core, gated only on the flag — never lean-skipped) and calls `_ptt_hold()` as the first line of the relay `play_to_device` try + `_ptt_release()` in its `finally` (so the key releases on a full clip, an "Ultron, stop"/barge cancel, OR an error); `shutdown()` closes it.
 
 **HID-only HARDENED variant (2026-06-15):** the serial device is a *composite* HID-keyboard **+ CDC serial (COM) port** — the exact USB-descriptor fingerprint of Arduino aimbot/BadUSB devices. A 16-agent research board's #1 (legitimate, not evasion) hardening was to **drop the COM port**: the hardened firmware `firmware/leonardo_ptt_hid/leonardo_ptt_hid.ino` is **HID-only** (`-DCDC_DISABLED`) — a Boot keyboard + a vendor **Raw HID** collection (usage page `0xFFC0`, via NicoHood HID-Project) — plus a **custom USB VID/PID** (`0x1209` pid.codes + product `"USB Keyboard"`, dropping the Arduino `0x2341` identity). It then presents identically to any commercial keyboard with a config interface (Corsair/Razer/QMK). The matching host transport is `RawHidPttBackend` (lazy `hidapi`; the same `D`/`U`/`H` protocol as HID **output reports** — writing an output report is DEVICE I/O, NOT synthetic input, no `LLKHF_INJECTED`). `backend: "auto"` (default) tries `RawHidPttBackend` (find by VID `hid_vid` + usage page `hid_usage_page`) first, falling back to `SerialHidPttBackend`; `"rawhid"`/`"serial"` pin one. Flashing note: with CDC gone the board can't be serial-flashed — `firmware/leonardo_ptt_hid/` is flashed via a **double-tap-reset + poll-for-bootloader + avrdude** dance (the `--clean` rebuild matters so the *core* descriptor picks up the flags, not just the sketch).
 
@@ -4030,7 +4084,7 @@ VAD" rather than misclassifying.
   - `_resolve_system_prompt()` (Phase 1) — sources from `PersonaLoader.get_system_prompt("user_facing")` when `llm.persona.source == "workspace"` (default), else `cfg.system_prompt`. Falls back to config when workspace is empty.
   - `_http_chat_completion(...)` / `_http_stream(...)` — OpenAI-compat HTTP client (uses `requests`, SSE for streaming, cancel-aware).
   - `_chat_completion_kwargs(_llm_cfg, enable_thinking, *, stream)` (4B plan Stage F; 2026-05-14 third pass rewrite) — static helper that builds the kwargs dict for `Llama.create_chat_completion`. Returns ONLY the four sampling params + optional ``stream`` flag — NEVER emits ``chat_template_kwargs`` because the pinned llama-cpp-python 0.3.22 doesn't accept it (passing it raises ``TypeError``). The thinking-mode toggle is applied to the user message instead via :meth:`_apply_no_think_marker`. The HTTP runtime's payload-building code still emits ``chat_template_kwargs`` because llama-cpp-server (separate codebase) does accept it.
-  - `_apply_no_think_marker(messages, enable_thinking) -> list` (2026-05-14 third pass) — staticmethod that appends ``/no_think`` to the last user message when ``enable_thinking is False``. Qwen3 / Qwen3.5 chat templates inspect the user message for this marker and skip the ``<think>...</think>`` block. ``enable_thinking=None`` (default) and ``True`` are no-ops. Returns a copy of ``messages`` — never mutates the original. Replaces the previous ``chat_template_kwargs`` mechanism which crashed against the real llama-cpp-python signature.
+  - `_apply_no_think_marker(messages, enable_thinking) -> list` (2026-05-14 third pass) — staticmethod that appends ``/no_think`` to the last user message when ``enable_thinking is False``. Qwen3 / Qwen3.5 chat templates inspect the user message for this marker and skip the ``<think>...</think>`` block. ``enable_thinking=None`` (default) and ``True`` are no-ops. Returns a copy of ``messages`` — never mutates the original. Replaces the previous ``chat_template_kwargs`` mechanism which crashed against the real llama-cpp-python signature. **2026-06-15 marker-leak fix:** the marker is Qwen-template-specific, so it is gated on the LIVE-LOADED model (`self.model_path`), not just config — in lean gaming the LLM is constructed directly as the llama-3.2-3b preset while `config.llm` still names the Qwen base, so a config-only check wrongly matched "qwen" and appended `/no_think` to the llama model (which has no template hook and PARROTED it — TTS spoke "No think"). The root bug was that `self.model_path` is a `pathlib.Path`; the old code called `.lower()` on it directly, which raised `AttributeError` that the bare `except` swallowed → the marker was appended UNCONDITIONALLY. Fixed with `str()` coercion so the Qwen check actually runs against the resolved path.
   - `_build_llama(cfg, model_path, n_ctx, n_gpu_layers) -> (Llama, Path)` (4B plan voice-swap) — pure constructor that builds + returns a fresh `Llama` instance per `cfg`. Does NOT mutate `self`. Used by `_init_in_process` and `reload_for_preset`.
   - `reload_for_preset(preset: str) -> (bool, str)` (4B plan voice-swap) — hot-swap the loaded LLM to `preset` without restarting Kenning. Builds the new `Llama` FIRST so a failed swap (missing GGUF, invalid preset) leaves the engine in its working state. On success: history cleared, `KENNING_LLM_PRESET` env updated, stale `KENNING_LLM_MODEL_PATH` cleared. On failure: env vars restored. Idempotent (`already on X` returns success without rebuild). `in_process` runtime only.
   - `generate(user_message, *, enable_thinking=None)` and `generate_stream(user_message, *, enable_thinking=None, record_history=True)` (4B plan Stage F + 2026-05-18 latency pass 3 Phase 3) — per-call thinking mode parameter, plus `record_history` on the streaming variant. When `record_history=False`, the end-of-stream auto-record is skipped so callers can defer history commit to after they've confirmed the response was actually consumed (used by the orchestrator's speculative-LLM path).
@@ -6518,7 +6572,7 @@ Off-by-default mode for principled corpus testing that mimics the disabled-funct
 OBS-capturable radial audio visualizer overlay window that reacts in real time to every Kenning utterance (normal + relay). Zero latency on the speaker path; disabled by default.
 
 **Architecture**
-- `WaveformSink` — process singleton; safe to `submit` from any thread. Two daemon threads: a *pacer* (FFT analysis, real-time frame pacing) and a *UI* (owns `tk.Tk()` + Canvas, ~30 fps redraw). Never spawned until first `configure(enabled=True)`; fully torn down on disable.
+- `WaveformSink` — process singleton; safe to `submit` from any thread. Two daemon threads: a *pacer* (FFT analysis, real-time frame pacing) and a *UI* (owns `tk.Tk()` + Canvas, ~30 fps redraw). Never spawned until first `configure(enabled=True)`; fully torn down on disable. **2026-06-15:** the idle spin-freeze + render change-detection optimizations were REVERTED — the ring spin now ALWAYS advances (a slow drift at rest that speeds up while speaking) and the overlay breathes smoothly at 60fps again; a tiny tkinter canvas costs nothing to spin, and the frozen-at-idle look read as "dead on screen".
 - `_RenderState` — holds pre-created Canvas items and eases them toward each target frame with asymmetric attack/release gains.
 
 **Public API**
@@ -6587,6 +6641,13 @@ In-model per-phoneme duration shaping for Kokoro/StyleTTS2 — natural, context-
 - **`press_key` and `press_hotkey` added to `_BLOCKED_TOOL_EXACT`** — these two tools, which drive `pyautogui.SendInput`, were previously unguarded against the safety validator's `is_blocked_tool` check. Both are now in the frozenset alongside `click`, `type_text`, etc.
 - **`is_blocked_tool` namespaced-dispatcher fix** — `tool_name` values arriving as `openclaw.window_automation` or `desktop.input.press_hotkey` previously fell through all block checks because neither the full name nor the prefix matched. Fix: (1) strip a leading `openclaw.` namespace prefix, then (2) also test the bare final dotted segment (`bare = name.rsplit(".", 1)[-1]`) against both `_BLOCKED_TOOL_EXACT` and `_BLOCKED_TOOL_PREFIXES`. Both the full normalised name and the bare segment are checked so either form blocks.
 
+**Audit-hardening batch (2026-06-15):**
+- **Canary derives its tripwire set from the firewall** — the boot posture canary (`_audit_anticheat_posture` in `pipeline/orchestrator.py`) no longer hard-codes its sys.modules tripwire list; it imports `import_firewall.blocked_module_names()` so prevent==detect with no drift (a module added to the firewall blocklist is automatically also asserted-absent by the canary).
+- **Canary regressions now log at ERROR (not WARNING)** — both the anticheat posture canary (`ANTICHEAT POSTURE CANARY`) and the lean-boot canary (`LEAN BOOT CANARY`) escalated to `logger.error` so a footprint/lean regression is unmissable (fail-open preserved — logged, never raised).
+- **Safe-by-DEFAULT gaming schema** — `GamingModeConfig.enabled` and `engage_at_startup` code defaults flipped to `True` (alongside the already-True `anticheat_safe_mode`), so a lost/reset `config.yaml` still boots anticheat-safe + gaming-engaged + lean. The unit sweep stays hermetic via the conftest config-pin disable.
+- **`scripts/run_kenning_mcp_for_openclaw.py` hard-refuses under anticheat** — `_refuse_if_gaming()` runs FIRST and exits BEFORE importing any MCP tools whenever `anticheat_active()` is true (FAIL-CLOSED: if the state can't be determined, it refuses), so nothing OpenClaw-related spins up during a match.
+- **Dead `BlockInput` helper refuses while anticheat is active** — `desktop/win32_helpers.py`'s `_call_block_input(enable)` (the `user32.BlockInput` wrapper under `block_input_context`) now returns `False` with no OS call when `anticheat_active()` — a third belt beyond the import firewall + module gates (this ban-class input-suppression primitive has no production caller and lives in the firewall-blocked `kenning.desktop` package, so it is already unreachable while gaming, but it refuses outright regardless). No-op while anticheat is off, so existing tests are unchanged.
+
 #### New module: src/kenning/safety/import_firewall.py
 
 ### `src/kenning/safety/import_firewall.py` (NEW 2026-06-15 — loader-level anticheat import firewall)
@@ -6601,6 +6662,24 @@ else loads; `is_firewall_installed()` is asserted by the boot posture
 canary. This makes the never-load guarantee loader-level: the ban-class
 automation stack cannot be pulled into the anticheat-pinned RAM even by
 a stray lazy import.
+
+- **Blocklist expanded (2026-06-15):** added the raw input/capture
+  automation libs `keyboard` (global low-level keyboard hook /
+  `SetWindowsHookEx`), `mouse` (global low-level mouse hook),
+  `pydirectinput` (a `SendInput` DirectInput-scancode wrapper), and
+  `d3dshot` (DXGI desktop-duplication screen capture); plus the stale
+  pre-rename `ultron.desktop` / `ultron.openclaw_bridge.browser` /
+  `ultron.openclaw_bridge.desktop` mirror prefixes — the `src/ultron/`
+  package no longer exists (renamed to `kenning`) and is never imported,
+  but the prefixes are blocked as a belt-and-suspenders guardrail so a
+  resurrected legacy path can never slip the firewall.
+- **Installed before the Orchestrator constructs (2026-06-15):**
+  `install_import_firewall()` now runs in `kenning/__main__.py` BEFORE
+  the `Orchestrator` is built (it was previously installed inside the
+  orchestrator), eliminating the prior unprotected boot window between
+  process start and orchestrator construction. The install is idempotent
+  (a second call is a no-op) and a no-op while anticheat is off — the
+  meta-path hook only raises once `anticheat_active()` is true.
 
 #### Changed module: src/kenning/llm/inference.py
 
@@ -6697,6 +6776,26 @@ audio:
 
 - `prefer_wasapi_output` — read by `audio.devices.make_output_stream`; when true and the device is a WASAPI endpoint, opens a `WasapiSettings(auto_convert=True)` + `latency='low'` stream (B1/B3 ~22–25 ms vs ~90–180 ms MME); non-WASAPI devices fall back to MME `latency='low'`.
 - `mute_speakers` — read live; zeroes conversational Kokoro output and skips the relay monitor mirror on the default speakers, leaving the team relay (B1) and OBS broadcast (B3) untouched. The GUI "Mute my speakers (loopback)" knob + "APPLY MUTE ONLY" button apply just this key via `app._apply_one("audio.mute_speakers")`.
+
+#### `stop_button` block (NEW 2026-06-15)
+
+```yaml
+stop_button:
+  enabled: true            # master: allow the voice summon at all
+  show_at_startup: false   # true = the window is up the moment Ultron boots
+  width: 120               # window px
+  bar_height: 16           # black drag strip on top (grab to reposition)
+  button_height: 36        # the STOP button itself
+  bg_color: "#000000"      # fully black window + bar
+  accent_color: "#e5484d"  # Kenning crimson — button text + 1px border
+  button_fill: "#140709"   # near-black button face (brightens on hover/press)
+  always_on_top: true      # float over the (borderless-windowed) game
+  label: "STOP"
+  x: 60                    # initial top-left position on screen
+  y: 60
+```
+
+Read by `StopButtonConfig` (`config.py`) and `audio/stop_button.py`. The window is summoned/dismissed by voice ("show/hide the stop button", matched by `match_stop_button_command`); clicking it fires the orchestrator's all-channel `_cancel_all_playback()` — the loopback-immune equivalent of voice "Ultron, stop" (no wake-word watcher involved). In-process tkinter; fail-open (no display / no Tk → never appears, voice path untouched).
 
 #### `testing_mode` block
 

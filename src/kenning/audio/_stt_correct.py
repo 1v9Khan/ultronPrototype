@@ -151,7 +151,8 @@ _CONTEXT_RULES: tuple[tuple[re.Pattern[str], object], ...] = (
 _AGENT_MISHEARS = {
     "silva": "Sova", "selva": "Sova", "sofa": "Sova", "soda": "Sova",
     "soever": "Sova", "sovereign": "Sova", "saba": "Sova", "sova's": "Sova",
-    "sobi": "Sova", "sovah": "Sova", "soba": "Sova",
+    "sobi": "Sova", "sovah": "Sova", "soba": "Sova", "silver": "Sova",
+    "silvers": "Sova",
     "royal": "Reyna", "raina": "Reyna", "rayna": "Reyna", "reina": "Reyna",
     "rena": "Reyna", "regina": "Reyna", "reyna's": "Reyna", "ray nuh": "Reyna",
     "jet": "Jett", "jed": "Jett", "jett's": "Jett", "jette": "Jett",
@@ -235,6 +236,40 @@ _PHRASE_MISHEARS: tuple[tuple[re.Pattern[str], object], ...] = (
      lambda m: "C " + m.group(1).lower()),
     (re.compile(r"\ba\s+main[e]?\b", re.I), "A main"),
     (re.compile(r"\bhey\s+main\b", re.I), "A main"),
+    # Site letter at the END of a movement order heard as a word: "rotate to be"
+    # -> "rotate to B", "push to see" -> "push to C". Gated to a movement verb so
+    # a conversational "going to be there" (which never reaches this callout-only
+    # corrector anyway) stays safe.
+    (re.compile(
+        r"\b(rotate|rotating|push|pushing|fall\s*back|falling\s*back|go|going|"
+        r"move|moving|rush|rushing|split|swing|swinging|cross|crossing|head|"
+        r"heading|hit|hitting|take|taking|send\s+it|over)\s+to\s+be\b", re.I),
+     lambda m: m.group(1) + " to B"),
+    (re.compile(
+        r"\b(rotate|rotating|push|pushing|fall\s*back|falling\s*back|go|going|"
+        r"move|moving|rush|rushing|split|swing|swinging|cross|crossing|head|"
+        r"heading|hit|hitting|take|taking|send\s+it|over)\s+to\s+(?:see|sea|cee)\b",
+        re.I),
+     lambda m: m.group(1) + " to C"),
+    # "hey <agent>" blends into "Hell<agent>" ("hey Sage" -> "Hellsage", "hey
+    # Jett" -> "Helljet") -- the greeting glues to the name and the location
+    # "hell" surfaces. Drop the glued prefix so only the agent (then praised)
+    # remains. Requires NO space (a real "hell" location keeps its space).
+    (re.compile(
+        r"\bhell(?=(?:sage|jett|jet|reyna|raze|sova|omen|neon|viper|cypher|"
+        r"killjoy|phoenix|breach|fade|skye|astra|harbor|clove|chamber|"
+        r"brimstone|gekko|yoru|iso|deadlock|gekko|tejo|waylay|vyse)\b)",
+        re.I), ""),
+    # Number-word mishears in a COUNT context only: "three pushing" -> heard
+    # "tree pushing"; "one mid" -> "won mid". Gated to a following push/site
+    # token so the location "tree" ("split through tree") and "we won" are safe.
+    (re.compile(
+        r"\btree\b(?=\s+(?:pushing|rushing|coming|going|rotating|on\b|in\b|"
+        r"at\b|enemies|enemy|guys|of\s+them|men))", re.I), "three"),
+    (re.compile(
+        r"\bwon\b(?=\s+(?:mid|middle|a\b|b\b|c\b|on\b|in\b|at\b|heaven|hell|"
+        r"main|long|short|site|pushing|rushing|rotating|enemy|enemies))",
+        re.I), "one"),
     # multi-word abilities the STT splits.
     (re.compile(r"\b(?:cale|kayo|kayle|kio)\s+knife\b", re.I), "KAY/O knife"),
     (re.compile(r"\bspikes\s+down\b", re.I), "spike is down"),
@@ -253,7 +288,8 @@ _FUZZY_BLOCK = {
     "is", "in", "it", "i", "a", "an", "the", "of", "on", "no", "so", "go",
     "to", "up", "we", "he", "me", "be", "by", "see", "say", "way", "play",
     "they", "them", "their", "there", "here", "have", "has", "had", "get",
-    "got", "out", "now", "one", "two", "our", "all", "for", "and", "but",
+    "got", "out", "now", "one", "two", "three", "four", "five", "six", "won",
+    "our", "all", "for", "and", "but",
     "site", "main", "mid", "left", "right", "back", "push", "hold", "rotate",
     "save", "down", "dead", "kill", "team", "good", "nice", "this", "that",
     "with", "from", "just", "like", "what", "when", "where", "who", "why",
@@ -270,6 +306,9 @@ _FUZZY_BLOCK = {
     "are", "art", "you're", "youre", "yours", "shot", "shots", "shoot",
     "sort", "war", "core", "more", "store", "wore", "ore", "her", "his",
     "greet", "greets", "greeting", "greetings",
+    # greetings that phonetically collide with locations (hello/hellos metaphone
+    # "HL" == "hell") -- a greeting must never snap onto a callout location.
+    "hello", "hellos", "howdy", "hiya", "heya", "yo", "sup", "wassup",
     "last", "fast", "past", "blast",   # "last guy"->"blast" (last is a callout)
     # short agent names that ARE common words -> curated/phonetic only
     "raze", "sage", "fade", "neon", "iso", "omen", "clove", "viper", "skye",

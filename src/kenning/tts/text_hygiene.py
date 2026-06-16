@@ -33,6 +33,14 @@ _CONTROL_TOKENS = re.compile(
 )
 _HAS_SPEAKABLE = re.compile(r"[A-Za-z0-9]")
 
+# Proper nouns the Kokoro G2P mis-reads as INITIALISMS: an all-caps token (or a
+# dotted form) is spelled out letter-by-letter ("JARVIS" -> "J. A. R. V. I. S").
+# Map them to a spoken-word spelling so they're read as a name. Case-insensitive
+# and dot-tolerant so "JARVIS", "Jarvis", and "J.A.R.V.I.S." all normalise.
+_PRONUNCIATION = (
+    (re.compile(r"\bJ\.?A\.?R\.?V\.?I\.?S\b", re.IGNORECASE), "Jarvis"),
+)
+
 
 def sanitize_spoken_text(text: str) -> str:
     """Strip unspeakable artifacts; return "" when nothing remains.
@@ -48,6 +56,8 @@ def sanitize_spoken_text(text: str) -> str:
         return ""
     cleaned = _STAGE_DIRECTION.sub(" ", text)
     cleaned = _CONTROL_TOKENS.sub(" ", cleaned)
+    for _pat, _rep in _PRONUNCIATION:
+        cleaned = _pat.sub(_rep, cleaned)
     cleaned = " ".join(cleaned.split())
     # Drop leading/trailing orphaned quote marks left by stripped spans.
     cleaned = cleaned.strip(' "“”/')

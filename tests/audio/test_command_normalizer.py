@@ -45,9 +45,12 @@ def test_callouts_route_to_relay(text):
 
 
 # --- Conversational / Spotify / identity: must NOT be grabbed by relay -------
+# NB: "<teammate> asked about <topic>" is intentionally NOT here -- a reported
+# question now routes to Ultron's in-character ANSWER path (see
+# test_reported_topic_question_routes_to_answer). "Tell me about X" (the USER
+# asking Ultron directly) stays conversational.
 NOT_RELAY = [
     "Tell me about Tony Stark",
-    "And my teammate asked about Black Widow",
     "what do you think of the enemy team",
     "are we going to win",
     "who are you",
@@ -70,6 +73,25 @@ def test_non_callouts_not_relayed(text):
         return
     assert not _routes_relay(text), (
         f"should NOT relay: {text!r} -> {normalize_command(text)!r}")
+
+
+# --- Reported questions route to the in-character ANSWER path (Marvel/topic/
+# identity asked by a teammate) -- NOT a literal callout of the question --------
+def test_reported_topic_question_routes_to_answer():
+    from kenning.audio.relay_speech import match_relay_command
+    for utt in [
+        "Jett asked about Tony Stark",
+        "my teammate asked about Black Widow",
+        "my teammate is wondering about Iron Man",
+        "Reyna asked how far the moon is",
+        "team asked if you are a streamer",
+    ]:
+        cmd = match_relay_command(normalize_command(utt))
+        assert cmd is not None, utt
+        assert cmd.compose and cmd.context, (utt, cmd)   # answer, not a callout
+        assert not cmd.verbatim, utt
+    # Marvel names survive normalization (no "Iron Man" -> "Iron main").
+    assert "Iron Man" in normalize_command("my teammate is wondering about Iron Man")
 
 
 # --- Vocab correction: the canonical term appears in the normalized output ---
@@ -118,3 +140,98 @@ def test_empty_and_noise():
     assert normalize_command("   ") == "   "
     # single-word noise should not become a relay
     assert not _routes_relay("me")
+
+
+# --- Bare greetings: NEVER snapped to a location or relayed (live bug: "Hello."
+# -> "tell my team hell." -> broadcast "No hell." to the team) ----------------
+BARE_GREETINGS = [
+    "Hello.", "hello", "hi", "hey", "hey there", "yo", "yo Ultron",
+    "hiya", "howdy", "sup", "what's up", "good morning",
+]
+
+
+@pytest.mark.parametrize("text", BARE_GREETINGS)
+def test_bare_greeting_not_mangled_or_relayed(text):
+    out = normalize_command(text)
+    # preserved verbatim: never rewritten into a relay, never corrupted into the
+    # location "hell" (the live "Hello." -> "tell my team hell." -> "No hell." bug)
+    assert out == text.strip(), f"{text!r} altered -> {out!r}"
+    assert not out.lower().startswith("tell my team"), f"{text!r} -> {out!r}"
+    assert not _routes_relay(text), f"{text!r} -> {out!r}"
+
+
+# --- "I want my team to X" -> "tell my team X" (no doubled lead, payload kept) -
+def test_want_my_team_extracts_directive():
+    out = normalize_command("I want my team to rotate to B")
+    assert _routes_relay("I want my team to rotate to B")
+    assert out.lower().count("my team") == 1, f"doubled addressee: {out!r}"
+    assert "to b" in out.lower(), f"site lost: {out!r}"
+
+
+def test_want_my_team_variants_relay():
+    for t in [
+        "I want my team to fall back",
+        "I need my team to save",
+        "I wanna tell my team to push B",
+        "I want the squad to rotate",
+    ]:
+        out = normalize_command(t)
+        assert out.lower().startswith("tell my team "), f"{t!r} -> {out!r}"
+        assert out.lower().count("my team") == 1, f"doubled: {t!r} -> {out!r}"
+
+
+# --- Site letter at the end of a movement order: "to be" -> "to B" -----------
+def test_site_letter_at_end_of_movement():
+    assert "to B" in normalize_command("tell my team to rotate to be")
+    assert "to B" in normalize_command("my team push to be")
+    assert "to C" in normalize_command("tell my team to rotate to see")
+
+
+# --- Audit 2026-06-15: verbatim family, possessive, STT mishears -------------
+def _verbatim(text: str):
+    return match_relay_command(normalize_command(text))
+
+
+def test_verbatim_family_relays_exactly():
+    # All of the user's "Verbatim" forms must relay with verbatim=True (no tail).
+    for t in [
+        "repeat to my team watermelon",
+        "say to my team mic check one two",
+        "say exactly to my team testing testing",
+        "repeat to the team spike is down",
+        "tell my team word for word rotating now",
+        "Pete to my team watermelon",          # STT repeat->Pete
+        "Heat to the team spike is down",       # STT repeat->Heat
+    ]:
+        cmd = _verbatim(t)
+        assert cmd is not None and getattr(cmd, "verbatim", False), (
+            f"should be verbatim: {t!r} -> {normalize_command(t)!r}")
+
+
+def test_say_content_to_team_is_not_verbatim():
+    # "say <content> to my team" (addressee NOT immediately after say) rephrases.
+    cmd = _verbatim("say we are rotating to my team")
+    assert cmd is not None and not getattr(cmd, "verbatim", True)
+
+
+def test_team_possessive_strips_lead():
+    out = normalize_command("my team's cypher cage on A")
+    assert "team's" not in out.lower(), out
+    assert _routes_relay("my team's cypher cage on A")
+
+
+def test_stt_agent_and_count_mishears():
+    assert "Sova" in normalize_command("Silver has his ult")
+    # "three" (a count) must NOT be corrupted to the location "tree"
+    assert "tree" not in normalize_command("my team three pushing B").lower()
+    assert "three" in normalize_command("my team three pushing B").lower()
+    # "won mid" -> count "one mid"; the location "tree" is preserved
+    assert "one mid" in normalize_command("my team won mid").lower()
+    assert "tree" in normalize_command("tell my team split through tree").lower()
+
+
+def test_hey_agent_blend_dropped():
+    # "hey Sage" blends to "Hellsage"; the glued hell-prefix is dropped.
+    out = normalize_command("Hellsage nice job")
+    assert "hell" not in out.lower(), out
+    assert "Sage" in out

@@ -372,7 +372,12 @@ _REPEAT_LEAD_RE = re.compile(
     r"(?:(?:repeat|echo)(?:\s+(?:back|after\s+me))*"
     # "say exactly to my team X" / "say word for word ..." / "say verbatim ..."
     # are soundboard-verbatim too (the marker, not just 'repeat', carries it).
-    r"|say\s+(?:exactly|word\s+for\s+word|verbatim))\b",
+    r"|say\s+(?:exactly|word\s+for\s+word|verbatim)"
+    # Bare "say to my team X" / "say to <name> X": "say" + an IMMEDIATE addressee
+    # means speak X as-is (the user's "say to my team mic check one two" intent).
+    # The lookahead keeps "say we are rotating to my team" a normal rephrase.
+    r"|say(?=\s+to\s+(?:my\s+|our\s+|the\s+)?"
+    r"(?:team|teammates?|squad|guys|boys|mates|crew|him|her|them|everyone)\b))\b",
     re.IGNORECASE,
 )
 # Leading meta-connective the user may put before the phrase ("repeat to my team
@@ -569,6 +574,29 @@ _DIRECTIVE_TAIL_RE = re.compile(
 _TELL_HIM_TAIL_RE = re.compile(
     r"[,;.]?\s*(?:please\s+)?(?:and\s+)?tell\s+(?:him|her|them)\s+"
     r"(?:that\s+|to\s+)?(?P<payload>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+# A reported QUESTION with NO explicit directive ("Jett asked about Tony Stark",
+# "my teammate is wondering if you're a bot", "Reyna asked how far the moon is").
+# This is an IMPLICIT 'respond': Ultron AUTHORS an in-character answer (identity
+# pool / Marvel / general knowledge) relayed to the team -- NOT a literal callout
+# of the question (the live bug: "Jett asked about Tony Stark" was relayed
+# verbatim with a Jett-callout tail instead of answered in character). Requires a
+# QUESTION verb + a question object, so a status relay ("Reyna said she's low")
+# or a request ("Jett asked for a drop") never trips it.
+_REPORTED_QUESTION_OBJ_RE = re.compile(
+    r"\b(?:asked|asking|asks|wondering|wonders|wondered|curious"
+    r"|wants?\s+to\s+know|wanted\s+to\s+know)\b"
+    r"\s+(?:you\b\s*|me\b\s*|us\b\s*|the\s+team\b\s*)?"
+    r"(?:about|if|whether|why|how|what(?:'?s)?|where|when|who(?:'?s)?|which)\b",
+    re.IGNORECASE,
+)
+# A leading "tell my team" / "tell the squad" the normalizer may have prepended
+# to a reported question -- stripped before the reported-question check.
+_TEAM_LEAD_STRIP_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:can\s+you\s+)?tell\s+(?:my\s+|our\s+|the\s+)?"
+    r"(?:team|teammates?|squad|guys|boys|crew)\s+",
     re.IGNORECASE,
 )
 
@@ -949,6 +977,34 @@ def _match_context_directive(
     return None
 
 
+def _match_reported_question(
+    cleaned: str, raw_text: str, vocabulary: Sequence[str],
+) -> Optional[RelayCommand]:
+    """Match a reported QUESTION with no explicit directive -> implicit answer.
+
+    "Jett asked about Tony Stark" / "my teammate is wondering if you're a bot"
+    -> Ultron AUTHORS an in-character answer (the build_relay_line answer path
+    handles identity pools / Marvel / general knowledge), relayed to the team.
+    Returns None for directive forms (handled by _match_context_directive), for
+    first-person-to-you instructions, and for anything lacking a question object.
+    """
+    s = _TEAM_LEAD_STRIP_RE.sub("", cleaned, count=1).strip()
+    if _DIRECTIVE_TAIL_RE.search(s):
+        return None  # explicit directive -> the directive path owns it
+    if _FIRST_PERSON_TO_YOU_RE.match(s):
+        return None
+    if not _REPORTED_QUESTION_OBJ_RE.search(s):
+        return None
+    context = s.strip().strip(",;.").strip()
+    if len(context.split()) < 3:
+        return None
+    return RelayCommand(
+        payload="", raw_text=raw_text,
+        addressee=_addressee_from_context(context, vocabulary),
+        compose=True, context=context, directive="respond",
+    )
+
+
 def match_relay_command(
     text: str,
     *,
@@ -1048,6 +1104,14 @@ def match_relay_command(
                 payload="encouragement", raw_text=text,
                 addressee="team", compose=True,
             )
+
+    # Reported QUESTION with no directive ("Jett asked about Tony Stark", "my
+    # teammate is wondering if you're a bot") -> Ultron answers in character.
+    # BEFORE the group-callout loop so the normalizer's "tell my team ..." prefix
+    # doesn't get it relayed literally as a callout.
+    reported_q = _match_reported_question(cleaned, text, vocabulary)
+    if reported_q is not None:
+        return reported_q
 
     # Group callouts ("tell my team X").
     for pattern in _RELAY_PATTERNS:
@@ -1844,6 +1908,34 @@ def _is_morale_phrase(payload: object) -> bool:
     return bool(_MORALE_PHRASE_RE.match(str(payload or "")))
 
 
+#: Curated Ultron CRITICIZE lines ('{name}' substituted with the teammate). The
+#: 3B answers "criticize Reyna for that" with a vague non-criticism ("I've
+#: assessed their position" -- live); a curated pool names a CONCRETE failure
+#: and lands a cold verdict, reliably and in-character. Each opens with the name.
+DEFAULT_CRITICIZE_LINES: tuple[str, ...] = (
+    "{name}, you overextended and fed the round. Hold your angle next time.",
+    "{name}, that ultimate bought us nothing. Track your timing.",
+    "{name}, first blood, again. The pattern is you, and it is correctable.",
+    "{name}, wrong rotation, wrong read. Trust my call, not your instinct.",
+    "{name}, you peeked a held angle for free. Flesh forgets; I do not.",
+    "{name}, that whiff was decisive. Aim is a solved problem -- solve it.",
+    "{name}, you abandoned the site for a kill that wasn't there.",
+    "{name}, you traded yourself for nothing. Patience wins this, not bravado.",
+    "{name}, your util went to an empty corner. Waste nothing, we have little.",
+    "{name}, you swung into a crossfire I already mapped. Listen next time.",
+    "{name}, you forced a duel you could not win. Math is not optional.",
+    "{name}, you pushed without the team. Alone, you are just a statistic.",
+    "{name}, that was greedy, and greed is how mortals lose. Reset.",
+    "{name}, you held the wrong angle while they took the easy one.",
+    "{name}, you died with the spike. That is a failure I cannot calculate away.",
+    "{name}, your timing was a half-second late, as always. Half-seconds lose rounds.",
+    "{name}, you saved when we needed you, and bought when we needed quiet.",
+    "{name}, you chased instead of anchoring. The map punished it instantly.",
+    "{name}, that was loud, slow, and predictable. Improve, or follow my calls.",
+    "{name}, you gave them a free entry. I do not give anything for free.",
+)
+
+
 #: DEFAULT_GREETING / VICTORY / DEFEAT / FAREWELL / IDENTITY _LINES are imported
 #: from _ultron_setpieces.py (above) -- board-expanded ~5x, gate-filtered, every
 #: greeting names Ultron. Picked with anti-repeat for reliable, varied character.
@@ -1870,14 +1962,38 @@ _IDENTITY_Q_RE = re.compile(
 _STREAMER_Q_RE = re.compile(r"\bstreamer\b", re.IGNORECASE)
 
 
+#: Control / strings / recording question forms that DON'T fit the "are you ..."
+#: shape but are still a teammate asking what Ultron is ("who's controlling you",
+#: "do you have strings", "is this pre-recorded"). Kept specific so a tactical
+#: callout never trips them.
+_IDENTITY_FORM_RE = re.compile(
+    r"\b(?:who|what)(?:'?s|\s+is|\s+are)?\s+"
+    r"(?:controlling|running|behind|pulling|making|operating|piloting)\b"
+    r"|\bdo\s+you\s+have\s+(?:any\s+)?(?:strings|an?\s+off[\s-]?switch)\b"
+    r"|\b(?:pulling|holding)\s+(?:your|the)\s+strings\b"
+    r"|\b(?:any|some)\s+strings\s+on\s+you\b|\bstrings\s+on\s+you\b"
+    r"|\b(?:is|are)\s+(?:this|that|it|you|someone)\b[^?]*?"
+    r"\b(?:recording|recorded|pre[\s-]?recorded|playback|played\s+back|"
+    r"soundboard|sound\s*board|voice[\s-]?changer|controlling\s+you|"
+    r"making\s+you\s+(?:say|talk))\b",
+    re.IGNORECASE,
+)
+
+
 def _is_identity_question(text: object) -> bool:
     t = str(text or "").lower()
-    # Generic "what are you / what you are" is always an identity question.
+    if not t:
+        return False
+    # Generic "what are you / what you are / who are you" is always identity.
     if "what are you" in t or "what you are" in t or "who are you" in t:
         return True
-    if not any(k in t for k in ("are you", "you are", "you a ", "you an ")):
-        return False
-    return bool(_IDENTITY_Q_RE.search(t))
+    # "are you (a) <nature>" / "you are (a) <nature>".
+    if (any(k in t for k in ("are you", "you are", "you a ", "you an "))
+            and _IDENTITY_Q_RE.search(t)):
+        return True
+    # Control / strings / recording forms ("who's controlling you", "do you have
+    # an off switch", "is this pre-recorded").
+    return bool(_IDENTITY_FORM_RE.search(t))
 
 
 #: Curated Ultron CALM-DOWN lines ('{name}' substituted with the teammate, or
@@ -2283,9 +2399,31 @@ def _pick_flavor(pool: Sequence[str], recent_lines: Optional[Sequence[str]]) -> 
     return _pick_lru(list(pool))
 
 
+def _join_tail(head: str, tail: str) -> str:
+    """Join a callout HEAD and a flavor TAIL as two SEPARATE SENTENCES.
+
+    The callout and its flavor tail are always two distinct sentences, so the
+    boundary between them must carry a full sentence terminator ('.') -- without
+    it the synth runs them together and they slur ("Rotate to B On my read"
+    instead of "Rotate to B. On my read."). Guaranteeing the '.' here makes the
+    TTS sentence-pause fire EVERY time. NOTE: multi-fact callouts ("two A, one
+    heaven") join their facts internally with commas/and BEFORE this, so only the
+    head<->tail boundary gets a period -- the facts still flow as one sentence.
+    """
+    head = (head or "").rstrip()
+    tail = (tail or "").strip()
+    if not tail:
+        return head
+    if not head:
+        return tail
+    if head[-1] not in ".!?":
+        head = head + "."
+    return f"{head} {tail}"
+
+
 def _flavored(callout: str, pool: Sequence[str],
               recent_lines: Optional[Sequence[str]]) -> str:
-    return f"{callout} {_pick_flavor(pool, recent_lines)}"
+    return _join_tail(callout, _pick_flavor(pool, recent_lines))
 
 
 # ---------------------------------------------------------------------------
@@ -2396,11 +2534,11 @@ def _flavor_ctx(callout: str, register: str,
         else:
             ac = list(_MULTI_FLAVOR.get(sit, ()))
         if ac:                                   # agent-specific is the sole source
-            return f"{callout} {_pick_flavor(ac, recent_lines)}"
+            return _join_tail(callout, _pick_flavor(ac, recent_lines))
     ctx = _ctx_candidates(register, ability=ability, loc=loc, count=count)
     pool = list(_REGISTER_POOL.get(register, _FLAVOR_ENEMY))
     cands = ctx * 4 + pool if ctx else pool      # fact-templates dominate when present
-    return f"{callout} {_pick_flavor(cands, recent_lines)}"
+    return _join_tail(callout, _pick_flavor(cands, recent_lines))
 
 
 def _payload_flavor_facts(p: str) -> dict:
@@ -2916,7 +3054,8 @@ def _as_snap_callout(
         if not flavor:
             return snap
         if snap.startswith("Our "):
-            return f"{snap} {pick_line(_OWN_ULT_TAILS, recent_lines=recent_lines)}"
+            return _join_tail(
+                snap, pick_line(_OWN_ULT_TAILS, recent_lines=recent_lines))
         return flav(snap, _FLAVOR_ULT)
 
     # --- agent utility report '[our/their/my] <agent> <ability-word> <rest>'
@@ -3853,14 +3992,32 @@ def build_relay_line(
             out = out[0].upper() + out[1:]
         return _cap_line(out, max_chars)
 
-    # Identity question ('are you an AI / bot / soundboard / streamer?') ->
-    # a VARIED curated Ultron declaration (the 3B otherwise soundboards the same
-    # line every time). Streamer gets its own 'deeper than a feed' answer.
+    # Criticize a named teammate ("criticize Reyna for that") -> a curated cold
+    # critique naming a CONCRETE failure (the 3B answers vaguely -- "I've
+    # assessed their position"). Reliable + varied; opens with the name.
+    _dir = getattr(command, "directive", None) or ""
+    if _dir.startswith("criticize:"):
+        target = _dir.split(":", 1)[1].strip() or "that one"
+        line = pick_line(DEFAULT_CRITICIZE_LINES, recent_lines=recent_lines)
+        return _cap_line(line.format(name=target), max_chars)
+
+    # Identity question ('are you an AI / bot / soundboard / streamer / a real
+    # person / who's controlling you / a voice changer / a recording?') -> a
+    # DISTINCT curated Ultron answer from the matching CATEGORY pool (~30 lines
+    # each, LRU-varied). The 3B otherwise repeats one generic line or drifts
+    # off-voice. Falls back to the generic identity set-pieces when the question
+    # is an identity question but no specific category is detected.
     _ctx = getattr(command, "context", None) or ""
-    if _is_identity_question(_ctx) or _is_identity_question(getattr(command, "payload", "")):
-        pool = (DEFAULT_STREAMER_LINES if _STREAMER_Q_RE.search(_ctx)
-                or _STREAMER_Q_RE.search(getattr(command, "payload", "") or "")
-                else DEFAULT_IDENTITY_LINES)
+    _pl = getattr(command, "payload", "") or ""
+    if _is_identity_question(_ctx) or _is_identity_question(_pl):
+        from kenning.audio._ultron_identity import (
+            IDENTITY_POOLS, classify_identity_question,
+        )
+        _cat = (classify_identity_question(_ctx)
+                or classify_identity_question(_pl))
+        pool = IDENTITY_POOLS.get(_cat) if _cat else None
+        if pool is None:
+            pool = DEFAULT_IDENTITY_LINES
         return _cap_line(pick_line(pool, recent_lines=recent_lines), max_chars)
 
     # Curated CORRECT answer to a recognized general-knowledge question -- the
@@ -3923,7 +4080,7 @@ def build_relay_line(
                     recent_lines=None, generate_fn=generate_fn,
                 )
                 if tail and tail.strip():
-                    return _cap_line(f"{det_line} {tail.strip()}", max_chars)
+                    return _cap_line(_join_tail(det_line, tail.strip()), max_chars)
             return _cap_line(det_line, max_chars)
 
         # LATENCY/RESOURCE: a TACTICAL line the deterministic handlers could not
