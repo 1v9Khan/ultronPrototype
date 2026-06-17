@@ -10,8 +10,32 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: STOP-WINDOW PTT TOGGLE + ROBUST ORPHAN-PROCESS GUARDRAILS** (2026-06-16,
+> latest — follows the corpus-fix pass below). (1) The tiny STOP window
+> (`audio/stop_button.py`) gained a **PTT toggle** below the STOP button:
+> green "PTT ON" = Ultron auto-holds the team-mic key for relays, grey "PTT OFF" = the
+> relay STILL plays but he never presses the key. Wired through a runtime
+> `Orchestrator._ptt_runtime_enabled` flag that `_ptt_hold` checks (release is never gated, so
+> a key held when toggled OFF mid-line is freed); `_set_ptt_runtime_enabled` is the overlay
+> callback. (2) **Process-cleanup guardrails so no runaway orphan survives** (a 20 GB
+> system-Python `embedder_server.py` had lingered 24 h after a crash): a **parent-death
+> deadman** in `scripts/embedder_server.py` (`_parent_watchdog` + `_pid_alive`) self-exits the
+> embedder within ~3 s of the orchestrator dying by ANY means — crash / `taskkill /F` /
+> TerminateProcess — the gap no in-parent cleanup can cover (the orchestrator passes
+> `KENNING_EMBEDDER_PARENT_PID`); `subprocess/sidecar_lock.py` adds `reap_stray_embedders`
+> (boot-time reap of ANY `embedder_server` by cmdline, incl. an un-bound duplicate the
+> port-listener sweep can't see, even one spawned by a different python), wired into the
+> orchestrator's sidecar spawn after the sweep; and `subprocess/kill_tree.py` adds
+> `kill_own_children` — a shutdown CATCH-ALL that reaps every descendant — called at the end of
+> `Orchestrator.shutdown()` (runs on the with-block / SIGINT / SIGTERM / atexit paths). Also
+> fixed a latent `sidecar_lock._kill` bug (it referenced a non-existent `killed` attr → always
+> returned 0; now uses `KillTreeResult.total_killed`). Tests: `tests/subprocess/
+> test_orphan_guardrails.py` (real-subprocess reap + deadman-liveness), 89 subprocess + 62
+> ptt/stop tests green. testing-mode config (`testing_mode.enabled`, `push_to_talk.enabled`)
+> was flipped ON in `config.yaml` for live testing (annotated to revert before a lean game).
+>
 > **Validating HEAD: 25k-CORPUS HAND-AUDIT → ADVERSARIAL RESEARCH BOARD → 8-PHASE FIX PASS
-> + META/SOCIAL/MARVEL + testing-mode FULL-FLOW LOGS** (2026-06-16, latest). A by-hand audit
+> + META/SOCIAL/MARVEL + testing-mode FULL-FLOW LOGS** (2026-06-16). A by-hand audit
 > of a 25,000-case full-pipeline relay corpus drove an adversarial research board (map →
 > spec → adversarial-verify → synthesize) whose verdicts caught two would-be regressions
 > before any code landed (a homonym `has_fact` collision that would re-silence addressed

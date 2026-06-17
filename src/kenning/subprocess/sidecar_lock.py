@@ -112,10 +112,47 @@ def _kill(pid: Optional[int]) -> int:
     try:
         from kenning.subprocess.kill_tree import kill_process_tree
         res = kill_process_tree(int(pid), grace_seconds=4.0)
-        return int(getattr(res, "killed", 0) or getattr(res, "terminated", 0) or 0)
+        # KillTreeResult exposes total_killed = len(terminated)+len(force_killed);
+        # the old `killed`/`terminated` getattr was a no-op (no such int attr) and
+        # int(tuple) would have raised -- so this always reported 0.
+        return int(getattr(res, "total_killed", 0) or 0)
     except Exception as e:                                        # noqa: BLE001
         logger.debug("sidecar kill_process_tree(%s) failed (%s)", pid, e)
         return 0
+
+
+def reap_stray_embedders(keep_pid: Optional[int] = None,
+                         script_hint: str = "embedder_server") -> int:
+    """Reap ANY lingering ``embedder_server`` process (matched by command line)
+    that we are NOT keeping -- the backstop the port-listener sweep can't cover:
+    a DUPLICATE/orphan that FAILED to bind the port (so it owns no LISTEN socket)
+    but is still resident burning RAM/VRAM, incl. one spawned by a *different*
+    python (the 20 GB system-Python orphan that survived 24 h). Never reaps the
+    current process or ``keep_pid``. Returns the count reaped. Fail-open (0)."""
+    try:
+        import psutil
+    except Exception:                                            # noqa: BLE001
+        return 0
+    me = os.getpid()
+    reaped = 0
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            pid = int(proc.info.get("pid") or 0)
+            if pid <= 0 or pid == me or (keep_pid and pid == int(keep_pid)):
+                continue
+            name = (proc.info.get("name") or "").lower()
+            if "python" not in name:
+                continue
+            cmd = " ".join(proc.info.get("cmdline") or [])
+            if script_hint in cmd:
+                killed = _kill(pid)
+                if killed:
+                    reaped += 1
+                    logger.warning("reaped STRAY embedder pid=%s killed=%d cmd=%r",
+                                   pid, killed, cmd[:140])
+        except Exception:                                        # noqa: BLE001
+            continue
+    return reaped
 
 
 def sweep(host: str, port: int, model: str,

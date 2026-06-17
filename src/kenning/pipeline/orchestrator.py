@@ -1236,6 +1236,11 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             logger.debug("push-to-talk init failed (%s); PTT disabled", e)
             self._ptt = None
+        # Runtime PTT toggle (the STOP-window "PTT" button flips it): gates the
+        # auto team-mic key-press. Default = the configured enabled state. When
+        # OFF, the relay STILL plays -- Ultron just never holds the team-PTT key,
+        # so he is not pressing '6' on every line unless the user wants it.
+        self._ptt_runtime_enabled = bool(settings.PUSH_TO_TALK_ENABLED)
 
         # Tiny always-on-top, mouse-clickable "STOP" window. Clicking it fires
         # the SAME all-channel cancel as voice "Ultron, stop" (_cancel_all_playback)
@@ -1266,6 +1271,10 @@ class Orchestrator:
                     label=_sb.label,
                     x=_sb.x,
                     y=_sb.y,
+                    # PTT toggle row: flips the auto team-mic key-press at runtime
+                    # without touching the relay.
+                    on_toggle_ptt=self._set_ptt_runtime_enabled,
+                    ptt_enabled=self._ptt_runtime_enabled,
                 )
                 if getattr(_sb, "show_at_startup", False):
                     self._stop_button.show()
@@ -1434,6 +1443,15 @@ class Orchestrator:
             try:
                 from kenning.subprocess import sidecar_lock
                 verdict, owned_pid = sidecar_lock.sweep(host, port, model, path=pidfile)
+                # Backstop the port-listener sweep: reap any STRAY embedder_server
+                # process not bound to the port (a duplicate/orphan that lost the
+                # bind race but kept running), keeping the one we'll reuse.
+                try:
+                    n = sidecar_lock.reap_stray_embedders(keep_pid=owned_pid)
+                    if n:
+                        logger.warning("reaped %d stray embedder process(es) at boot", n)
+                except Exception:                                    # noqa: BLE001
+                    pass
                 if verdict == "reuse":
                     self._embedder_sidecar_reuse_pid = owned_pid
                     logger.info("embedder sidecar already running on %s:%d "
@@ -1460,6 +1478,9 @@ class Orchestrator:
         env["KENNING_EMBEDDER_PORT"] = str(port)
         env["KENNING_EMBEDDER_QUERY_PROMPT"] = getattr(rcfg, "sidecar_query_prompt", "query")
         env["KENNING_EMBEDDER_DOC_PROMPT"] = getattr(rcfg, "sidecar_doc_prompt", "document")
+        # Parent-death deadman: the sidecar self-terminates if THIS process dies,
+        # so a force-killed/crashed Ultron never leaves a runaway embedder orphan.
+        env["KENNING_EMBEDDER_PARENT_PID"] = str(os.getpid())
         _dev = getattr(rcfg, "sidecar_device", "")
         if _dev:
             env["KENNING_EMBEDDER_DEVICE"] = _dev
@@ -5404,6 +5425,18 @@ class Orchestrator:
                 clear_surface_hooks()
             except Exception:                                     # noqa: BLE001
                 pass
+        # FINAL catch-all backstop: reap EVERY remaining descendant of this
+        # process so NO child Ultron spawned (embedder sidecar / MCP / any
+        # helper) can survive shutdown -- behind the targeted reaps above. Runs
+        # on every shutdown path (with-block, SIGINT/SIGTERM, atexit).
+        try:
+            from kenning.subprocess.kill_tree import kill_own_children
+            n = kill_own_children(grace_seconds=3.0)
+            if n:
+                logger.info(
+                    "shutdown backstop: reaped %d residual child process(es)", n)
+        except Exception:                                            # noqa: BLE001
+            pass
 
     # --- main loop -----------------------------------------------------------
 
@@ -9657,17 +9690,36 @@ class Orchestrator:
 
     def _ptt_hold(self) -> None:
         """Hold the team-PTT key for the relay about to play. Fail-safe: no-op
-        when PTT is disabled / no device (NullPttBackend), and never raises."""
+        when the runtime PTT toggle is OFF (STOP-window "PTT" button), when PTT
+        is disabled / no device (NullPttBackend), and never raises. The relay
+        still plays either way -- this only gates the auto key-press."""
+        if not getattr(self, "_ptt_runtime_enabled", True):
+            return
         ptt = getattr(self, "_ptt", None)
         if ptt is not None:
             ptt.hold()
 
     def _ptt_release(self) -> None:
         """Release the team-PTT key after the relay drained. Fail-safe no-op when
-        PTT is disabled / no device; returns immediately (tail handled async)."""
+        PTT is disabled / no device; returns immediately (tail handled async).
+        NOT gated on the runtime toggle -- so a key still held when PTT was just
+        toggled OFF mid-line is always released."""
         ptt = getattr(self, "_ptt", None)
         if ptt is not None:
             ptt.release()
+
+    def _set_ptt_runtime_enabled(self, enabled: bool) -> None:
+        """STOP-window PTT toggle callback: enable/disable Ultron's auto team-mic
+        key-press WITHOUT touching the relay. When turned OFF, release any key
+        held this instant so the mic is never left open."""
+        self._ptt_runtime_enabled = bool(enabled)
+        logger.info("PTT auto key-press %s (runtime toggle)",
+                    "ENABLED" if enabled else "DISABLED")
+        if not enabled:
+            try:
+                self._ptt_release()
+            except Exception:                                        # noqa: BLE001
+                pass
 
     def _stop_watcher_enabled(self) -> bool:
         """Whether to run the wake-word interrupt watcher during playback.

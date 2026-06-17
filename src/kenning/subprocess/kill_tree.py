@@ -346,10 +346,54 @@ def kill_pid_if_alive(
     )
 
 
+def kill_own_children(*, grace_seconds: float = DEFAULT_GRACE_SECONDS) -> int:
+    """Terminate EVERY descendant of the CURRENT process (never self) -- the
+    final shutdown backstop so no child Ultron spawned (embedder sidecar, MCP
+    server, any helper) can survive, even one the targeted reaps missed. Returns
+    the count of descendants reaped. Fail-open (0) when psutil is unavailable."""
+    import os
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001
+        return 0
+    try:
+        me = psutil.Process(os.getpid())
+        kids = me.children(recursive=True)
+    except Exception:  # noqa: BLE001
+        return 0
+    if not kids:
+        return 0
+    grace = _clamp_grace(grace_seconds)
+    for c in kids:
+        try:
+            c.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+    reaped = 0
+    try:
+        gone, alive = psutil.wait_procs(kids, timeout=grace)
+        reaped = len(gone)
+        for p in alive:
+            try:
+                p.kill()
+                reaped += 1
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        for p in kids:
+            try:
+                p.kill()
+                reaped += 1
+            except Exception:  # noqa: BLE001
+                pass
+    return reaped
+
+
 __all__ = [
     "DEFAULT_GRACE_SECONDS",
     "KillTreeResult",
     "MAX_GRACE_SECONDS",
     "kill_pid_if_alive",
     "kill_process_tree",
+    "kill_own_children",
 ]

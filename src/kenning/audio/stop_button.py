@@ -104,6 +104,9 @@ class StopButtonOverlay:
         label: str = "STOP",
         x: int = 60,
         y: int = 60,
+        on_toggle_ptt: Optional[Callable[[bool], None]] = None,
+        ptt_enabled: bool = True,
+        ptt_height: int = 30,
     ) -> None:
         self._on_stop = on_stop
         self._width = max(72, int(width))
@@ -116,6 +119,14 @@ class StopButtonOverlay:
         self._label = label or "STOP"
         self._x = int(x)
         self._y = int(y)
+        # Optional PTT (push-to-talk) toggle row below the STOP button. When
+        # wired, clicking it enables/disables Ultron's auto team-mic key-press
+        # (the relay still plays either way -- this only stops Ultron from
+        # holding the team-PTT key on every line). ``_ptt_enabled`` tracks the
+        # displayed state across show/hide rebuilds.
+        self._on_toggle_ptt = on_toggle_ptt
+        self._ptt_enabled = bool(ptt_enabled)
+        self._ptt_h = max(0, int(ptt_height))
         self._ui: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -182,7 +193,9 @@ class StopButtonOverlay:
             w = self._width
             bar_h = self._bar_h
             btn_h = self._btn_h
-            height = bar_h + btn_h
+            _has_ptt = self._on_toggle_ptt is not None and self._ptt_h > 0
+            ptt_h = self._ptt_h if _has_ptt else 0
+            height = bar_h + btn_h + ptt_h
             root = tk.Tk()
             root.title("ULTRON // STOP")
             root.geometry(f"{w}x{height}+{self._x}+{self._y}")
@@ -209,6 +222,49 @@ class StopButtonOverlay:
                 bar.bind("<Button-1>", _press)
                 bar.bind("<B1-Motion>", _move)
                 bar.bind("<Button-3>", lambda _e: self.hide())
+
+            # PTT toggle -- packed at the BOTTOM (so STOP fills the middle).
+            # Green "PTT ON" = Ultron auto-holds the team-mic key for relays;
+            # grey "PTT OFF" = relay still plays but he never presses the key.
+            if _has_ptt:
+                _on_fg, _on_fill = "#3ddc84", "#0c1f13"      # green = ON
+                _off_fg, _off_fill = "#8a8f98", "#141414"    # grey = OFF
+
+                def _ptt_colors():
+                    return ((_on_fg, _on_fill) if self._ptt_enabled
+                            else (_off_fg, _off_fill))
+
+                _fg0, _fill0 = _ptt_colors()
+                ptt_btn = tk.Button(
+                    root, text=f"PTT {'ON' if self._ptt_enabled else 'OFF'}",
+                    bg=_fill0, fg=_fg0,
+                    activebackground=_fill0, activeforeground="#ffffff",
+                    relief="flat", bd=0, highlightthickness=1,
+                    highlightbackground=_fg0, highlightcolor=_fg0,
+                    font=("Segoe UI Semibold", 9), cursor="hand2",
+                )
+
+                def _toggle_ptt():
+                    self._ptt_enabled = not self._ptt_enabled
+                    fg, fill = _ptt_colors()
+                    try:
+                        ptt_btn.configure(
+                            text=f"PTT {'ON' if self._ptt_enabled else 'OFF'}",
+                            bg=fill, fg=fg, activebackground=fill,
+                            highlightbackground=fg, highlightcolor=fg)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        if self._on_toggle_ptt is not None:
+                            self._on_toggle_ptt(self._ptt_enabled)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("ptt toggle callback failed: %s", e)
+                    logger.info("ptt toggle -> %s",
+                                "ON" if self._ptt_enabled else "OFF")
+
+                ptt_btn.configure(command=_toggle_ptt)
+                ptt_btn.pack(fill="x", side="bottom")
+                ptt_btn.bind("<Button-3>", lambda _e: self.hide())
 
             # The STOP button -- the only visible element: red text + a 1px red
             # border on a near-black face, brightening while hovered/pressed.

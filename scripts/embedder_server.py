@@ -40,6 +40,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Default matches the ISOLATED venv (.venv-embedder has sentence-transformers,
@@ -129,8 +131,75 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
 
+def _pid_alive(pid: int) -> bool:
+    """True iff process ``pid`` is still running. psutil if present, else a
+    ctypes OpenProcess+GetExitCodeProcess check on Windows / os.kill(0) on POSIX.
+    Fail-SAFE: an indeterminate result returns True (never self-kill on doubt)."""
+    if pid <= 0:
+        return True
+    try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except Exception:                                            # noqa: BLE001
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not h:
+                return False            # cannot open -> gone
+            code = wintypes.DWORD()
+            ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+            k.CloseHandle(h)
+            return (not ok) or code.value == STILL_ACTIVE
+        except Exception:                                        # noqa: BLE001
+            return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:                                            # noqa: BLE001
+        return True
+
+
+def _parent_watchdog() -> None:
+    """Self-exit when the parent (Ultron orchestrator) dies, so a force-killed
+    or crashed parent NEVER leaves this embedder as a runaway orphan. The parent
+    PID is passed via KENNING_EMBEDDER_PARENT_PID (fallback: the spawn-time
+    parent). Polls every few seconds; ``os._exit`` skips atexit/locks so the
+    model+VRAM are freed immediately by the OS."""
+    try:
+        ppid = int(os.environ.get("KENNING_EMBEDDER_PARENT_PID", "0") or "0")
+    except Exception:                                            # noqa: BLE001
+        ppid = 0
+    if ppid <= 0:
+        ppid = os.getppid()
+    if ppid <= 0:
+        return
+    sys.stderr.write(f"[embedder] parent-watchdog armed on pid {ppid}\n")
+    sys.stderr.flush()
+    while True:
+        time.sleep(3.0)
+        if not _pid_alive(ppid):
+            sys.stderr.write(
+                f"[embedder] parent pid {ppid} gone -> self-terminating "
+                "(orphan guard)\n")
+            sys.stderr.flush()
+            os._exit(0)
+
+
 def main():
     _load()
+    # Parent-death deadman: the strongest orphan guard -- the child cleans itself
+    # up on ANY parent death (crash, taskkill /F, TerminateProcess), which no
+    # in-parent cleanup can cover.
+    threading.Thread(target=_parent_watchdog, daemon=True,
+                     name="parent-watchdog").start()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), _Handler)
     try:
         server.serve_forever()
