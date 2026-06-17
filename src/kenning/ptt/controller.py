@@ -22,6 +22,7 @@ Robustness:
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from typing import Optional
@@ -51,12 +52,20 @@ class PttController:
         heartbeat_ms: int = 50,
         release_tail_ms: int = 150,
         lead_ms: int = 120,
+        release_jitter_ms: int = 60,
         max_hold_seconds: float = 8.0,
     ) -> None:
         self._backend = backend
         self._hb = max(0.005, heartbeat_ms / 1000.0)
         self._tail = max(0.0, release_tail_ms / 1000.0)
         self._lead = max(0.0, lead_ms / 1000.0)
+        # 2026-06-17 audit: a small RANDOM extra on the release tail so the
+        # key-hold duration is never machine-precise across relays -- a cheap
+        # behavioral-fingerprint reducer for the external HID device. It only ever
+        # EXTENDS the mic-open window (release later, never earlier), so it can
+        # NEVER clip the relay, and it is async (in the driver thread), so it adds
+        # ZERO latency to the voice path. Set to 0 to disable.
+        self._jitter = max(0.0, release_jitter_ms / 1000.0)
         self._max_hold = max(0.1, float(max_hold_seconds))
         self._cv = threading.Condition()
         self._state = _IDLE
@@ -103,7 +112,8 @@ class PttController:
             with self._cv:
                 if self._state in (_HOLDING, _RELEASING):
                     self._state = _RELEASING
-                    self._release_at = time.monotonic() + self._tail
+                    _extra = random.uniform(0.0, self._jitter) if self._jitter else 0.0
+                    self._release_at = time.monotonic() + self._tail + _extra
                     self._cv.notify_all()
         except Exception as e:  # noqa: BLE001
             logger.debug("ptt release failed: %s", e)
@@ -201,6 +211,7 @@ def build_ptt_controller(config=None, *, enabled=None, serial_port=None) -> PttC
             heartbeat_ms=int(getattr(ptt, "heartbeat_ms", 50)) if ptt else 50,
             release_tail_ms=int(getattr(ptt, "release_tail_ms", 150)) if ptt else 150,
             lead_ms=int(getattr(ptt, "lead_ms", 120)) if ptt else 120,
+            release_jitter_ms=int(getattr(ptt, "release_jitter_ms", 60)) if ptt else 60,
             max_hold_seconds=float(getattr(ptt, "max_hold_seconds", 8.0)) if ptt else 8.0,
         )
 

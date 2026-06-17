@@ -975,12 +975,40 @@ class KokoroSpeech:
             gap = np.zeros(
                 int(self._sample_rate * (_gap_ms / 1000.0)), dtype=np.float32,
             )
-            spaced: list[np.ndarray] = []
-            for i, ch in enumerate(audio_chunks):
-                if i > 0:
-                    spaced.append(gap)
-                spaced.append(ch)
-            pcm_f32 = np.concatenate(spaced)
+            # 2026-06-17 BLIP FIX: a raw silence gap between two chunks whose
+            # edges are NOT exactly zero steps abruptly from the chunk's last
+            # sample to 0 (and from 0 to the next chunk's first sample) -- a
+            # discontinuity heard as a CLICK/POP at the callout<->tail boundary
+            # (reported live as a "blip" on most callouts). Cosine-fade the
+            # INTERNAL edges (the chunk end before a gap, the chunk start after a
+            # gap) to/from zero so every gap transition is continuous. The FIRST
+            # chunk's start and the LAST chunk's end are left untouched -- those
+            # are the clip boundaries the trim-fade DSP already handles.
+            _fade_n = min(
+                int(self._sample_rate * 0.010),               # ~10 ms cosine
+                *( [len(c) // 2 for c in audio_chunks] or [0] ),
+            )
+            if _fade_n > 1:
+                _ramp = (0.5 * (1.0 - np.cos(
+                    np.linspace(0.0, np.pi, _fade_n, dtype=np.float32))))
+                _last = len(audio_chunks) - 1
+                _spaced: list[np.ndarray] = []
+                for i, ch in enumerate(audio_chunks):
+                    ch = np.array(ch, dtype=np.float32, copy=True)
+                    if i > 0:                 # fade IN the start (out of the gap)
+                        ch[:_fade_n] *= _ramp
+                        _spaced.append(gap)
+                    if i < _last:             # fade OUT the end (into the gap)
+                        ch[-_fade_n:] *= _ramp[::-1]
+                    _spaced.append(ch)
+                pcm_f32 = np.concatenate(_spaced)
+            else:
+                spaced: list[np.ndarray] = []
+                for i, ch in enumerate(audio_chunks):
+                    if i > 0:
+                        spaced.append(gap)
+                    spaced.append(ch)
+                pcm_f32 = np.concatenate(spaced)
         else:
             pcm_f32 = np.concatenate(audio_chunks)
         # Keep the RAW (pre-DSP) Kokoro output so the spoken-blip check can tell

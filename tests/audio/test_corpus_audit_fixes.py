@@ -521,3 +521,58 @@ class TestUsageLogFlow:
         assert rec["final"] == "Two on A. A flaw."
         assert rec["channel"] == "team_mic"
         assert "ts" in rec
+
+
+# ===========================================================================
+# 2026-06-17 live-testing fixes: wh-question copula inversion, dedicated
+# agent-select (draft) tails, and the natural "{Agent}, {place}." callout form.
+# ===========================================================================
+class TestT617TestingFixes:
+    @pytest.mark.parametrize("text,expected", [
+        # a wh-question whose copula trails the subject is inverted to spoken order
+        ("ask my team where our smokes are", "Where are our smokes?"),
+        ("ask my team what the score is", "What is the score?"),
+        ("ask my team where they are", "Where are they?"),
+        # already in spoken order / no trailing copula -> left verbatim
+        ("ask my team where is Sova", "Where is Sova?"),
+        ("ask my team why they aren't smoking", "Why they aren't smoking?"),
+    ])
+    def test_wh_copula_inversion(self, text, expected) -> None:
+        assert _line(text) == expected
+
+    @pytest.mark.parametrize("text,role", [
+        ("tell my team we need smokes", "We need smokes."),
+        ("tell my team we need an initiator", "We need an initiator."),
+        ("tell my team we need a duelist", "We need a duelist."),
+        ("tell my team we need a sentinel", "We need a sentinel."),
+    ])
+    def test_agent_select_gets_composition_tail(self, text, role) -> None:
+        from kenning.audio.relay_speech import _AGENT_SELECT_TAILS
+        line = _line(text)
+        assert line.startswith(role), line
+        tail = line[len(role):].strip()
+        assert tail in _AGENT_SELECT_TAILS, f"{tail!r} not a draft tail"
+
+    def test_enemy_comp_read_keeps_enemy_tail_not_draft(self) -> None:
+        # "they have no smokes" is an ENEMY comp read, NOT a draft request --
+        # it must NOT get a composition tail.
+        from kenning.audio.relay_speech import _AGENT_SELECT_TAILS
+        line = _line("tell my team they have no smokes")
+        assert line.startswith("They have no smokes."), line
+        assert line[len("They have no smokes."):].strip() not in _AGENT_SELECT_TAILS
+
+    def test_place_bearing_need_is_not_draft(self) -> None:
+        # "we need smokes on A" is in-game UTILITY, not a draft pick.
+        from kenning.audio.relay_speech import _AGENT_SELECT_TAILS
+        line = _line("tell my team we need smokes on A")
+        assert line[len("We need smokes on A."):].strip() not in _AGENT_SELECT_TAILS
+
+    @pytest.mark.parametrize("text,head", [
+        ("tell my team reyna is tree", "Reyna, tree."),
+        ("tell my team jett is heaven", "Jett, heaven."),
+        ("tell my team sova is window", "Sova, window."),
+    ])
+    def test_single_agent_position_uses_comma_form(self, text, head) -> None:
+        line = _line(text)
+        assert line.startswith(head), line
+        assert " is tree" not in line and " is heaven" not in line

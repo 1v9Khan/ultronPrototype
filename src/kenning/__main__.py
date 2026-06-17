@@ -5,7 +5,12 @@ from __future__ import annotations
 import signal
 import sys
 
-from kenning.pipeline import Orchestrator
+# NOTE: the Orchestrator is imported LAZILY inside main() -- AFTER the anticheat
+# import firewall is installed -- so there is no window in which the Orchestrator
+# module's (transitive) import chain could pull a blocked input/capture/automation
+# module before the loader-level block is live (2026-06-17 audit: close the
+# structural pre-firewall import window). Do NOT add a module-top
+# `from kenning.pipeline import Orchestrator` back here.
 from kenning.utils.logging import configure_logging, get_logger
 
 
@@ -45,27 +50,53 @@ def main() -> int:
     configure_logging()
     logger = get_logger("main")
 
-    # 2026-06-15 audit hardening: install the anticheat import firewall as the
-    # VERY FIRST action after logging -- BEFORE the single-instance lock and
-    # BEFORE the Orchestrator is constructed -- so there is NO window in which a
-    # blocked input/capture/automation module could be imported before the
-    # loader-level block is live. The firewall is a NO-OP while anticheat-safe
-    # mode is off (it returns None for every import), so this is free for
-    # non-gaming sessions; and it is idempotent, so the Orchestrator's own
-    # install() later in __init__ is a safe no-op. (The Orchestrator MODULE is
-    # imported at the top of this file -- a load verified to pull zero blocked
-    # libs -- so installing here, before the Orchestrator is *constructed*,
-    # covers the entire heavy __init__.)
+    # 2026-06-15/06-17 audit hardening: install the anticheat import firewall as
+    # the VERY FIRST action after logging -- BEFORE the single-instance lock,
+    # BEFORE the Orchestrator MODULE is even imported (the import is lazy, below),
+    # and BEFORE it is constructed -- so there is NO window in which a blocked
+    # input/capture/automation module could be imported before the loader-level
+    # block is live. The firewall is a NO-OP while anticheat-safe mode is off, so
+    # this is free for non-gaming sessions; it is idempotent (the Orchestrator's
+    # own install() in __init__ is a safe no-op); and on UNCERTAINTY it fails
+    # SAFE (blocks). After install we PROVE it actually enforces (a live blocked-
+    # import probe) and, while anticheat is active, treat a non-enforcing firewall
+    # as FATAL -- we refuse to start rather than run a protected game without the
+    # loader-level backstop.
     try:
-        from kenning.safety.import_firewall import install_import_firewall
+        from kenning.safety.import_firewall import (
+            assert_firewall_enforces,
+            install_import_firewall,
+            is_firewall_installed,
+        )
 
         install_import_firewall()
-    except Exception as e:  # noqa: BLE001 - fail-open at the entry layer
-        logger.error(
-            "anticheat import firewall FAILED to install at entry (%s); the "
-            "Orchestrator will retry and the posture canary will flag a miss -- "
-            "investigate before going live.", e,
+        enforces = assert_firewall_enforces()
+        try:
+            from kenning.safety.anticheat import anticheat_active
+            ac = bool(anticheat_active())
+        except Exception:                                            # noqa: BLE001
+            ac = True  # uncertain -> treat as protected (fail-safe)
+        if ac and (not is_firewall_installed() or not enforces):
+            logger.critical(
+                "anticheat import firewall is NOT enforcing while anticheat-safe "
+                "mode is active -- REFUSING to start (the loader-level block on "
+                "input/capture/automation modules is the safety backstop beside a "
+                "kernel anticheat). Investigate import_firewall before going live."
+            )
+            print("\n[!] Anticheat import firewall not enforcing; refusing to "
+                  "start. See logs.\n")
+            return 4
+    except Exception as e:  # noqa: BLE001
+        # The firewall machinery itself failed to load. While anticheat is the
+        # default posture, this is fatal -- do not boot blind beside Vanguard.
+        logger.critical(
+            "anticheat import firewall FAILED to install/verify at entry (%s) -- "
+            "REFUSING to start; the loader-level block could not be established.",
+            e,
         )
+        print(f"\n[!] Anticheat firewall failed to initialize ({e}); refusing to "
+              "start. See logs.\n")
+        return 4
 
     # 2026-06-12 single-instance guard: two simultaneous `python -m
     # kenning` processes both grab the mic and double-respond (and the
@@ -101,6 +132,11 @@ def main() -> int:
         print("  Local voice-first AI assistant — prototype")
         print("=" * 60)
         print("  Loading models — this can take 1–3 minutes on first run.")
+
+        # Lazy import: the firewall is now installed + verified, so importing the
+        # Orchestrator module (and its transitive chain) happens UNDER the
+        # loader-level block (2026-06-17 audit: no pre-firewall import window).
+        from kenning.pipeline import Orchestrator
 
         try:
             orchestrator = Orchestrator()

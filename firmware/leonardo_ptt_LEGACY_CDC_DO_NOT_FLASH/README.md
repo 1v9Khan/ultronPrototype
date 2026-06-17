@@ -1,3 +1,14 @@
+> # ⛔ DO NOT FLASH THIS FIRMWARE ⛔
+> **This is the LEGACY CDC-serial build. It enumerates with the Arduino VID
+> `0x2341` AND creates a virtual COM port — an Arduino/cheat-device fingerprint
+> Vanguard heuristics may flag.** It is kept only for reference (the `.ino` was
+> renamed to `.ino.DO_NOT_FLASH` so it cannot open as an Arduino sketch).
+>
+> **Flash `firmware/leonardo_ptt_hid/` instead** — the hardened HID-only build:
+> VID `0x1209` (pid.codes), "Generic / USB Keyboard", **no CDC interface, no COM
+> port** → enumerates under *Keyboards* in Device Manager, indistinguishable from
+> a commodity keyboard. Never reflash while Valorant/Vanguard is running.
+
 # Auto push-to-talk firmware (Arduino Leonardo)
 
 Lets Ultron transmit relay callouts on Valorant **team** voice (which is

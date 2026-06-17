@@ -164,7 +164,7 @@ audio:
 # is completely inert. To arm: flash the firmware, set enabled + serial_port.
 push_to_talk:
   enabled: false             # master switch. Env: KENNING_PTT_ENABLED
-  backend: "auto"            # "auto" (HID-only first, then serial) | "rawhid" | "serial"
+  backend: "rawhid"          # "rawhid" (HID-only hardened device; NO serial fallback) | "auto" | "serial". 2026-06-17 audit: pinned to rawhid so PTT can ONLY use the masked HID keyboard (VID 0x1209, no COM port) and NEVER auto-falls-back to the legacy-CDC serial path that scans for the Arduino VID 0x2341. If the hardened device is absent, PTT is inert (NullPttBackend) rather than opening a COM port.
   hid_vid: 0x1209            # HID-only device USB VID (pid.codes open hardware)
   hid_usage_page: 0xFFC0     # vendor Raw-HID command collection (matches firmware/leonardo_ptt_hid)
   serial_port: "auto"        # legacy serial device: "auto" -> detect by USB id; or "COM5". Env: KENNING_PTT_SERIAL_PORT
@@ -172,6 +172,7 @@ push_to_talk:
   key: "6"                   # the in-game team-PTT key the device holds (match your bind + firmware)
   lead_ms: 200               # hold the key this long BEFORE audio (open the channel; never clip the first phoneme). Dead air = imperceptible.
   release_tail_ms: 300       # keep holding this long AFTER the clip drains (device buffer + game codec tail; never clip the last phoneme). Dead air = imperceptible.
+  release_jitter_ms: 60      # 2026-06-17 audit: random 0..60ms EXTRA on the release tail so the HID key-hold duration is never machine-precise (behavioral-fingerprint reducer). Only extends the mic window (never clips); async (zero latency). 0 disables.
   heartbeat_ms: 50           # keep-alive cadence refreshing the firmware hardware deadman
   max_hold_seconds: 8.0      # host watchdog: force-release if a single hold runs longer than this
 

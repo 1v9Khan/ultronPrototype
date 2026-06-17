@@ -1572,15 +1572,26 @@ class Orchestrator:
         runtime ``is_gaming_mode_active()`` (False throughout __init__) and NOT
         ``anticheat_active()`` (a non-gaming anticheat-pinned dev boot must still
         load coding/search). Lean gaming boot is the permanent default; every
-        skip is individually toggleable. Fail-closed to False (keep the
-        subsystem) on any error -- never skip something by accident."""
+        skip is individually toggleable.
+
+        2026-06-17 audit: FAIL-SAFE to SKIP (True) on a config-read error. The
+        prior fail-direction (keep the subsystem) was the wrong fail-safe beside a
+        kernel anticheat -- if the config can't be read we must NOT load a heavy /
+        automation-adjacent subsystem into RAM. A config error here means boot is
+        already degraded; the safe default for a gaming-first system is the lean
+        posture. (The firewall + validator still hard-block any dangerous use even
+        if a subsystem did load, so this is defense-in-depth.)"""
         try:
             from kenning.config import get_config
             gm = get_config().gaming_mode
             return bool(getattr(gm, "engage_at_startup", False)
                         and getattr(gm, flag, True))
-        except Exception:                                            # noqa: BLE001
-            return False
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning(
+                "lean-gaming skip check for %r could not read config (%s) -- "
+                "fail-SAFE: SKIPPING the subsystem (lean posture).", flag, e,
+            )
+            return True
 
     def _start_dialog_poller(self) -> None:
         """Start the UIA DialogPoller -- UNLESS anticheat-safe mode is active.
@@ -1659,11 +1670,16 @@ class Orchestrator:
         bridge_loaded = [m for m in (
             "kenning.openclaw_bridge.browser", "kenning.openclaw_bridge.desktop",
         ) if m in _sys.modules]
-        # The import firewall must be INSTALLED so any future lazy import of a
-        # blocked module is refused at the loader, not merely blocked at call.
+        # The import firewall must be INSTALLED *and ENFORCING* so any future lazy
+        # import of a blocked module is refused at the loader, not merely blocked
+        # at call. 2026-06-17 audit: prove enforcement with a live blocked-import
+        # probe, not just presence on meta_path.
         try:
-            from kenning.safety.import_firewall import is_firewall_installed
-            firewall_ok = bool(is_firewall_installed())
+            from kenning.safety.import_firewall import (
+                assert_firewall_enforces, is_firewall_installed,
+            )
+            firewall_ok = bool(is_firewall_installed()
+                               and assert_firewall_enforces())
         except Exception:                                            # noqa: BLE001
             firewall_ok = False
         poller = getattr(self, "_dialog_poller", None)
@@ -1691,6 +1707,48 @@ class Orchestrator:
                 "installed" if firewall_ok else "off",
                 "running" if poller_running else "not started",
             )
+        # 2026-06-17 audit: DIVERGENCE guardrail. The schema defaults for
+        # testing_mode.enabled and push_to_talk.enabled are False (the safe lean
+        # posture), but the ON-DISK config.yaml / env can carry them ON for
+        # testing. Neither opens a ban-class surface (testing_mode keeps anticheat
+        # ACTIVE -- it only keeps the LLM/TTS on GPU instead of the lean CPU
+        # profile; PTT is external-device I/O only), but they are NON-default and
+        # the user should know before a ranked game. Emit a loud, explicit
+        # reminder whenever they diverge from the safe default while gaming is the
+        # startup intent, so "first boot is safe" never silently rests on a stale
+        # hand-set flag.
+        try:
+            from kenning.config import get_config as _gc
+            _cfg = _gc()
+            _engage = bool(getattr(getattr(_cfg, "gaming_mode", None),
+                                   "engage_at_startup", False))
+            _testing = False
+            try:
+                from kenning.safety.testing_mode import is_testing_mode_active
+                _testing = bool(is_testing_mode_active())
+            except Exception:                                        # noqa: BLE001
+                pass
+            _ptt_on = bool(getattr(getattr(_cfg, "push_to_talk", None),
+                                   "enabled", False))
+            if _engage and (_testing or _ptt_on):
+                _div = []
+                if _testing:
+                    _div.append("testing_mode ON (GPU profile, not the lean CPU "
+                                "gaming profile; usage trace is being written)")
+                if _ptt_on:
+                    _div.append("push_to_talk ENABLED (external USB-HID device "
+                                "presses the team-mic key -- device-I/O only, no "
+                                "synthetic input, but non-default)")
+                logger.warning(
+                    "NON-DEFAULT SAFETY FLAGS LIVE while gaming-engaged: %s. "
+                    "Neither is a ban-class surface (anticheat stays ACTIVE), "
+                    "but the repo-safe defaults are OFF -- revert before a ranked "
+                    "game if you want the fully-lean CPU posture.",
+                    "; ".join(_div),
+                )
+        except Exception:                                            # noqa: BLE001
+            pass
+
         # LEAN GAMING BOOT canary (2026-06-15): when gaming is the startup intent,
         # the non-essential subsystems must NOT have loaded -- PROVE it against
         # sys.modules every boot so a lean-boot gate regression is visible in the

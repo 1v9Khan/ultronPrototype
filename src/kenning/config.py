@@ -3905,6 +3905,12 @@ class PushToTalkConfig(_Strict):
     # clipped. Also dead air (silence on an open mic), so it is imperceptible;
     # only under-holding (a cut-off word) is a real problem.
     release_tail_ms: int = Field(default=300, ge=0, le=2000)
+    # 2026-06-17 audit: a small RANDOM extra (0..this) added to the release tail
+    # so the external HID key-hold duration is never machine-precise across
+    # relays -- a cheap behavioral-fingerprint reducer beside a kernel anticheat.
+    # It only EXTENDS the mic-open window (never clips) and is applied async (zero
+    # voice-path latency). 0 disables.
+    release_jitter_ms: int = Field(default=60, ge=0, le=500)
     # Keep-alive cadence: while held, the host sends a heartbeat byte this often
     # to refresh the firmware's hardware deadman. Must be well under the firmware
     # deadman window (recommend firmware deadman ~= 3-4x this).

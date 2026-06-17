@@ -2696,6 +2696,44 @@ _ECHO_SOUND_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- AGENT-SELECT (draft) role requests --------------------------------------
+# At AGENT SELECT the user asks a teammate to FILL a comp ROLE: "we need smokes",
+# "we need an initiator / a duelist / a sentinel". These get a DEDICATED tail
+# about completing the COMPOSITION -- NOT an in-game tactical command ("Hold the
+# shape and push") and NOT the enemy-comp read ("they have no smokes", which
+# keeps its enemy-contempt tail because it leads with they/enemy). The whole
+# payload must be just "<lead> (a/an/some)? <role>"; a place-bearing variant
+# ("we need smokes on A") is in-game UTILITY, not a draft pick, and is excluded
+# by the end-anchor. 2026-06-17 testing notes.
+_AGENT_SELECT_FULL_RE = re.compile(
+    r"^(?:"
+    r"we\s+(?:need|want|could\s+use|gotta|have\s+to|should\s+(?:get|run|pick))|"
+    r"i\s+(?:need|want)|need|"
+    r"someone\s+(?:go|take|lock|pick|play|run|on)|"
+    r"can\s+(?:someone|anyone)\s+(?:go|play|lock|pick|run|take)|"
+    r"lock(?:\s+in)?|pick|let'?s\s+(?:get|run)|get\s+me|run"
+    r")\s+(?:a\s+|an\s+|some\s+|the\s+)?"
+    r"(?P<role>smokes?|smoker|controller|initiator|duelist|sentinel|flex)\s*$",
+    re.IGNORECASE,
+)
+# Curated, hand-written composition/draft tails (Ultron's cold register). These
+# evoke COMPLETING THE COMP -- deliberately distinct from in-game command tails
+# ("No hesitation", "Hold the shape") and enemy-comp contempt ("A lesser design").
+_AGENT_SELECT_TAILS = (
+    "Complete the composition.",
+    "The draft is unfinished.",
+    "We are one piece short.",
+    "Fill the gap before we lock.",
+    "A team must be whole.",
+    "Round out the design.",
+    "Do not leave the comp lacking.",
+    "Build the better team.",
+    "Choose, and choose well.",
+    "Balance the loadout.",
+    "No composition wins half-formed.",
+    "Then lock it in.",
+)
+
 
 def _as_literal_echo(
     p: str, recent_lines: Optional[Sequence[str]], addressee: str,
@@ -2736,6 +2774,28 @@ _Q_STRONG_LEAD_RE = re.compile(
 )
 _Q_IF_LEAD_RE = re.compile(r"^(?:if|whether)\s+(?P<body>.+)$", re.IGNORECASE)
 
+# 2026-06-17 testing: a wh-question whose copula TRAILS the subject must be
+# inverted to natural spoken order -- "where our smokes are" -> "where ARE our
+# smokes", "what the score is" -> "what IS the score". Only a BARE trailing
+# copula (is/are/was/were/am) with a subject between it and the wh-word fires;
+# everything else is left verbatim ("why they aren't smoking", "how long till
+# her heal", "where is Sova" -> unchanged, already in spoken order).
+_Q_WH_COPULA_INVERT_RE = re.compile(
+    r"^(?P<wh>why|how|where|when|what|whats|who|whom|which|whose)\s+"
+    r"(?P<subj>.+?)\s+(?P<be>is|are|was|were|am)$",
+    re.IGNORECASE,
+)
+
+
+def _wh_copula_invert(pl: str) -> str:
+    """Move a trailing copula to just after the wh-word ("where our smokes are"
+    -> "where are our smokes"). Returns ``pl`` unchanged when there is no bare
+    trailing copula to invert."""
+    m = _Q_WH_COPULA_INVERT_RE.match(pl)
+    if not m:
+        return pl
+    return f"{m.group('wh')} {m.group('be')} {m.group('subj')}".strip()
+
 # Concrete tactical/info tokens that mark a NAMED declarative as an information
 # relay (echo it faithfully) rather than an insult/read (keep the LLM's flavor).
 # 2026-06-17 [173].
@@ -2767,7 +2827,10 @@ def _as_question_relay(p: str) -> Optional[str]:
         return None
     # wh-lead always a question; an aux-lead only when a SUBJECT follows it
     # (so "is not the problem" / "is arguing" stays a declarative, not a question).
-    if _Q_WH_LEAD_RE.match(pl) or _Q_AUX_SUBJECT_RE.match(pl):
+    if _Q_WH_LEAD_RE.match(pl):
+        pl = _wh_copula_invert(pl)        # "where our smokes are" -> "where are our smokes"
+        return pl[0].upper() + pl[1:] + "?"
+    if _Q_AUX_SUBJECT_RE.match(pl):
         return pl[0].upper() + pl[1:] + "?"
     m = _Q_IF_LEAD_RE.match(pl)
     if m and len(m.group("body").split()) <= 6:
@@ -3401,8 +3464,11 @@ def _as_agent_position(p: str) -> Optional[str]:
                       " ", residual, flags=re.IGNORECASE).strip()
     if residual:
         return None
+    # Natural Valorant callout register: "{Agent}, {place}." -- "Reyna is tree"
+    # reads as "Reyna is A tree" (the 3B then riffs on foliage); the comma form is
+    # the canonical spotting call and is unambiguous. 2026-06-17 testing note.
     if len(agents) == 1:
-        return f"{agents[0]} is {place}."
+        return f"{agents[0]}, {place}."
     if len(agents) == 2:
         names = f"{agents[0]} and {agents[1]}"
     else:
@@ -3712,6 +3778,19 @@ def _as_snap_callout(
         q = _as_question_relay(p)
         if q is not None:
             return q
+
+    # --- AGENT-SELECT (draft) role request -> dedicated COMPOSITION tail.
+    #     "we need smokes / an initiator / a duelist / a sentinel" at agent
+    #     select. Distinct from an in-game tactical command and from the enemy
+    #     comp read ("they have no smokes"). A place-bearing variant ("we need
+    #     smokes on A") is in-game util and does NOT match (full-payload anchor). ---
+    if not _is_compound and _AGENT_SELECT_FULL_RE.match(p) and not _ENEMY_LEAD_RE.match(p):
+        base = p.rstrip(".!?,;:")
+        callout = base[0].upper() + base[1:] + "."
+        if not flavor:
+            return callout
+        tail = _pick_lru(list(_AGENT_SELECT_TAILS))
+        return _join_tail(callout, tail) if tail else callout
 
     # --- CAREFUL warnings: 'careful ramp', 'careful flank', 'careful they
     #     could have crossed to ramp' ---
