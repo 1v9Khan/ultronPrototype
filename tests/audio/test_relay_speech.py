@@ -718,6 +718,33 @@ def test_ask_day_snap_team_and_agent() -> None:
     assert c2 is None or getattr(c2, "directive", None) != "ask_day"
 
 
+def test_target_snap_registry_is_data_extensible(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part C target registry: hello/ask-day route through it, and a NEW
+    TargetSnapRule (team + per-agent) auto-routes with NO pipeline code."""
+    import re as _re
+    import kenning.audio.relay_speech as relay_mod
+    import kenning.audio.voice_lines as vl
+
+    # existing target snaps still route + render correctly via the registry.
+    c = relay_mod.match_relay_command("say hello to my team")
+    assert relay_mod.build_relay_line(c, None, rephrase=False) == "Hello team."
+    # append a brand-new target command -> routes for team AND a named agent.
+    rule = vl.TargetSnapRule(
+        "wish_luck",
+        _re.compile(r"^(?:please\s+)?wish\s+(?P<target>.+?)\s+(?:good\s+)?luck",
+                    _re.IGNORECASE),
+        team_lines=("Luck is for the unprepared.",),
+        agent_templates=("{name}. Win anyway.",))
+    monkeypatch.setattr(vl, "TARGET_SNAP_REGISTRY", vl.TARGET_SNAP_REGISTRY + (rule,))
+    ct = relay_mod.match_relay_command("wish my team good luck")
+    assert getattr(ct, "directive", None) == "wish_luck"
+    assert relay_mod.build_relay_line(ct, None, rephrase=False) == \
+        "Luck is for the unprepared."
+    ca = relay_mod.match_relay_command("wish Sova luck")
+    assert relay_mod.build_relay_line(ca, None, rephrase=False) == "Sova. Win anyway."
+
+
 def test_short_hello_does_not_hijack_long_intro() -> None:
     import kenning.audio.relay_speech as relay_mod
 

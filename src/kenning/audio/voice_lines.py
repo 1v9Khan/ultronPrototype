@@ -278,3 +278,42 @@ SNAP_REGISTRY: tuple = (
              lines=DEFAULT_CONSOLATION_LINES),
     SnapRule("praise", _PRAISE_RE, "pool", lines=DEFAULT_PRAISE_LINES),
 )
+
+
+# --- TARGET-BASED snaps ("say hello to <team|agent>", "ask <team|agent> ...") --
+# These take a TARGET (the whole team, or a named agent) the matcher captures as
+# regex group "target" and resolves (relay_speech._resolve_hello_target) to
+# "team" or a canonical agent. Render: team -> a line from ``team_lines``; a named
+# agent -> a ``agent_templates`` entry .format(name=<Agent>). ``skip_if_contains``
+# disqualifies the rule when the full text contains one of these (e.g. "introduce"
+# keeps the LONG team intro on the greet path, not the short hello). Add a new
+# target command by appending ONE TargetSnapRule -- no pipeline code:
+#   TargetSnapRule("wish_luck",
+#       re.compile(r"^(?:please\s+)?wish\s+(?P<target>.+?)\s+(?:good\s+)?luck", re.I),
+#       team_lines=("Luck is for the unprepared. But -- proceed.",),
+#       agent_templates=("{name}. Luck is beneath you. Win anyway.",)),
+
+
+@dataclass(frozen=True)
+class TargetSnapRule:
+    """A snap addressed to a target (team or a named agent) captured by regex."""
+    name: str                         # == RelayCommand.directive
+    match: "re.Pattern"               # must capture group "target"
+    team_lines: tuple = ()            # rendered when target resolves to "team"
+    agent_templates: tuple = ()       # {name} templates for a named agent
+    skip_if_contains: tuple = ()      # phrases (lowercased) that disqualify
+
+
+TARGET_SNAP_REGISTRY: tuple = (
+    TargetSnapRule(
+        "hello", _HELLO_RE,
+        team_lines=("Hello team.",),
+        agent_templates=("Hello, {name}.",),
+        skip_if_contains=("introduce",),
+    ),
+    TargetSnapRule(
+        "ask_day", _ASK_DAY_RE,
+        team_lines=_ASK_DAY_TEAM_LINES,
+        agent_templates=_ASK_DAY_AGENT_TEMPLATES,
+    ),
+)

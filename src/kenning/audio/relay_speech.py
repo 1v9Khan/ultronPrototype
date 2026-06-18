@@ -1518,6 +1518,14 @@ def match_relay_command(
     # game", not a farewell monologue).
     _is_verbatim_cmd = bool(_VERBATIM_SUFFIX_RE.search(cleaned))
 
+    # Part C target-based snaps: DATA-DRIVEN hello / ask-day (+ any user-added
+    # TargetSnapRule in voice_lines.TARGET_SNAP_REGISTRY). First match wins; falls
+    # through to the hardcoded blocks below when disabled or unmatched.
+    if not _is_verbatim_cmd:
+        _treg = _match_target_registry(cleaned, text)
+        if _treg is not None:
+            return _treg
+
     # SHORT hello ("say hello to my team" -> "Hello team."; "say hello to Jett"
     # -> "Hello, Jett.") -- a brief greeting, distinct from the long team intro
     # below. Checked FIRST; skipped when "introduce" is present (that is the long
@@ -2444,6 +2452,65 @@ def _apply_snap_registry(
             return pick_line(rule.lines, recent_lines=recent_lines)
     except Exception as e:                                        # noqa: BLE001
         logger.debug("snap registry skipped (%s); hardcoded fallback", e)
+    return None
+
+
+def _match_target_registry(cleaned: str, text: str):
+    """Part C target-based snaps: iterate ``voice_lines.TARGET_SNAP_REGISTRY`` and
+    return a RelayCommand for the FIRST rule whose regex matches AND whose target
+    resolves to "team" or a known agent. So a new target command (e.g. "wish
+    <agent> luck") is added by appending ONE TargetSnapRule. Returns None to fall
+    through to the hardcoded hello/ask-day below. Gated by KENNING_SNAP_REGISTRY."""
+    import os
+    if os.getenv("KENNING_SNAP_REGISTRY", "1").strip().lower() in (
+        "0", "false", "no", "off",
+    ):
+        return None
+    low = (cleaned or "").lower()
+    try:
+        from kenning.audio.voice_lines import TARGET_SNAP_REGISTRY
+        for rule in TARGET_SNAP_REGISTRY:
+            if any(s in low for s in rule.skip_if_contains):
+                continue
+            m = rule.match.match(cleaned)
+            if not m:
+                continue
+            tgt = _resolve_hello_target(m.group("target"))
+            if tgt is not None:
+                return RelayCommand(
+                    payload=rule.name, raw_text=text, addressee=tgt,
+                    directive=rule.name,
+                )
+    except Exception as e:                                        # noqa: BLE001
+        logger.debug("target registry skipped (%s); hardcoded fallback", e)
+    return None
+
+
+def _render_target_registry(
+    command, recent_lines: Optional[Sequence[str]] = None,
+) -> Optional[str]:
+    """Render a target-based snap from ``voice_lines.TARGET_SNAP_REGISTRY`` by
+    matching ``command.directive``: team -> a ``team_lines`` pick; a named agent
+    -> an ``agent_templates`` pick .format(name=<Agent>). None -> hardcoded
+    fallback. Gated by KENNING_SNAP_REGISTRY."""
+    import os
+    if os.getenv("KENNING_SNAP_REGISTRY", "1").strip().lower() in (
+        "0", "false", "no", "off",
+    ):
+        return None
+    try:
+        from kenning.audio.voice_lines import TARGET_SNAP_REGISTRY
+        directive = getattr(command, "directive", None)
+        tgt = getattr(command, "addressee", "team") or "team"
+        for rule in TARGET_SNAP_REGISTRY:
+            if rule.name != directive:
+                continue
+            if tgt == "team":
+                return pick_line(rule.team_lines, recent_lines=recent_lines)
+            return pick_line(
+                rule.agent_templates, recent_lines=recent_lines).format(name=tgt)
+    except Exception as e:                                        # noqa: BLE001
+        logger.debug("target render skipped (%s); hardcoded fallback", e)
     return None
 
 
@@ -5250,9 +5317,16 @@ def build_relay_line(
     if getattr(command, "verbatim", False) and command.payload:
         return _cap_line(_strip_artifacts(command.payload), max_chars)
 
+    # Part C target-based snaps: DATA-DRIVEN render of hello / ask-day (+ any
+    # user-added TargetSnapRule) from voice_lines.TARGET_SNAP_REGISTRY. Falls
+    # through to the hardcoded renders below when disabled or unmatched.
+    _treg_line = _render_target_registry(command, recent_lines)
+    if _treg_line is not None:
+        return _cap_line(_treg_line, max_chars)
+
     # SHORT hello -- a brief greeting, deterministic (no LLM), distinct from the
     # long team intro (directive="greet"). "Hello team." for the team, "Hello,
-    # <Agent>." for a named agent. 2026-06-18.
+    # <Agent>." for a named agent. 2026-06-18. (Hardcoded fallback for the above.)
     if getattr(command, "directive", None) == "hello":
         _tgt = getattr(command, "addressee", "team") or "team"
         line = "Hello team." if _tgt == "team" else f"Hello, {_tgt}."
