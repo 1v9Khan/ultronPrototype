@@ -427,6 +427,150 @@ def test_play_to_device_closes_stream_on_write_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# team-relay (Valorant) conditioning: _shape_for_team
+# ---------------------------------------------------------------------------
+
+
+def _dbfs(x: np.ndarray) -> float:
+    rms = float(np.sqrt(np.mean(np.square(np.asarray(x, dtype=np.float64)))))
+    return 20.0 * np.log10(max(rms, 1e-12))
+
+
+class TestTeamShaping:
+    """The Valorant team-path conditioning chain. These exercise the helper
+    DIRECTLY (play_to_device only runs it on the live, non-stream_factory path)."""
+
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch, **on: str) -> None:
+        # Master ON; every stage OFF unless explicitly turned on by the caller.
+        monkeypatch.setenv("KENNING_RELAY_TEAM_DSP", "1")
+        for stage in ("KENNING_RELAY_COMMS_FILTER", "KENNING_RELAY_NORMALIZE",
+                      "KENNING_RELAY_COMFORT_NOISE", "KENNING_RELAY_SOFTCLIP"):
+            monkeypatch.setenv(stage, on.get(stage, "0"))
+
+    def test_master_gate_off_is_passthrough(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        monkeypatch.setenv("KENNING_RELAY_TEAM_DSP", "0")
+        x = (0.1 * np.sin(np.linspace(0, 200, 24000))).astype(np.float32)
+        out = relay_mod._shape_for_team(x, 48000)
+        assert np.array_equal(out, x)
+
+    def test_comfort_noise_fills_digital_silence_below_ceiling(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        self._isolate(monkeypatch, KENNING_RELAY_COMFORT_NOISE="1")
+        out = relay_mod._shape_for_team(np.zeros(24000, dtype=np.float32), 48000)
+        # No longer digital zero, but never audible hiss (<= -52 dBFS hard cap;
+        # ~ -58 default).
+        assert -72.0 < _dbfs(out) <= -52.0
+
+    def test_comfort_noise_hard_ceiling_honored(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        self._isolate(monkeypatch, KENNING_RELAY_COMFORT_NOISE="1")
+        monkeypatch.setenv("KENNING_RELAY_NOISE_DBFS", "-6")  # absurd, must clamp
+        out = relay_mod._shape_for_team(np.zeros(24000, dtype=np.float32), 48000)
+        assert _dbfs(out) <= -52.0 + 0.5
+
+    def test_normalize_pulls_quiet_clip_up(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        self._isolate(monkeypatch, KENNING_RELAY_NORMALIZE="1")
+        monkeypatch.setenv("KENNING_RELAY_TARGET_DBFS", "-20")
+        t = np.arange(24000) / 48000.0
+        quiet = (0.01 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+        before, after = _dbfs(quiet), _dbfs(relay_mod._shape_for_team(quiet, 48000))
+        assert after > before + 6.0      # boosted (clamped at +12 dB)
+
+    def test_normalize_gain_is_clamped(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        self._isolate(monkeypatch, KENNING_RELAY_NORMALIZE="1")
+        monkeypatch.setenv("KENNING_RELAY_TARGET_DBFS", "-20")
+        t = np.arange(8000) / 48000.0
+        tiny = (1e-4 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+        out = relay_mod._shape_for_team(tiny, 48000)
+        # +12 dB clamp => at most ~4x, NOT normalized all the way to -20 dBFS.
+        assert float(np.max(np.abs(out))) <= float(np.max(np.abs(tiny))) * 4.0 + 1e-6
+
+    def test_softclip_caps_peaks_at_ceiling(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        self._isolate(monkeypatch, KENNING_RELAY_SOFTCLIP="1")
+        monkeypatch.setenv("KENNING_RELAY_CEILING_DBFS", "-1")
+        hot = (np.ones(2000, dtype=np.float32) * 2.0)   # 2x over full scale
+        out = relay_mod._shape_for_team(hot, 48000)
+        ceil = 10.0 ** (-1.0 / 20.0)
+        assert float(np.max(np.abs(out))) <= ceil + 1e-3
+
+    def test_bandshape_highpass_strips_dc(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        self._isolate(monkeypatch, KENNING_RELAY_COMMS_FILTER="1")
+        out = relay_mod._shape_for_team(
+            np.full(24000, 0.2, dtype=np.float32), 48000)
+        assert abs(float(np.mean(out))) < 0.02     # DC removed by the high-pass
+
+    def test_lowpass_off_by_default_keeps_highs(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        self._isolate(monkeypatch, KENNING_RELAY_COMMS_FILTER="1")
+        monkeypatch.delenv("KENNING_RELAY_LOWPASS_HZ", raising=False)
+        t = np.arange(24000) / 48000.0
+        hi = (0.3 * np.sin(2 * np.pi * 9000 * t)).astype(np.float32)
+        out = relay_mod._shape_for_team(hi, 48000)
+        assert _dbfs(out) > _dbfs(hi) - 3.0        # 9 kHz survives (LP is off)
+
+    def test_lowpass_when_enabled_attenuates_highs(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        self._isolate(monkeypatch, KENNING_RELAY_COMMS_FILTER="1")
+        monkeypatch.setenv("KENNING_RELAY_LOWPASS_HZ", "8500")
+        t = np.arange(24000) / 48000.0
+        hi = (0.3 * np.sin(2 * np.pi * 12000 * t)).astype(np.float32)
+        out = relay_mod._shape_for_team(hi, 48000)
+        assert _dbfs(out) < _dbfs(hi) - 3.0        # 12 kHz cut by the 8.5 kHz LP
+
+    def test_default_chain_raises_floor_and_keeps_length(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        # Full DEFAULT chain (no env set beyond clearing the LP). Speech with
+        # digital-silence gaps, like Kokoro.
+        for v in ("KENNING_RELAY_TEAM_DSP", "KENNING_RELAY_COMMS_FILTER",
+                  "KENNING_RELAY_NORMALIZE", "KENNING_RELAY_COMFORT_NOISE",
+                  "KENNING_RELAY_SOFTCLIP", "KENNING_RELAY_LOWPASS_HZ"):
+            monkeypatch.delenv(v, raising=False)
+        n = 24000
+        t = np.arange(n) / 48000.0
+        x = (0.1 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+        x[: n // 4] = 0.0
+        x[-n // 4:] = 0.0
+        out = relay_mod._shape_for_team(x, 48000)
+        assert out.shape == x.shape
+        assert np.all(np.isfinite(out))
+        # the leading silent quarter now carries the comfort-noise floor.
+        assert _dbfs(out[: n // 8]) > _dbfs(x[: n // 8]) + 10.0
+
+    def test_fail_open_never_raises(self) -> None:
+        import kenning.audio.relay_speech as relay_mod
+
+        for bad in (np.array([], dtype=np.float32),
+                    np.array([np.nan, np.inf, -np.inf, 0.0], dtype=np.float32)):
+            out = relay_mod._shape_for_team(bad, 48000)
+            assert isinstance(out, np.ndarray)
+
+
+# ---------------------------------------------------------------------------
 # resolve_relay_device
 # ---------------------------------------------------------------------------
 

@@ -294,9 +294,13 @@ class ControlPanel:
         # along. Lets the user isolate the loopback tracks with zero risk to the
         # lean-boot / gaming / anticheat defaults.
         self._mute_btn = ttk.Button(
-            bottom, text="APPLY MUTE ONLY", style="Ghost.TButton",
-            command=lambda: self._apply_one(("audio", "mute_speakers")))
+            bottom, text="APPLY MUTE", style="Ghost.TButton",
+            command=lambda: self._apply_mute_value(True))
         self._mute_btn.pack(side="right", padx=8)
+        self._unmute_btn = ttk.Button(
+            bottom, text="APPLY UNMUTE", style="Ghost.TButton",
+            command=lambda: self._apply_mute_value(False))
+        self._unmute_btn.pack(side="right", padx=8)
         self._tick_clock()
 
     def _toggle_gaming(self) -> None:
@@ -461,6 +465,19 @@ class ControlPanel:
             )
         except Exception as e:  # noqa: BLE001
             self._status.configure(text=f"Apply failed: {e}", foreground=ERR)
+
+    def _apply_mute_value(self, mute: bool) -> None:
+        """Force the 'Mute my speakers' knob to ``mute`` and apply ONLY it live --
+        backs the dedicated quick MUTE / UNMUTE buttons. Pins the value first so
+        the user never has to flip the checkbox, then reuses _apply_one so still
+        exactly that one knob is written (no other pending edit rides along)."""
+        var = self._vars.get(("audio", "mute_speakers"))
+        if var is not None:
+            try:
+                var.set(bool(mute))
+            except Exception:  # noqa: BLE001
+                pass
+        self._apply_one(("audio", "mute_speakers"))
 
     def _toggle_pause(self) -> None:
         self._paused = not self._paused

@@ -10,6 +10,39 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: VALORANT TEAM-VOICE AUDIO ROOT-CAUSE FIX (11-agent board) + GUI UNMUTE**
+> (2026-06-18, latest, follows 0b5da79). Ultron's TTS sounded great on the desktop speakers + the OBS
+> mirror but DEGRADED only through Valorant team voice. An 11-agent board (5 research → 5 adversarial →
+> synthesis) ran a **LIVE VoiceMeeter Remote-API probe** and found the smoking gun: the B1 bus (Ultron →
+> Valorant mic) sits at **−21.14 dB** vs B2 (real mic) at **0.0 dB**, while A1 (speakers, same buffer,
+> sounds great) is −4.62 dB. So Vivox's always-on **AGC** applies ~21 dB of makeup gain to Ultron,
+> lifting the codec/quantization noise floor (the gritty/thin sound); a real mic never triggers it (it
+> arrives hot, with a natural broadband noise bed). This explains the user's "volume is the same but
+> quality is bad" — AGC equalizes loudness, the makeup gain wrecks timbre. **DECISIVE fix is MANUAL**
+> (raise the B1 VoiceMeeter fader to match B2). The **code complement** = `relay_speech._shape_for_team`
+> (TEAM-PATH + LIVE-PATH ONLY — placed inside the `stream_factory is None` guard so the 4 `play_to_device`
+> tests are untouched; master gate `KENNING_RELAY_TEAM_DSP`, every stage env-gated + fail-open): rumble
+> high-pass → **static voiced-RMS normalize** to −20 dBFS (one scalar, no pumping; `KENNING_RELAY_TARGET_DBFS`)
+> → **continuous −58 dBFS pinkish comfort-noise floor** across every sample (fills Kokoro's DIGITAL-silence
+> gaps so Vivox's noise-suppressor/VAD stop going "underwater"; hard-capped at −52; `KENNING_RELAY_NOISE_DBFS`)
+> → **zero-latency tanh soft-clip** ceiling (`KENNING_RELAY_CEILING_DBFS`). The old aggressive 7.5 kHz
+> band-pass (`_comms_shape`, now removed) is REPLACED — its low-pass is **off by default**
+> (`KENNING_RELAY_LOWPASS_HZ=0`; it over-darkened an already-dark fine-tune); the 24→native polyphase
+> resample STAYS (the probe confirmed it binds WASAPI 48 kHz, exact 2×, no 44.1 double-convert — the
+> double-resample hypothesis was DISPROVEN). Deliberately AVOIDED (adversarial board): no standalone
+> compressor (stacks with Vivox AGC → pumping), no HF tilt-cut / de-reverb (the voice is dark + baked
+> reverb), no look-ahead limiter or VAD pre-roll prepend (real latency), no forced mono (the mono→stereo
+> widen in `play_to_device` is a B1-VAIO anti-static measure — kept). NEW **`audio/voicemeeter_level.py`**
+> = optional boot-time **level guard** (`KENNING_RELAY_VM_LEVEL_GUARD`, default OFF; ctypes
+> `VoicemeeterRemote64.dll` from the fixed VB path only; reads `Bus[5]/Bus[6].Gain`, warns or — with
+> `KENNING_RELAY_VM_RESTORE` — sets B1 to match B2; touches only VoiceMeeter's own Remote API, never the
+> game; fully fail-open, never blocks boot), wired into orchestrator boot beside the broadcast/monitor
+> configure. **GUI:** `settings_gui/app.py` gained an **APPLY UNMUTE** button beside APPLY MUTE
+> (`_apply_mute_value(bool)` pins + hot-applies only the `audio.mute_speakers` knob). **120/120**
+> `test_relay_speech.py` (12 new `TestTeamShaping`). Restarted clean (lean + anticheat ACTIVE + gaming +
+> PTT armed via .env). config.yaml UNCHANGED. DETAIL → memory
+> `project_valorant_audio_rootcause_2026_06_18.md`.
+>
 > **Validating HEAD: FULL-BATTERY COHERENCE FIX (≈239 cmds, 5 iterations → 239/239 relay,
 > 0 desktop) + GAMING-PERSONA GUARANTEE + SPECULATIVE-DECODING ASSESSMENT** (2026-06-17,
 > latest). Read all 275 turns of `logs/usage_trace.jsonl` line-by-line, then built a replay

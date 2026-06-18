@@ -871,6 +871,20 @@ class Orchestrator:
             _configure_monitor()
         except Exception as e:                                       # noqa: BLE001
             logger.debug("local monitor configure skipped (%s)", e)
+        # 2026-06-18: boot-time VoiceMeeter relay-bus level guard (DEFAULT OFF).
+        # The Valorant team-voice degradation traced to the B1 (Valorant mic) bus
+        # fader sitting ~21 dB below the B2 (real mic) bus, so Vivox's AGC over-
+        # amplified Ultron and lifted the codec noise floor. When enabled
+        # (KENNING_RELAY_VM_LEVEL_GUARD=1) this reads B1 vs B2 via VoiceMeeter's
+        # OWN Remote API and warns (or restores) if B1 drifts low, so the manual
+        # fader fix sticks across scene reloads. Touches only VoiceMeeter, never
+        # the game -- anticheat-clean. Fully fail-open; never blocks boot.
+        try:
+            from kenning.audio.voicemeeter_level import check_relay_bus_level
+
+            check_relay_bus_level()
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("voicemeeter level guard skipped (%s)", e)
         # 2026-06-12: bring up the optional voice waveform overlay (a separate
         # borderless OBS-capturable window that visualizes EVERY spoken line --
         # conversation AND relay). Off unless ``visualizer.enabled``; fail-open

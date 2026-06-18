@@ -5511,6 +5511,160 @@ def resolve_relay_device(configured: Optional[str | int]) -> Optional[int]:
         return None
 
 
+# --- TEAM-RELAY (Valorant) CONDITIONING -------------------------------------
+# Why: the SAME Kokoro PCM sounds great on the desktop speakers and the OBS
+# mirror but degraded through Valorant's team voice. A live VoiceMeeter Remote-
+# API probe found the Valorant mic bus (B1) sitting ~21 dB BELOW the real-mic bus
+# (B2) while the speakers (A1) -- fed the identical buffer -- sound perfect. So
+# Vivox's always-on AGC applies huge makeup gain to Ultron, which lifts the
+# codec/quantization noise floor (the gritty/thin "low quality"). A real mic
+# never triggers this: it arrives at a healthy level WITH a natural broadband
+# noise bed. The DECISIVE fix is a VoiceMeeter fader (raise B1 to match B2); the
+# code below is the team-path-only SOFTWARE complement -- a static level
+# normalize so the AGC stops hunting, a continuous low-level comfort-noise floor
+# so Vivox's noise-suppressor (which mis-fires on Kokoro's DIGITAL-silence gaps)
+# has a sane reference, a rumble high-pass, and a zero-latency soft-clip ceiling.
+# The speaker + OBS feeds NEVER call this -- they stay pristine full-band. Every
+# stage is independently env-gated and fail-open; the whole chain is gated by
+# KENNING_RELAY_TEAM_DSP and runs ONLY on the live path (not the test seam).
+
+
+def _relay_flag(name: str, default: str = "1") -> bool:
+    """Env truthiness for the team-DSP toggles (default given by ``default``)."""
+    import os
+    return os.getenv(name, default).strip().lower() not in (
+        "0", "false", "no", "off", "",
+    )
+
+
+def _relay_float(name: str, default: float) -> float:
+    """Env float for the team-DSP knobs; fail to ``default`` on a bad value."""
+    import os
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:                                            # noqa: BLE001
+        return default
+
+
+def _team_bandshape(x: np.ndarray, sr: int) -> np.ndarray:
+    """Rumble high-pass (cheap, harmless) + an OPTIONAL gentle low-pass.
+
+    The low-pass is OFF by default (KENNING_RELAY_LOWPASS_HZ=0): the Ultron fine-
+    tune is already dark (pitched down, baked reverb), so cutting highs muffles it
+    further -- enable a gentle ~8.5-9 kHz LP only if codec fizz/sibilance is heard.
+    The high-pass (default 100 Hz) strips DC/rumble BEFORE normalize so it can't
+    skew the RMS estimate. Fail-open to the input.
+    """
+    try:
+        from scipy.signal import butter, sosfilt
+        if x.size < 64 or sr < 8000:
+            return x
+        nyq = sr / 2.0
+        hp_hz = _relay_float("KENNING_RELAY_HIGHPASS_HZ", 100.0)
+        lp_hz = _relay_float("KENNING_RELAY_LOWPASS_HZ", 0.0)
+        y = x
+        if hp_hz > 0:
+            sos = butter(2, min(hp_hz, nyq * 0.95) / nyq, btype="highpass",
+                         output="sos")
+            y = sosfilt(sos, y)
+        if lp_hz > 0:
+            sos = butter(2, min(lp_hz, nyq * 0.95) / nyq, btype="lowpass",
+                         output="sos")
+            y = sosfilt(sos, y)
+        return np.asarray(y, dtype=np.float32)
+    except Exception:                                            # noqa: BLE001
+        return x
+
+
+def _team_normalize(x: np.ndarray, sr: int) -> np.ndarray:
+    """Static voiced-frame RMS normalize to a fixed target so Vivox's AGC stops
+    hunting. ONE scalar gain per clip -> zero pumping, zero added color. Masking
+    to voiced samples keeps Kokoro's true-silence gaps from dragging the estimate
+    and over-boosting. Gain clamped to +/-12 dB. Default target -20 dBFS (lets the
+    AGC pull DOWN, gentler than up). Fail-open."""
+    try:
+        target = _relay_float("KENNING_RELAY_TARGET_DBFS", -20.0)
+        target_lin = float(10.0 ** (target / 20.0))
+        gate = 10.0 ** (-50.0 / 20.0)             # voiced gate ~ -50 dBFS
+        mask = np.abs(x) > gate
+        if not bool(mask.any()):
+            return x
+        rms = float(np.sqrt(np.mean(np.square(x[mask]))))
+        if rms < 1e-6:
+            return x
+        gain = float(min(4.0, max(0.25, target_lin / rms)))   # +/-12 dB
+        return (x * gain).astype(np.float32)
+    except Exception:                                            # noqa: BLE001
+        return x
+
+
+def _team_comfort_noise(x: np.ndarray, sr: int) -> np.ndarray:
+    """Add a continuous, very low-level pinkish room-tone floor across EVERY sample
+    (incl. the head/tail/inter-word gaps) so Vivox's noise-suppressor and VAD see a
+    stationary, human-mic-like reference instead of Kokoro's digital zero -- which
+    it over-subtracts into the 'underwater' artifact. Fresh RNG per clip (no
+    periodic tone). Default -58 dBFS, HARD-capped at -52 dBFS so it can never be
+    audible hiss to teammates. Zero latency (vectorized add). Fail-open."""
+    try:
+        from scipy.signal import lfilter
+        n = x.size
+        if n < 64:
+            return x
+        dbfs = min(_relay_float("KENNING_RELAY_NOISE_DBFS", -58.0), -52.0)
+        level = float(10.0 ** (dbfs / 20.0))
+        noise = np.random.default_rng().standard_normal(n).astype(np.float32)
+        # one-pole tilt -> pinkish room tone (not flat white).
+        noise = np.asarray(lfilter([0.15], [1.0, -0.85], noise),
+                           dtype=np.float32)
+        nrms = float(np.sqrt(np.mean(np.square(noise)))) or 1.0
+        noise *= (level / nrms)
+        return (x + noise).astype(np.float32)
+    except Exception:                                            # noqa: BLE001
+        return x
+
+
+def _team_softclip(x: np.ndarray, sr: int) -> np.ndarray:
+    """Memoryless tanh soft-clip ceiling -- the ONLY limiter on this path (a look-
+    ahead brickwall would add real latency). Catches the few peaks normalize +
+    comfort-noise can push up so the int16 cast never HARD-clips (hard clip reads
+    as fuzz through a low-bitrate codec). Default ceiling -1 dBFS. Zero latency.
+    Fail-open."""
+    try:
+        ceil_lin = float(10.0 ** (_relay_float(
+            "KENNING_RELAY_CEILING_DBFS", -1.0) / 20.0))
+        if ceil_lin <= 0:
+            return x
+        return (ceil_lin * np.tanh(x / ceil_lin)).astype(np.float32)
+    except Exception:                                            # noqa: BLE001
+        return x
+
+
+def _shape_for_team(samples: np.ndarray, sr: int) -> np.ndarray:
+    """Team-relay (Valorant) conditioning chain, float32 mono in/out. Order:
+    rumble-HP (+optional LP) -> static RMS normalize -> comfort-noise floor ->
+    soft-clip ceiling. Each stage is independently env-gated; the whole chain is
+    gated by KENNING_RELAY_TEAM_DSP (default ON) and fail-open to the raw input.
+    Used ONLY on the live Valorant team path -- speaker / OBS feeds never call
+    this, so they stay pristine full-band."""
+    x = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if not _relay_flag("KENNING_RELAY_TEAM_DSP", "1"):
+        return x
+    try:
+        # KENNING_RELAY_COMMS_FILTER kept as the band-shape toggle (back-compat:
+        # =0 disables the HP/LP stage, the user's existing A/B switch).
+        if _relay_flag("KENNING_RELAY_COMMS_FILTER", "1"):
+            x = _team_bandshape(x, sr)
+        if _relay_flag("KENNING_RELAY_NORMALIZE", "1"):
+            x = _team_normalize(x, sr)
+        if _relay_flag("KENNING_RELAY_COMFORT_NOISE", "1"):
+            x = _team_comfort_noise(x, sr)
+        if _relay_flag("KENNING_RELAY_SOFTCLIP", "1"):
+            x = _team_softclip(x, sr)
+        return np.asarray(x, dtype=np.float32).reshape(-1)
+    except Exception:                                            # noqa: BLE001
+        return np.asarray(samples, dtype=np.float32).reshape(-1)
+
+
 def play_to_device(
     pcm: np.ndarray,
     sample_rate: int,
@@ -5545,26 +5699,66 @@ def play_to_device(
     """
     if pcm is None or len(pcm) == 0:
         return 0.0
-    data = np.asarray(pcm)
-    if data.dtype != np.int16:
-        clipped = np.clip(data.astype(np.float32), -1.0, 1.0)
-        data = (clipped * 32767.0).astype(np.int16)
-    # Widen mono -> stereo (centered) BEFORE opening the stream. VoiceMeeter
-    # virtual inputs (the relay B1 strip) -- and effectively every output
-    # endpoint on this rig -- are STEREO. A 1-channel stream forces WASAPI's
-    # auto-convert to do a 1->2 channel up-mix ON TOP of the 24k->48k resample,
-    # and that channel conversion is what statics/distorts on the B1 VAIO
-    # endpoint. The OBS/B3 BroadcastSink already pre-widens to stereo and stays
-    # clean; mirror it here so WASAPI only has to resample, not also re-channel.
-    data = np.column_stack((data.reshape(-1), data.reshape(-1)))  # (-1, 2)
+    _src = np.asarray(pcm)
+    # Float mono for clean resampling.
+    if _src.dtype == np.int16:
+        f = (_src.astype(np.float32) / 32768.0).reshape(-1)
+    else:
+        f = np.clip(_src.astype(np.float32), -1.0, 1.0).reshape(-1)
 
-    # Lowest-latency stream for this device (WASAPI low-latency + auto-convert
-    # when available, else MME latency='low'). ``stream_factory`` (test seam)
-    # bypasses the host logic via make_output_stream.
+    # 2026-06-18 TEAM-PATH QUALITY: resample HERE to the team device's NATIVE rate
+    # with a high-quality polyphase filter, then open the stream at THAT rate so
+    # the backend's low-latency auto-convert SRC never touches the signal. The OBS
+    # and speaker paths are lossless / direct, so WASAPI's fast resample is fine
+    # for them -- but the team relay feeds Valorant's UNFORGIVING voice codec,
+    # where the converter's artifacts (inaudible in OBS) get amplified. Unlike a
+    # real 48 kHz hardware mic, Kokoro's 24 kHz output is resampled at all, and on
+    # this rig the "Voicemeeter Input" endpoint can resolve to a 44.1 kHz host
+    # instance -> a 24->44.1 then 44.1->48 (engine) double / non-integer chain.
+    # A clean polyphase resample straight to the device's native rate removes that
+    # whole variable. Fail-open to the source rate (WASAPI auto-convert) on error.
+    out_rate = sample_rate
+    # The resample needs the REAL host device's rate, so it runs only on the live
+    # path; the ``stream_factory`` test seam bypasses host logic (and thus this).
+    if stream_factory is None:
+        try:
+            import sounddevice as _sd
+            from scipy.signal import resample_poly as _rpoly
+            from math import gcd as _gcd
+            _native = int(round(
+                _sd.query_devices(device_index)["default_samplerate"]))
+            if _native and _native != sample_rate and f.size:
+                _g = _gcd(_native, sample_rate)
+                f = _rpoly(f, _native // _g, sample_rate // _g).astype(np.float32)
+                out_rate = _native
+        except Exception as e:                                   # noqa: BLE001
+            logger.debug("team-path native resample skipped (%s); letting the "
+                         "backend auto-convert from %d Hz", e, sample_rate)
+            out_rate = sample_rate
+
+        # Team-relay (Valorant) conditioning -- LIVE PATH ONLY (the
+        # ``stream_factory`` test seam bypasses host logic and thus this). A live
+        # VoiceMeeter probe found the Valorant mic bus ~21 dB below the real-mic
+        # bus, so Vivox's AGC over-amplifies Ultron and lifts the codec noise
+        # floor; this chain (rumble-HP -> RMS normalize -> comfort-noise floor ->
+        # soft-clip) makes the synthetic signal survive Vivox's AGC + noise-
+        # suppressor. Speaker / OBS feeds never reach here. Gated by
+        # KENNING_RELAY_TEAM_DSP; fail-open inside _shape_for_team.
+        f = _shape_for_team(f, out_rate)
+
+    data = (np.clip(f, -1.0, 1.0) * 32767.0).astype(np.int16)
+    # Widen mono -> stereo (centered) BEFORE opening the stream. VoiceMeeter
+    # virtual inputs are STEREO; a 1-channel stream forces a 1->2 up-mix in the
+    # backend that statics on the B1 VAIO endpoint. Pre-widen so the backend has
+    # to do NEITHER a re-channel NOR (after the resample above) a rate conversion.
+    data = np.column_stack((data, data))  # (-1, 2)
+
+    # Open at the (already-matched) native rate so the backend performs no SRC.
+    # ``stream_factory`` (test seam) bypasses host logic via make_output_stream.
     from kenning.audio.devices import make_output_stream
 
     stream = make_output_stream(
-        device_index, sample_rate, 2, "int16", stream_factory=stream_factory,
+        device_index, out_rate, 2, "int16", stream_factory=stream_factory,
     )
     t0 = time.monotonic()
     written = len(data)
@@ -5575,12 +5769,12 @@ def play_to_device(
         else:
             # Chunked write so an "Ultron, stop" can abort the team relay
             # mid-clip. Drop out the moment the cancel flag is set.
-            step = max(1, int(sample_rate * chunk_ms / 1000.0))
+            step = max(1, int(out_rate * chunk_ms / 1000.0))
             written = 0
             for start in range(0, len(data), step):
                 if cancel_event.is_set():
                     logger.info("relay playback cancelled at %.2fs (barge-in)",
-                                written / float(sample_rate))
+                                written / float(out_rate))
                     break
                 chunk = data[start:start + step]
                 stream.write(chunk)
@@ -5591,7 +5785,7 @@ def play_to_device(
             stream.close()
         except Exception:  # noqa: BLE001 - best-effort teardown
             pass
-    seconds = written / float(sample_rate)
+    seconds = written / float(out_rate)
     logger.debug(
         "relay playback: %.2fs audio to device %d in %.2fs",
         seconds, device_index, time.monotonic() - t0,
