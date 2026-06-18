@@ -186,3 +186,87 @@ MULTI_TERMS = {
     "recon dart": "recon dart", "owl drone": "drone", "alarm bot": "alarmbot",
     "nano swarm": "nanoswarm", "trip wire": "tripwire",
 }
+
+
+# ============================================================================
+# SECTION 2 -- NORMALIZATION LAYER 2: PRE-ROUTING COMMAND NORMALIZATION
+# (consumed by kenning.audio.command_normalizer.normalize_command /
+#  recover_relay_lead; edit the "tell my team" RECOGNITION rules here)
+# ============================================================================
+# The lead-recognition rules: which leading words/verbs + team-noun mean "this is
+# a relay to my team". TEAM_NOUN / MANGLED_TELL / TELL_CLASS_VERB are the editable
+# WORD LISTS; the *_RE regexes are built from them. To add a new STT mishear of
+# "tell" (e.g. it keeps hearing "told"), add it to MANGLED_TELL. To accept a new
+# team synonym, add it to TEAM_NOUN.
+#
+# NOTE (this pass): the rest of command_normalizer's rule groups -- scaffold/
+# wrapper strip, disfluency resolver, STT phrase repairs, want/need-team veto --
+# remain in command_normalizer.py (dense, fragment-interwoven; relocating them
+# needs a behavioural diff). They are catalogued in command_normalizer's section
+# headers; this section holds the highest-traffic, most-edited lead rules.
+
+import re
+
+NORM2_TEAM_NOUN = r"(?:team|teammates?|squad|boys|guys|mates|crew|fellas|homies)"
+# Known mis-hears + casual variants of "tell" when a TEAM addressee follows.
+# "call out", "give", "share", "drop", "ask", "relay" are real relay verbs with
+# their own downstream handling and are NOT here -- only the wrong-word leads
+# that otherwise leak or fall to desktop. A team noun MUST follow.
+NORM2_MANGLED_TELL = (
+    r"calls?|called|holds?|help|helps|helped|builds?|build|follows?|kills?|"
+    r"while|how|puts?|don'?t|without|all|tale|tales|fell|filled|hail|paul|"
+    r"y'?all|told|sell|tal|tel|kel|whilst|hauled|valorant|tellin'?|telling|"
+    # "hope"/"hoped" observed as STT mishears of "tell" before a team addressee
+    # ("hope my team nice try" == "tell my team nice try"); "I hope my team wins"
+    # opens with "I" so the ^-anchored lead never fires. NOT "give" (real verb).
+    r"hope|hopes|hoped"
+)
+# A canonical, already-correct team lead.
+NORM2_TELL_CLASS_VERB = (
+    r"tell|say|let|warn|inform|remind|announce|broadcast|yell|shout")
+
+NORM2_MANGLED_TEAM_LEAD_RE = re.compile(
+    rf"^\s*(?:{NORM2_MANGLED_TELL})\s+(?:my|the|a|our)\s+{NORM2_TEAM_NOUN}\b[\s,:.]*",
+    re.IGNORECASE,
+)
+NORM2_IRREGULAR_TEAM_LEAD_RE = re.compile(
+    rf"^\s*(?:"
+    rf"i\s+(?:just\s+|already\s+)?told\s+(?:my|the|our)\s+{NORM2_TEAM_NOUN}"
+    rf"|(?:that'?s|this\s+is)\s+(?:the\s+)?team(?:\s+that)?"
+    rf")\b[\s,:.]*",
+    re.IGNORECASE,
+)
+NORM2_TELL_TEAM_LEAD_RE = re.compile(
+    rf"^\s*(?:please\s+)?(?:{NORM2_TELL_CLASS_VERB})\s+(?:to\s+)?"
+    rf"(?:my\s+|our\s+|the\s+)?{NORM2_TEAM_NOUN}\b(?:\s+know)?[\s,:.]*",
+    re.IGNORECASE,
+)
+
+
+# ============================================================================
+# SECTION 3 -- ROUTING / SEMANTICS
+# (the semantic command router commits an utterance to a FAMILY when the top
+#  family clears a threshold AND beats the runner-up by a margin AND isn't the
+#  conversational anchor)
+# ============================================================================
+# EDITABLE TUNING KNOBS (relocated here from command_router.py, where they were
+# hardcoded). Lower a family's threshold to make it commit more eagerly; raise it
+# to require more confidence. The margin is the min lead over the runner-up.
+ROUTE_DEFAULT_THRESHOLD = 0.50     # min top-family score to commit
+ROUTE_DEFAULT_MARGIN = 0.06        # min (top - runner_up) to commit
+ROUTE_FAMILY_THRESHOLDS = {        # per-family overrides of the default
+    "identity": 0.55,
+    "spotify": 0.50,
+    "team_callout": 0.48,
+    "desktop_refuse": 0.50,
+}
+
+# The ROUTING EXEMPLARS (phrases that define each family) + the relay-intent gate
+# exemplars are large, already-clean DATA modules; to keep this aggregate's import
+# graph minimal (it loads very early via _stt_correct) they are NOT imported here.
+# Edit them in their dedicated files -- this map is the index:
+#   * family -> exemplar phrases ........ kenning/audio/_command_exemplars.py
+#       (FAMILIES, ABSTAIN_FAMILIES, DETERMINISTIC_FAMILIES). To ADD a routable
+#        command family or grow one, add exemplar phrases there.
+#   * relay-intent gate exemplars ....... kenning/audio/_relay_intent.py
+#       (RELAY_POSITIVE_EXEMPLARS / RELAY_NEGATIVE_EXEMPLARS + gate threshold).

@@ -42,16 +42,15 @@ logger = get_logger("audio.command_router")
 # hybrid (lexical+embedding) backend; the research is emphatic that the real
 # values are encoder-specific and must be tuned on REAL transcripts. Bias: a
 # family must be clearly the best (margin) AND clearly relevant (threshold).
-_DEFAULT_THRESHOLD = 0.50          # min top-family score to commit
-_DEFAULT_MARGIN = 0.06             # min (top - runner_up) to commit
-# Optional per-family threshold overrides (identity phrasings are tight + score
-# high; callouts are multi-modal + score lower, so a slightly lower floor).
-_FAMILY_THRESHOLDS: Dict[str, float] = {
-    "identity": 0.55,
-    "spotify": 0.50,
-    "team_callout": 0.48,
-    "desktop_refuse": 0.50,
-}
+# 2026-06-18 Part B: the routing TUNING KNOBS (default threshold, margin, and the
+# per-family threshold overrides) are relocated to the routing aggregate
+# kenning.audio.routing_rules (Section 3) -- edit them THERE. Imported here
+# (aliased to the existing private names); the routing logic below is unchanged.
+from kenning.audio.routing_rules import (  # noqa: E402
+    ROUTE_DEFAULT_THRESHOLD as _DEFAULT_THRESHOLD,
+    ROUTE_DEFAULT_MARGIN as _DEFAULT_MARGIN,
+    ROUTE_FAMILY_THRESHOLDS as _FAMILY_THRESHOLDS,
+)
 
 
 @dataclass

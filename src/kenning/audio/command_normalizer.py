@@ -139,49 +139,19 @@ def _strip_leading_junk(s: str) -> str:
 # ("tell my team Call my team X") -- to a single "tell my team " lead BEFORE the
 # scaffold/gate pipeline. Anchored strictly on "<word> (my|the|a) team" (or the
 # explicit irregular recounts) so ordinary speech is never touched.
-_TEAM_NOUN = r"(?:team|teammates?|squad|boys|guys|mates|crew|fellas|homies)"
-# Known mis-hears + casual variants of "tell" when a TEAM addressee follows.
-# "call out", "give", "share", "drop", "ask", "relay" are real relay verbs with
-# their own downstream handling and are NOT here -- only the wrong-word leads
-# that otherwise leak or fall to desktop. A team noun MUST follow, so a real
-# action that merely opens with one of these words ("hold A", "help me",
-# "follow him") is never rewritten.
-_MANGLED_TELL = (
-    r"calls?|called|holds?|help|helps|helped|builds?|build|follows?|kills?|"
-    r"while|how|puts?|don'?t|without|all|tale|tales|fell|filled|hail|paul|"
-    r"y'?all|told|sell|tal|tel|kel|whilst|hauled|valorant|tellin'?|telling|"
-    # 2026-06-18: "hope"/"hoped" observed as STT mishears of "tell" before a
-    # team addressee ("hope my team nice try" == "tell my team nice try"). Safe:
-    # there is no legitimate "hope (my|the) team X" COMMAND, and a genuine musing
-    # ("I hope my team wins") opens with "I", so the ^-anchored lead never fires.
-    # NOT added: "give" -- it is a real relay verb with its own encouragement /
-    # fun-fact / roast handlers ("give my team some encouragement").
-    r"hope|hopes|hoped"
-)
-_MANGLED_TEAM_LEAD_RE = re.compile(
-    rf"^\s*(?:{_MANGLED_TELL})\s+(?:my|the|a|our)\s+{_TEAM_NOUN}\b[\s,:.]*",
-    re.IGNORECASE,
-)
-# Irregular declarative recounts -> a relay the streamer is narrating. "I told my
-# team X" is unambiguously a relay (past-tense recount); "I want/need my team X"
-# is left to _WANT_TEAM (it has a musing veto). "that's/this is (the) team [that]"
-# is the mis-heard "tell (the) team".
-_IRREGULAR_TEAM_LEAD_RE = re.compile(
-    rf"^\s*(?:"
-    rf"i\s+(?:just\s+|already\s+)?told\s+(?:my|the|our)\s+{_TEAM_NOUN}"
-    rf"|(?:that'?s|this\s+is)\s+(?:the\s+)?team(?:\s+that)?"
-    rf")\b[\s,:.]*",
-    re.IGNORECASE,
-)
-# A canonical, already-correct team lead. "ask"/"relay to" are INCLUDED so their
-# verb is preserved (their question/named semantics matter) while junk stacked
-# AFTER them is still stripped. det is OPTIONAL ("tell team they are defaulting").
-_TELL_CLASS_VERB = (
-    r"tell|say|let|warn|inform|remind|announce|broadcast|yell|shout")
-_TELL_TEAM_LEAD_RE = re.compile(
-    rf"^\s*(?:please\s+)?(?:{_TELL_CLASS_VERB})\s+(?:to\s+)?"
-    rf"(?:my\s+|our\s+|the\s+)?{_TEAM_NOUN}\b(?:\s+know)?[\s,:.]*",
-    re.IGNORECASE,
+# 2026-06-18 Part B: the lead-recognition RULES (team-noun word list, mangled-
+# "tell" mishear list, tell-class verbs, and their lead regexes) are relocated to
+# the routing aggregate kenning.audio.routing_rules (Section 2) -- edit them
+# THERE. Imported here (aliased to the existing private names); the consuming
+# functions below are UNCHANGED. Behaviour byte-for-byte identical (proven by
+# scripts/_voice_lines_verify.py via the regex .pattern digests).
+from kenning.audio.routing_rules import (  # noqa: E402
+    NORM2_TEAM_NOUN as _TEAM_NOUN,
+    NORM2_MANGLED_TELL as _MANGLED_TELL,
+    NORM2_TELL_CLASS_VERB as _TELL_CLASS_VERB,
+    NORM2_MANGLED_TEAM_LEAD_RE as _MANGLED_TEAM_LEAD_RE,
+    NORM2_IRREGULAR_TEAM_LEAD_RE as _IRREGULAR_TEAM_LEAD_RE,
+    NORM2_TELL_TEAM_LEAD_RE as _TELL_TEAM_LEAD_RE,
 )
 _ANY_TEAM_LEAD_OUTER_RE = re.compile(
     rf"^\s*(?:please\s+)?(?:{_TELL_CLASS_VERB}|ask|relay(?:\s+to)?)\s+(?:to\s+)?"
