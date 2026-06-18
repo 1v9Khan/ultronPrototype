@@ -2448,7 +2448,10 @@ def _apply_snap_registry(
             if rule.kind == "head_tail":
                 head = (m.group(1) if m.groups() else text).strip()
                 head = head[:1].upper() + head[1:].lower()
-                return f"{head}. {pick_line(rule.tails, recent_lines=recent_lines)}"
+                # via _join_tail so the flavor-tail toggle is the SINGLE chokepoint
+                # (identical when flavor on; head-only when off).
+                return _join_tail(
+                    head, pick_line(rule.tails, recent_lines=recent_lines))
             return pick_line(rule.lines, recent_lines=recent_lines)
     except Exception as e:                                        # noqa: BLE001
         logger.debug("snap registry skipped (%s); hardcoded fallback", e)
@@ -2523,7 +2526,7 @@ def _as_consolation_or_praise(
         head = m.group(1).strip()
         head = head[:1].upper() + head[1:].lower()      # "nice try" -> "Nice try"
         tail = pick_line(_NICE_TRY_TAILS, recent_lines=recent_lines)
-        return f"{head}. {tail}"
+        return _join_tail(head, tail)                   # single flavor chokepoint
     if _CONSOLATION_RE.match(text):
         return pick_line(DEFAULT_CONSOLATION_LINES, recent_lines=recent_lines)
     if _PRAISE_RE.match(text):

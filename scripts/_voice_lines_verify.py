@@ -54,9 +54,20 @@ def _val_digest(v):
     """A stable, comparable representation of a value we care about."""
     if isinstance(v, re.Pattern):
         return {"kind": "regex", "pattern": v.pattern, "flags": int(v.flags)}
+    # bool is an int subclass -- check first so it isn't digested as a number.
+    if isinstance(v, bool):
+        return {"kind": "bool", "value": v}
+    if isinstance(v, (int, float)):
+        # relocated numeric knobs (routing thresholds/margins) live here.
+        return {"kind": "num", "value": v}
     if isinstance(v, (tuple, list)):
         if v and all(isinstance(x, str) for x in v):
             return {"kind": "seq", "items": list(v)}
+        # data-driven registries: tuples of frozen dataclasses (SnapRule /
+        # TargetSnapRule). repr() is stable (dataclass repr + regex repr) so a
+        # reordered/dropped/rewired rule is caught.
+        if v and all(hasattr(x, "__dataclass_fields__") for x in v):
+            return {"kind": "dataclass_seq", "repr": repr(v)}
         return None
     if isinstance(v, frozenset) or isinstance(v, set):
         if v and all(isinstance(x, str) for x in v):
@@ -120,6 +131,11 @@ def main() -> int:
                  for k in d}
     # A symbol may legitimately move modules; compare by (value) presence too.
     for (m, k) in sorted(names_base):
+        # An import FAILURE marker is not data -- ignore it so a from-scratch
+        # relocation (baseline before a new aggregate module exists) doesn't
+        # report a spurious MISSING ...__import_error__ diff.
+        if k == "__import_error__":
+            continue
         bv = base[m][k]
         cv = cur.get(m, {}).get(k)
         if cv is None:

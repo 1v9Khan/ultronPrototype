@@ -29,19 +29,26 @@ HOW IT MAPS (category -> trigger -> matcher -> response pool -> flavor tail):
   farewell        "say bye to my team"               (relay_speech._FAREWELL_RE)      DEFAULT_FAREWELL_/VICTORY_/DEFEAT_LINES
   identity        "are you a bot"                     (relay_speech identity pools)    DEFAULT_IDENTITY_LINES
 
-PHYSICALLY HERE (moved out of relay_speech.py): the social-snap regexes + pools
-listed above with a leading ``_``.  RE-EXPORTED here (the canonical curated pools
-live in their category modules, re-exposed so this file is the single import
-surface -- edit them in the file named):
-  * DEFAULT_*_LINES            -> kenning/audio/_ultron_setpieces.py
-  * AGENT_FLAVOR (1,628 tails) -> kenning/audio/_agent_flavor.py  (script-generated/audited)
+PHYSICALLY HERE (moved out of relay_speech.py, edit BELOW): the social-snap
+regexes + pools listed above with a leading ``_``, plus SNAP_REGISTRY /
+TARGET_SNAP_REGISTRY.
+
+RE-EXPORTED HERE (actually imported into this module, so `from voice_lines import
+X` works AND it is `is`-identical to the source -- edit at the SOURCE file):
+  * DEFAULT_*_LINES            <- kenning/audio/_ultron_setpieces.py
+  * AGENT_FLAVOR (1,628 tails) <- kenning/audio/_agent_flavor.py  (script-generated/audited)
+
+INDEXED ONLY (NOT imported here -- to keep this early-loaded module's import graph
+minimal; EDIT THEM IN THE FILE NAMED, this is just the map):
   * command responses          -> kenning/audio/_ultron_commands.py
   * social-reaction pools       -> kenning/audio/_ultron_social.py
   * identity pools             -> kenning/audio/_ultron_identity.py
   * shared callout-tail pools   -> kenning/audio/_ultron_pools.py
 
-To ADD/EDIT a social snap: edit its regex + lines below. (Part C will let you
-add a whole new command by appending a registry entry -- no code.)
+To ADD/EDIT a social snap: edit its regex + lines below. To ADD A WHOLE COMMAND
+with no pipeline code: append a SnapRule (payload snap) or TargetSnapRule (target
+snap) to the registries at the bottom of this file -- see the worked example +
+the PRECEDENCE note there.
 """
 from __future__ import annotations
 
@@ -247,15 +254,19 @@ _THANK_YOU_TAILS = (
 #                        as the head + a random ``tails`` line:
 #                        "Nice try."  +  "We take the next."
 #
-# EXAMPLE -- add a "tell my team well played" snap:
+# EXAMPLE -- add a "tell my team execute" snap (a trigger NO existing rule matches):
 #   SnapRule(
-#       name="well_played",
-#       match=re.compile(r"^\s*(well\s+played|good\s+game|wp|gg\s+wp)\b", re.I),
+#       name="execute",
+#       match=re.compile(r"^\s*(execute|run it|go time|it'?s time)\b", re.I),
 #       kind="pool",
-#       lines=("Well played. The design held.", "Acceptable. Do it again."),
+#       lines=("Execute. The outcome is decided.", "Now. No hesitation."),
 #   ),
-# ...and it routes immediately. ORDER matters: put a more specific rule (e.g.
-# "nice try") BEFORE a broader one ("consolation") that would also match.
+# PRECEDENCE: rules are tried IN ORDER and the FIRST regex that matches wins, so
+# APPENDING only works if no earlier rule already matches your trigger. e.g. a
+# "well played" rule would NEVER fire if appended, because the `praise` rule above
+# already matches "well played"/"good game"/"gg" -- INSERT such a rule BEFORE the
+# broader one instead of appending. When in doubt, pick a trigger no existing rule
+# claims (check the regexes above).
 from dataclasses import dataclass
 
 
