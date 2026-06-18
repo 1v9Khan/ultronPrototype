@@ -10,6 +10,36 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: ROUTING/NORMALIZATION + LLM AGGREGATES + TARGET REGISTRY + 5-LENS REVIEW**
+> (2026-06-18, latest). The aggregate system was extended to TWO more single-edit-place files,
+> each a separate pushed, INDEPENDENTLY-REVERTIBLE checkpoint, all proven byte-for-byte by
+> `scripts/_voice_lines_verify.py` (now also covers numeric knobs + the dataclass registries;
+> 351 symbols):
+> - **`audio/routing_rules.py`** (tag `checkpoint/routing-rules`, `e014af0`): the
+> normalization + routing rules. **§1** STT vocab correction (gazetteers + mishear maps +
+> protection sets; consumed by `_stt_correct`). **§2** the "tell my team" lead-recognition
+> rules (`NORM2_*`; consumed by `command_normalizer`). **§3** the routing commit thresholds
+> (`ROUTE_DEFAULT_THRESHOLD/MARGIN/FAMILY_THRESHOLDS`; consumed by `command_router`) + an index
+> to the exemplar modules left in place. The agent gazetteer is now the SINGLE source of truth
+> (`voice_lines` resolves "hello `<agent>`" through the map derived from it — the cross-aggregate
+> overlap, resolved by pulling from routing_rules).
+> - **`audio/llm_prompts.py`** (tag `checkpoint/llm-prompts`, `aa1e9db`): everything fed to the
+> LLM — `ULTRON_GAMING_PERSONA` + the adaptive ANSWER persona/rule blocks + `ANSWER_SYSTEM_FOR`,
+> with a construction-site index. `_REPHRASE_PROMPT` (~120-line f-string) + the config.yaml base
+> persona are indexed-in-place (documented edit site), not retyped.
+> - **TARGET registry** (`04073f1`): `TargetSnapRule` + `TARGET_SNAP_REGISTRY` +
+> `_match_target_registry`/`_render_target_registry` make hello / ask-day data-driven — a new
+> "say/ask `<team|agent>` …" command is one appended entry, no code. Additive + flag-gated
+> (`KENNING_SNAP_REGISTRY`); hardcoded paths remain as fallback.
+> - **5-LENS REVIEW + P0 fixes** (`6f7f812`): a review board (correctness/completeness/
+> extensibility/readability/safety) did a LIVE-object diff (0 behavior change, 318/318 identical)
+> and found 4 must-fixes, all applied: harness now digests numeric knobs + the dataclass
+> registries + ignores the `__import_error__` false-positive; both nice-try renders routed
+> through `_join_tail` (true single flavor-toggle chokepoint); voice_lines docstring made honest
+> (re-exported-vs-indexed) + the broken `well_played` SnapRule example replaced + a PRECEDENCE
+> note added. ~141 relay/wake tests green. DETAIL → memory
+> `project_voice_lines_aggregate_2026_06_18.md`.
+>
 > **Validating HEAD: VOICE-LINES AGGREGATE (Part B) + DATA-DRIVEN SNAP REGISTRY (Part C) + new
 > social snaps** (2026-06-18, latest). Three pushed, INDEPENDENTLY-REVERTIBLE git checkpoints:
 > - **Checkpoint 0 `21f3c7e`** (pre-refactor baseline): `__main__._ResilientStream` — a redirected/
