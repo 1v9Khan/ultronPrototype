@@ -7369,6 +7369,11 @@
 "kind": "regex",
 "pattern": "^\\s*(?:(?:i\\s+(?:can\\s+)?)?hear\\b|i\\s+heard\\b|footsteps\\b|(?:they|they're|the\\s+enemy|enemy|enemies)\\s+(?:have|has|had|got|bought|saved|sold|forced|forcing|are\\s+saving|are\\s+forcing|need|needs|never|always|crossed|cross|tripped|will|won'?t|are\\s+all|are\\s+off|could\\s+be|might\\s+be|may\\s+be|wrapped|wrapping|re-?hit|committing|splitting)\\b|(?:there\\s+(?:are|is)\\s+)?(?:one|two|three|four|five|six|\\d+)\\s+\\w|(?:my\\s+|their\\s+|our\\s+|the\\s+)?(?:Astra|Breach|Brimstone|Chamber|Clove|Cypher|Deadlock|Fade|Gekko|Harbor|Iso|Jett|KAYO|Killjoy|Neon|Omen|Phoenix|Raze|Reyna|Sage|Skye|Sova|Viper|Vyse|Yoru|Tejo|Waylay|Miks|Veto)\\b.*\\b(?:main|site|long|short|mid|heaven|hell|window|garage|tree|cat|plat|connector|link|ramp|market|sewer|spawn|cubby|elbow|pit|rafters|stairs|ult|ulted|ulting|walled|smoked|flashed|darted|caged|stunned|droned|naded|mollied|half|low|one\\s+shot|dead|down|cracked|tree|nest|snake|baiting|baited|baits|flanking|lurking|peeking|rotating|pushing)\\b|spike\\b)"
 },
+"_TEAM_AS_SUBJECT_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^\\s*(?:my\\s+|our\\s+|the\\s+)?(?:team|teammates?|squad|boys|guys|mates|crew|duo)\\s+(?:is|are|was|were|'?s|'?re|keeps?|kept|just|already|has|have|had|wants?|wanted|said|says|asked|asking|started|stopped|won'?t|can'?t|cannot|gets?|got|been|being|\\w+ing)\\b"
+},
 "_TEAM_LEAD": {
 "flags": 34,
 "kind": "regex",
@@ -8179,7 +8184,7 @@
 },
 "_ASK_LEAD": {
 "kind": "str",
-"value": "(?:to|for|if|whether|why|how|what|when|where|who)"
+"value": "(?:to|for|if|whether|why|how|what|when|where|who|about)"
 },
 "_ASK_OPEN_RE": {
 "flags": 34,

@@ -799,7 +799,10 @@ _COMPLIMENT_RE = re.compile(
 # match; question words are KEPT so the rephrase delivers a question
 # ("ask my clove why she is not smoking window" -> "Clove, why aren't
 # you smoking window?").
-_ASK_LEAD = r"(?:to|for|if|whether|why|how|what|when|where|who)"
+# 2026-06-18 audit F4: include "about" so "ask my Cypher about his cage" /
+# "ask Sage about the retake" relay a topic question to the named agent (these
+# were MISSED -- the payload prefix only accepted bare question words).
+_ASK_LEAD = r"(?:to|for|if|whether|why|how|what|when|where|who|about)"
 
 
 @functools.lru_cache(maxsize=8)

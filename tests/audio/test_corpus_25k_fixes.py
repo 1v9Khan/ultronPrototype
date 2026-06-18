@@ -152,3 +152,27 @@ def test_f3_genuine_doubled_team_lead_still_strips():
     # collapse the doubled relay verb (no copula after the team noun).
     out = _strip_scaffold("my team tell them rotate to B")
     assert out.lower().startswith("tell my team") or "rotate to B" in out
+
+
+# ---------------------------------------------------------------------------
+# F4: "ask <agent> about <topic>" is a topic-question relay to that agent. It
+# was MISSED because the named-ask payload prefix only accepted bare question
+# words (if/whether/why/how/...), not "about".
+# ---------------------------------------------------------------------------
+
+
+def test_f4_ask_agent_about_topic_relays():
+    from kenning.audio.command_normalizer import normalize_command
+    from kenning.audio.relay_speech import match_relay_command
+    for t, agent in [
+        ("ask my cypher about his cage near window", "Cypher"),
+        ("ask Sage about the retake plan", "Sage"),
+        ("ask my sova about the dart timing", "Sova"),
+    ]:
+        cmd = match_relay_command(normalize_command(t))
+        assert cmd is not None, t
+        assert cmd.addressee == agent, (t, cmd.addressee)
+        assert cmd.payload.startswith("about"), (t, cmd.payload)
+    # existing question-word asks must STILL work.
+    cmd = match_relay_command(normalize_command("ask Sage if she has her ult"))
+    assert cmd is not None and cmd.addressee == "Sage"
