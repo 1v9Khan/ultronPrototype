@@ -868,7 +868,13 @@ web_search:
 # ---------------------------------------------------------------------------
 
 addressing:
-  follow_up_enabled: true
+  # 2026-06-18: WAKE WORD REQUIRED. The wake-free follow-up window armed after
+  # every turn and captured room/stream/teammate speech (live log: 114 follow-up
+  # captures, the flan-t5 gate the only filter -- and it mis-accepted "Okay." /
+  # "Why is it suddenly running like this" as ADDRESSED -> unprompted replies).
+  # Off => every turn must start with the wake word; the follow-up window never
+  # arms and the classifier never runs. Flip back to true to re-enable it.
+  follow_up_enabled: false
   # CONFIRMED 30 s (NOT the Foundation prompt's 10 s) — user override per
   # memory/feedback_kenning_extension.md. Don't re-tighten without asking.
   warm_mode_duration_seconds: 30.0

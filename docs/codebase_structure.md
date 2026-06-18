@@ -10,6 +10,26 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: WAKE WORD REQUIRED (follow-up window OFF)** (2026-06-18, latest, follows
+> 6740cb4). Live-log investigation of "Ultron responded without a wake word, and sometimes missed a
+> wake command." Read `logs/kenning.log` by hand: the **false positives** were the wake-free follow-up
+> window — `addressing.follow_up_enabled: true` armed a 120 s window after every turn that captured
+> room/stream/teammate speech (**114** follow-up captures in one session), gated only by the weak
+> flan-t5 zero-shot addressee classifier, which **mis-accepted** un-addressed lines ("Okay." conf 0.83,
+> "Why is it suddenly running like this" 0.85) as ADDRESSED → unprompted replies (and rejected 92, so it
+> was both leaky and noisy). FIX (per the user's "for now just reject anything not initiated with a wake
+> word"): **`config.yaml addressing.follow_up_enabled: true → false`** — every turn must now start with
+> the wake word; the follow-up window never arms (`follow_up_until` stays None) and the addressing
+> classifier never runs. Note `_addr_cfg` is captured once at `run()` entry, so this needs a restart
+> (done). SEPARATE, NOT YET FIXED (out of this change's scope): the **false negatives** ("said the wake
+> word, no response") = `loop:empty_capture` after `wake_word_fired` — the cold pre-roll snapshot
+> (`_capture_utterance` `chunks[0]`, [orchestrator.py:6665]) is fed to STT but **not** to `vad.process`,
+> so a command landing in the pre-roll window can leave `speech_seen` False and the buffer discarded; and
+> there is **no capture-stall watchdog** on this branch (a mic-stream stall → `get_chunk` None forever →
+> deafness). Both have fixes on other branches (pre-roll→VAD pre-feed `ad15ded`; capture-stall
+> `_restart_capture_stream` `0163ba6`) not reapplied to this `main` — flagged for a follow-up pass.
+> Restarted clean. DETAIL → memory `project_valorant_audio_rootcause_2026_06_18.md`.
+>
 > **Validating HEAD: VALORANT TEAM-VOICE AUDIO ROOT-CAUSE FIX (11-agent board) + GUI UNMUTE**
 > (2026-06-18, latest, follows 0b5da79). Ultron's TTS sounded great on the desktop speakers + the OBS
 > mirror but DEGRADED only through Valorant team voice. An 11-agent board (5 research → 5 adversarial →
