@@ -59,53 +59,18 @@ except Exception:                                                 # noqa: BLE001
 # 1. DOMAIN GAZETTEER (the bias list)
 # ===========================================================================
 # --- Agents (canonical display incl. the KAY/O slash) ----------------------
-_AGENTS = (
-    "Astra", "Breach", "Brimstone", "Chamber", "Clove", "Cypher", "Deadlock",
-    "Fade", "Gekko", "Harbor", "Iso", "Jett", "KAY/O", "Killjoy", "Neon",
-    "Omen", "Phoenix", "Raze", "Reyna", "Sage", "Skye", "Sova", "Viper",
-    "Vyse", "Yoru", "Tejo", "Waylay", "Miks", "Veto",
-)
-# --- Maps -------------------------------------------------------------------
-_MAPS = (
-    "Ascent", "Bind", "Breeze", "Fracture", "Haven", "Icebox", "Lotus",
-    "Pearl", "Split", "Sunset", "Abyss", "Corrode",
-)
-# --- Weapons ----------------------------------------------------------------
-_WEAPONS = (
-    "Classic", "Shorty", "Frenzy", "Ghost", "Sheriff", "Stinger", "Spectre",
-    "Bucky", "Judge", "Bulldog", "Guardian", "Phantom", "Vandal", "Marshal",
-    "Outlaw", "Operator", "Ares", "Odin",
-)
-# --- Single-word abilities / utility callout terms --------------------------
-_ABILITIES = (
-    "turret", "alarmbot", "nanoswarm", "lockdown", "drone", "dart", "smoke",
-    "smokes", "flash", "flashes", "molly", "wall", "cage", "cages", "trip",
-    "tripwire", "stun", "slow", "recon", "knife", "blade", "orb", "beacon",
-    "ult", "ulted", "ulting", "ultimate", "gatecrash", "showstopper",
-    "rolling", "thunder", "blade", "paint", "shells", "satchel", "boombot",
-    "blast", "pack", "snowball", "tailwind", "updraft", "cloudburst",
-    "barrier", "slow", "heal", "resurrect", "rez", "fragment", "seize",
-    "wingman", "trailblazer", "dizzy", "haunt", "shroud", "trademark",
-    "cove", "headhunter", "tour", "rendezvous", "prowler", "nightfall",
-    "paranoia", "blindside", "fault", "aftershock", "rift",
-)
-# --- Single-word callout locations (cross-map) ------------------------------
-_LOCATIONS = (
-    "heaven", "hell", "hookah", "garage", "market", "tree", "elbow", "ramp",
-    "ramps", "connector", "window", "rafters", "generator", "pit", "link",
-    "showers", "lamps", "mid", "middle", "main", "site", "long", "short",
-    "spawn", "lobby", "default", "tower", "boathouse", "kitchen", "dish",
-    "snowman", "yellow", "green", "tube", "tubes", "vents", "vent", "cubby",
-    "stairs", "catwalk", "alley", "courtyard", "logs", "double",
-)
-# --- Tactical verbs / nouns (callout vocabulary) ----------------------------
-_TERMS = (
-    "spike", "plant", "planted", "planting", "defuse", "defusing", "defused",
-    "retake", "eco", "force", "save", "rotate", "rotating", "flank",
-    "flanking", "lurk", "lurking", "peek", "peeking", "push", "pushing",
-    "hold", "holding", "trade", "clutch", "entry", "anchor", "refrag",
-    "wallbang", "headshot", "dink", "spray", "crosshair", "swing", "jiggle",
-    "molotov", "incendiary", "defuser", "carrier", "lit", "tagged",
+# 2026-06-18 Part B (routing aggregate): the STT-correction vocabulary +
+# mishear maps + protection sets are the editable NORMALIZATION-LAYER-1 RULES,
+# relocated to kenning.audio.routing_rules (Section 1) -- edit them THERE.
+# Imported here (aliased to the existing private names); the derivation below
+# (phonetic index, lower-case maps, merged mishears) is UNCHANGED. Behaviour is
+# byte-for-byte identical (proven by scripts/_voice_lines_verify.py).
+from kenning.audio.routing_rules import (  # noqa: E402
+    AGENTS as _AGENTS, MAPS as _MAPS, WEAPONS as _WEAPONS,
+    ABILITIES as _ABILITIES, LOCATIONS as _LOCATIONS, TERMS as _TERMS,
+    AGENT_MISHEARS as _AGENT_MISHEARS, TERM_MISHEARS as _TERM_MISHEARS,
+    MISHEAR_FORCE as _MISHEAR_FORCE, FUZZY_BLOCK as _FUZZY_BLOCK,
+    PROTECT_EXTRA as _PROTECT_EXTRA, MULTI_TERMS as _MULTI_TERMS,
 )
 
 # Single-token canonical set (multi-word terms handled by phrase/n-gram).
@@ -157,83 +122,11 @@ _CONTEXT_RULES: tuple[tuple[re.Pattern[str], object], ...] = (
 )
 
 
-# ===========================================================================
-# 3a. CURATED single-word mishears (genuine wrong words) ---------------------
-# ===========================================================================
-_AGENT_MISHEARS = {
-    "silva": "Sova", "selva": "Sova", "sofa": "Sova", "soda": "Sova",
-    "soever": "Sova", "sovereign": "Sova", "saba": "Sova", "sova's": "Sova",
-    "sobi": "Sova", "sovah": "Sova", "soba": "Sova", "silver": "Sova",
-    "silvers": "Sova",
-    "royal": "Reyna", "raina": "Reyna", "rayna": "Reyna", "reina": "Reyna",
-    "rena": "Reyna", "regina": "Reyna", "reyna's": "Reyna", "ray nuh": "Reyna",
-    "jet": "Jett", "jed": "Jett", "jett's": "Jett", "jette": "Jett",
-    "yet": "Jett", "jett": "Jett",
-    "cipher": "Cypher", "sypher": "Cypher", "cyphus": "Cypher", "sifa": "Cypher",
-    "sina": "Cypher", "saifer": "Cypher",
-    "kayo": "KAY/O", "cale": "KAY/O", "kayle": "KAY/O", "kio": "KAY/O",
-    "kayoh": "KAY/O", "kay-o": "KAY/O", "que": "KAY/O", "kayode": "KAY/O",
-    "oman": "Omen", "omens": "Omen", "omar": "Omen",
-    "vyper": "Viper", "wiper": "Viper", "viper's": "Viper", "hyper": "Viper",
-    "race": "Raze", "rays": "Raze", "raisa": "Raze",
-    "raz": "Raze", "raze's": "Raze", "rage": "Raze",
-    "felix": "Phoenix", "phoenix's": "Phoenix", "fenix": "Phoenix",
-    "venix": "Phoenix", "phoenixs": "Phoenix",
-    "gecko": "Gekko", "geko": "Gekko", "gekko's": "Gekko", "geco": "Gekko",
-    "breech": "Breach", "breach's": "Breach",
-    "fate": "Fade", "faded": "Fade", "fad": "Fade", "fage": "Fade",
-    "sky": "Skye", "ski": "Skye", "skype": "Skye", "sky's": "Skye",
-    "aster": "Astra", "astro": "Astra", "astra's": "Astra",
-    "arbor": "Harbor", "harbour": "Harbor", "harper": "Harbor", "arbour": "Harbor",
-    "clive": "Clove", "clove's": "Clove", "clo": "Clove", "claw": "Clove",
-    "cloves": "Clove", "clive's": "Clove",
-    "brimston": "Brimstone", "grimstone": "Brimstone", "brimstine": "Brimstone",
-    "brim": "Brimstone", "brimstone's": "Brimstone", "brimstown": "Brimstone",
-    "deadlocke": "Deadlock", "dead lock": "Deadlock", "deadbolt": "Deadlock",
-    "deadshot": "Deadlock", "deadlog": "Deadlock",
-    "neon's": "Neon", "nian": "Neon", "neyon": "Neon", "leon": "Neon",
-    "euro": "Yoru", "yoda": "Yoru", "yoru's": "Yoru", "yo-ru": "Yoru",
-    "yoroo": "Yoru", "yору": "Yoru",
-    "kill joy": "Killjoy", "killjoy's": "Killjoy", "kiljoy": "Killjoy",
-    "kj": "Killjoy", "kill-joy": "Killjoy",
-    "chambers": "Chamber", "chamber's": "Chamber", "jaber": "Chamber",
-    "teacho": "Tejo", "taho": "Tejo", "tejo's": "Tejo", "techno": "Tejo",
-    "way lay": "Waylay", "weigh lay": "Waylay", "waylaid": "Waylay",
-    "mix": "Miks", "meeks": "Miks", "mics": "Miks",
-    "vice": "Vyse", "vise": "Vyse", "vis": "Vyse", "vyce": "Vyse", "wise": "Vyse",
-    "veto's": "Veto", "vito": "Veto",
-    "iso's": "Iso", "isa": "Iso", "ito": "Iso",
-}
-
-# --- Unambiguous Valorant TERM lexicon (single-word) ------------------------
-_TERM_MISHEARS = {
-    "ultimate": "ult", "ultima": "ult", "ulta": "ult",
-    "diffuse": "defuse", "diffusing": "defusing", "diffused": "defused",
-    "molotov": "molly", "incendiary": "molly", "mollie": "molly", "mali": "molly",
-    "trip wire": "tripwire", "nano swarm": "nanoswarm", "alarm bot": "alarmbot",
-    "recon dart": "recon bolt", "owl drone": "drone",
-    # Clove's ability -- was phonetically snapping to the location "middle".
-    # Delivered as a curated CAPITALIZED mishear (not via _ABILITIES, which
-    # lowercases) and force-applied so the common-word reading never wins.
-    "meddle": "Meddle",
-    "the spike": "the spike", "operator": "Operator", "op": "Operator",
-}
-
+# _AGENT_MISHEARS / _TERM_MISHEARS -> kenning.audio.routing_rules Section 1
+# (imported above). The merge below stays here (derivation, not a rule).
 _MISHEARS = {**_AGENT_MISHEARS, **_TERM_MISHEARS}
 
-# A curated mishear whose SOURCE token is a common English word only fires when
-# it is on this allow-list -- otherwise the common-word reading wins (same
-# frontier principle as the fuzzy snapper: never silently corrupt a common word).
-# This kills net-harmful collisions ("yet"->Jett, "wise"/"vice"->Vyse,
-# "royal"->Reyna) while keeping genuine STT errors ("jet"->Jett, "race"->Raze,
-# "sky"/"ski"->Skye, "silver"->Sova, "euro"->Yoru, "que"->KAY/O, "mix"->Miks).
-_MISHEAR_FORCE = frozenset({
-    "jet", "race", "sky", "ski", "silver", "euro", "que", "mix",
-    "operator", "op", "ultimate", "ultima", "ulta", "meddle",
-    # intended callout-context overrides (asserted by tests) despite the source
-    # also being an English word:
-    "royal", "wise", "vice",
-})
+# _MISHEAR_FORCE -> kenning.audio.routing_rules Section 1 (imported above).
 
 
 # ===========================================================================
@@ -347,35 +240,7 @@ _PHRASE_MISHEARS: tuple[tuple[re.Pattern[str], object], ...] = (
 # ===========================================================================
 # 4. Common English close to a short agent name -> curated/phonetic only -----
 # ===========================================================================
-_FUZZY_BLOCK = {
-    "is", "in", "it", "i", "a", "an", "the", "of", "on", "no", "so", "go",
-    "to", "up", "we", "he", "me", "be", "by", "see", "say", "way", "play",
-    "they", "them", "their", "there", "here", "have", "has", "had", "get",
-    "got", "out", "now", "one", "two", "three", "four", "five", "six", "won",
-    "our", "all", "for", "and", "but",
-    "site", "main", "mid", "left", "right", "back", "push", "hold", "rotate",
-    "save", "down", "dead", "kill", "team", "good", "nice", "this", "that",
-    "with", "from", "just", "like", "what", "when", "where", "who", "why",
-    "hey", "yes", "not", "can", "will", "you", "your",
-    # common words that phonetically collide with gazetteer terms (never snap)
-    "set", "sit", "seat", "sight", "made", "make", "makes", "said", "send",
-    "sent", "sort", "shirt", "fight", "light", "night", "side", "time",
-    "line", "mine", "point", "place", "thing", "lower", "raise", "volume",
-    "music", "song", "track", "turn", "put", "throw", "song", "want", "need",
-    "should", "would", "could", "about", "going", "coming",
-    # common words that JW snapped onto gazetteer terms in live logs:
-    #   are->Ares(weapon), you're->Yoru(agent), shot->short(loc),
-    #   greet->Corrode(map, both metaphone "KRT")
-    "are", "art", "you're", "youre", "yours", "shot", "shots", "shoot",
-    "sort", "war", "core", "more", "store", "wore", "ore", "her", "his",
-    "greet", "greets", "greeting", "greetings",
-    # greetings that phonetically collide with locations (hello/hellos metaphone
-    # "HL" == "hell") -- a greeting must never snap onto a callout location.
-    "hello", "hellos", "howdy", "hiya", "heya", "yo", "sup", "wassup",
-    "last", "fast", "past", "blast",   # "last guy"->"blast" (last is a callout)
-    # short agent names that ARE common words -> curated/phonetic only
-    "raze", "sage", "fade", "neon", "iso", "omen", "clove", "viper", "skye",
-}
+# _FUZZY_BLOCK -> kenning.audio.routing_rules Section 1 (imported above).
 
 # 2026-06-16 (C2): real English / kit words the snapper or the _GAZ_LOWER-direct
 # branch corrupted (live-confirmed). Consulted ONLY for the gaz-direct branch and
@@ -385,10 +250,7 @@ _FUZZY_BLOCK = {
 # _MISHEAR_FORCE escape hatch still overrides these. Deliberately EXCLUDES "ego"
 # (ego->eco is a useful STT fix) and "incendiary" (incendiary->molly is the
 # colloquial kit name) -- both are live-verify trade-offs, kept as corrections.
-_PROTECT_EXTRA = frozenset({
-    "veto", "flush", "dash", "smack", "plat", "lurker", "rotation", "rotates",
-    "doable", "marker", "ascend", "drift", "breath", "drain", "trap", "split",
-})
+# _PROTECT_EXTRA -> kenning.audio.routing_rules Section 1 (imported above).
 
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z'/]*")
 
@@ -500,10 +362,7 @@ def _fix_token(tok: str) -> str:
 
 
 # --- N-gram span phonetic match for 2-word gazetteer terms ------------------
-_MULTI_TERMS = {
-    "recon dart": "recon dart", "owl drone": "drone", "alarm bot": "alarmbot",
-    "nano swarm": "nanoswarm", "trip wire": "tripwire",
-}
+# _MULTI_TERMS -> kenning.audio.routing_rules Section 1 (imported above).
 
 
 # ===========================================================================

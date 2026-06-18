@@ -28,15 +28,22 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 
 _DIGEST = Path("logs/_voice_lines_digest.json")
 
-# Every module that holds voice-line data or matching regexes today.
+# Every module that holds voice-line / normalization / routing data or regexes.
 _MODULES = [
     "kenning.audio.relay_speech",
+    "kenning.audio.voice_lines",
     "kenning.audio._ultron_setpieces",
     "kenning.audio._ultron_commands",
     "kenning.audio._ultron_social",
     "kenning.audio._ultron_identity",
     "kenning.audio._agent_flavor",
+    # normalization layers + routing/semantics (routing-rules aggregate target).
     "kenning.audio.command_normalizer",
+    "kenning.audio._stt_correct",
+    "kenning.audio.command_router",
+    "kenning.audio._router_backends",
+    "kenning.audio._command_exemplars",
+    "kenning.audio._relay_intent",
 ]
 
 
