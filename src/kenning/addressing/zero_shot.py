@@ -94,8 +94,15 @@ class ZeroShotAddresseeModel:
         """Run zero-shot classification.
 
         Returns ``(verdict, confidence, latency_ms)`` where ``verdict`` is
-        one of ``"YES"``, ``"NO"``, ``"UNCLEAR"``. Confidence is heuristic:
-        we treat a clean single-token answer as 0.75, anything else as 0.55.
+        one of ``"YES"``, ``"NO"``, ``"UNCLEAR"``.
+
+        2026-06-18: ``confidence`` is now the model's REAL certainty -- the
+        softmax probability mass on the first generated token (the verdict's
+        first sub-token) -- instead of the old hard-coded 0.75. That constant
+        was the literal cause of the follow-up drop: a confident "Ultron, show
+        me the stop button" was stamped 0.75 < the 0.80 ADDRESSED bar and
+        silently rejected. Fail-open to the legacy constants if the step scores
+        are unavailable.
         """
         import torch
 
@@ -108,14 +115,30 @@ class ZeroShotAddresseeModel:
         t0 = time.monotonic()
         with torch.no_grad():
             inputs = self._tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-            output_ids = self._model.generate(
+            gen = self._model.generate(
                 **inputs,
                 max_new_tokens=4,
                 do_sample=False,
                 num_beams=1,
+                output_scores=True,
+                return_dict_in_generate=True,
             )
+        output_ids = gen.sequences
         raw = self._tokenizer.decode(output_ids[0], skip_special_tokens=True).strip().upper()
         latency_ms = (time.monotonic() - t0) * 1000
+
+        # REAL confidence = P(first generated token) from the step-0 score
+        # softmax. None if scores are missing -> fall back to the old constants.
+        model_conf: Optional[float] = None
+        try:
+            scores0 = gen.scores[0][0]                 # logits over vocab, step 0
+            probs0 = torch.softmax(scores0, dim=-1)
+            first_tok_id = int(output_ids[0][1])       # [0]=decoder_start, [1]=first gen
+            c = float(probs0[first_tok_id])
+            if c == c and 0.0 <= c <= 1.0:             # finite + in range
+                model_conf = c
+        except Exception:                              # noqa: BLE001
+            model_conf = None
 
         # First word is the verdict.
         first_word = raw.split()[0].rstrip(".,!?:;") if raw else "UNCLEAR"
@@ -124,9 +147,10 @@ class ZeroShotAddresseeModel:
                 "Zero-shot returned unexpected token %r for %r -- treating as UNCLEAR",
                 raw, utterance[:60],
             )
-            return "UNCLEAR", 0.40, latency_ms
+            return "UNCLEAR", (model_conf if model_conf is not None else 0.40), latency_ms
 
-        # Heuristic confidence: clean YES/NO is high, UNCLEAR is the
-        # explicit low-confidence signal.
-        confidence = 0.75 if first_word in {"YES", "NO"} else 0.50
+        if first_word in {"YES", "NO"}:
+            confidence = model_conf if model_conf is not None else 0.75
+        else:
+            confidence = model_conf if model_conf is not None else 0.50
         return first_word, confidence, latency_ms

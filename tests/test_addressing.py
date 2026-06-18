@@ -208,11 +208,14 @@ def test_third_party_narrative_rule_does_not_break_legit_commands():
                 )
 
 
-def test_zero_shot_addressed_min_confidence_gate_demotes_low_confidence_yes():
-    """2026-05-11 false-positive guard: when zero-shot returns YES at
-    < min_confidence, the classifier should demote to NOT_ADDRESSED
-    (with default_silent=True). This is the lever that catches the
-    saturated-at-0.75 third-person verdicts."""
+def test_fusion_demotes_third_person_mention_despite_yes_signal():
+    """2026-06-18: the fused log-odds scorer replaces the old blunt
+    min-confidence gate. A third-person mention ("Kenning said that earlier")
+    leads with the name but is ABOUT us, not TO us -- its strong negative lexical
+    features must drive the fused probability below the ADDRESSED threshold even
+    when the zero-shot model leans YES. (Symmetrically, a borderline 0.75 YES on a
+    NEUTRAL utterance is now TRUSTED -- that reversal is the fix for the dropped
+    'Ultron, show me the stop button'.)"""
     from unittest.mock import patch
     from kenning.addressing.classifier import AddressingClassifier
 
@@ -220,26 +223,28 @@ def test_zero_shot_addressed_min_confidence_gate_demotes_low_confidence_yes():
         rule_confidence_threshold=0.8,
         default_silent_on_uncertain=True,
         log_path=None,
-        zero_shot_addressed_min_confidence=0.80,
     )
-    # Simulate a borderline zero-shot YES at 0.75. The utterance must
-    # be ambiguous enough that no rule fires above 0.8 -- pick a
-    # short follow-up that the rule layer abstains on.
+    # Third-person mention -> strong negative lexical features + the model (which
+    # agrees NO on clear third-person) drive the fused probability far below tau.
     with patch.object(
         classifier._zero_shot,
         "classify",
-        return_value=("YES", 0.75, 3.0),
+        return_value=("NO", 0.7, 3.0),
     ):
         verdict = classifier.classify(
-            "Maybe try a different angle on it.",
+            "Kenning said that earlier.",
             seconds_since_response=10.0,
         )
-    # Gate fires: low-confidence YES demoted to NOT_ADDRESSED.
     assert verdict.decision == AddressingDecision.NOT_ADDRESSED, (
-        f"expected NOT_ADDRESSED after gate, got {verdict.decision.value} "
-        f"(reason={verdict.reason})"
+        f"expected NOT_ADDRESSED for third-person mention, got "
+        f"{verdict.decision.value} (reason={verdict.reason})"
     )
-    assert "below ADDRESSED threshold" in verdict.reason
+    assert verdict.source == "fusion"
+    # And the reversal that fixes the live bug: a leading wake word + imperative is
+    # ADDRESSED with ZERO model latency (lexically decisive, no zero-shot call).
+    no_model = classifier.classify("Ultron, show me the stop button.", 3.0)
+    assert no_model.decision == AddressingDecision.ADDRESSED
+    assert no_model.zero_shot_raw is None  # decided on lexical features alone
 
 
 def test_zero_shot_addressed_min_confidence_gate_allows_high_confidence_yes():

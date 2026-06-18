@@ -80,4 +80,6 @@ def test_classifier_subsequent_call_works_after_failure(
     classifier._zero_shot.classify.return_value = ("YES", 0.85, 12.0)
     verdict = classifier.classify("second", 5.0)
     assert verdict.decision == AddressingDecision.ADDRESSED
-    assert verdict.source == "zero_shot"
+    # 2026-06-18: the fused scorer is the primary path (it consults the zero-shot
+    # model in the undecided band); "zero_shot" is the legacy fail-open fallback.
+    assert verdict.source in ("fusion", "zero_shot")

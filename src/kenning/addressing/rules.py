@@ -123,7 +123,7 @@ _CONTINUATION_TOKENS = {
 # mid-sentence to avoid catching the YES "kenning, what's..." case which is
 # matched by _DIRECT_ADDRESS first.
 _THIRD_PERSON_MENTION = re.compile(
-    r"\bkenning\s+(?:just|already|previously|earlier|said|thinks|told|wrote|claimed|reported|mentioned)\b",
+    r"\b(?:ultron|kenning)\s+(?:just|already|previously|earlier|said|thinks|told|wrote|claimed|reported|mentioned|is|was|keeps|seems|lagged|crashed|broke)\b",
     re.IGNORECASE,
 )
 
@@ -202,6 +202,77 @@ _INTERJECTIONS = {
     "ow", "ouch",
     "ugh", "argh", "hmm", "uhh", "umm", "uhhh", "err",
 }
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-18 FUSION feature extractor. Instead of one short-circuiting RuleHit,
+# emit a graded feature vector the classifier fuses in log-odds space. Reuses
+# every regex/set above. POSITION-AWARE: a LEADING assistant name is a strong
+# ADDRESSED cue; a name mentioned mid-sentence / third-person is a NEGATIVE one.
+# ---------------------------------------------------------------------------
+
+# Leading wake word (the assistant's name) at the very start = a vocative address.
+# Narrow, audited names only (not the broad ASR-mishear set) so chatter that
+# merely contains a homophone doesn't fire. Captures the "Ultron, ..." the
+# kenning-only _DIRECT_ADDRESS regex above was blind to (the live failure).
+_LEADING_WAKE = re.compile(
+    r"^\s*(?:hey\s+|okay\s+|ok\s+|alright\s+)?"
+    r"(?:ultron|kenning|altron|ultraun)\b[\s,.\-:!?]*",
+    re.IGNORECASE,
+)
+_NAME_ANYWHERE = re.compile(r"\b(?:ultron|kenning)\b", re.IGNORECASE)
+# Human-directed openers: a subject pronoun (NOT 'you', which can address us) or
+# an answer particle at the very start -- the empirically dominant NOT-ADDRESSED
+# markers (Amazon ICASSP'20).
+_SUBJ_PRONOUN_OPENER = re.compile(
+    r"^\s*(?:i|we|he|she|they|it)(?:['’]\w+|\s+\w+)", re.IGNORECASE)
+_PARTICLE_OPENER = re.compile(
+    r"^\s*(?:yeah|yep|yup|nah|nope|okay|ok|oh|uh+|um+|hmm+|er+)\b", re.IGNORECASE)
+_TRAILS_OFF = (",", " and", " but", " so", " or", " because")
+_THIRD_PERSON_SUBJ_Q = re.compile(
+    r"^(?:how|what|why|when|where|who)\s+(?:he|she|they|him|her|them)\b", re.IGNORECASE)
+
+
+def features(
+    utterance: str,
+    seconds_since_response: float = 0.0,
+) -> dict:
+    """Graded addressee features in [0,1] (+ recency_s) for log-odds fusion.
+
+    Every signal reuses a regex/set defined above. The assistant-name check is
+    POSITION-AWARE and, when a leading name is present, the imperative/question
+    features are evaluated on the REMAINDER ("Ultron, show me X" -> imperative)."""
+    text = (utterance or "").strip()
+    lowered = text.lower().rstrip(".!?,")
+    wm = _LEADING_WAKE.match(text)
+    third_person = bool(_THIRD_PERSON_MENTION.search(text))
+    # "Ultron said ..." / "Kenning is broken" leads with the name but is ABOUT us,
+    # not a vocative TO us -> suppress the leading-wake boost; count it negative.
+    leading = bool(wm) and not third_person
+    rest = text[wm.end():].strip() if wm else text
+    rwords = rest.split()
+    trails = rest.rstrip(".!?").rstrip().endswith(_TRAILS_OFF)
+    fq = bool(_FACTUAL_QUESTION_STEMS.match(rest)) and len(rwords) >= 4 \
+        and not trails and not _THIRD_PERSON_SUBJ_Q.match(rest)
+    imperative = bool(_IMPERATIVE_VERBS.match(rest))
+    return {
+        "leading_wake": 1.0 if leading else 0.0,
+        "embedded_or_3p_name": 1.0 if (
+            (not leading and _NAME_ANYWHERE.search(text)) or third_person
+        ) else 0.0,
+        "initial_imperative": 1.0 if imperative else 0.0,
+        "factual_question": 1.0 if fq else 0.0,
+        "second_person_q": 1.0 if _SECOND_PERSON_QUESTIONS.match(rest) else 0.0,
+        "continuation": 1.0 if lowered in _CONTINUATION_TOKENS else 0.0,
+        "subj_pronoun_opener": 1.0 if (not wm and _SUBJ_PRONOUN_OPENER.match(text)) else 0.0,
+        "particle_opener": 1.0 if (not wm and _PARTICLE_OPENER.match(text)) else 0.0,
+        "phone_opener": 1.0 if _PHONE_OPENERS.search(text) else 0.0,
+        "interjection": 1.0 if lowered in _INTERJECTIONS else 0.0,
+        "third_party_narrative": 1.0 if _THIRD_PARTY_NARRATIVE.search(text) else 0.0,
+        "possessive_q": 1.0 if _THIRD_PARTY_POSSESSIVE_QUESTION.match(text) else 0.0,
+        "trails_off": 1.0 if (trails and not wm and not imperative) else 0.0,
+        "recency_s": float(max(0.0, seconds_since_response)),
+    }
 
 
 def classify(

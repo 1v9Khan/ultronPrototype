@@ -93,7 +93,9 @@ def test_observe_addressing_verdict_emits_one_row(capturing_writer: ObservationW
     assert row["subsystem"] == "addressing"
     assert row["event_type"] == "classify_addressing"
     assert row["extra"]["decision"] == "ADDRESSED"
-    assert row["extra"]["classifier_source"] == "rule"
+    # 2026-06-18: the fused scorer is the primary path; it still emits the
+    # observation via _log. ("rule" was the pre-fusion source label.)
+    assert row["extra"]["classifier_source"] in ("fusion", "rule")
 
 
 def test_observe_retrieval_records_lineage_ids(capturing_writer: ObservationWriter) -> None:
@@ -226,7 +228,9 @@ def test_addressing_classifier_emits_observation(
     row = rows[0]
     assert row["subsystem"] == "addressing"
     assert row["extra"]["decision"] == "ADDRESSED"
-    assert row["extra"]["classifier_source"] == "rule"
+    # 2026-06-18: the fused scorer is the primary path; it still emits the
+    # observation via _log. ("rule" was the pre-fusion source label.)
+    assert row["extra"]["classifier_source"] in ("fusion", "rule")
 
 
 def test_conversation_memory_retrieve_emits_empty_query_observation(

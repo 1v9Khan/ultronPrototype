@@ -8,6 +8,8 @@ conversation with Kenning or stray speech.
 from __future__ import annotations
 
 import json
+import math
+import os
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -19,11 +21,58 @@ from kenning.addressing.rules import (
     AddressingDecision,
     RuleHit,
     classify as classify_by_rules,
+    features as rule_features,
 )
 from kenning.addressing.zero_shot import ZeroShotAddresseeModel
 from kenning.utils.logging import get_logger
 
 logger = get_logger("addressing.classifier")
+
+# ---------------------------------------------------------------------------
+# 2026-06-18 FUSION scorer. Combine the graded lexical/structural features
+# (rules.features) + the zero-shot model's REAL P(YES) + recency into a single
+# calibrated confidence in log-odds space, then threshold cost-asymmetrically.
+# Hand-set log-odds weights (signs/magnitudes from the Amazon ICASSP'20 / Apple
+# DDSD directionality the research board surfaced); fit by logistic regression
+# later from the addressing JSONL the classifier already writes. The flan term
+# is consulted ONLY when the lexical logit is in the undecided band, so clear
+# commands ("Ultron, show me the stop button") and clear chatter resolve with
+# ZERO model latency.
+# ---------------------------------------------------------------------------
+_ADDR_W = {
+    "leading_wake": 3.0,
+    "matcher_hit": 2.2,
+    "initial_imperative": 1.6,
+    "factual_question": 1.0,
+    "continuation": 0.8,
+    "second_person_q": 0.0,
+    "embedded_or_3p_name": -2.2,
+    "subj_pronoun_opener": -1.4,
+    "particle_opener": -1.2,
+    "phone_opener": -2.5,
+    "interjection": -2.0,
+    "third_party_narrative": -2.2,
+    "possessive_q": -2.0,
+    "trails_off": -1.0,
+}
+_ADDR_W_FLAN = 1.0
+_ADDR_FLAN_BAND = 3.0   # consult flan only when |lexical logit| < this
+
+
+def _addr_b0(t: float) -> float:
+    """Recency prior in log-odds: +0.4 right after we spoke, decaying to -0.6 by
+    >=20 s into the follow-up window (turn-taking strongly predicts addressing)."""
+    return 0.4 - min(max(t, 0.0) / 20.0, 1.0) * 1.0
+
+
+def _addr_tau() -> float:
+    """Cost-asymmetric ADDRESSED threshold. Default 0.20 (a false-reject of a real
+    command costs ~4x a false-accept). Raise via KENNING_ADDRESSING_TAU during a
+    live stream to be more conservative about chatter."""
+    try:
+        return min(0.95, max(0.01, float(os.getenv("KENNING_ADDRESSING_TAU", "0.20") or 0.20)))
+    except Exception:                                                # noqa: BLE001
+        return 0.20
 
 
 @dataclass
@@ -97,8 +146,80 @@ class AddressingClassifier:
         self,
         utterance: str,
         seconds_since_response: float = 0.0,
+        matcher_hit: bool = False,
     ) -> AddressingVerdict:
-        """Classify ``utterance``. Always returns a verdict; never raises."""
+        """Classify ``utterance`` via the fused log-odds scorer. Always returns a
+        verdict; never raises (fails open to the legacy rules->zero-shot cascade).
+
+        ``matcher_hit`` lets the caller signal that a deterministic command matcher
+        (relay / stop-button / spotify / settings) already parses the utterance --
+        a very strong ADDRESSED feature (an executable command is almost certainly
+        for us)."""
+        t0 = time.monotonic()
+        try:
+            return self._classify_fused(
+                utterance, seconds_since_response, matcher_hit, t0)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("fused addressing failed (%s) -- legacy cascade", e)
+            return self._classify_cascade(utterance, seconds_since_response)
+
+    def _classify_fused(
+        self,
+        utterance: str,
+        seconds_since_response: float,
+        matcher_hit: bool,
+        t0: float,
+    ) -> AddressingVerdict:
+        feats = rule_features(utterance, seconds_since_response)
+        feats["matcher_hit"] = 1.0 if matcher_hit else 0.0
+        lex = _addr_b0(feats.get("recency_s", 0.0)) + sum(
+            _ADDR_W[k] * feats.get(k, 0.0) for k in _ADDR_W)
+        logit = lex
+        raw = None
+        used_flan = False
+        # Consult the zero-shot model ONLY when the lexical evidence is
+        # undecided -- clear commands / clear chatter skip it (zero model latency).
+        if abs(lex) < _ADDR_FLAN_BAND:
+            try:
+                context = (
+                    self._recent_turns_provider(4)
+                    if self._recent_turns_provider is not None else None)
+            except Exception:                                        # noqa: BLE001
+                context = None
+            raw, zs_conf, _ = self._zero_shot.classify(
+                utterance, context=context,
+                seconds_since_response=seconds_since_response)
+            used_flan = True
+            p_yes = (zs_conf if raw == "YES"
+                     else (1.0 - zs_conf) if raw == "NO" else 0.5)
+            p_yes = min(max(p_yes, 1e-4), 1.0 - 1e-4)
+            logit += _ADDR_W_FLAN * math.log(p_yes / (1.0 - p_yes))
+        p = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, logit))))
+        tau = _addr_tau()
+        decision = (
+            AddressingDecision.ADDRESSED if p >= tau
+            else (AddressingDecision.NOT_ADDRESSED if self.default_silent
+                  else AddressingDecision.UNCERTAIN))
+        verdict = AddressingVerdict(
+            decision=decision,
+            confidence=p,
+            source="fusion",
+            reason=(f"fused p={p:.2f}>=tau {tau:.2f}" if p >= tau
+                    else f"fused p={p:.2f}<tau {tau:.2f}")
+                   + f" | lex_logit={lex:.2f}"
+                   + (f" +flan({raw})" if used_flan else " (lexical-decisive)"),
+            latency_ms=(time.monotonic() - t0) * 1000,
+            zero_shot_raw=raw,
+        )
+        self._log(utterance, verdict)
+        return verdict
+
+    def _classify_cascade(
+        self,
+        utterance: str,
+        seconds_since_response: float = 0.0,
+    ) -> AddressingVerdict:
+        """Legacy rules->zero-shot cascade; the fail-open fallback for classify()."""
         t0 = time.monotonic()
 
         rule_hit = classify_by_rules(utterance, seconds_since_response)
