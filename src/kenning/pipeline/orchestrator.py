@@ -5828,6 +5828,19 @@ class Orchestrator:
                 try:
                     from kenning.audio.command_normalizer import normalize_command
                     _raw_stt = user_text
+                    # 2026-06-18: stand down if the utterance was JUST the wake word
+                    # / a filler ("Ultron." alone) with NO command after it. Checked
+                    # on the RAW text BEFORE normalization -- normalize_command does
+                    # NOT empty a bare wake word (it keeps "Ultron", and mangles a
+                    # bare "Tron" into the callout "drone"), so an after-normalize
+                    # check misses it. Matters now that the pre-roll is VAD-fed, so a
+                    # bare "Ultron" with no command can be captured + transcribed as
+                    # just the wake word -- routing that would fire a spurious turn.
+                    _wm = _WAKE_REMNANT_RE.match(_raw_stt)
+                    if _wm is not None and not _raw_stt[_wm.end():].strip():
+                        print("  (heard only the wake word; standing down)")
+                        trace.tlog(logger, "routing:wake_word_only", raw=_raw_stt[:120])
+                        continue
                     _normed = normalize_command(user_text)
                     # ALWAYS log BOTH the raw STT transcript AND the normalized
                     # routing text (even when unchanged) so every turn shows the
@@ -6746,6 +6759,27 @@ class Orchestrator:
         # (breaths, "umm" pauses) while still kicking off well within
         # the fast-path silence baseline.
         speculative_silence_kickoff_chunks = 2
+
+        # 2026-06-18 FREEZE FIX (short command right after the wake word): feed the
+        # PRE-ROLL through the VAD before the live loop. A command spoken
+        # immediately after "Ultron" ("Ultron say hello") lands in the pre-roll --
+        # BEFORE this capture's snapshot -- so the live-loop VAD only ever saw the
+        # post-command silence, speech_seen stayed False, and the capture bailed as
+        # empty_capture, DISCARDING the buffer that contained the command (the
+        # live "said it 8 times before it responded" symptom). Pre-feeding the VAD
+        # (it slices arbitrary audio into 512-sample windows itself) lets that
+        # speech register, so the buffer (pre-roll + live audio, already includes
+        # chunks[0]) is kept and transcribed. The wake-word tail in the pre-roll is
+        # stripped from the transcript downstream by normalize_command. Fail-open.
+        _pre = chunks[0] if chunks else None
+        if _pre is not None and getattr(_pre, "size", 0):
+            try:
+                _pre_res = self.vad.process(_pre)
+                if _pre_res is not None and _pre_res.is_speech:
+                    speech_seen = True
+                    speech_start_samples = 0
+            except Exception:                                        # noqa: BLE001
+                pass
 
         while not self._shutdown.is_set() and elapsed_samples < max_samples:
             chunk = self.audio.get_chunk(timeout=0.5)
