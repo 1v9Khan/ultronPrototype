@@ -163,7 +163,7 @@ audio:
 # anticheat-clean design). DEFAULT OFF + fail-safe: with no device / disabled it
 # is completely inert. To arm: flash the firmware, set enabled + serial_port.
 push_to_talk:
-  enabled: false             # master switch. Env: KENNING_PTT_ENABLED
+  enabled: true              # master switch. Env: KENNING_PTT_ENABLED  [stream-build: ON]
   backend: "rawhid"          # "rawhid" (HID-only hardened device; NO serial fallback) | "auto" | "serial". 2026-06-17 audit: pinned to rawhid so PTT can ONLY use the masked HID keyboard (VID 0x1209, no COM port) and NEVER auto-falls-back to the legacy-CDC serial path that scans for the Arduino VID 0x2341. If the hardened device is absent, PTT is inert (NullPttBackend) rather than opening a COM port.
   hid_vid: 0x1209            # HID-only device USB VID (pid.codes open hardware)
   hid_usage_page: 0xFFC0     # vendor Raw-HID command collection (matches firmware/leonardo_ptt_hid)

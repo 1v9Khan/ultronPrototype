@@ -220,6 +220,18 @@ _WAKE_REMNANT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# BLUNT STOP-BUTTON FIX (stream stopgap): a TIGHT leading-wake matcher used to
+# bypass the follow-up addressing classifier. Deliberately NARROWER than
+# _WAKE_MISHEAR -- only genuine "Ultron" homophones, NEVER the conversational
+# fillers (yeah / ok / so / to / one / now) that _WAKE_MISHEAR also covers, so a
+# leading wake word forces "addressed" without re-opening the door to firing on
+# chatter ("yeah I dunno"). Caller also requires a command AFTER the wake word.
+_FOLLOWUP_WAKE_RE = re.compile(
+    r"^\s*(?:ultron|ultran|ultram|ultra|altron|all[\s-]*tron|"
+    r"tron|trond|ulton|olt?ron|elt?ron)\b[\s,.!?:;-]*",
+    re.IGNORECASE,
+)
+
 
 def _strip_leading_wake_remnant(text: str) -> str:
     """Strip leading mis-transcribed wake words / fillers ("Yeah. Run, …" -> "…").
@@ -5754,10 +5766,26 @@ class Orchestrator:
                     # (observed live: a direct command dropped at
                     # conf 0.75 vs the 0.80 threshold). Also skips the
                     # ~190 ms classifier on every relay turn.
+                    _fu_wake = _FOLLOWUP_WAKE_RE.match(user_text)
+                    _leading_wake = bool(
+                        _fu_wake and user_text[_fu_wake.end():].strip())
                     if self._is_relay_command(user_text):
                         print(f"  (follow-up, relay) you: {user_text}")
                         trace.tlog(
                             logger, "addressing:relay_override",
+                            text=user_text[:160],
+                        )
+                    elif _leading_wake:
+                        # BLUNT STOP-BUTTON FIX (stream stopgap): a leading wake
+                        # word in the follow-up window is treated as definitely-
+                        # addressed, bypassing the confidence classifier -- so
+                        # "Ultron, show me the stop button" (and any wake-led
+                        # command) always fires even if the classifier would score
+                        # it borderline. The tight _FOLLOWUP_WAKE_RE + the
+                        # require-a-command-after guard keep it off plain chatter.
+                        print(f"  (follow-up, wake) you: {user_text}")
+                        trace.tlog(
+                            logger, "addressing:leading_wake_override",
                             text=user_text[:160],
                         )
                     else:

@@ -324,20 +324,19 @@ class WakeWordConfig(_Strict):
         default_factory=lambda: {"ultron": 3},
     )
     cooldown_seconds: float = 1.5
-    # 2026-06-18 PER-WORD cold pre-roll (seconds of audio kept from BEFORE the
-    # wake-word fire). Sized to NEVER clip the first COMMAND word. At the old 0.05
-    # the word right after "Ultron" was lost: "Ultron tell my team ..." dropped
-    # "tell" (transcribed "my team ..." / "call my team ...") because the wake
-    # detection latency put "tell" in the un-captured gap -- user-reported, with a
-    # longer MANUAL pause as the only workaround. 0.35 reaches back past that gap
-    # so the leading word is always captured. The wake word's own "...tron" tail
-    # that now also enters the pre-roll is stripped RELIABLY on the primary path by
-    # ``command_normalizer.normalize_command`` (leading-wake-remnant strip --
-    # verified for "Ultron"/"tron"/"ultra" leads), so capturing it costs nothing.
+    # PER-WORD cold pre-roll (seconds of audio kept from BEFORE the wake-word
+    # fire). 2026-06-18 STREAM REVERT: back to 0.05 (from 0.35). The 0.35 reached
+    # back far enough to ALSO capture the wake word's own "...tron" tail, which
+    # Whisper hallucinated into phantom leading words (Franz / Prong / One / We're
+    # on) that contaminated the callout. At 0.05 only the command is captured --
+    # the user deliberately pauses briefly after "Ultron" so the first command
+    # word isn't clipped. (A cleaner fix that keeps both -- domain-prompt wake
+    # priming so the tail transcribes as a strippable "Ultron" -- is preserved on
+    # the wip/2026-06-18-confidence-stt branch for later refinement.)
     # Keep <= ``audio.ring_buffer_seconds`` (0.5). A word absent here uses
     # ``audio.cold_pre_roll_seconds``.
     cold_pre_roll: dict[str, float] = Field(
-        default_factory=lambda: {"ultron": 0.35},
+        default_factory=lambda: {"ultron": 0.05},
     )
 
 
