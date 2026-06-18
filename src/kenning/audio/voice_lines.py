@@ -65,6 +65,21 @@ try:  # large, script-generated/audited libraries -- re-exposed for discovery.
 except Exception:  # noqa: BLE001 - never block import on an optional library
     AGENT_FLAVOR = {}
 
+# --- FALLBACK pools (physically here; relocated from relay_speech.py) --------
+# Tiny safety nets for the user-curated corpora that ship on disk: roast lines
+# (``data/relay_roast.txt``) and fun facts (``data/relay_fun_facts.txt``, ~thousands
+# of lines). These DEFAULT_* tuples are only used when the on-disk file is missing
+# or unreadable, so they stay small. relay_speech imports them back, so the public
+# names DEFAULT_ROAST_LINES / DEFAULT_FUN_FACTS are unchanged.
+DEFAULT_ROAST_LINES: "tuple[str, ...]" = (
+    "I may be an AI, but you are a bot.",
+)
+DEFAULT_FUN_FACTS: "tuple[str, ...]" = (
+    "Honey never spoils -- edible pots have been found in ancient tombs.",
+    "Octopuses have three hearts and blue, copper-based blood.",
+    "A day on Venus is longer than its year.",
+)
+
 # ============================================================================
 # SOCIAL SNAPS -- regexes + pools relocated here from relay_speech.py (Part B).
 # ============================================================================

@@ -2352,9 +2352,9 @@ def _fallback_line(command: RelayCommand) -> str:
 
 # Seed lines for the user-curated roast file. Spoken VERBATIM -- the
 # user owns this list and extends it by editing the file.
-DEFAULT_ROAST_LINES: tuple[str, ...] = (
-    "I may be an AI, but you are a bot.",
-)
+# 2026-06-18 follow-up: DEFAULT_ROAST_LINES relocated to the aggregate
+# (voice_lines.py) -- imported back so the public name + behaviour are unchanged.
+from kenning.audio.voice_lines import DEFAULT_ROAST_LINES  # noqa: E402,F401
 
 _ROAST_FILE_HEADER = (
     "# Kenning relay roast lines -- one per line, spoken VERBATIM when\n"
@@ -2448,12 +2448,9 @@ pick_line = pick_roast_line
 # --- Fun facts ---------------------------------------------------------
 
 # Fallback if the shipped corpus is missing/unreadable (it ships at
-# ``data/relay_fun_facts.txt`` with thousands of lines).
-DEFAULT_FUN_FACTS: tuple[str, ...] = (
-    "Honey never spoils -- edible pots have been found in ancient tombs.",
-    "Octopuses have three hearts and blue, copper-based blood.",
-    "A day on Venus is longer than its year.",
-)
+# ``data/relay_fun_facts.txt`` with thousands of lines). 2026-06-18 follow-up:
+# relocated to the aggregate (voice_lines.py); imported back, name unchanged.
+from kenning.audio.voice_lines import DEFAULT_FUN_FACTS  # noqa: E402,F401
 
 
 #: Curated Ultron-voiced morale lines. Pure "give my team encouragement" /
