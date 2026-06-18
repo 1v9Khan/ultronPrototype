@@ -1628,7 +1628,14 @@ class WebSearchConfig(_Strict):
 
 
 class AddressingConfig(_Strict):
-    follow_up_enabled: bool = True
+    # 2026-06-18: DEFAULT OFF for v1 -- the wake word ("Ultron") is REQUIRED for
+    # EVERY command. The wake-free follow-up window (acting on an addressee-
+    # classifier verdict within ~30s of Kenning speaking) was firing on room /
+    # stream / teammate speech the user never addressed. Once the confidence
+    # calculation is trusted enough to gate wake-free speech reliably, flip this
+    # back on. With it False the loop sets follow_up_until=None after every turn,
+    # so it always returns to _wait_for_wake_word (wake-gated).
+    follow_up_enabled: bool = False
     # CONFIRMED 30s, NOT the Foundation prompt's 10s, per feedback_kenning_extension.md
     warm_mode_duration_seconds: float = 30.0
     default_uncertain_to_not_addressed: bool = True

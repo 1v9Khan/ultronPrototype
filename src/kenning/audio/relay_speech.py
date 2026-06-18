@@ -2047,6 +2047,20 @@ _RELAY_SAMPLING = {
              "\nUser:", "\nUSER:", "Ultron:", "ADDRESS:", "\n-"],
 }
 
+# 2026-06-18: the relay REPHRASE path must NOT inherit the LLM's BASE desktop
+# system prompt ("You are Kenning ...", ~4158 chars). That persona is irrelevant
+# to a team callout, WASTES ~1000 tokens of the 6144-token context on every relay
+# LLM call (pushing the prompt to the n_ctx edge -> slow + fragile), and is a
+# latent persona leak if the 3B ever followed it over the (Ultron) user prompt.
+# The rephrase user prompt is already the full in-character instruction, so a
+# short Ultron system line is all that is needed. (The ANSWER path already passes
+# its own focused system prompt; this brings the rephrase path to parity.)
+_RELAY_REPHRASE_SYSTEM = (
+    "You are Ultron, relaying a teammate's callout on Valorant team voice. "
+    "Reply with only the spoken callout line, in character -- no preamble, no "
+    "quotes, no narration."
+)
+
 
 def _build_rephrase_prompt(
     command: RelayCommand,
@@ -5372,6 +5386,7 @@ def build_relay_line(
                     # program is still in development...").
                     tokens = llm.generate_stream(
                         prompt,
+                        system_prompt=_RELAY_REPHRASE_SYSTEM,
                         sampling=_RELAY_SAMPLING,
                         record_history=False,
                         suppress_memory_context=True,

@@ -868,7 +868,7 @@ web_search:
 # ---------------------------------------------------------------------------
 
 addressing:
-  follow_up_enabled: true
+  follow_up_enabled: false   # v1: wake word "Ultron" REQUIRED for every command (no wake-free follow-up). Re-enable once confidence-gating of wake-free speech is trusted.
   # CONFIRMED 30 s (NOT the Foundation prompt's 10 s) — user override per
   # memory/feedback_kenning_extension.md. Don't re-tighten without asking.
   warm_mode_duration_seconds: 30.0
