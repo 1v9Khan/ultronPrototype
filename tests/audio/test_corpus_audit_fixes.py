@@ -576,3 +576,37 @@ class TestT617TestingFixes:
         line = _line(text)
         assert line.startswith(head), line
         assert " is tree" not in line and " is heaven" not in line
+
+
+# ===========================================================================
+# 2026-06-18: deterministic gratitude snap -> "Thank you." + a dedicated
+# 10-tail Ultron-persona pool (cold, superior acknowledgment), routed off the LLM.
+# ===========================================================================
+class TestThankYouSnap:
+    @pytest.mark.parametrize("text", [
+        "tell my team thank you",
+        "tell my team thank you so much",
+        "tell my team thanks team",
+        "tell my team thanks guys",
+        "tell my team thank you everyone",
+    ])
+    def test_gratitude_snaps_with_persona_tail(self, text) -> None:
+        from kenning.audio.relay_speech import _THANK_YOU_TAILS
+        line = _line(text)
+        assert line.startswith("Thank you."), line
+        tail = line[len("Thank you."):].strip()
+        assert tail in _THANK_YOU_TAILS, f"{tail!r} not in the curated pool"
+
+    def test_pool_has_ten_distinct_tails(self) -> None:
+        from kenning.audio.relay_speech import _THANK_YOU_TAILS
+        assert len(_THANK_YOU_TAILS) == 10
+        assert len(set(_THANK_YOU_TAILS)) == 10
+
+    def test_contextual_thanks_does_not_snap(self) -> None:
+        # "thank you for the heal" carries context -> must NOT collapse to the
+        # bare "Thank you." snap (the full-payload anchor excludes it).
+        from kenning.audio.relay_speech import _THANK_YOU_TAILS
+        line = _line("tell my team thank you for the heal")
+        tail = (line[len("Thank you."):].strip()
+                if line.startswith("Thank you.") else None)
+        assert tail not in _THANK_YOU_TAILS, line

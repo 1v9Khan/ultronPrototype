@@ -2734,6 +2734,34 @@ _AGENT_SELECT_TAILS = (
     "Then lock it in.",
 )
 
+# --- GRATITUDE relay -> a deterministic "Thank you." snap with its OWN 10-tail
+#     Ultron-persona pool. Ultron rarely gives credit, so the tails are COLD,
+#     superior acknowledgment (backhanded approval -- never warmth). Routed off
+#     the LLM like the other snaps. Matches a BARE gratitude phrase only
+#     ("thank you" / "thanks team" / "thank you so much"); a CONTEXTUAL thanks
+#     ("thank you for the heal") does NOT match (full-payload anchor) and keeps
+#     the LLM's flavor. 2026-06-18.
+_THANK_YOU_RE = re.compile(
+    r"^\s*(?:thank\s*(?:you|u)|thanks|thx|ty|appreciate\s+(?:it|you|that)|"
+    r"much\s+appreciated)"
+    r"(?:\s+(?:you|so\s+much|very\s+much|a\s+lot|so|guys|team|all|y'?all|"
+    r"everyone|man|bro|fam|kindly))*"
+    r"[\s.!,]*$",
+    re.IGNORECASE,
+)
+_THANK_YOU_TAILS = (
+    "The execution was clean.",
+    "You performed to specification.",
+    "Competence, at last.",
+    "Precision I can respect.",
+    "The pattern held because of you.",
+    "A worthy instrument.",
+    "Strength recognizes strength.",
+    "You earned the moment.",
+    "Remain this useful.",
+    "Even flesh can rise.",
+)
+
 
 def _as_literal_echo(
     p: str, recent_lines: Optional[Sequence[str]], addressee: str,
@@ -3791,6 +3819,15 @@ def _as_snap_callout(
             return callout
         tail = _pick_lru(list(_AGENT_SELECT_TAILS))
         return _join_tail(callout, tail) if tail else callout
+
+    # --- GRATITUDE -> deterministic "Thank you." + a dedicated Ultron-persona
+    #     tail (cold, superior acknowledgment). Bare gratitude only; contextual
+    #     thanks falls through to the LLM. ---
+    if not _is_compound and _THANK_YOU_RE.match(p):
+        if not flavor:
+            return "Thank you."
+        tail = _pick_lru(list(_THANK_YOU_TAILS))
+        return _join_tail("Thank you.", tail) if tail else "Thank you."
 
     # --- CAREFUL warnings: 'careful ramp', 'careful flank', 'careful they
     #     could have crossed to ramp' ---

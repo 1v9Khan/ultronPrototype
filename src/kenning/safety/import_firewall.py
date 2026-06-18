@@ -96,7 +96,13 @@ _BLOCK_EXACT = frozenset({
     "pygetwindow",    # window enumeration / geometry
     "pyperclip",      # clipboard read/write
     "win32clipboard", # pywin32 clipboard
-    "pytesseract",    # OCR
+    # NOTE: pytesseract (OCR) is DELIBERATELY NOT blocked here. transformers
+    # (pulled in by Kokoro TTS + Whisper) probes it at IMPORT time via
+    # importlib.util.find_spec("pytesseract"); this finder RAISES inside that
+    # probe, so the whole transformers import fails and Kokoro/Whisper/Smart-Turn
+    # go silent. pytesseract is not installed anyway, and the OCR capability is
+    # already blocked via the kenning.desktop prefix (kenning.desktop.ocr), so
+    # omitting the bare name costs zero protection. 2026-06-18 hotfix (reapplied).
     "ahk",            # AutoHotkey driver (synthetic input + hotkeys)
     "pyautoit",       # AutoIt driver (synthetic input)
     "autoit",         # AutoIt driver (synthetic input)

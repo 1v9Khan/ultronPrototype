@@ -220,6 +220,17 @@ _WAKE_REMNANT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 2026-06-18: an explicit wake word LEADING a follow-up-window utterance is an
+# unambiguous address to Kenning -- the user said the name -- so it must bypass the
+# borderline zero-shot addressing gate. Observed live: "Ultron, show me the stop
+# button" transcribed perfectly but scored 0.75 < the 0.80 ADDRESSED threshold and
+# was dropped, so the command never ran. The rules side keyed the direct-address
+# rule to "kenning" ONLY, so the actual "ultron" wake word was invisible to the
+# classifier. Narrow to the REAL wake words (not the broad _WAKE_MISHEAR set,
+# which includes fillers/homophones) so it can't false-accept room chatter.
+_FOLLOWUP_WAKE_RE = re.compile(
+    r"^\s*(?:hey[\s,]+)?(?:ultron|kenning)\b", re.IGNORECASE)
+
 
 def _strip_leading_wake_remnant(text: str) -> str:
     """Strip leading mis-transcribed wake words / fillers ("Yeah. Run, …" -> "…").
@@ -5754,10 +5765,15 @@ class Orchestrator:
                     # (observed live: a direct command dropped at
                     # conf 0.75 vs the 0.80 threshold). Also skips the
                     # ~190 ms classifier on every relay turn.
-                    if self._is_relay_command(user_text):
-                        print(f"  (follow-up, relay) you: {user_text}")
+                    # A relay command OR an explicit leading wake word ("Ultron,
+                    # show me the stop button") is DEFINITELY for Kenning -- honor it
+                    # directly instead of risking a borderline zero-shot rejection
+                    # (the stop-button command was dropped at conf 0.75 < 0.80 in
+                    # the follow-up window despite the user saying the name).
+                    if self._is_relay_command(user_text) or _FOLLOWUP_WAKE_RE.match(user_text):
+                        print(f"  (follow-up, addressed) you: {user_text}")
                         trace.tlog(
-                            logger, "addressing:relay_override",
+                            logger, "addressing:wake_or_relay_override",
                             text=user_text[:160],
                         )
                     else:
