@@ -127,3 +127,28 @@ def test_f5_musing_gate_spares_real_self_status():
     for t in ("I'm planting", "I died", "I'm low", "I need a drop",
               "I got one", "I have spike"):
         assert not _NARRATION_MUSING_RE.match(t), t
+
+
+# ---------------------------------------------------------------------------
+# F3: a verbatim/context relay whose team noun is a reported SUBJECT
+# ("my teammate is flaming me, tell them to calm down ...") lost its "tell them"
+# directive because _strip_scaffold treated "my teammate is ..." as an outer
+# relay frame and stripped the nested verb. The context clause must not enable
+# that strip, so the real directive survives.
+# ---------------------------------------------------------------------------
+
+
+def test_f3_context_subject_clause_keeps_the_relay_directive():
+    # The "tell them ..." directive must survive (not be stripped).
+    out = _strip_scaffold("my teammate is flaming me, tell them to calm down")
+    assert "tell them to calm down" in out or "calm down" in out
+    assert "tell them" in out  # nested directive preserved, not deleted
+    out2 = _strip_scaffold("the squad keeps dying, tell them to slow down")
+    assert "tell them" in out2
+
+
+def test_f3_genuine_doubled_team_lead_still_strips():
+    # "my team, tell them rotate" (team as ADDRESS, not subject) should still
+    # collapse the doubled relay verb (no copula after the team noun).
+    out = _strip_scaffold("my team tell them rotate to B")
+    assert out.lower().startswith("tell my team") or "rotate to B" in out

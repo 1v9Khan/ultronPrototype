@@ -308,8 +308,13 @@ def _strip_scaffold(s: str) -> str:
             consumed_lead = True
     # (3b) nested relay verb -- only when an OUTER relay frame already exists, so
     # a single legitimate "tell my team X" is never stripped to bare "X".
+    # A team noun that is the SUBJECT of a reported clause ("my teammate is
+    # flaming me, tell them to calm down") is CONTEXT, not an outer relay frame,
+    # so it must NOT enable the nested-verb strip below (which would delete the
+    # real "tell them ..." directive). F3.
     had_outer = consumed_lead or bool(
-        _HAS_RELAY_LEAD.match(s) or _TEAM_LEAD.match(s))
+        _HAS_RELAY_LEAD.match(s)
+        or (_TEAM_LEAD.match(s) and not _TEAM_AS_SUBJECT_RE.match(s)))
     if had_outer:
         lead_m = _HAS_RELAY_LEAD.match(s) or _TEAM_LEAD.match(s)
         start = lead_m.end() if lead_m else 0
@@ -552,6 +557,21 @@ _AMBIG_TACTICAL_LEAD = re.compile(
     r"^\s*(?:drop|give|share|call)\b"
     r"(?!\s+(?:out\b|to\b|them\b|'?em\b|everyone\b|everybody\b|"
     r"(?:my|our|the)\s+(?:team|teammates?|squad|boys|guys|mates|crew|gang|fam)\b))",
+    re.IGNORECASE,
+)
+
+# A team noun used as the SUBJECT of a reported clause ("my teammate is flaming
+# me", "the squad keeps dying", "my team just lost") -- context, NOT an address
+# lead. Distinguished by a copula / auxiliary / reporting verb right after the
+# noun. Used so _strip_scaffold's nested-verb strip does NOT treat such a context
+# clause as an outer relay frame and delete the REAL relay directive that follows
+# ("my teammate is flaming me, tell them to calm down"). 2026-06-18 audit F3.
+_TEAM_AS_SUBJECT_RE = re.compile(
+    r"^\s*(?:my\s+|our\s+|the\s+)?"
+    r"(?:team|teammates?|squad|boys|guys|mates|crew|duo)\s+"
+    r"(?:is|are|was|were|'?s|'?re|keeps?|kept|just|already|has|have|had|"
+    r"wants?|wanted|said|says|asked|asking|started|stopped|won'?t|"
+    r"can'?t|cannot|gets?|got|been|being|\w+ing)\b",
     re.IGNORECASE,
 )
 
