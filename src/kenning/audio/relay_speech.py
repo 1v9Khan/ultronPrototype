@@ -3651,7 +3651,11 @@ _M1_CONNECTORS = frozenset(
 _M1_OWNER = frozenset("their our enemy enemies they them".split())
 _M1_LOC_EXTRA = frozenset("room area spot position pos".split())
 _M1_DMG = frozenset(
-    "shot lit cracked hurt one-shot one-tap damaged dinged tagged chunked".split())
+    "shot lit cracked hurt one-shot one-tap damaged dinged tagged chunked "
+    # 2026-06-18: "hit" is the MOST common damage verb ("Jett hit 84") yet was
+    # missing, so "<agent> hit <n>" bailed the slot grammar and slipped to the
+    # fuzzy router (which abstained it to the LLM). Plus near-synonyms.
+    "hit tapped tap clipped melted bopped".split())
 _M1_ACTION = _ACTION_WORDS | frozenset(
     "watching coming falling reloading dead down baiting trading swinging "
     "committing crossing boosting anchoring covering low".split())
@@ -3680,6 +3684,12 @@ def _parse_callout_slots(p: str) -> Optional[tuple]:
             # token only, so "last one back site" -> "Last one back site." (never
             # the double-capped "Last One").
             types.add("count"); out.append(low); continue
+        if low.isdigit():
+            # 2026-06-18: a MULTI-digit number is a damage / health value
+            # ("hit 84", "97 left", "120 armor") -- a tactical slot, not residual.
+            # Without this "<agent> hit <84>" bailed the slot grammar (single-digit
+            # only) and slipped to the fuzzy router, which abstained it to the LLM.
+            types.add("dmg"); out.append(low); continue
         if low in _M1_DMG:
             types.add("dmg"); out.append(low); continue
         if low in _LOC_TOKENS or low in _M1_LOC_EXTRA:

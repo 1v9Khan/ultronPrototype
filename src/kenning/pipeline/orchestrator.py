@@ -2994,6 +2994,23 @@ class Orchestrator:
             logger.debug("relay command probe failed: %s", e)
             return False
 
+    def _looks_like_slot_callout(self, user_text: str) -> bool:
+        """True when EVERY token of ``user_text`` is a recognised tactical slot
+        (agent / count / damage / location / action) with >=2 distinct meaningful
+        types -- an UNAMBIGUOUS team callout the strict relay matcher missed only
+        because it lacks an explicit "tell my team" lead ("Jett hit 84", "one back
+        plat", "Reyna is tree"). Used to FORCE the relay deterministically before
+        the fuzzy semantic router, which can score a short callout closest-to-
+        conversational and abstain it to the LLM. Conservative: any residual
+        non-tactical token (banter / question / opinion) bails -> False, so it
+        never steals a real conversational turn. Fail-open to False."""
+        try:
+            from kenning.audio.relay_speech import _parse_callout_slots
+            return _parse_callout_slots(user_text) is not None
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("slot-callout probe failed: %s", e)
+            return False
+
     def _maybe_handle_anticheat_toggle(self, user_text: str) -> bool:
         """Anticheat-safe mode voice toggle: "enable anticheat mode" /
         "disable anticheat mode" (also "tournament mode"). While active,
@@ -6388,7 +6405,22 @@ class Orchestrator:
                 # relay path imports only kenning.audio.* + config -- no
                 # coding/openclaw/heavy -- so it is anticheat-safe in lean boot.
                 if self.coding_voice is None:
-                    if self._maybe_handle_relay_speech(user_text):
+                    _relayed = self._maybe_handle_relay_speech(user_text)
+                    if not _relayed and self._looks_like_slot_callout(user_text):
+                        # Deterministic agent/tactical callout the STRICT matcher
+                        # missed only for lack of an explicit "tell my team" lead
+                        # ("Jett hit 84", "one back plat"). Force it through the
+                        # relay rather than let the fuzzy semantic router below
+                        # score it closest-to-conversational and abstain it to the
+                        # LLM (observed live: "Jett hit 84" -> abstain 0.563 -> LLM).
+                        _relayed = self._maybe_handle_relay_speech(
+                            user_text, force=True)
+                        if _relayed:
+                            trace.tlog(
+                                logger, "routing:slot_callout_forced",
+                                text=user_text[:120],
+                            )
+                    if _relayed:
                         self._last_response_finished_monotonic = time.monotonic()
                         if _addr_cfg.follow_up_enabled:
                             follow_up_until = (
