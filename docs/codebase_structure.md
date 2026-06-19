@@ -10,6 +10,18 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: "THEY'RE OUT" SNAP CALLOUT (enemy out / committed on site)**
+> (2026-06-18, user request). Bare "Ultron, they're out" / "they're not out" only relayed via the
+> fuzzy relay-intent gate (sidecar) and could miss. Added the enemy-commitment "out" shape to
+> `command_normalizer._STRONG_CALLOUT_RE` (`(?:are|is)? (?:not)? out\b` after the enemy lead) so
+> "they're out", "they're not out", "they are out", "the enemy is out", "they're out on site"
+> relay DETERMINISTICALLY (bypass the gate, like the other strong callouts) → "They're out.
+> \<Ultron tail\>" via `_as_enemy_status`. Precise: `out\b` matches only standalone "out" (never
+> outside/outnumbered); the enemy lead gates it so "force them out"/"call them out"/insults
+> ("they're washed") are NOT matched. Golden re-blessed (only `_STRONG_CALLOUT_RE` changed; the
+> re-bless also captured this session's NEW symbols the gate never flags: `_RELAY_REPHRASE_SYSTEM`,
+> `_Q_WH_NEGAUX_INVERT_RE`, `_NEG_AUX_CONTRACT`). Tests: `TestEnemyOutCallout`; 219 corpus pass.
+>
 > **Validating HEAD: LEAN-DISPATCH VOICE-TOGGLE GAP (flavor-off gave an LLM response)**
 > (2026-06-18). "Ultron, flavor off" returned an LLM response in gaming. STT + the matcher were
 > correct ("flavor off." → `relay_speech.match_flavor_toggle` = disable); the WIRING was missing.
