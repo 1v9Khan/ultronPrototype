@@ -1058,6 +1058,7 @@ def flavor_tails_enabled() -> bool:
 # scripts/_voice_lines_verify.py). The FUNCTIONS that consume them stay below.
 from kenning.audio.voice_lines import (  # noqa: E402
     _FLAVOR_OFF_RE, _FLAVOR_ON_RE,
+    _FLAVOR_OFF_MISHEAR_RE, _FLAVOR_ON_MISHEAR_RE,
     _HELLO_RE, _HELLO_TEAM_WORDS,
     _ASK_DAY_RE, _ASK_DAY_TEAM_LINES, _ASK_DAY_AGENT_TEMPLATES,
     _CONSOLATION_RE, _PRAISE_RE, _NICE_TRY_RE, _NICE_TRY_TAILS, _CLUTCH_RE,
@@ -1075,9 +1076,12 @@ def match_flavor_toggle(text: str) -> Optional[bool]:
     if not text:
         return None
     cleaned = text.strip()
-    if _FLAVOR_OFF_RE.match(cleaned):
+    # Clean phrasings first, then the Whisper-mishear fallbacks ("save her off"
+    # -> flavor off). OFF is checked before ON so an "off" mishear never trips an
+    # "on" lead. Callers pass the RAW transcript (pre-normalization).
+    if _FLAVOR_OFF_RE.match(cleaned) or _FLAVOR_OFF_MISHEAR_RE.match(cleaned):
         return False
-    if _FLAVOR_ON_RE.match(cleaned):
+    if _FLAVOR_ON_RE.match(cleaned) or _FLAVOR_ON_MISHEAR_RE.match(cleaned):
         return True
     return None
 

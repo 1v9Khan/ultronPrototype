@@ -771,3 +771,34 @@ class TestSayHelloDefaultAndStop:
         # a tactical "stop <verb>" must NOT become the stop_command defiance.
         cmd = _cmd(text)
         assert cmd is None or cmd.directive != "stop_command"
+
+
+class TestFlavorToggleMishears:
+    """2026-06-19: "flavor off" is not Valorant-domain vocab, so the domain-biased
+    Whisper mangles it -- live it transcribed as "Save her off." and (after the
+    relay normalizer prepended "tell my team") relayed as an eco call. The toggle
+    now tolerates the homophone mishears AND is matched on the RAW transcript."""
+
+    @_pytest.mark.parametrize("text", [
+        "flavor off", "flavour off", "Save her off.", "save her off", "saver off",
+        "savor off", "favor off", "favour off", "flavors off", "flaver off",
+        "labor off", "tails off", "Ultron, save her off",
+    ])
+    def test_off_mishears(self, text) -> None:
+        assert _RS.match_flavor_toggle(text) is False, f"{text!r} should toggle OFF"
+
+    @_pytest.mark.parametrize("text", [
+        "flavor on", "favor on", "save her on", "flavour back on",
+        "bring back the flavor", "tails on",
+    ])
+    def test_on_forms(self, text) -> None:
+        assert _RS.match_flavor_toggle(text) is True, f"{text!r} should toggle ON"
+
+    @_pytest.mark.parametrize("text", [
+        "back off", "hold off", "call off A", "fall off", "they're off",
+        "we're off", "save", "tell my team to save", "we're on", "lock on",
+        "I'm on it", "push on A", "they are on B", "mic on", "eyes on", "hold on",
+        "tell my team save her off",  # the NORMALIZED form must NOT toggle (raw does)
+    ])
+    def test_guards_do_not_toggle(self, text) -> None:
+        assert _RS.match_flavor_toggle(text) is None, f"{text!r} must NOT toggle"

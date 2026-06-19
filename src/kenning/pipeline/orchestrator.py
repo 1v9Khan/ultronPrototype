@@ -6048,9 +6048,13 @@ class Orchestrator:
                 # so only true team callouts gain the lead. The ORIGINAL
                 # transcript was already recorded to dialogue history above, so
                 # "what did I say earlier?" recall still sees the real words.
+                # RAW STT, pre-normalization. Control toggles (flavor off/on)
+                # match on THIS, not the normalized text: normalize_command
+                # prepends the relay lead ("save her off" -> "tell my team save
+                # her off"), which hides the toggle (live "flavor off" miss).
+                _raw_stt = user_text
                 try:
                     from kenning.audio.command_normalizer import normalize_command
-                    _raw_stt = user_text
                     _normed = normalize_command(user_text)
                     # ALWAYS log BOTH the raw STT transcript AND the normalized
                     # routing text (even when unchanged) so every turn shows the
@@ -6594,7 +6598,7 @@ class Orchestrator:
                             via="llm_device_switch-lean", follow_up=False,
                         )
                         continue
-                    if self._maybe_handle_flavor_toggle(user_text):
+                    if self._maybe_handle_flavor_toggle(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
                         trace.tlog(

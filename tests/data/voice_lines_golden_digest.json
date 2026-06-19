@@ -8661,10 +8661,20 @@
 ],
 "kind": "seq"
 },
+"_FLAVOR_OFF_MISHEAR_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+|ultron[\\s,]+)?(?:turn\\s+|set\\s+|put\\s+)?(?:flavou?rs?|flavou?red|flaver|flairs?|favou?rs?|favou?red|favou?rite|save(?:rs?|s)?(?:\\s+(?:her|hers|here|your|the))?|savou?rs?|labou?rs?|tales?|tails?|tail)\\s+(?:is\\s+|are\\s+|tails?\\s+)?off\\b\\s*[.!?]*$"
+},
 "_FLAVOR_OFF_RE": {
 "flags": 34,
 "kind": "regex",
 "pattern": "^(?:please\\s+)?(?:(?:disable|turn\\s+off|stop|cut|kill|drop|silence|mute|remove|no\\s+more)\\s+(?:the\\s+|your\\s+|all\\s+)?(?:flavou?r|flair|tail|tails|flavou?r\\s+tails?|extra\\s+commentary|commentary|one[\\s-]?liners?|quips?)|turn\\s+(?:the\\s+|your\\s+)?(?:flavou?r|flair|tail|tails|flavou?r\\s+tails?|extra\\s+commentary|commentary|one[\\s-]?liners?|quips?)\\s+off|(?:flavou?r|tails?)\\s+off|no\\s+(?:flavou?r|tails?))\\s*[.!?]*$"
+},
+"_FLAVOR_ON_MISHEAR_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+|ultron[\\s,]+)?(?:turn\\s+|set\\s+|put\\s+)?(?:flavou?rs?|flavou?red|flaver|flairs?|favou?rs?|favou?red|favou?rite|save(?:rs?|s)?\\s+(?:her|hers|here|your)|savou?rs?)\\s+(?:is\\s+|are\\s+|tails?\\s+)?(?:back\\s+)?on\\b\\s*[.!?]*$"
 },
 "_FLAVOR_ON_RE": {
 "flags": 34,
@@ -10501,10 +10511,28 @@
 "kind": "str",
 "value": "(?:flavou?r|flair|tail|tails|flavou?r\\s+tails?|extra\\s+commentary|commentary|one[\\s-]?liners?|quips?)"
 },
+"_FLAVOR_OFF_MISHEAR_LEAD": {
+"kind": "str",
+"value": "(?:flavou?rs?|flavou?red|flaver|flairs?|favou?rs?|favou?red|favou?rite|save(?:rs?|s)?(?:\\s+(?:her|hers|here|your|the))?|savou?rs?|labou?rs?|tales?|tails?|tail)"
+},
+"_FLAVOR_OFF_MISHEAR_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+|ultron[\\s,]+)?(?:turn\\s+|set\\s+|put\\s+)?(?:flavou?rs?|flavou?red|flaver|flairs?|favou?rs?|favou?red|favou?rite|save(?:rs?|s)?(?:\\s+(?:her|hers|here|your|the))?|savou?rs?|labou?rs?|tales?|tails?|tail)\\s+(?:is\\s+|are\\s+|tails?\\s+)?off\\b\\s*[.!?]*$"
+},
 "_FLAVOR_OFF_RE": {
 "flags": 34,
 "kind": "regex",
 "pattern": "^(?:please\\s+)?(?:(?:disable|turn\\s+off|stop|cut|kill|drop|silence|mute|remove|no\\s+more)\\s+(?:the\\s+|your\\s+|all\\s+)?(?:flavou?r|flair|tail|tails|flavou?r\\s+tails?|extra\\s+commentary|commentary|one[\\s-]?liners?|quips?)|turn\\s+(?:the\\s+|your\\s+)?(?:flavou?r|flair|tail|tails|flavou?r\\s+tails?|extra\\s+commentary|commentary|one[\\s-]?liners?|quips?)\\s+off|(?:flavou?r|tails?)\\s+off|no\\s+(?:flavou?r|tails?))\\s*[.!?]*$"
+},
+"_FLAVOR_ON_MISHEAR_LEAD": {
+"kind": "str",
+"value": "(?:flavou?rs?|flavou?red|flaver|flairs?|favou?rs?|favou?red|favou?rite|save(?:rs?|s)?\\s+(?:her|hers|here|your)|savou?rs?)"
+},
+"_FLAVOR_ON_MISHEAR_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+|ultron[\\s,]+)?(?:turn\\s+|set\\s+|put\\s+)?(?:flavou?rs?|flavou?red|flaver|flairs?|favou?rs?|favou?red|favou?rite|save(?:rs?|s)?\\s+(?:her|hers|here|your)|savou?rs?)\\s+(?:is\\s+|are\\s+|tails?\\s+)?(?:back\\s+)?on\\b\\s*[.!?]*$"
 },
 "_FLAVOR_ON_RE": {
 "flags": 34,

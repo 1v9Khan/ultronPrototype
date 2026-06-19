@@ -108,6 +108,34 @@ _FLAVOR_ON_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Whisper MISHEARS of the terse "flavor off" / "flavor on" toggle. "flavor" is
+# NOT Valorant-domain vocab, so the domain-biased STT mangles it toward in-vocab
+# words -- live, "flavor off" transcribed as "Save her off." (then the relay
+# normalizer prepended "tell my team" and it relayed as an eco call). These map
+# the homophone leads + a trailing off/on back to the toggle. The trailing
+# off/on is the distinctive signal: no tactical callout is "<flavor-homophone>
+# off". Matched on the RAW transcript (pre-normalization). The ON lead is kept
+# TIGHTER than OFF -- bare "<word> on" collides with far more real speech (the
+# known "flavor on" -> "we're on" miss), so "we're/they're" are deliberately NOT
+# leads; use "bring back the flavor" for a reliable ON.
+_FLAVOR_OFF_MISHEAR_LEAD = (
+    r"(?:flavou?rs?|flavou?red|flaver|flairs?|favou?rs?|favou?red|favou?rite|"
+    r"save(?:rs?|s)?(?:\s+(?:her|hers|here|your|the))?|savou?rs?|"
+    r"labou?rs?|tales?|tails?|tail)")
+_FLAVOR_ON_MISHEAR_LEAD = (
+    r"(?:flavou?rs?|flavou?red|flaver|flairs?|favou?rs?|favou?red|favou?rite|"
+    r"save(?:rs?|s)?\s+(?:her|hers|here|your)|savou?rs?)")
+_FLAVOR_OFF_MISHEAR_RE = re.compile(
+    rf"^(?:please\s+|ultron[\s,]+)?(?:turn\s+|set\s+|put\s+)?{_FLAVOR_OFF_MISHEAR_LEAD}\s+"
+    r"(?:is\s+|are\s+|tails?\s+)?off\b\s*[.!?]*$",
+    re.IGNORECASE,
+)
+_FLAVOR_ON_MISHEAR_RE = re.compile(
+    rf"^(?:please\s+|ultron[\s,]+)?(?:turn\s+|set\s+|put\s+)?{_FLAVOR_ON_MISHEAR_LEAD}\s+"
+    r"(?:is\s+|are\s+|tails?\s+)?(?:back\s+)?on\b\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
 # --- short "say hello" -> a brief greeting (NOT the long team intro) ---------
 # "say hello to my team" -> "Hello team."; "say hello to <agent>" -> "Hello, X."
 _HELLO_RE = re.compile(
