@@ -994,3 +994,27 @@ class TestLiveBatch0619C:
     def test_good_job_terse_snap(self, _tails_off) -> None:
         assert _line("tell my team good job") == "Good job."
         assert _line("tell my Reyna good job") == "Good job, Reyna."
+
+
+class TestLiveBatch0619D:
+    """2026-06-19 fourth live batch: verbatim "say to my team X word for word"
+    must strip the trailing marker; Spotify volume must accept "my volume"."""
+
+    @_pytest.mark.parametrize("text,expected", [
+        ("say to my team I can't drop word for word", "I can't drop"),
+        ("say to my team push B word for word", "push B"),
+    ])
+    def test_say_to_team_verbatim_strips_marker(self, _tails_off, text, expected) -> None:
+        assert _line(text) == expected
+
+    @_pytest.mark.parametrize("text,action,value", [
+        ("lower my volume by 10 percent", "volume_down", 10),
+        ("raise my volume by 20", "volume_up", 20),
+        ("lower my volume", "volume_down", 0),
+        ("set my volume to 50", "volume_set", 50),
+        ("turn my volume up", "volume_up", 0),
+    ])
+    def test_spotify_my_volume(self, text, action, value) -> None:
+        from kenning.spotify.voice import match_spotify_command
+        c = match_spotify_command(text)
+        assert c is not None and c.action == action and c.value == value, f"{text!r}"

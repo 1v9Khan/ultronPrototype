@@ -560,6 +560,13 @@ def _match_repeat_command(
         else _display_name(who)
     )
     rest = _REPEAT_CONNECTIVE_RE.sub("", rest, count=1).strip().strip('"').strip()
+    # A TRAILING verbatim marker ("... word for word" / "... verbatim") is the
+    # instruction, not part of the phrase. The "tell my team X word for word"
+    # path strips it upstream, but the "say/repeat to my team X word for word"
+    # path did not (live: spoke "I can't drop word for word"). Strip it here.
+    _vm = _VERBATIM_SUFFIX_RE.search(rest)
+    if _vm is not None and _vm.start() > 0:
+        rest = rest[:_vm.start()].strip().strip('"').strip()
     if not re.search(r"[A-Za-z0-9]", rest):
         return None
     return RelayCommand(

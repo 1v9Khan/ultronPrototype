@@ -108,8 +108,8 @@ _NEXT = re.compile(
 )
 _VOL_SET = re.compile(
     r"^(?:please\s+)?(?:"
-    r"set\s+(?:the\s+)?volume\s+(?:to|at)\s+"
-    r"|(?:put|make|turn)\s+(?:the\s+)?volume\s+(?:to\s+|at\s+)?"
+    r"set\s+(?:(?:the|my|our)\s+)?volume\s+(?:to|at)\s+"
+    r"|(?:put|make|turn)\s+(?:(?:the|my|our)\s+)?volume\s+(?:to\s+|at\s+)?"
     r"|volume\s+(?:to\s+|at\s+)?"
     r")(?P<n>\d{1,3})\s*(?:percent|%)?\s*[.!?]*$",
     re.IGNORECASE,
@@ -117,32 +117,33 @@ _VOL_SET = re.compile(
 # Relative nudge by an explicit amount: "lower the volume by 10%", "raise it
 # by 20", "turn it up by 15 percent", "volume down by 5". The "by N" is the
 # disambiguator vs the fixed-step _VOL_UP / _VOL_DOWN.
-_VOBJ = r"(?:\s+(?:it|the\s+(?:music|volume|sound)|volume))?"  # optional object
+# optional object -- "it" / "the|my|our music|volume|sound" / bare "volume".
+_VOBJ = r"(?:\s+(?:it|(?:the|my|our)\s+(?:music|volume|sound)|volume))?"
 _VOL_DELTA = re.compile(
     r"^(?:please\s+)?(?:"
-    r"(?P<up>turn\s+(?:it|the\s+(?:music|volume|sound))\s+up"
-    r"|crank\s+(?:it|the\s+volume)(?:\s+up)?|bump\s+(?:it|the\s+volume)(?:\s+up)?"
-    r"|(?:pump|jack)\s+(?:it|the\s+volume)\s+up"
+    r"(?P<up>turn\s+(?:it|(?:the|my|our)\s+(?:music|volume|sound))\s+up"
+    r"|crank\s+(?:it|(?:the|my)\s+volume)(?:\s+up)?|bump\s+(?:it|(?:the|my)\s+volume)(?:\s+up)?"
+    r"|(?:pump|jack)\s+(?:it|(?:the|my)\s+volume)\s+up"
     rf"|raise{_VOBJ}|increase{_VOBJ}|boost{_VOBJ}|up\s+the\s+volume|volume\s+up)"
     r"|"
-    r"(?P<down>turn\s+(?:it|the\s+(?:music|volume|sound))\s+down"
-    r"|drop\s+(?:it|the\s+volume)(?:\s+down)?|knock\s+(?:it|the\s+volume)(?:\s+down)?"
+    r"(?P<down>turn\s+(?:it|(?:the|my|our)\s+(?:music|volume|sound))\s+down"
+    r"|drop\s+(?:it|(?:the|my)\s+volume)(?:\s+down)?|knock\s+(?:it|(?:the|my)\s+volume)(?:\s+down)?"
     rf"|lower{_VOBJ}|decrease{_VOBJ}|reduce{_VOBJ}|down\s+the\s+volume|volume\s+down)"
     r")\s+by\s+(?P<n>\d{1,3})\s*(?:percent|%)?\s*[.!?]*$",
     re.IGNORECASE,
 )
 _VOL_UP = re.compile(
-    r"^(?:please\s+)?(?:turn\s+(?:it|the\s+(?:music|volume|sound))\s+up(?:\s+a\s+(?:bit|little))?"
-    r"|volume\s+up|louder|crank\s+(?:it|the\s+(?:volume|music))(?:\s+up)?"
-    r"|(?:bump|pump|jack)\s+(?:it|the\s+volume)\s+up|make\s+it\s+louder|a\s+(?:bit|little)\s+louder"
-    r"|(?:raise|increase|boost)\s+(?:the\s+)?volume|more\s+volume)\s*[.!?]*$",
+    r"^(?:please\s+)?(?:turn\s+(?:it|(?:the|my|our)\s+(?:music|volume|sound))\s+up(?:\s+a\s+(?:bit|little))?"
+    r"|volume\s+up|louder|crank\s+(?:it|(?:the|my)\s+(?:volume|music))(?:\s+up)?"
+    r"|(?:bump|pump|jack)\s+(?:it|(?:the|my)\s+volume)\s+up|make\s+it\s+louder|a\s+(?:bit|little)\s+louder"
+    r"|(?:raise|increase|boost)\s+(?:(?:the|my|our)\s+)?volume|more\s+volume)\s*[.!?]*$",
     re.IGNORECASE,
 )
 _VOL_DOWN = re.compile(
-    r"^(?:please\s+)?(?:turn\s+(?:it|the\s+(?:music|volume|sound))\s+down(?:\s+a\s+(?:bit|little))?"
-    r"|volume\s+down|quieter|softer|lower\s+(?:it|the\s+volume)"
-    r"|(?:bring|drop|knock)\s+(?:it|the\s+volume)\s+down|make\s+it\s+(?:quieter|softer)"
-    r"|a\s+(?:bit|little)\s+(?:quieter|softer)|(?:decrease|lower|drop)\s+(?:the\s+)?volume|less\s+volume)\s*[.!?]*$",
+    r"^(?:please\s+)?(?:turn\s+(?:it|(?:the|my|our)\s+(?:music|volume|sound))\s+down(?:\s+a\s+(?:bit|little))?"
+    r"|volume\s+down|quieter|softer|lower\s+(?:it|(?:the|my|our)\s+volume)"
+    r"|(?:bring|drop|knock)\s+(?:it|(?:the|my)\s+volume)\s+down|make\s+it\s+(?:quieter|softer)"
+    r"|a\s+(?:bit|little)\s+(?:quieter|softer)|(?:decrease|lower|drop)\s+(?:(?:the|my|our)\s+)?volume|less\s+volume)\s*[.!?]*$",
     re.IGNORECASE,
 )
 _SHUFFLE = re.compile(
