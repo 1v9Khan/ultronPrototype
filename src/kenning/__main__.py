@@ -99,6 +99,17 @@ def main() -> int:
     configure_logging()
     logger = get_logger("main")
 
+    # 2026-06-19: flavor tails OFF by DEFAULT for the running app -- crisp,
+    # tail-free callouts for competitive play ("Group up." not "Group up, but
+    # their formation is predictable...") that survive restarts. Set here, before
+    # the lazy Orchestrator import pulls relay_speech (which reads this env once
+    # at import). setdefault, so a real KENNING_FLAVOR_TAILS env var AND the
+    # runtime "Ultron, flavor on" toggle both still win. The library default
+    # stays ON, so tests/standalone imports are unaffected. NB the app does not
+    # auto-load .env, so a .env value alone would NOT take effect here.
+    import os as _os_flavor_default
+    _os_flavor_default.environ.setdefault("KENNING_FLAVOR_TAILS", "0")
+
     # 2026-06-15/06-17 audit hardening: install the anticheat import firewall as
     # the VERY FIRST action after logging -- BEFORE the single-instance lock,
     # BEFORE the Orchestrator MODULE is even imported (the import is lazy, below),
