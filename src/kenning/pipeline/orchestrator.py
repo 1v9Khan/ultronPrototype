@@ -6980,6 +6980,20 @@ class Orchestrator:
         those at the VAD layer.
         """
         self.vad.reset()
+        # 2026-06-19: drain any STALE backlog from the input queue before the new
+        # capture (mirrors _follow_up_listen's entry, which _capture_utterance was
+        # missing). After a long TTS turn the mic queue can carry a beat of stale
+        # SILENCE; without this the live loop drains that stale silence as
+        # "leading silence" and hits the 2.0s empty-capture bail BEFORE the user's
+        # actual command is reached -> the command is lost and they must repeat it
+        # (the "sometimes takes 2 commands to respond" symptom). The pre-roll is
+        # snapshotted from the RING below (a separate buffer), so draining the
+        # QUEUE here does not touch it. No-op when the queue is already current
+        # (the common case), so it cannot regress a healthy turn. Fail-open.
+        try:
+            self.audio.drain()
+        except Exception:                                            # noqa: BLE001
+            pass
         # 2026-05-19 Tracks 1c-1e: best-effort cancel of any in-flight
         # background summarizer pass. The user is about to (or has just
         # started to) speak; we want the GPU free for the foreground
@@ -7133,10 +7147,25 @@ class Orchestrator:
         # the fast-path silence baseline.
         speculative_silence_kickoff_chunks = 2
 
+        # 2026-06-19 CAPTURE-STALL WATCHDOG (mirrors _wait_for_wake_word, which had
+        # it; the capture loop did NOT). A healthy stream delivers a block every
+        # ~16ms, so consecutive get_chunk timeouts mean the input stream STALLED
+        # mid-capture (a USB-overrun / CPU-starvation stall right after a heavy 3B
+        # turn + long TTS) -- the live "sometimes takes 2 commands" symptom. Only
+        # restart while speech_seen is False (no command captured yet, so nothing
+        # to lose); never mid-utterance. Fail-open.
+        cap_stall_nones = 0
+
         while not self._shutdown.is_set() and elapsed_samples < max_samples:
             chunk = self.audio.get_chunk(timeout=0.5)
             if chunk is None:
+                cap_stall_nones += 1
+                if cap_stall_nones >= _CAPTURE_STALL_TIMEOUTS and not speech_seen:
+                    if self._restart_capture_stream():
+                        self.vad.reset()
+                    cap_stall_nones = 0
                 continue
+            cap_stall_nones = 0
             chunks.append(chunk)
             elapsed_samples += chunk.shape[0]
             if streaming_active:
@@ -7537,11 +7566,24 @@ class Orchestrator:
         # speech_chunks, matching the returned buffer, and no CPU is
         # burned transcribing room chatter for the whole warm window.
         streaming_active = False
+        # 2026-06-19 CAPTURE-STALL WATCHDOG (mirror _capture_utterance /
+        # _wait_for_wake_word). At timeout=0.1s a stall shows as a run of None;
+        # ~1s of consecutive timeouts -> restart the input stream so the follow-up
+        # window doesn't go deaf after a heavy turn. Fail-open.
+        fu_stall_nones = 0
+        _fu_stall_limit = max(2, int(_CAPTURE_STALL_SECONDS / 0.1))
 
         while not self._shutdown.is_set() and time.monotonic() < deadline:
             chunk = self.audio.get_chunk(timeout=0.1)
             if chunk is None:
+                fu_stall_nones += 1
+                if fu_stall_nones >= _fu_stall_limit:
+                    if self._restart_capture_stream():
+                        self.wake.reset()
+                        self.vad.reset()
+                    fu_stall_nones = 0
                 continue
+            fu_stall_nones = 0
             self.ring.write(chunk)
 
             # Wake word always wins — even if we're mid-utterance.
