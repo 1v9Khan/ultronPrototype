@@ -10,6 +10,20 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: TEAM-RELAY PINNED TO THE ULTRON PERSONA (NEVER KENNING)**
+> (2026-06-18). A real-game LLM trace showed the relay rephrase's SYSTEM message was literally
+> `"You are Kenning."` — `relay_speech.build_relay_line` called `generate_stream` WITHOUT a
+> `system_prompt`, so it fell back to the engine's DEFAULT desktop persona (config.yaml
+> `llm.system_prompt` = "You are Kenning ..."). The team relay only ever runs in gaming, where the
+> persona must ALWAYS be Ultron. FIX: new `relay_speech._RELAY_REPHRASE_SYSTEM` (Ultron + the relay
+> output contract) is passed on the generic relay rephrase, mirroring the conversational paths
+> (`orchestrator._gaming_conversational_prompt` → `ULTRON_GAMING_PERSONA`) and the answer pipeline
+> (`ANSWER_PERSONA_CORE`) which were already Ultron. Also (local `.env`, gitignored):
+> `KENNING_WHISPER_INITIAL_PROMPT` `'Kenning.'` → `'Ultron.'` so the Whisper decode-bias handle
+> matches the gaming wake word (and a bleeding wake-tail transcribes as the strippable "Ultron"
+> rather than a phantom). NB: the "Kenning" mentions left in `llm_prompts.py` are GUARDRAILS
+> instructing Ultron to *never say* "Kenning" — those are correct, not leaks. 208 relay tests pass.
+>
 > **Validating HEAD: WHISPER DOMAIN-BIAS RESTORE + SMART-TURN MIN-SPEECH FLOOR**
 > (2026-06-18). Two more real-voice capture/STT fixes after live re-testing:
 > - **Whisper domain-prompt shadow** (`transcription/whisper_engine.py`): `initial_prompt` was
