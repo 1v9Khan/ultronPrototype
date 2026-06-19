@@ -40,6 +40,15 @@
 > re-bless also captured this session's NEW symbols the gate never flags: `_RELAY_REPHRASE_SYSTEM`,
 > `_Q_WH_NEGAUX_INVERT_RE`, `_NEG_AUX_CONTRACT`). Tests: `TestEnemyOutCallout`; 219 corpus pass.
 >
+> **Validating HEAD: WAKE FALSE-POSITIVE — `ultron` SUSTAIN GATE 3→4 FRAMES**
+> (2026-06-18, `3e433a9`). The `ultron` openWakeWord model false-fired at 0.93 on "Oh, we shouldn't
+> have lost that round" (phonetic "Oh we" ≈ "ultron"). A threshold change can't separate it (real
+> wakes fire 0.78–0.95, overlapping 0.93; the user already dropped ultron 0.7→0.65 for misses), so
+> the fix tightens the designed no-retrain false-accept lever instead: `config.yaml
+> wake_word.consecutive_frames.ultron` **3→4** — a 2-syllable "Ultron" sustains 4 frames; a brief
+> confusable spikes ~3. Reversible to 3 if a fast real "Ultron" is ever missed; the proper long-term
+> fix is retraining the model. Boot-time config only.
+>
 > **Validating HEAD: LEAN-DISPATCH VOICE-TOGGLE GAP (flavor-off gave an LLM response)**
 > (2026-06-18). "Ultron, flavor off" returned an LLM response in gaming. STT + the matcher were
 > correct ("flavor off." → `relay_speech.match_flavor_toggle` = disable); the WIRING was missing.
