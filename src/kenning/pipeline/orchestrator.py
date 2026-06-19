@@ -5972,6 +5972,28 @@ class Orchestrator:
                     trace.tlog(logger, "stt:empty_transcript")
                     continue
 
+                # WAKE-WORD-ONLY utterance ("Ultron" / a bare wake remnant or
+                # filler, no command). Now that the cold pre-roll is VAD'd
+                # (above), a bare "Ultron" no longer dies as empty_capture -- it
+                # transcribes to just the wake word, which must NOT be routed (it
+                # would mishear/relay as garbage). Stand down when the leading
+                # wake-remnant match consumes the WHOLE transcript (nothing
+                # alphanumeric after it). NB _strip_leading_wake_remnant
+                # deliberately preserves a STANDALONE wake word, so match
+                # _WAKE_REMNANT_RE directly here. Checked on the RAW transcript
+                # BEFORE normalize_command (which keeps "Ultron"); a real
+                # multi-word command leaves content after the match and proceeds.
+                _wake_only = _WAKE_REMNANT_RE.match(user_text)
+                if _wake_only is not None and not re.search(
+                    r"[A-Za-z0-9]", user_text[_wake_only.end():]
+                ):
+                    if not came_from_follow_up:
+                        print("  (wake word only; standing down)")
+                    trace.tlog(
+                        logger, "routing:wake_word_only", text=user_text[:160],
+                    )
+                    continue
+
                 # In the follow-up window, gate every utterance through the
                 # CPU-side addressing classifier. Don't reset the deadline on
                 # rejected speech -- we measure FOLLOW_UP_TIMEOUT_SECONDS from
@@ -7027,6 +7049,33 @@ class Orchestrator:
                 self._maybe_feed_stt_chunk(c)
         speech_seen = False
         speech_start_samples = 0
+        # 2026-06-19 (ported from ad15ded): VAD the COLD pre-roll ONCE. chunks[0]
+        # is the ring snapshot captured BEFORE the detector fired -- it holds the
+        # wake-word tail AND the start of any command spoken with NO pause after
+        # "Ultron". The live loop below only VADs NEW chunks, so a command that
+        # landed entirely in the pre-roll left the live VAD seeing only trailing
+        # silence -> speech_seen stayed False -> the buffer (WITH the command)
+        # was discarded as loop:empty_capture (the live "didn't respond at first"
+        # freeze). Pre-feeding latches speech_seen so the buffer is kept and
+        # transcribed. The VAD was reset above (and chunks[0] is NOT appended to
+        # the live stream again) so this + the live chunks form ONE continuous
+        # VAD stream with no double-count. A pure wake-tail latch can't cause a
+        # premature wake-only submit: a pause then triggers SPEECH_END on a
+        # sub-floor fragment, which the min-speech floor below downgrades to
+        # "incomplete" and EXTENDS until the real command arrives. Fail-open:
+        # any error just leaves speech_seen False (legacy behaviour).
+        try:
+            _pre_chunk = chunks[0] if chunks else None
+            if _pre_chunk is not None and getattr(_pre_chunk, "shape", (0,))[0] > 0:
+                _pre_res = self.vad.process(_pre_chunk)
+                if _pre_res is not None and (
+                    _pre_res.event == SpeechEvent.SPEECH_START
+                    or getattr(_pre_res, "is_speech", False)
+                ):
+                    speech_seen = True
+                    speech_start_samples = 0
+        except Exception:                                            # noqa: BLE001
+            pass
         long_utterance_bump_applied = False
         elapsed_samples = 0
         max_samples = int(self._max_utterance_seconds * settings.SAMPLE_RATE)

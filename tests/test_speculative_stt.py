@@ -466,3 +466,49 @@ def test_smart_turn_above_floor_submits(monkeypatch):
     assert audio.size == 4 * 256, (
         f"above the floor, an 'early_complete' verdict must submit at the first "
         f"SPEECH_END; got {audio.size} samples ({audio.size / 256:.0f} chunks)")
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-19: cold pre-roll -> VAD pre-feed (ad15ded port). A command spoken
+# with no pause after "Ultron" lands in the pre-roll; the live loop only VADs
+# NEW chunks, so without the pre-feed speech_seen stayed False and the buffer
+# (with the command) was discarded as empty_capture. The pre-feed VADs chunks[0]
+# and latches speech_seen. silence_grace = 2.0s = 125 chunks of 256 samples, so
+# 140 silence chunks trips the leading-silence empty-bail unless speech latched.
+# ---------------------------------------------------------------------------
+def test_preroll_speech_prevents_empty_bail(monkeypatch):
+    from kenning.audio.vad import SpeechEvent as E
+    script = [(E.SPEECH_START, 0.9)] + [(E.NONE, 0.0)] * 140
+    o = _capture_orch(monkeypatch, script)
+    o._cold_pre_roll_seconds = 0.05  # non-empty pre-roll so the pre-feed runs
+    audio = o._capture_utterance()
+    assert audio.shape[0] > 0, "pre-roll speech must latch speech_seen (no empty bail)"
+
+
+def test_preroll_silence_still_bails_empty(monkeypatch):
+    from kenning.audio.vad import SpeechEvent as E
+    script = [(E.NONE, 0.0)] * 140  # pre-feed silence + live silence
+    o = _capture_orch(monkeypatch, script)
+    o._cold_pre_roll_seconds = 0.05
+    audio = o._capture_utterance()
+    assert audio.shape[0] == 0, "no speech anywhere must still bail empty (legacy)"
+
+
+def test_wake_only_stand_down_predicate():
+    """FIX2: the leading wake-remnant match consuming the WHOLE transcript ->
+    stand down; a real command leaves alphanumeric content and proceeds."""
+    import re as _re
+    from kenning.pipeline.orchestrator import _WAKE_REMNANT_RE as R
+
+    def wake_only(t):
+        m = R.match(t)
+        return m is not None and not _re.search(r"[A-Za-z0-9]", t[m.end():])
+
+    assert wake_only("Ultron")
+    assert wake_only("Ultron.")
+    assert wake_only("Tron")
+    assert wake_only("okay")          # bare filler -> stand down (room noise)
+    assert not wake_only("Ultron flavor off")
+    assert not wake_only("Ultron show me the stop button")
+    assert not wake_only("tell my team to push B")
+    assert not wake_only("push B now")
