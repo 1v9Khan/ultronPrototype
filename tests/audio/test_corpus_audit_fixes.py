@@ -1018,3 +1018,24 @@ class TestLiveBatch0619D:
         from kenning.spotify.voice import match_spotify_command
         c = match_spotify_command(text)
         assert c is not None and c.action == action and c.value == value, f"{text!r}"
+
+
+class TestRunOnLead:
+    """2026-06-19: fast speech drops the spaces in the command lead
+    ("Tellmyteam"/"Askmyteam"); the spaced canonicalizer missed it and a second
+    lead got prepended (live: "Tellmyteam, Sova heaven..." kept only a fragment).
+    Re-spaced before lead canonicalization."""
+
+    @_pytest.mark.parametrize("text,expect_lead", [
+        ("Tellmyteam they're A", "tell my team"),
+        ("Askmyteam to rotate", "ask my team"),
+        ("Tellmyteam push B", "tell my team"),
+    ])
+    def test_runon_lead_respaced(self, text, expect_lead) -> None:
+        from kenning.audio.command_normalizer import normalize_command
+        n = normalize_command(text).lower()
+        assert n.startswith(expect_lead), f"{text!r} -> {n!r}"
+
+    def test_teammate_not_broken(self) -> None:
+        from kenning.audio.command_normalizer import normalize_command
+        assert "teammate" in normalize_command("tell my teammate to wait").lower()

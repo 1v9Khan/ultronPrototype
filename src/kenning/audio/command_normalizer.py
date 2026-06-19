@@ -204,6 +204,12 @@ _GIVE_TEAM_TO_RE = re.compile(
 _DROP_POSSESSIVE_RE = re.compile(
     r"\bdrop\s+me\s+(?:his|her|their|its)\b", re.IGNORECASE,
 )
+# Run-together command lead from fast speech ("Tellmyteam"/"ask my team" with
+# the spaces dropped). \s* (zero-or-more) catches the no-space form; \bteam\b
+# keeps "tell my teammate" safe.
+_RUNON_TEAM_LEAD_RE = re.compile(
+    r"^\s*(tell|told|ask)\s*(?:my|the|our)\s*team\b[\s,:.]*", re.IGNORECASE,
+)
 
 
 def _canonicalize_directive_lead(s: str) -> str:
@@ -984,6 +990,14 @@ def normalize_command(text: str) -> str:
     if _BARE_GREETING.match(raw):
         return raw
     s = _strip_leading_junk(raw)
+    # Run-together lead: fast speech makes STT drop the spaces in the command
+    # prefix ("tell my team" -> "Tellmyteam", "ask my team" -> "Askmyteam"),
+    # which the spaced lead canonicalizer below can't match, so a SECOND lead
+    # gets prepended and the parser keeps only a fragment (live: "Tellmyteam,
+    # Cypherhit84, Sova, Heaven..." relayed just "Sova heaven"). Re-space it.
+    s = _RUNON_TEAM_LEAD_RE.sub(
+        lambda m: ("ask" if m.group(1).lower() == "ask" else "tell")
+        + " my team ", s, count=1)
     # Repair a mis-heard verbatim verb + drop a team-addressee possessive BEFORE
     # routing, so "Pete to my team X" relays X verbatim and "my team's X" strips
     # its lead cleanly.
