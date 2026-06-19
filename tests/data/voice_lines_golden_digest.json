@@ -8201,6 +8201,16 @@
 "kind": "regex",
 "pattern": "\\bA\\b(?=\\s+(?i:restaurant|teleporter|connector|boathouse|waterfall|generator|breakable|courtyard|pyramids|dumpster|fountain|basement|platform|showers|kitchen|library|tunnels|default|snowman|pillars|rafters|flowers|snipers|screens|windows|balcony|barrels|catwalk|canteen|u\\-haul|subroza|boiler|towers|yellow|screen|market|arches|dugout|pillar|tunnel|barrel|window|orange|secret|arcade|switch|bridge|heaven|crates|rubble|runway|garage|stairs|pocket|corner|behind|sniper|bottom|rafter|garden|flower|sewers|hookah|shower|island|tubes|steps|ropes|sewer|elbow|doors|close|inner|tower|lobby|bench|pizza|cubby|stack|green|halls|lower|crate|right|front|choke|cliff|flank|spawn|fence|lamps|small|crane|ramps|boxes|alley|ducts|ledge|truck|snake|spool|outer|vents|short|mound|plaza|pipes|tiles|upper|attic|lane|belt|duct|dish|ramp|boba|site|cave|plat|wood|pipe|wall|club|door|lamp|drop|wine|tree|cony|hall|void|link|near|main|mail|bend|edge|back|arch|deep|long|vent|tube|shop|logs|yard|bath|rope|maze|high|haul|blue|sand|hell|left|nest|old|far|top|box|mid|cat|pit|gen|hut|big|low|art|new|tp|ct)\\b)"
 },
+"_BARE_CLUTCH_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^\\s*(?:i\\s+got\\s+(?:this|it|us|the\\s+round)|i'?ve\\s+got\\s+(?:this|it|us|the\\s+round)|i\\s+have\\s+(?:this|it|us|the\\s+round)|i(?:'?ll|'?m\\s+gonna|'?m\\s+going\\s+to|\\s+will|\\s+can|\\s+gonna)\\s+(?:clutch|carry|win|take|close|handle|secure)\\s+(?:this|it|us|the\\s+round)|i(?:'?ll|'?m\\s+gonna|'?m\\s+going\\s+to|\\s+will|\\s+can|\\s+gonna)?\\s*clutch(?:ing|\\s+up)?|leave\\s+it\\s+to\\s+me|this\\s+(?:round\\s+)?is\\s+(?:all\\s+)?mine|watch\\s+(?:this|me)(?:\\s+(?:work|clutch))?)\\s*[.!?]*$"
+},
+"_BARE_ENCOURAGE_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+)?(?:i\\s+|to\\s+|let'?s\\s+)?(?:encourage|hype(?:\\s+up)?|motivate|rally|gas\\s+up|pump\\s+up)\\s+(?:the\\s+|my\\s+|our\\s+)?(?:team|teammates?|guys|boys|squad|everyone|them|us)\\b\\s*[.!?]*$"
+},
 "_BARE_SAY_RE": {
 "flags": 34,
 "kind": "regex",

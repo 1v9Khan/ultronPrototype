@@ -802,3 +802,53 @@ class TestFlavorToggleMishears:
     ])
     def test_guards_do_not_toggle(self, text) -> None:
         assert _RS.match_flavor_toggle(text) is None, f"{text!r} must NOT toggle"
+
+
+class TestBareMoraleRouting:
+    """2026-06-19: bare "I got this" (clutch) and "encourage the team" fell to the
+    semantic router -> abstain -> LLM, so the flavor-OFF snaps never fired. They
+    now match deterministically (anchored, before the narration gate). Real
+    callouts ("I got this angle") are NOT hijacked. Identity direct-questions get
+    a flavor-OFF rebuttal via the orchestrator identity handler."""
+
+    @_pytest.mark.parametrize("text", [
+        "I got this", "I've got this", "I'll clutch this", "leave it to me",
+    ])
+    def test_clutch_snaps_when_off(self, _tails_off, text) -> None:
+        assert _line(text) in _RS._FO_CLUTCH, f"{text!r} must snap to the clutch pool"
+
+    @_pytest.mark.parametrize("text", [
+        "encourage the team", "encourage my team", "I encourage my team",
+        "encourage them", "hype up the team",
+    ])
+    def test_encourage_snaps_when_off(self, _tails_off, text) -> None:
+        assert _line(text) in _RS._FO_ENCOURAGE, f"{text!r} must snap to encourage"
+
+    def test_clutch_flavor_on_is_a_clutch_line(self) -> None:
+        prev = _RS.flavor_tails_enabled()
+        try:
+            _RS.set_flavor_tails_enabled(True)
+            line = _line("I got this")
+            # flavor ON -> a real (tailed) clutch line, never None/LLM, not the snap
+            assert line and line not in _RS._FO_CLUTCH
+        finally:
+            _RS.set_flavor_tails_enabled(prev)
+
+    @_pytest.mark.parametrize("text", [
+        "I got this angle", "I got him", "encourage them to push",
+        "I have the spike", "I'll take A main",
+    ])
+    def test_real_callouts_not_hijacked(self, _tails_off, text) -> None:
+        cmd = _cmd(text)
+        if cmd is None:
+            return  # fell through -> not hijacked
+        line = build_relay_line(cmd, rephrase=False)
+        assert line not in _RS._FO_CLUTCH and line not in _RS._FO_ENCOURAGE, \
+            f"{text!r} must NOT be hijacked into a morale snap ({line!r})"
+
+    def test_identity_flavor_off_lines(self) -> None:
+        f = _RS._flavor_off_identity_line
+        assert f("soundboard") == "No, I am not a soundboard. I am Ultron."
+        assert f("voice_changer") == "An AI doesn't need a voice changer. I am Ultron."
+        assert f("streamer") == "I am an AI, I cannot stream. I am Ultron."
+        assert f("bot") is None and f("real_person") is None and f(None) is None

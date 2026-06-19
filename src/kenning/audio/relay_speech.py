@@ -291,6 +291,36 @@ _COMPOSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
+# 2026-06-19: BARE morale spoken with NO explicit relay lead. Live, "I got this"
+# and "encourage the team" fell through every relay matcher to the semantic
+# router, which abstained (low margin) -> the LLM, so the flavor-OFF clutch /
+# encourage snaps never fired. These are team-directed even without "tell my
+# team". Caught EARLY in match_relay_command (before the narration gate, which
+# would suppress the first-person "I got this" as a musing). ANCHORED ($) so a
+# real callout ("I got this angle", "encourage them to push") is NOT hijacked.
+_BARE_CLUTCH_RE = re.compile(
+    r"^\s*(?:"
+    r"i\s+got\s+(?:this|it|us|the\s+round)"
+    r"|i'?ve\s+got\s+(?:this|it|us|the\s+round)"
+    r"|i\s+have\s+(?:this|it|us|the\s+round)"
+    r"|i(?:'?ll|'?m\s+gonna|'?m\s+going\s+to|\s+will|\s+can|\s+gonna)\s+"
+    r"(?:clutch|carry|win|take|close|handle|secure)\s+(?:this|it|us|the\s+round)"
+    r"|i(?:'?ll|'?m\s+gonna|'?m\s+going\s+to|\s+will|\s+can|\s+gonna)?\s*"
+    r"clutch(?:ing|\s+up)?"
+    r"|leave\s+it\s+to\s+me"
+    r"|this\s+(?:round\s+)?is\s+(?:all\s+)?mine"
+    r"|watch\s+(?:this|me)(?:\s+(?:work|clutch))?"
+    r")\s*[.!?]*$",
+    re.IGNORECASE,
+)
+_BARE_ENCOURAGE_RE = re.compile(
+    r"^(?:please\s+)?(?:i\s+|to\s+|let'?s\s+)?"
+    r"(?:encourage|hype(?:\s+up)?|motivate|rally|gas\s+up|pump\s+up)\s+"
+    r"(?:the\s+|my\s+|our\s+)?"
+    r"(?:team|teammates?|guys|boys|squad|everyone|them|us)\b\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
 # Roast requests: spoken VERBATIM from the user-curated lines file
 # (never LLM-authored) -- "Kenning, roast my team".
 _ROAST_RE = re.compile(
@@ -1562,6 +1592,26 @@ def match_relay_command(
     if not text:
         return None
     cleaned = _normalize_speech(_LEADING_ARTIFACT.sub("", text.strip()))
+
+    # BARE morale spoken with no relay lead -- "I got this" (clutch) / "encourage
+    # the team" / "I encourage my team". Team-directed even without "tell my
+    # team", but the narration gate just below suppresses the first-person "I got
+    # this" as a musing, so catch them HERE. Anchored so a real callout ("I got
+    # this angle") is not hijacked. build_relay_line renders the flavor-ON pool or
+    # the flavor-OFF snap (clutch payload -> _as_clutch / _FO_CLUTCH; encourage ->
+    # morale lines / _FO_ENCOURAGE).
+    if _BARE_CLUTCH_RE.match(cleaned):
+        # compose=False so build_relay_line reaches _as_clutch for the flavor-ON
+        # clutch pool (matching the "tell my team I got this" path); the flavor-
+        # OFF hook keys on the payload regardless.
+        return RelayCommand(
+            payload=cleaned.strip(" .!?"), raw_text=text, addressee="team",
+        )
+    if _BARE_ENCOURAGE_RE.match(cleaned):
+        return RelayCommand(
+            payload="encouragement", raw_text=text,
+            addressee="team", compose=True,
+        )
 
     # Narration / private-thought / chat-reaction that is relay-SHAPED but must
     # NOT relay -- the streamer thinking out loud ("I should tell them to X",
@@ -5586,6 +5636,20 @@ def _fo_weapon(text: str) -> Optional[str]:
     return "Operator" if w.lower() == "op" else w[:1].upper() + w[1:]
 
 
+def _flavor_off_identity_line(cat: Optional[str]) -> Optional[str]:
+    """Crisp tail-free identity rebuttal for the flavor-OFF soundboard /
+    voice-changer / streamer categories. Used by the orchestrator's identity
+    handler when flavor tails are off (a direct "are you a soundboard" routes via
+    the semantic-router identity family, NOT build_relay_line). Returns None for
+    other identity categories (bot / real-person / puppet / recording / model-leak
+    keep their full curated pools)."""
+    return {
+        "soundboard": "No, I am not a soundboard. I am Ultron.",
+        "voice_changer": "An AI doesn't need a voice changer. I am Ultron.",
+        "streamer": "I am an AI, I cannot stream. I am Ultron.",
+    }.get(cat or "")
+
+
 def _flavor_off_response(
     command: "RelayCommand", recent_lines: Optional[Sequence[str]] = None,
 ) -> Optional[str]:
@@ -5662,8 +5726,10 @@ def _flavor_off_response(
             if (cat == "shutup" or "shut up" in ctxl) and agent:
                 return _fo_pick(_FO_SHUTUP, agent, recent_lines)
 
-        # "I got this" -> clutch pool (team-style regardless of addressee).
-        if payl in ("i got this", "i've got this", "i have this"):
+        # "I got this" / "I'll clutch this" / "leave it to me" -> clutch pool
+        # (team-style regardless of addressee). Use the full clutch detector so
+        # EVERY clutch form snaps, not just the three literal phrases.
+        if _BARE_CLUTCH_RE.match(payl) or _CLUTCH_RE.match(payl):
             return _fo_pick(_FO_CLUTCH, None, recent_lines)
 
         # Weapon requests.

@@ -6747,13 +6747,22 @@ class Orchestrator:
                                 )
                                 from kenning.audio.relay_speech import (
                                     _is_identity_question, pick_line,
+                                    flavor_tails_enabled,
+                                    _flavor_off_identity_line,
                                 )
                                 if _is_identity_question(user_text):
                                     _cat = classify_identity_question(user_text)
-                                    _pool = (IDENTITY_POOLS.get(_cat)
-                                             if _cat else None)
-                                    if _pool:
-                                        _ans = pick_line(_pool)
+                                    # Flavor OFF: a crisp tail-free rebuttal for
+                                    # soundboard / voice-changer / streamer (else
+                                    # the full curated pool). Same desktop channel.
+                                    _ans = None
+                                    if not flavor_tails_enabled():
+                                        _ans = _flavor_off_identity_line(_cat)
+                                    if _ans is None:
+                                        _pool = (IDENTITY_POOLS.get(_cat)
+                                                 if _cat else None)
+                                        _ans = pick_line(_pool) if _pool else None
+                                    if _ans:
                                         self._speak(_ans)
                                         _router_consumed = True
                                         # full-flow capture: a model-leak/identity
