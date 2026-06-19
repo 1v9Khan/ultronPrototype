@@ -58,6 +58,41 @@ rule) or A/B audio by ear, items are shipped by risk:
 
 ---
 
+## Implementation status (V1 session, 2026-06-19)
+
+**🟢 SHIPPED-ON (runtime `.env`, verified test-neutral, reversible):**
+- **STT `beam_size` 5 → 1** (`.env KENNING_WHISPER_BEAM_SIZE`) — snap STT decode latency win.
+- **TTS inter-sentence gap 350 → 280 ms** (`.env KENNING_TTS_SENTENCE_PAUSE_MS`) — trims the
+  post-callout pause before a flavor tail. Pure inter-sentence *silence* — no speaking-rate or
+  voice-character change.
+- These were proven **innocent by a controlled A/B**: the full sweep produced the **identical**
+  pass/fail set (10866 passed / same 24 environmental fails) with the tuning vs. baseline `.env`.
+
+**✅ VERIFIED already-done / no action:**
+- **Kokoro GPU keep-warm (T2)** is already wired at `orchestrator.py` (`self.tts.warmup()`).
+- **Python hot-path micro-opt (M1)** — all 115 `re.compile` in `relay_speech.py` are module-level;
+  no per-call compiles to hoist.
+
+**✏️ CORRECTION to the plan:** `KENNING_TTS_LENGTH_SCALE` feeds **Piper only** (`piper_length_scale`)
+— it is a **dead knob for the Kokoro runtime**. Kokoro pacing is `speed` (default 1.0, already
+native) + `dur_*` factors, which are **voice character** (A/B-approved, locked) and were **not**
+touched. So the only safe TTS pacing lever is the inter-sentence gap (shipped above).
+
+**🔵 SPEC'D-NEXT (not shipped — need live A/B / offline work / corpus gate; doing them blind would
+risk the quality regression the mandate forbids):** the endpoint close-on-recognized-complete
+(1.1, the biggest win — must NOT be a blind floor-lower; that re-opens the 0.8 s-fragment
+hallucination bug), E2 adaptive silence + Smart-Turn V3.1, T3/T4 synth↔PTT overlap + streaming,
+F1 WAV pre-render cache, R1 Model2Vec static re-rank (corpus-gated), MC SymSpell/bigram,
+detect_side refactor, L1 prefix-cache, L3 thread cap. See Tiers below.
+
+**⚠️ Sweep recipe note (for future sessions):** running the sweep with **no embedder sidecar**
+requires `KENNING_ROUTER_WAIT_SECONDS=0` (fail-fast to lexical) or it blocks ~30 s/test on the
+cold-sidecar poll. In that no-sidecar mode ~24 relay/single-instance/summarizer/evolution/web
+tests fail as **environmental artifacts** (the relay-intent gate fails open to lexical) — not
+regressions. The documented "all green" baseline runs with a live sidecar.
+
+---
+
 ## Part A — Executable roadmap
 
 ### Tier 0 — Measurement (do first, always-safe)
@@ -89,14 +124,15 @@ construction**. **Flag** `KENNING_SNAP_EARLY_ENDPOINT` (default OFF) + a guard r
 **Verify:** unit tests that a complete parse closes early and a fragment/partial does not;
 live A/B truncation rate on "Spike mid", "plant C", "tell the team… [pause] …rotate".
 
-**1.2 🟢 TTS snap-path pacing (T1).** The "slow even with tails OFF" root cause is
-*pause placement*, not speed: a callout + flavor tail are two Kokoro sentences, so the
-inter-sentence gap is injected after a short callout. For the **relay path only** (LLM /
-conversational lines keep the calmer profile): inter-sentence gap **350 → 220 ms** and
-relay `length_scale` **1.10 → 1.05** (both inside the research's safe 0.95–1.05 / 60–1000 ms
-clamps; per-chunk `trim_and_fade` already keeps the boundary clean). Literal callout text
-unchanged. **−120 ms/gap + tighter spoken duration. Verify:** tests on the pacing knobs;
-live ear-check no slur.
+**1.2 🟢 TTS snap-path pacing (T1) — SHIPPED (inter-sentence gap only).** The "slow even with
+tails OFF" root cause is *pause placement*, not speed: a callout + flavor tail are two Kokoro
+sentences, so the inter-sentence gap is injected after a short callout. **Shipped:** the
+inter-sentence gap **350 → 280 ms** (`KENNING_TTS_SENTENCE_PAUSE_MS`) — pure inter-sentence
+*silence* (per-chunk `trim_and_fade` already keeps the boundary clean), so literal callout text
+and voice character are unchanged. **−70 ms/gap. NOTE:** `length_scale` is **not** a Kokoro knob
+(it feeds Piper only); Kokoro speaking-rate/`dur_*` are voice character (A/B-approved, locked) and
+were intentionally **not** touched. **Verify:** `test_kokoro_engine.py` (reads the gap env
+adaptively — passes); live ear-check the cadence isn't rushed (revert to 350 if so).
 
 **1.3 🟢 STT snap decode: `beam_size` 5 → 1 + `condition_on_previous_text=False`.** For a
 clean close-mic English closed-domain callout, beam=1 is faster and neutral-to-better
