@@ -225,8 +225,14 @@ NORM2_MANGLED_TELL = (
 NORM2_TELL_CLASS_VERB = (
     r"tell|say|let|warn|inform|remind|announce|broadcast|yell|shout")
 
+# The determiner (my/the/our) is OPTIONAL: a 2-word mishear of "tell my" often
+# absorbs the determiner -- live, "tell my team to fall back" was heard as
+# "Valorant team to fall back" (no "my"), so the lead went unrecognized and the
+# whole phrase relayed literally ("Valorant team to fall back."). The mishear set
+# is curated to words that MEAN "tell", so "<tell-mishear> team X" == "tell my
+# team X" with or without the determiner.
 NORM2_MANGLED_TEAM_LEAD_RE = re.compile(
-    rf"^\s*(?:{NORM2_MANGLED_TELL})\s+(?:my|the|a|our)\s+{NORM2_TEAM_NOUN}\b[\s,:.]*",
+    rf"^\s*(?:{NORM2_MANGLED_TELL})\s+(?:(?:my|the|a|our)\s+)?{NORM2_TEAM_NOUN}\b[\s,:.]*",
     re.IGNORECASE,
 )
 NORM2_IRREGULAR_TEAM_LEAD_RE = re.compile(

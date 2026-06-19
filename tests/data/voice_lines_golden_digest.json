@@ -7270,7 +7270,7 @@
 "_MANGLED_TEAM_LEAD_RE": {
 "flags": 34,
 "kind": "regex",
-"pattern": "^\\s*(?:calls?|called|holds?|help|helps|helped|builds?|build|follows?|kills?|while|how|puts?|don'?t|without|all|tale|tales|fell|filled|hail|paul|y'?all|told|sell|tal|tel|kel|whilst|hauled|valorant|tellin'?|telling|hope|hopes|hoped)\\s+(?:my|the|a|our)\\s+(?:team|teammates?|squad|boys|guys|mates|crew|fellas|homies)\\b[\\s,:.]*"
+"pattern": "^\\s*(?:calls?|called|holds?|help|helps|helped|builds?|build|follows?|kills?|while|how|puts?|don'?t|without|all|tale|tales|fell|filled|hail|paul|y'?all|told|sell|tal|tel|kel|whilst|hauled|valorant|tellin'?|telling|hope|hopes|hoped)\\s+(?:(?:my|the|a|our)\\s+)?(?:team|teammates?|squad|boys|guys|mates|crew|fellas|homies)\\b[\\s,:.]*"
 },
 "_MANGLED_TELL": {
 "kind": "str",

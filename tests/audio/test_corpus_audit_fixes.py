@@ -852,3 +852,27 @@ class TestBareMoraleRouting:
         assert f("voice_changer") == "An AI doesn't need a voice changer. I am Ultron."
         assert f("streamer") == "I am an AI, I cannot stream. I am Ultron."
         assert f("bot") is None and f("real_person") is None and f(None) is None
+
+
+class TestMangledTeamLeadNoDeterminer:
+    """2026-06-19: "tell my team to fall back" was heard as "Valorant team to
+    fall back" (the 2-word "tell my" mishear absorbed the determiner), so the
+    lead went unrecognized and the whole phrase relayed literally. The mangled-
+    tell lead now accepts a MISSING determiner."""
+
+    @_pytest.mark.parametrize("text,expect", [
+        ("Valorant team to fall back", "fall back"),
+        ("Valorant team rotate B", "rotate b"),
+        ("Valorant squad push A", "push a"),
+    ])
+    def test_mangled_lead_no_determiner_relays(self, text, expect) -> None:
+        line = _line(text).lower()
+        assert expect in line, f"{text!r} should relay the directive, got {line!r}"
+        assert "valorant" not in line, f"{text!r} leaked the misheard lead: {line!r}"
+
+    @_pytest.mark.parametrize("text", [
+        "kill the enemy team", "push with the team",
+    ])
+    def test_real_phrases_not_hijacked(self, text) -> None:
+        from kenning.audio.command_normalizer import normalize_command
+        assert not normalize_command(text).lower().startswith("tell my team")
