@@ -10,6 +10,23 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: CAPTURE-STALL WATCHDOG (intermittent wake-deafness fix)**
+> (2026-06-18). Live testing showed intermittent wake-word deafness ("one command works, the next
+> won't") even when the user waited fully for each response. The wake/capture/VAD modules
+> (`wake_word.py`/`capture.py`/`vad.py`) are byte-identical to the last-known-good build (no change
+> since `7e35017`), and the failed commands leave NO log trace — they never reach `wake_word_fired`.
+> ROOT CAUSE: `orchestrator._wait_for_wake_word`'s `chunk is None` branch (which the code's own
+> comment notes only fires on "a ≥0.5s PortAudio STALL") had NO recovery. On a USB-overrun /
+> CPU-starvation stall after a heavy in-process 3B-on-CPU relay turn + long TTS, `get_chunk` returns
+> None indefinitely and the detector goes deaf until the stream happens to recover. FIX (ported from
+> branch `0163ba6`): count consecutive `get_chunk` timeouts and, after ~1s (`_CAPTURE_STALL_TIMEOUTS`
+> =2 × 0.5s), call new `_restart_capture_stream()` (`audio.stop()+start()+drain()`, fail-open) so the
+> wake pipeline self-heals. Two back-to-back 0.5s timeouts never occur on a healthy stream (a quiet
+> room still streams silence chunks) → ZERO added delay in the no-stall case, no false restarts. The
+> WARNING it logs ("capture stall … restarting") also instruments the diagnosis. 3 regression tests
+> in `tests/test_capture_stall_watchdog.py`. NB: not yet added to the (default-disabled)
+> `_follow_up_listen` loop.
+>
 > **Validating HEAD: TEAM-RELAY PINNED TO THE ULTRON PERSONA (NEVER KENNING)**
 > (2026-06-18). A real-game LLM trace showed the relay rephrase's SYSTEM message was literally
 > `"You are Kenning."` — `relay_speech.build_relay_line` called `generate_stream` WITHOUT a
