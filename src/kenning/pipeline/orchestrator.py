@@ -7076,6 +7076,20 @@ class Orchestrator:
                     consecutive_silence_chunks += 1
                 else:
                     consecutive_silence_chunks = 0
+                    # 2026-06-18 truncation fix: speech RESUMED after a
+                    # speculative kick-off WITHOUT a VAD SPEECH_END/START cycle.
+                    # The kickoff fires after ~32 ms of silence, far below the
+                    # SPEECH_END (MIN_SILENCE) baseline, so a natural mid-
+                    # utterance micro-pause (32-~300 ms) never triggers the
+                    # SPEECH_START invalidation above -- leaving a STALE partial
+                    # (the pre-pause lead) that _collect_speculative_stt would
+                    # commit, DROPPING everything said after the pause. Invalidate
+                    # + re-arm so the committed transcript is the FULL utterance
+                    # (speculation re-fires on the final trailing silence, so the
+                    # latency win is preserved for the common single-pause case).
+                    if speculative_kicked:
+                        self._invalidate_speculative_stt()
+                        speculative_kicked = False
                 if (
                     not speculative_kicked
                     and consecutive_silence_chunks >= speculative_silence_kickoff_chunks
@@ -7445,6 +7459,13 @@ class Orchestrator:
                     consecutive_silence_chunks += 1
                 else:
                     consecutive_silence_chunks = 0
+                    # 2026-06-18 truncation fix (mirror of _capture_utterance):
+                    # speech resumed after a speculative kick-off without a VAD
+                    # SPEECH_END/START cycle -> invalidate + re-arm so a mid-
+                    # utterance micro-pause can't commit a stale partial lead.
+                    if speculative_kicked:
+                        self._invalidate_speculative_stt()
+                        speculative_kicked = False
                 if (
                     not speculative_kicked
                     and consecutive_silence_chunks >= speculative_silence_kickoff_chunks

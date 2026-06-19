@@ -246,3 +246,140 @@ def test_kick_off_copies_audio_to_avoid_race():
     assert len(received_audio) == 1
     seen = received_audio[0]
     assert np.allclose(seen, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Capture-loop invalidation: mid-utterance pause must NOT commit a stale
+# partial (2026-06-18 truncation fix).
+#
+# The speculative kickoff fires after ~32 ms of silence -- FAR below the
+# SPEECH_END (MIN_SILENCE) baseline. Previously the in-flight result was only
+# invalidated on a VAD SPEECH_START event, which only happens after a full
+# SPEECH_END. So a natural mid-utterance micro-pause (32-~300 ms) kicked off
+# speculation on the pre-pause LEAD but never invalidated it -- _collect_*
+# then committed that lead as the final transcript, dropping everything the
+# user said after the pause ("the raw isn't picking up the whole thing").
+# The fix invalidates + re-arms whenever speech RESUMES after a kickoff,
+# regardless of whether a SPEECH_START event fired.
+# ---------------------------------------------------------------------------
+
+
+def _capture_orch(monkeypatch, vad_script, *, transcribe="ok"):
+    """Partial Orchestrator wired to drive ``_capture_utterance`` through a
+    scripted VAD. ``vad_script`` is a list of (SpeechEvent, probability), one
+    per chunk, consumed lock-step by ``vad.process``/``audio.get_chunk``; the
+    loop ends on the SPEECH_END entry (smart-turn is stubbed off, so the VAD
+    decides end-of-turn). Heavy helpers (wake-strip, smart-turn, streaming) are
+    stubbed so only the speculative-STT silence/resume logic is exercised."""
+    from kenning.pipeline import orchestrator as orch_mod
+    from kenning.pipeline.orchestrator import Orchestrator
+    from kenning.audio.vad import VadResult
+
+    o = object.__new__(Orchestrator)
+    o._speculative_stt_lock = threading.Lock()
+    o._speculative_stt_thread = None
+    o._speculative_stt_result = None
+    o._speculative_stt_active = False
+    o._speculative_stt_invalidated = False
+    o._shutdown = threading.Event()
+
+    o.stt = SimpleNamespace(transcribe=lambda audio: transcribe)
+    o.ring = SimpleNamespace(
+        snapshot=lambda n: np.zeros(max(0, int(n)), dtype=np.float32))
+    o.wake = SimpleNamespace(active_word=None)
+
+    # Config knobs chosen to keep the loop on the plain VAD path.
+    o._cold_pre_roll_seconds = 0.0
+    o._max_utterance_seconds = 30.0
+    o._long_utterance_threshold_seconds = 0.0      # disable the long-utterance bump
+    o._long_utterance_silence_duration_ms = 1200
+    o._smart_turn_incomplete_extension_ms = 0
+    o._smart_turn_medium_grace_ms = 0
+
+    # No-op heavy helpers.
+    o._cancel_background_summarizer = lambda: None
+    o._kick_off_tts_preopen = lambda: None
+    o._maybe_start_stt_stream = lambda: False
+    o._maybe_feed_stt_chunk = lambda c: None
+    o._stt_streaming_enabled = lambda: False
+    o._smart_turn_should_check = lambda **k: False  # VAD decides end-of-turn
+    o._strip_wake_audio = lambda buf, *a, **k: buf  # avoid Silero segmentation
+    monkeypatch.setattr(orch_mod, "_trim_wake_from_capture",
+                        lambda audio, *a, **k: audio)
+
+    state = {"i": 0}
+
+    def _process(chunk):
+        ev, prob = vad_script[min(state["i"], len(vad_script) - 1)]
+        state["i"] += 1
+        return VadResult(event=ev, is_speech=prob >= 0.5, probability=prob)
+
+    o.vad = SimpleNamespace(
+        threshold=0.5, reset=lambda: None, process=_process,
+        set_min_silence_duration_ms=lambda ms: None,
+    )
+
+    chunk = np.zeros(256, dtype=np.float32)
+    served = {"n": 0}
+
+    def _get_chunk(timeout=0.5):
+        if served["n"] >= len(vad_script):
+            o._shutdown.set()  # belt-and-braces if SPEECH_END didn't break
+            return None
+        served["n"] += 1
+        return chunk
+
+    o.audio = SimpleNamespace(get_chunk=_get_chunk)
+    return o
+
+
+def _count_invalidations(o):
+    n = {"calls": 0}
+    orig = o._invalidate_speculative_stt
+
+    def _counting():
+        n["calls"] += 1
+        return orig()
+
+    o._invalidate_speculative_stt = _counting
+    return n
+
+
+def test_capture_invalidates_speculative_on_midpause_resume(monkeypatch):
+    """A mid-utterance pause kicks off speculation; resumed speech WITHOUT a
+    SPEECH_END/START cycle must invalidate the stale partial."""
+    from kenning.audio.vad import SpeechEvent as E
+
+    o = _capture_orch(monkeypatch, [
+        (E.SPEECH_START, 1.0), (E.NONE, 1.0),
+        (E.NONE, 0.0), (E.NONE, 0.0),   # >=2 silence chunks -> speculative kickoff
+        (E.NONE, 1.0), (E.NONE, 1.0),   # speech RESUMES (no SPEECH_START event)
+        (E.NONE, 0.0), (E.NONE, 0.0),   # final trailing silence
+        (E.SPEECH_END, 0.0),            # smart-turn off -> VAD ends the capture
+    ])
+    n = _count_invalidations(o)
+    o._capture_utterance()
+    o._collect_speculative_stt(timeout_s=2.0)  # join/cleanup bg threads
+    assert n["calls"] >= 1, (
+        "resumed speech after a speculative kickoff must invalidate the stale "
+        "pre-pause partial -- otherwise the committed transcript drops "
+        "everything said after the pause")
+
+
+def test_capture_keeps_speculative_without_resume(monkeypatch):
+    """A single trailing-silence kickoff with NO resumed speech must not be
+    invalidated -- the speculative latency win is preserved for the common
+    case."""
+    from kenning.audio.vad import SpeechEvent as E
+
+    o = _capture_orch(monkeypatch, [
+        (E.SPEECH_START, 1.0), (E.NONE, 1.0), (E.NONE, 1.0),
+        (E.NONE, 0.0), (E.NONE, 0.0),   # trailing silence -> kickoff, NO resume
+        (E.SPEECH_END, 0.0),
+    ])
+    n = _count_invalidations(o)
+    o._capture_utterance()
+    o._collect_speculative_stt(timeout_s=2.0)
+    assert n["calls"] == 0, (
+        "a trailing-silence kickoff with no resumed speech must NOT be "
+        "invalidated -- the speculative latency win must be preserved")
