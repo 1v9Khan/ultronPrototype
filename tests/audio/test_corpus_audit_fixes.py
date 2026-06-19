@@ -533,9 +533,14 @@ class TestT617TestingFixes:
         ("ask my team where our smokes are", "Where are our smokes?"),
         ("ask my team what the score is", "What is the score?"),
         ("ask my team where they are", "Where are they?"),
-        # already in spoken order / no trailing copula -> left verbatim
+        # a wh-question whose NEGATED aux trails the subject also fronts to spoken
+        # order (2026-06-18 audio-corpus audit #15).
+        ("ask my team why they aren't smoking", "Why aren't they smoking?"),
+        ("ask my team why they don't rotate", "Why don't they rotate?"),
+        ("ask my team why we aren't pushing", "Why aren't we pushing?"),
+        # already in spoken order (aux already leads) -> left as-is, no double-flip
         ("ask my team where is Sova", "Where is Sova?"),
-        ("ask my team why they aren't smoking", "Why they aren't smoking?"),
+        ("ask my team why isn't he pushing", "Why isn't he pushing?"),
     ])
     def test_wh_copula_inversion(self, text, expected) -> None:
         assert _line(text) == expected

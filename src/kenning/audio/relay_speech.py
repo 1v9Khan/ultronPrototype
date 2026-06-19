@@ -3065,15 +3065,47 @@ _Q_WH_COPULA_INVERT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 2026-06-18 audio-corpus audit (#15): a wh-question whose NEGATED auxiliary
+# TRAILS the subject must also front to natural spoken order -- "why they aren't
+# smoking" -> "why aren't they smoking", "why isn't he pushing" stays put (the
+# aux already leads). Mirrors the copula inversion above but for a negated aux
+# (is/are/do/does/can/will/...n't or "... not"). Tightly bounded: a CLOSED aux
+# set + a CLOSED subject set, and only invoked inside the already-gated ask path
+# (_as_question_relay). The contracted spoken form is restored on output so an
+# uncontracted "are not" still reads as "aren't".
+_NEG_AUX_CONTRACT = {
+    "is": "isn't", "are": "aren't", "was": "wasn't", "were": "weren't",
+    "do": "don't", "does": "doesn't", "did": "didn't", "can": "can't",
+    "could": "couldn't", "will": "won't", "would": "wouldn't",
+    "should": "shouldn't", "has": "hasn't", "have": "haven't", "had": "hadn't",
+    "must": "mustn't",
+}
+_Q_WH_NEGAUX_INVERT_RE = re.compile(
+    r"^(?P<wh>why|how|where|when|what|whats|who|whom|which|whose)\s+"
+    r"(?P<subj>they|he|she|it|we|you|the\s+\w+|their\s+\w+|our\s+\w+|my\s+\w+|"
+    r"enemy|enemies|someone|anyone|everyone)\s+"
+    r"(?P<aux>is|are|was|were|do|does|did|can|could|will|would|should|"
+    r"has|have|had|must)(?:n'?t|'t|\s+not)\s+(?P<rest>\S.*)$",
+    re.IGNORECASE,
+)
+
 
 def _wh_copula_invert(pl: str) -> str:
-    """Move a trailing copula to just after the wh-word ("where our smokes are"
-    -> "where are our smokes"). Returns ``pl`` unchanged when there is no bare
-    trailing copula to invert."""
+    """Move a trailing copula -- or a subject-trailing NEGATED auxiliary -- to
+    just after the wh-word: "where our smokes are" -> "where are our smokes";
+    "why they aren't smoking" -> "why aren't they smoking". Returns ``pl``
+    unchanged when neither pattern applies (already-inverted forms like "where
+    is Sova" / "why isn't he pushing" are left as-is)."""
     m = _Q_WH_COPULA_INVERT_RE.match(pl)
-    if not m:
-        return pl
-    return f"{m.group('wh')} {m.group('be')} {m.group('subj')}".strip()
+    if m:
+        return f"{m.group('wh')} {m.group('be')} {m.group('subj')}".strip()
+    m = _Q_WH_NEGAUX_INVERT_RE.match(pl)
+    if m:
+        neg = _NEG_AUX_CONTRACT[m.group("aux").lower()]
+        return (
+            f"{m.group('wh')} {neg} {m.group('subj')} {m.group('rest')}".strip()
+        )
+    return pl
 
 # Concrete tactical/info tokens that mark a NAMED declarative as an information
 # relay (echo it faithfully) rather than an insult/read (keep the LLM's flavor).

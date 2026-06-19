@@ -242,3 +242,9 @@ jira_integration/
 # HuggingFace cache under training/ -- pure third-party blob bloat; regenerable
 # via download_training_data.py. Was tracked in early history; now blocked.
 training/.hf-cache/
+
+# Live audio-injection corpus protocol — generated run artifacts
+# (the 4 scripts + README are tracked; audio is *.wav/*.mp3 ignored above).
+scripts/relay_test/audio_corpus/out/
+scripts/relay_test/audio_corpus/session_*/
+scripts/relay_test/audio_corpus/__pycache__/
