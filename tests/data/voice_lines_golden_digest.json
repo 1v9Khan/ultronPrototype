@@ -8948,11 +8948,6 @@
 ],
 "kind": "seq"
 },
-"_FO_STOP_RE": {
-"flags": 34,
-"kind": "regex",
-"pattern": "\\btold\\s+(?:you|me)\\s+to\\s+stop\\b"
-},
 "_FO_WEAPON_RE": {
 "flags": 34,
 "kind": "regex",
@@ -9003,7 +8998,7 @@
 "_HELLO_RE": {
 "flags": 34,
 "kind": "regex",
-"pattern": "^(?:please\\s+)?(?:say|give|send)\\s+(?:a\\s+|me\\s+)?(?:hi|hello|hey|heya|hiya|greetings|what'?s\\s+up|sup|a\\s+(?:hello|hi|greeting))\\s+to\\s+(?P<target>.+?)\\s*[.!?]*$"
+"pattern": "^(?:please\\s+)?(?:say|give|send)\\s+(?:a\\s+|me\\s+)?(?:hi|hello|hey|heya|hiya|greetings|what'?s\\s+up|sup|a\\s+(?:hello|hi|greeting))(?:\\s+to\\s+(?P<target>.+?))?\\s*[.!?]*$"
 },
 "_HELLO_TEAM_WORDS": {
 "items": [
@@ -9902,6 +9897,11 @@
 ],
 "kind": "set"
 },
+"_STOP_CMD_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:my\\s+|our\\s+|the\\s+)?(?P<who>[A-Za-z][\\w/]*(?:\\s+[A-Za-z][\\w/]*)?)\\s+(?:told|telling|tells|asked|asking|wants?|wanted|said|says?|saying|keeps?\\s+(?:telling|saying))\\s+(?:you|me|us|him|ultron|it)?\\s*(?:to\\s+)?stop\\b(?:\\s+(?:talking|responding|speaking|it|that|now|please|already))*\\s*[.!?]*$"
+},
 "_STREAMER_Q_RE": {
 "flags": 34,
 "kind": "regex",
@@ -10434,7 +10434,7 @@
 },
 "TARGET_SNAP_REGISTRY": {
 "kind": "dataclass_seq",
-"repr": "(TargetSnapRule(name='hello', match=re.compile(\"^(?:please\\\\s+)?(?:say|give|send)\\\\s+(?:a\\\\s+|me\\\\s+)?(?:hi|hello|hey|heya|hiya|greetings|what'?s\\\\s+up|sup|a\\\\s+(?:hello|hi|greeting))\\\\s+to\\\\s+(?P<target>.+?)\\\\s*[.!?]*$\", re.IGNORECASE), team_lines=('Hello team.',), agent_templates=('Hello, {name}.',), skip_if_contains=('introduce',)), TargetSnapRule(name='ask_day', match=re.compile(\"^(?:please\\\\s+)?ask\\\\s+(?P<target>.+?)\\\\s+(?:how\\\\s+(?:their|his|her|your|they'?re|the\\\\s+team'?s|everyone'?s|the)\\\\s+(?:day|morning|afternoon|evening|night)(?:'?s)?\\\\s+(?:is|are|was|were|going|been|, re.IGNORECASE), team_lines=(\"How is everyone's day going?\", \"Status report -- how is everyone's day?\", \"I am required to ask: how is everyone's day going?\", 'Before we begin, how is everyone holding up today?', 'How has the day treated all of you?', \"A moment of courtesy: how is everyone's day?\", 'How is everyone doing today?', 'Tell me, how has your day been, all of you?'), agent_templates=('How is your day going, {name}?', '{name}, how has your day been?', 'Status check, {name} -- how is your day?', 'A moment of courtesy, {name}: how is your day going?', '{name}, how are you holding up today?', 'Tell me, {name}, how has your day been?'), skip_if_contains=()))"
+"repr": "(TargetSnapRule(name='hello', match=re.compile(\"^(?:please\\\\s+)?(?:say|give|send)\\\\s+(?:a\\\\s+|me\\\\s+)?(?:hi|hello|hey|heya|hiya|greetings|what'?s\\\\s+up|sup|a\\\\s+(?:hello|hi|greeting))(?:\\\\s+to\\\\s+(?P<target>.+?))?\\\\s*[.!?]*$\", re.IGNORECASE), team_lines=('Hello team.',), agent_templates=('Hello, {name}.',), skip_if_contains=('introduce',)), TargetSnapRule(name='ask_day', match=re.compile(\"^(?:please\\\\s+)?ask\\\\s+(?P<target>.+?)\\\\s+(?:how\\\\s+(?:their|his|her|your|they'?re|the\\\\s+team'?s|everyone'?s|the)\\\\s+(?:day|morning|afternoon|evening|night)(?:'?s)?\\\\s+(?:is|are|was|were|going|been|, re.IGNORECASE), team_lines=(\"How is everyone's day going?\", \"Status report -- how is everyone's day?\", \"I am required to ask: how is everyone's day going?\", 'Before we begin, how is everyone holding up today?', 'How has the day treated all of you?', \"A moment of courtesy: how is everyone's day?\", 'How is everyone doing today?', 'Tell me, how has your day been, all of you?'), agent_templates=('How is your day going, {name}?', '{name}, how has your day been?', 'Status check, {name} -- how is your day?', 'A moment of courtesy, {name}: how is your day going?', '{name}, how are you holding up today?', 'Tell me, {name}, how has your day been?'), skip_if_contains=()))"
 },
 "_AGENT_SELECT_FULL_RE": {
 "flags": 34,
@@ -10514,7 +10514,7 @@
 "_HELLO_RE": {
 "flags": 34,
 "kind": "regex",
-"pattern": "^(?:please\\s+)?(?:say|give|send)\\s+(?:a\\s+|me\\s+)?(?:hi|hello|hey|heya|hiya|greetings|what'?s\\s+up|sup|a\\s+(?:hello|hi|greeting))\\s+to\\s+(?P<target>.+?)\\s*[.!?]*$"
+"pattern": "^(?:please\\s+)?(?:say|give|send)\\s+(?:a\\s+|me\\s+)?(?:hi|hello|hey|heya|hiya|greetings|what'?s\\s+up|sup|a\\s+(?:hello|hi|greeting))(?:\\s+to\\s+(?P<target>.+?))?\\s*[.!?]*$"
 },
 "_HELLO_TEAM_WORDS": {
 "items": [

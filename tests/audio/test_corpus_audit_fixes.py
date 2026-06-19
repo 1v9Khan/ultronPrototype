@@ -726,3 +726,48 @@ class TestFlavorOffSets:
         line = _line("say thank you to my team")
         assert line != "Thank you.", line
         assert line.lower().startswith("thank you")
+
+
+class TestSayHelloDefaultAndStop:
+    """2026-06-19: bare "say hello" defaults to the TEAM (was falling to the
+    semantic router -> identity -> LLM); "<agent> told you to stop" matches
+    DETERMINISTICALLY (it previously relied on the sidecar intent gate)."""
+
+    @_pytest.mark.parametrize("text", ["say hello", "Say hello.", "say hi", "say hey"])
+    def test_bare_hello_routes_to_team(self, text) -> None:
+        cmd = _cmd(text)
+        assert cmd is not None, f"{text!r} must hit the hello snap, not fall to the LLM"
+        assert cmd.directive == "hello" and cmd.addressee == "team"
+
+    def test_bare_hello_line_both_states(self) -> None:
+        prev = _RS.flavor_tails_enabled()
+        try:
+            _RS.set_flavor_tails_enabled(True)
+            assert _line("say hello") == "Hello team."
+            _RS.set_flavor_tails_enabled(False)
+            assert _line("say hello") == "Hello."
+        finally:
+            _RS.set_flavor_tails_enabled(prev)
+
+    def test_targeted_hello_unchanged(self) -> None:
+        assert _cmd("say hello to Jett").addressee == "Jett"
+        assert _cmd("say hello to my team").addressee == "team"
+
+    @_pytest.mark.parametrize("text", [
+        "Sage told you to stop", "Sage told me to stop", "Sage said stop talking",
+        "my Sage told me to stop responding",
+    ])
+    def test_stop_command_deterministic(self, text) -> None:
+        cmd = _cmd(text)
+        assert cmd is not None and cmd.directive == "stop_command", \
+            f"{text!r} must match stop_command deterministically"
+        assert cmd.addressee == "Sage"
+
+    @_pytest.mark.parametrize("text", [
+        "Sage told you to stop pushing", "Sage told you to stop rotating B",
+        "tell my team to stop",
+    ])
+    def test_tactical_stop_is_not_defiance(self, text) -> None:
+        # a tactical "stop <verb>" must NOT become the stop_command defiance.
+        cmd = _cmd(text)
+        assert cmd is None or cmd.directive != "stop_command"

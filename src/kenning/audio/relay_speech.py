@@ -795,6 +795,21 @@ _FLAME_ENEMY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "<agent> told you to stop" / "<agent> said stop talking" -- a teammate telling
+# Ultron to be quiet. DETERMINISTIC (the social classifier has no "stop" category,
+# so it otherwise fell to the sidecar-backed intent gate = flaky). The trailing
+# qualifier is restricted to silence words so a TACTICAL "stop pushing" / "stop
+# rotating" still relays normally. The leading token is the agent. directive=
+# "stop_command"; rendered from the defiance pool in BOTH flavor states.
+_STOP_CMD_RE = re.compile(
+    r"^(?:my\s+|our\s+|the\s+)?(?P<who>[A-Za-z][\w/]*(?:\s+[A-Za-z][\w/]*)?)\s+"
+    r"(?:told|telling|tells|asked|asking|wants?|wanted|said|says?|saying|"
+    r"keeps?\s+(?:telling|saying))\s+"
+    r"(?:you|me|us|him|ultron|it)?\s*(?:to\s+)?stop\b"
+    r"(?:\s+(?:talking|responding|speaking|it|that|now|please|already))*\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
 # Compliment a SPECIFIC teammate ("compliment my Sage", "hype up my Jett",
 # "praise Sova") -- Ultron AUTHORS cold, backhanded praise (compose), naming the
 # teammate. Mirror of _CRITICIZE_RE (2026-06-17 battery [64], which fell to the
@@ -1577,6 +1592,18 @@ def match_relay_command(
             compose=True, directive="flame_enemy",
         )
 
+    # "<agent> told you to stop" -- defiant comeback (deterministic; the agent is
+    # the leading token, else team). Only when "stop" is terminal or trailed by a
+    # silence word, so tactical "stop pushing" still relays.
+    _mstop = _STOP_CMD_RE.match(cleaned)
+    if _mstop is not None:
+        _stop_agent = _canon_agent(_mstop.group("who"))
+        return RelayCommand(
+            payload="stop", raw_text=text,
+            addressee=_stop_agent or "team", compose=True,
+            context=cleaned.strip(), directive="stop_command",
+        )
+
     # Criticize a SPECIFIC teammate ("criticize Reyna for that") -- Ultron
     # AUTHORS the critique (compose), never echoes the literal command. Checked
     # before the compose/relay patterns so the named-agent critique wins.
@@ -1641,7 +1668,9 @@ def match_relay_command(
     if not _is_verbatim_cmd and "introduce" not in cleaned.lower():
         _mh = _HELLO_RE.match(cleaned)
         if _mh:
-            _tgt = _resolve_hello_target(_mh.group("target"))
+            _raw_tgt = _mh.group("target")
+            # bare "say hello" (no target) -> greet the team by default.
+            _tgt = "team" if _raw_tgt is None else _resolve_hello_target(_raw_tgt)
             if _tgt is not None:
                 return RelayCommand(
                     payload="hello", raw_text=text, addressee=_tgt,
@@ -5529,7 +5558,6 @@ _FO_WEAPON_RE = re.compile(
     r"\b(vandal|phantom|operator|odin|sheriff|guardian|judge|bucky|marshal|"
     r"marshall|outlaw|shorty|spectre|stinger|bulldog|ghost|frenzy|classic|ares|"
     r"op|gun|rifle|awp)\b", re.IGNORECASE)
-_FO_STOP_RE = re.compile(r"\btold\s+(?:you|me)\s+to\s+stop\b", re.IGNORECASE)
 
 
 def _fo_pick(pool: Sequence[str], agent: Optional[str],
@@ -5611,6 +5639,10 @@ def _flavor_off_response(
         if directive == "flame_enemy":
             return _fo_pick(_FO_FLAME_ENEMY, None, recent_lines)
 
+        # "<agent> told you to stop" (deterministic stop_command; addressee=agent).
+        if directive == "stop_command":
+            return _fo_pick(_FO_STOP, agent or "human", recent_lines)
+
         # Reported social reactions: flaming / cringe / shut-up (agent named in
         # the context; the matcher set the addressee for these).
         if directive == "react" or "called you" in ctxl or "flaming" in ctxl \
@@ -5625,14 +5657,6 @@ def _flavor_off_response(
                 return _fo_pick(_FO_CRINGE, agent, recent_lines)
             if (cat == "shutup" or "shut up" in ctxl) and agent:
                 return _fo_pick(_FO_SHUTUP, agent, recent_lines)
-
-        # "<agent> told you to stop" -- the matcher leaves the agent in the
-        # payload (addressee stays team), so pull it from the text.
-        _stop_src = f"{pay} {ctx}"
-        if _FO_STOP_RE.search(_stop_src):
-            m = re.match(r"^\s*([A-Za-z][\w/]*)\b", pay)
-            ag = (_canon_agent(m.group(1)) if m else None) or agent
-            return _fo_pick(_FO_STOP, ag or "human", recent_lines)
 
         # "I got this" -> clutch pool (team-style regardless of addressee).
         if payl in ("i got this", "i've got this", "i have this"):
@@ -5837,6 +5861,13 @@ def build_relay_line(
     # above already returns it when tails are off; this handles flavor-ON).
     if _dir == "flame_enemy":
         return _cap_line(_fo_pick(_FO_FLAME_ENEMY, None, recent_lines), max_chars)
+
+    # "<agent> told you to stop" -- deterministic defiance pool in BOTH flavor
+    # states (the flavor-OFF hook handles tails-off; this handles flavor-ON).
+    if _dir == "stop_command":
+        _stop_ag = None if str(getattr(command, "addressee", "team")).lower() == "team" \
+            else getattr(command, "addressee", None)
+        return _cap_line(_fo_pick(_FO_STOP, _stop_ag or "human", recent_lines), max_chars)
 
     # Compliment a named teammate ("compliment my Sage") -> a curated cold,
     # backhanded praise opening with the name (the 3B analysed the agent instead

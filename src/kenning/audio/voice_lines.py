@@ -113,7 +113,8 @@ _FLAVOR_ON_RE = re.compile(
 _HELLO_RE = re.compile(
     r"^(?:please\s+)?(?:say|give|send)\s+(?:a\s+|me\s+)?"
     r"(?:hi|hello|hey|heya|hiya|greetings|what'?s\s+up|sup|a\s+(?:hello|"
-    r"hi|greeting))\s+to\s+(?P<target>.+?)\s*[.!?]*$",
+    r"hi|greeting))"
+    r"(?:\s+to\s+(?P<target>.+?))?\s*[.!?]*$",  # target OPTIONAL: bare "say hello" -> team
     re.IGNORECASE,
 )
 _HELLO_TEAM_WORDS = frozenset({
