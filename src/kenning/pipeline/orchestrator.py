@@ -208,6 +208,20 @@ _WAKE_REMNANT_RE = re.compile(
 _FOLLOWUP_WAKE_RE = re.compile(
     r"^\s*(?:hey[\s,]+)?(?:ultron|kenning)\b", re.IGNORECASE)
 
+# 2026-06-18: capture-stall watchdog thresholds. A healthy input stream delivers
+# a chunk every ~16 ms (and a quiet room still streams SILENCE chunks), so
+# get_chunk only times out when the stream has STOPPED producing callbacks -- a
+# USB-overrun / CPU-starvation stall after a heavy in-process turn (e.g. the 3B
+# relay on CPU + a long TTS playback). Kept SHORT (~1s) so a stall right after a
+# turn recovers before the user can realistically issue the next callout:
+# _TIMEOUTS is consecutive get_chunk(timeout=0.5) timeouts in the idle wake loop
+# (2 * 0.5s = ~1s); _SECONDS is the equivalent wall-clock gap for the follow-up
+# listen loop. 2 consecutive 0.5s timeouts never occur on a healthy stream, so
+# there are no false restarts; in the common NO-stall case there is ZERO added
+# delay -- the next wake fires the instant the user speaks.
+_CAPTURE_STALL_TIMEOUTS = 2
+_CAPTURE_STALL_SECONDS = 1.0
+
 
 def _strip_leading_wake_remnant(text: str) -> str:
     """Strip leading mis-transcribed wake words / fillers ("Yeah. Run, …" -> "…").
@@ -6791,6 +6805,7 @@ class Orchestrator:
         self.audio.drain()
         self.wake.reset()
         self.ring.clear()
+        idle_nones = 0  # consecutive get_chunk timeouts -> capture-stall watchdog
         while not self._shutdown.is_set():
             chunk = self.audio.get_chunk(timeout=0.5)
             # FAST settings-panel ACTION poll -- runs EVERY iteration, NOT just
@@ -6814,16 +6829,56 @@ class Orchestrator:
                 self._gui_action_last_drain = now
                 self._drain_gui_actions()
             if chunk is None:
+                # 2026-06-18 CAPTURE-STALL WATCHDOG: a HEALTHY input stream
+                # delivers a chunk every ~16 ms (even a quiet room streams
+                # SILENCE chunks), so get_chunk(timeout=0.5) only times out when
+                # the stream has STOPPED producing callbacks -- a USB-overrun /
+                # CPU-starvation stall after a heavy in-process 3B relay turn +
+                # long TTS, which otherwise leaves Ultron intermittently DEAF (the
+                # next wake word never fires -- the live "one works, the next
+                # won't" symptom). Consecutive timeouts = a stalled mic; after ~1s
+                # restart the input stream so the wake pipeline self-heals. Zero
+                # added delay in the healthy case (2 back-to-back 0.5s timeouts
+                # never occur on a live stream).
+                idle_nones += 1
+                if idle_nones >= _CAPTURE_STALL_TIMEOUTS:
+                    if self._restart_capture_stream():
+                        self.wake.reset()
+                        self.ring.clear()
+                    idle_nones = 0
                 # Heavier idle heartbeat -- only on a real >=0.5s gap: config
                 # hot-reload (also runs once per turn at the top of run(), so it
                 # does not need the per-iteration cadence) + embedder recovery.
                 self._maybe_reload_config()
                 self._maybe_recover_embedding()
                 continue
+            idle_nones = 0
             self.ring.write(chunk)
             if self.wake.process(chunk):
                 return True
         return False
+
+    def _restart_capture_stream(self) -> bool:
+        """Recover a STALLED microphone stream (no callbacks for ~1s -- a
+        USB-overrun / CPU-starvation stall after a heavy CPU turn). Stop+start the
+        InputStream so the wake pipeline self-heals rather than going
+        intermittently/permanently deaf. Fail-open: on error, leave the stream
+        as-is and the watchdog retries next cycle. Idempotent at the AudioCapture
+        layer (we stop() first, then start())."""
+        try:
+            logger.warning(
+                "capture stall: no microphone audio for ~%.0fs -- restarting the "
+                "input stream to recover the wake pipeline",
+                _CAPTURE_STALL_TIMEOUTS * 0.5,
+            )
+            self.audio.stop()
+            self.audio.start()
+            self.audio.drain()
+            logger.info("capture stream restarted after stall")
+            return True
+        except Exception as e:                                       # noqa: BLE001
+            logger.error("capture stream restart after stall FAILED: %s", e)
+            return False
 
     # --- phase: capture ------------------------------------------------------
 
