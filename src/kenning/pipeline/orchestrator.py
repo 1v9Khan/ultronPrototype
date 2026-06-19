@@ -7309,10 +7309,34 @@ class Orchestrator:
         # via VAD SEGMENTATION over the full buffer -- now safe because the live
         # capture loop is done. Drops the wake-word segment, keeps the command.
         # Fail-open to the lighter onset-trim, then the raw buffer.
-        return self._strip_wake_audio(
-            np.concatenate(chunks).astype(np.float32, copy=False),
-            pre_roll_len, speech_start_samples,
-        )
+        _full = np.concatenate(chunks).astype(np.float32, copy=False)
+        _stripped = self._strip_wake_audio(_full, pre_roll_len, speech_start_samples)
+        # 2026-06-18 DIAGNOSTIC (env KENNING_DEBUG_CAPTURE_DUMP, default OFF): dump
+        # the PRE-strip (full buffer) + POST-strip audio so a clip ("show me the
+        # stop button" -> "Start button") can be localized -- is the command lead
+        # present in the raw capture, or removed by the wake-strip? Fail-open.
+        if os.getenv("KENNING_DEBUG_CAPTURE_DUMP", "").strip().lower() in (
+                "1", "true", "yes", "on"):
+            try:
+                import soundfile as _sf
+                from pathlib import Path as _P
+                _n = getattr(self, "_capdump_n", 0) + 1
+                self._capdump_n = _n
+                _P("logs").mkdir(exist_ok=True)
+                _sf.write(f"logs/_capdump_{_n:02d}_prestrip.wav", _full,
+                          settings.SAMPLE_RATE, subtype="PCM_16")
+                _sf.write(f"logs/_capdump_{_n:02d}_poststrip.wav", _stripped,
+                          settings.SAMPLE_RATE, subtype="PCM_16")
+                logger.info(
+                    "capture dump #%d: prestrip=%.3fs poststrip=%.3fs cut=%.3fs "
+                    "(pre_roll_len=%d, speech_start=%d)", _n,
+                    len(_full) / settings.SAMPLE_RATE,
+                    len(_stripped) / settings.SAMPLE_RATE,
+                    (len(_full) - len(_stripped)) / settings.SAMPLE_RATE,
+                    pre_roll_len, speech_start_samples)
+            except Exception as _e:                                  # noqa: BLE001
+                logger.debug("capture dump failed: %s", _e)
+        return _stripped
 
     def _get_wake_seg_model(self):
         """Lazily load a DEDICATED Silero VAD model for post-capture wake-word
