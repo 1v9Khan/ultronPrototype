@@ -10,6 +10,20 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: LEAN-DISPATCH VOICE-TOGGLE GAP (flavor-off gave an LLM response)**
+> (2026-06-18). "Ultron, flavor off" returned an LLM response in gaming. STT + the matcher were
+> correct ("flavor off." → `relay_speech.match_flavor_toggle` = disable); the WIRING was missing.
+> The flavor-toggle handler (`orchestrator._maybe_handle_flavor_toggle`) + the LLM device-switch +
+> relay-mute toggles live ONLY inside the `if self.coding_voice is not None:` dispatch block. Lean
+> gaming skips the coding stack (`barebones_skip_coding` → `coding_voice is None`) and runs a
+> SEPARATE lean dispatch (`settings-GUI-lean`, `stop-button-lean`, `spotify-lean`, `relay-lean`,
+> router) that never mirrored these toggles → they fell to the semantic router (abstain) → the
+> conversational LLM. FIX (`28f55d6`): mirror the three lean-safe toggles (relay_speech / inference
+> only) into the lean dispatch BEFORE the relay matcher + router (`*-lean` trace tags).
+> ⚠️ **CLASS RULE:** any voice handler added to the coding_voice dispatch block must ALSO be mirrored
+> into the lean (`coding_voice is None`) dispatch or it is DEAD in gaming. (anticheat-toggle is
+> intentionally omitted — anticheat is pinned ON in lean.)
+>
 > **Validating HEAD: CAPTURE-STALL WATCHDOG (intermittent wake-deafness fix)**
 > (2026-06-18). Live testing showed intermittent wake-word deafness ("one command works, the next
 > won't") even when the user waited fully for each response. The wake/capture/VAD modules
