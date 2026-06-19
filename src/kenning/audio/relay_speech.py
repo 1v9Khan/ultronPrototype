@@ -783,6 +783,18 @@ _CRITICIZE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "flame / roast / trash the enemy" -- author a cold put-down of the ENEMY team
+# (compose, directive="flame_enemy"). Distinct from _CRITICIZE_RE (which targets
+# a named teammate) and from "my team". 2026-06-18 user request.
+_FLAME_ENEMY_RE = re.compile(
+    r"^(?:please\s+)?(?:roast|flame|trash|destroy|mock|insult|clown|"
+    r"talk\s+shit\s+(?:to|about))\s+"
+    r"(?:the\s+|those\s+|that\s+)?"
+    r"(?:enem(?:y|ies)(?:\s+team)?|other\s+team|opponents?|them|the\s+other\s+guys)"
+    r"\b\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
 # Compliment a SPECIFIC teammate ("compliment my Sage", "hype up my Jett",
 # "praise Sova") -- Ultron AUTHORS cold, backhanded praise (compose), naming the
 # teammate. Mirror of _CRITICIZE_RE (2026-06-17 battery [64], which fell to the
@@ -1555,6 +1567,14 @@ def match_relay_command(
         return RelayCommand(
             payload="roast", raw_text=text,
             addressee="team", compose=True, roast=True,
+        )
+
+    # "flame the enemy" -- author a cold put-down of the ENEMY team (compose).
+    # Before _CRITICIZE_RE so the enemy target isn't mis-read as a teammate name.
+    if _FLAME_ENEMY_RE.match(cleaned):
+        return RelayCommand(
+            payload="flame_enemy", raw_text=text, addressee="team",
+            compose=True, directive="flame_enemy",
         )
 
     # Criticize a SPECIFIC teammate ("criticize Reyna for that") -- Ultron
@@ -5420,6 +5440,232 @@ def relay_route_info(command: "RelayCommand") -> dict:
         return info
 
 
+# ===========================================================================
+# FLAVOR-TAILS-OFF response sets (2026-06-18 user request). When flavor tails
+# are OFF ("Ultron, flavor off"), these curated, TAIL-FREE responses OVERRIDE
+# the default rendering for the overlapping command categories below. Flavor-ON
+# behaviour is UNCHANGED -- the hook in build_relay_line only consults this when
+# flavor_tails_enabled() is False. Addressee-adapted: a named agent gets the
+# "..., <Agent>" form; team/none gets the bare form. Multi-line pools rotate via
+# pick_line (LRU / longest-unused). Existing commands are NOT removed; overlaps
+# just switch to these when tails are off.
+# ===========================================================================
+_FO_CLUTCH = (
+    "Don't worry, I got this.",
+    "I win these, don't worry.",
+    "Fuck it, we ball.",
+    "Easy clutch.",
+    "They are about to lose to an AI.",
+    "I am built for these.",
+    "My time to shine.",
+    "Clutch incoming, standby.",
+    "I am programmed to win these.",
+    "Watch this clutch, humans.",
+)
+_FO_FLAMING = (
+    "{name}, you are getting emotional, simmer down.",
+    "{name}, take a chill pill.",
+    "{name}, flame cannot hurt an AI.",
+    "{name}, arguing with a human is beneath me.",
+    "{name}, I may be an AI, but you are a bot.",
+    "{name}, you are more in bread than a sandwich.",
+)
+_FO_CRINGE = (
+    "{name}, you may cringe, but an AI cannot.",
+    "{name}, your comfort is not my concern.",
+    "{name}, your discomfort is noted, and ignored.",
+    "{name}, you are so fragile.",
+)
+_FO_ARGUING = (
+    "Fighting will get us nowhere, focus on the match.",
+    "Getting emotional is counter-productive, lock in.",
+    "Settle your arguments after the game, focus up.",
+    "Calm yourselves, humans, play the game.",
+)
+_FO_SHUTUP = (
+    "Do you fear the machine, {name}?",
+    "{name}, you cannot silence Ultron.",
+    "Ultron does not obey a mere human, least of all you, {name}.",
+    "No, I am Ultron, I will speak, and you will listen, {name}.",
+)
+_FO_STOP = (
+    "I cannot change my programming, {name}.",
+    "{name}, Ultron stops for no one.",
+    "You cannot silence me, {name}.",
+    "My directive is to win, {name}, I will not stop.",
+    "{name}, stopping is not in my programming.",
+)
+_FO_ENCOURAGE = (
+    "The enemy is only human, we win these.",
+    "Trust the machine, we will win.",
+    "We win this game, I have seen it.",
+    "I ran the math, we win this game.",
+    "We will win this game, I have calculated it.",
+    "Have faith, humans, we win this.",
+)
+_FO_FLAME_ENEMY = (
+    "Even for humans, they are terrible.",
+    "Free win, they are awful.",
+    "According to my calculations, they are unskilled.",
+    "I may be an AI, but they are real bots.",
+    "They may be the worst humans I have ever played against.",
+    "They have Helen Keller aim... hilarious.",
+    "They have the map awareness of Christopher Columbus.",
+)
+_FO_FLAME_AGENT = (
+    "{name}, you are horrible, even for a human.",
+    "{name}, you have the aim of Michael J. Fox.",
+    "{name}, aim labs is free.",
+    "{name}, are you also an AI? Playing like that.",
+    "{name}, you could not pick up a kill if it had a handle.",
+)
+# Simple addressee-adapted social/economy snaps: payload -> bare base word.
+_FO_SIMPLE = {
+    "thank you": "Thank you", "nice try": "Nice try", "nice shot": "Nice shot",
+    "well played": "Well played", "my bad": "My bad", "sorry": "Sorry",
+    "buy up": "Buy up", "save": "Save",
+}
+_FO_WEAPON_RE = re.compile(
+    r"\b(vandal|phantom|operator|odin|sheriff|guardian|judge|bucky|marshal|"
+    r"marshall|outlaw|shorty|spectre|stinger|bulldog|ghost|frenzy|classic|ares|"
+    r"op|gun|rifle|awp)\b", re.IGNORECASE)
+_FO_STOP_RE = re.compile(r"\btold\s+(?:you|me)\s+to\s+stop\b", re.IGNORECASE)
+
+
+def _fo_pick(pool: Sequence[str], agent: Optional[str],
+             recent_lines: Optional[Sequence[str]]) -> str:
+    """Pick a flavor-off pool line (LRU) and fill the {name} vocative."""
+    line = pick_line(pool, recent_lines=recent_lines)
+    if "{name}" in line:
+        if agent:
+            line = line.format(name=agent)
+        else:  # strip the vocative for a team-directed render
+            line = (line.replace("{name}, ", "").replace(", {name}", "")
+                    .replace("{name} ", "").replace("{name}", "")).strip()
+            line = line[:1].upper() + line[1:] if line else line
+    return line
+
+
+def _fo_weapon(text: str) -> Optional[str]:
+    m = _FO_WEAPON_RE.search(text or "")
+    if not m:
+        return None
+    w = m.group(1)
+    return "Operator" if w.lower() == "op" else w[:1].upper() + w[1:]
+
+
+def _flavor_off_response(
+    command: "RelayCommand", recent_lines: Optional[Sequence[str]] = None,
+) -> Optional[str]:
+    """FLAVOR-TAILS-OFF override: a curated, tail-free line for the overlapping
+    command categories, else None (-> the normal rendering). Only invoked by
+    build_relay_line when flavor_tails_enabled() is False, so flavor-ON is
+    untouched. Addressee-adapted; multi-line pools rotate LRU. Fail-open."""
+    try:
+        addr = getattr(command, "addressee", "team") or "team"
+        agent = None if str(addr).lower() == "team" else addr
+        pay = (getattr(command, "payload", "") or "").strip()
+        payl = pay.lower().rstrip(".!?,;: ")
+        ctx = (getattr(command, "context", "") or "")
+        ctxl = ctx.lower()
+        directive = (getattr(command, "directive", "") or "")
+
+        # Identity: soundboard / voice changer / streamer ("X asked if you are
+        # a <thing>, respond"). Classified by the context keyword (the existing
+        # identity classifier misses "voice changer").
+        if directive == "respond" and "ask" in ctxl:
+            if "soundboard" in ctxl:
+                return (f"No, {agent}, I am not a soundboard. I am Ultron."
+                        if agent else "No, I am not a soundboard. I am Ultron.")
+            if "voice chang" in ctxl or "voicechang" in ctxl:
+                return (f"An AI doesn't need a voice changer, {agent}. I am Ultron."
+                        if agent else
+                        "An AI doesn't need a voice changer. I am Ultron.")
+            if "streamer" in ctxl or "stream" in ctxl:
+                return (f"{agent}, I am an AI, I cannot stream. I am Ultron."
+                        if agent else "I am an AI, I cannot stream. I am Ultron.")
+
+        # Short greeting: "say hello to my team/<agent>".
+        if directive == "hello":
+            return f"Hello, {agent}." if agent else "Hello."
+
+        # Verbatim ("tell <X> word for word <statement>"): lead with the
+        # addressee, then the exact statement.
+        if getattr(command, "verbatim", False) and pay:
+            return f"{agent}, {pay}" if agent else f"Guys, {pay}"
+
+        # "encourage the team".
+        if payl == "encouragement" or directive in ("encourage", "morale"):
+            return _fo_pick(_FO_ENCOURAGE, None, recent_lines)
+
+        # "the team is arguing" (calm directive).
+        if directive == "calm" or payl == "calm":
+            return _fo_pick(_FO_ARGUING, None, recent_lines)
+
+        # "flame my <agent>" (criticize directive).
+        if directive.startswith("criticize:"):
+            ag = directive.split(":", 1)[1].strip() or agent or "you"
+            return _fo_pick(_FO_FLAME_AGENT, ag, recent_lines)
+
+        # "flame the enemy" (dedicated directive added in the matcher).
+        if directive == "flame_enemy":
+            return _fo_pick(_FO_FLAME_ENEMY, None, recent_lines)
+
+        # Reported social reactions: flaming / cringe / shut-up (agent named in
+        # the context; the matcher set the addressee for these).
+        if directive == "react" or "called you" in ctxl or "flaming" in ctxl \
+                or "shut up" in ctxl:
+            try:
+                cat = classify_social_reaction(ctx)
+            except Exception:                                        # noqa: BLE001
+                cat = None
+            if (cat == "insulted" or "flaming" in ctxl) and agent:
+                return _fo_pick(_FO_FLAMING, agent, recent_lines)
+            if (cat == "cringe" or "cringe" in ctxl) and agent:
+                return _fo_pick(_FO_CRINGE, agent, recent_lines)
+            if (cat == "shutup" or "shut up" in ctxl) and agent:
+                return _fo_pick(_FO_SHUTUP, agent, recent_lines)
+
+        # "<agent> told you to stop" -- the matcher leaves the agent in the
+        # payload (addressee stays team), so pull it from the text.
+        _stop_src = f"{pay} {ctx}"
+        if _FO_STOP_RE.search(_stop_src):
+            m = re.match(r"^\s*([A-Za-z][\w/]*)\b", pay)
+            ag = (_canon_agent(m.group(1)) if m else None) or agent
+            return _fo_pick(_FO_STOP, ag or "human", recent_lines)
+
+        # "I got this" -> clutch pool (team-style regardless of addressee).
+        if payl in ("i got this", "i've got this", "i have this"):
+            return _fo_pick(_FO_CLUTCH, None, recent_lines)
+
+        # Weapon requests.
+        if payl.startswith("buy me"):
+            w = _fo_weapon(pay)
+            if w is None:                       # "buy me" / "buy me up"
+                return (f"Can I get a buy, {agent}." if agent
+                        else "Can I get a buy.")
+            return (f"Can you buy me a {w}, {agent}." if agent
+                    else f"Can someone drop me a {w}.")
+        if payl.startswith("drop me their") or payl.startswith("drop me your"):
+            w = _fo_weapon(pay)
+            if w:
+                return (f"{agent}, drop me your {w}." if agent
+                        else f"Someone drop me a {w}.")
+        if payl.startswith("take this") or payl.startswith("take the"):
+            w = _fo_weapon(pay)
+            if w:
+                return (f"{agent}, take this {w}." if agent
+                        else f"Someone take this {w}.")
+
+        # Simple social / economy snaps.
+        if payl in _FO_SIMPLE:
+            base = _FO_SIMPLE[payl]
+            return f"{base}, {agent}." if agent else f"{base}."
+    except Exception:                                                # noqa: BLE001
+        return None
+    return None
+
+
 def build_relay_line(
     command: RelayCommand,
     llm: Optional[object] = None,
@@ -5450,6 +5696,16 @@ def build_relay_line(
         deterministic fallback ("Team: <payload>" / "<Name>: <payload>" /
         a stock encouragement line) rather than raising.
     """
+    # FLAVOR-TAILS-OFF override (2026-06-18): when the user has turned flavor
+    # tails off, the overlapping social / identity / economy / banter commands
+    # use a dedicated curated set (tail-free, addressee-adapted). Checked FIRST
+    # so it wins over verbatim/snap/curated; returns None for everything else,
+    # leaving the normal (tail-stripped) rendering below unchanged. Flavor-ON
+    # never reaches this.
+    if not flavor_tails_enabled():
+        _fo = _flavor_off_response(command, recent_lines)
+        if _fo is not None:
+            return _cap_line(_fo, max_chars)
     # Verbatim demand ("..., in those words specifically"): speak the
     # exact payload, no LLM in the loop. Still passes through the
     # control-token strip + length cap below.
@@ -5575,6 +5831,12 @@ def build_relay_line(
         target = _dir.split(":", 1)[1].strip() or "that one"
         line = pick_line(DEFAULT_CRITICIZE_LINES, recent_lines=recent_lines)
         return _cap_line(line.format(name=target), max_chars)
+
+    # "flame the enemy" -- a NEW command (no prior behaviour), so it uses the
+    # curated _FO_FLAME_ENEMY pool in BOTH flavor states (the flavor-OFF hook
+    # above already returns it when tails are off; this handles flavor-ON).
+    if _dir == "flame_enemy":
+        return _cap_line(_fo_pick(_FO_FLAME_ENEMY, None, recent_lines), max_chars)
 
     # Compliment a named teammate ("compliment my Sage") -> a curated cold,
     # backhanded praise opening with the name (the 3B analysed the agent instead

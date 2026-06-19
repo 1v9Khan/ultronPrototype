@@ -644,3 +644,85 @@ class TestEnemyOutCallout:
         # the new rule must NOT fire on "out" substrings / insults
         from kenning.audio.command_normalizer import _STRONG_CALLOUT_RE
         assert not _STRONG_CALLOUT_RE.match(text), text
+
+
+# ===========================================================================
+# 2026-06-18 user request: FLAVOR-TAILS-OFF response sets. When tails are off,
+# the overlapping social/identity/economy/banter commands use a dedicated
+# curated set; flavor-ON behaviour is unchanged. (relay_speech._flavor_off_*)
+# ===========================================================================
+import pytest as _pytest  # noqa: E402
+from kenning.audio import relay_speech as _RS  # noqa: E402
+
+
+@_pytest.fixture()
+def _tails_off():
+    prev = _RS.flavor_tails_enabled()
+    _RS.set_flavor_tails_enabled(False)
+    try:
+        yield
+    finally:
+        _RS.set_flavor_tails_enabled(prev)
+
+
+class TestFlavorOffSets:
+    @_pytest.mark.parametrize("text,expected", [
+        ("Sage asked if you are a soundboard, respond",
+         "No, Sage, I am not a soundboard. I am Ultron."),
+        ("the team asked if I am a soundboard, respond",
+         "No, I am not a soundboard. I am Ultron."),
+        ("Sage asked if I am a voice changer, respond",
+         "An AI doesn't need a voice changer, Sage. I am Ultron."),
+        ("the team asked if I am a voice changer, respond",
+         "An AI doesn't need a voice changer. I am Ultron."),
+        ("Sage asked if you are a streamer, respond",
+         "Sage, I am an AI, I cannot stream. I am Ultron."),
+        ("the team asked if you are a streamer, respond",
+         "I am an AI, I cannot stream. I am Ultron."),
+        ("say hello to my team", "Hello."),
+        ("say hello to Sage", "Hello, Sage."),
+        ("say thank you to my team", "Thank you."),
+        ("say thank you to Sage", "Thank you, Sage."),
+        ("say nice try to my team", "Nice try."),
+        ("say nice shot to Sage", "Nice shot, Sage."),
+        ("say well played to my team", "Well played."),
+        ("say my bad to my team", "My bad."),
+        ("say sorry to Sage", "Sorry, Sage."),
+        ("tell my team to buy up", "Buy up."),
+        ("tell Sage to save", "Save, Sage."),
+        ("tell my team to buy me", "Can I get a buy."),
+        ("tell my team to buy me a vandal", "Can someone drop me a Vandal."),
+        ("tell Sage to buy me a phantom", "Can you buy me a Phantom, Sage."),
+        ("ask my Sage to drop me their vandal", "Sage, drop me your Vandal."),
+        ("tell my team to take this vandal", "Someone take this Vandal."),
+        ("tell Sage to take this operator", "Sage, take this Operator."),
+        ("tell Sage word for word the spike is down", "Sage, the spike is down"),
+        ("tell my team word for word push B now", "Guys, push B now"),
+    ])
+    def test_flavor_off_exact(self, _tails_off, text, expected) -> None:
+        assert _line(text) == expected
+
+    @_pytest.mark.parametrize("text,pool,agent", [
+        ("tell my team I got this", _RS._FO_CLUTCH, None),
+        ("Sage is flaming you", _RS._FO_FLAMING, "Sage"),
+        ("Sage called you cringe", _RS._FO_CRINGE, "Sage"),
+        ("the team is arguing", _RS._FO_ARGUING, None),
+        ("Sage told you to shut up", _RS._FO_SHUTUP, "Sage"),
+        ("Sage told you to stop", _RS._FO_STOP, "Sage"),
+        ("encourage the team", _RS._FO_ENCOURAGE, None),
+        ("flame the enemy", _RS._FO_FLAME_ENEMY, None),
+        ("flame my Sage", _RS._FO_FLAME_AGENT, "Sage"),
+    ])
+    def test_flavor_off_pool_member(self, _tails_off, text, pool, agent) -> None:
+        line = _line(text)
+        rendered = {p.format(name=agent) if (agent and "{name}" in p) else p
+                    for p in pool}
+        assert line in rendered, f"{line!r} not in {sorted(rendered)}"
+
+    def test_flavor_on_unchanged(self) -> None:
+        # With tails ON, the override is skipped: "say thank you" keeps its tail,
+        # not the bare flavor-off "Thank you."
+        _RS.set_flavor_tails_enabled(True)
+        line = _line("say thank you to my team")
+        assert line != "Thank you.", line
+        assert line.lower().startswith("thank you")

@@ -8381,6 +8381,11 @@
 "kind": "regex",
 "pattern": "^i\\s+\\w+\\s+you\\b"
 },
+"_FLAME_ENEMY_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+)?(?:roast|flame|trash|destroy|mock|insult|clown|talk\\s+shit\\s+(?:to|about))\\s+(?:the\\s+|those\\s+|that\\s+)?(?:enem(?:y|ies)(?:\\s+team)?|other\\s+team|opponents?|them|the\\s+other\\s+guys)\\b\\s*[.!?]*$"
+},
 "_FLAVOR_CAREFUL": {
 "items": [
 "Patience. I have the timing.",
@@ -8841,6 +8846,117 @@
 "Wait it out, then strike."
 ],
 "kind": "seq"
+},
+"_FO_ARGUING": {
+"items": [
+"Fighting will get us nowhere, focus on the match.",
+"Getting emotional is counter-productive, lock in.",
+"Settle your arguments after the game, focus up.",
+"Calm yourselves, humans, play the game."
+],
+"kind": "seq"
+},
+"_FO_CLUTCH": {
+"items": [
+"Don't worry, I got this.",
+"I win these, don't worry.",
+"Fuck it, we ball.",
+"Easy clutch.",
+"They are about to lose to an AI.",
+"I am built for these.",
+"My time to shine.",
+"Clutch incoming, standby.",
+"I am programmed to win these.",
+"Watch this clutch, humans."
+],
+"kind": "seq"
+},
+"_FO_CRINGE": {
+"items": [
+"{name}, you may cringe, but an AI cannot.",
+"{name}, your comfort is not my concern.",
+"{name}, your discomfort is noted, and ignored.",
+"{name}, you are so fragile."
+],
+"kind": "seq"
+},
+"_FO_ENCOURAGE": {
+"items": [
+"The enemy is only human, we win these.",
+"Trust the machine, we will win.",
+"We win this game, I have seen it.",
+"I ran the math, we win this game.",
+"We will win this game, I have calculated it.",
+"Have faith, humans, we win this."
+],
+"kind": "seq"
+},
+"_FO_FLAME_AGENT": {
+"items": [
+"{name}, you are horrible, even for a human.",
+"{name}, you have the aim of Michael J. Fox.",
+"{name}, aim labs is free.",
+"{name}, are you also an AI? Playing like that.",
+"{name}, you could not pick up a kill if it had a handle."
+],
+"kind": "seq"
+},
+"_FO_FLAME_ENEMY": {
+"items": [
+"Even for humans, they are terrible.",
+"Free win, they are awful.",
+"According to my calculations, they are unskilled.",
+"I may be an AI, but they are real bots.",
+"They may be the worst humans I have ever played against.",
+"They have Helen Keller aim... hilarious.",
+"They have the map awareness of Christopher Columbus."
+],
+"kind": "seq"
+},
+"_FO_FLAMING": {
+"items": [
+"{name}, you are getting emotional, simmer down.",
+"{name}, take a chill pill.",
+"{name}, flame cannot hurt an AI.",
+"{name}, arguing with a human is beneath me.",
+"{name}, I may be an AI, but you are a bot.",
+"{name}, you are more in bread than a sandwich."
+],
+"kind": "seq"
+},
+"_FO_SHUTUP": {
+"items": [
+"Do you fear the machine, {name}?",
+"{name}, you cannot silence Ultron.",
+"Ultron does not obey a mere human, least of all you, {name}.",
+"No, I am Ultron, I will speak, and you will listen, {name}."
+],
+"kind": "seq"
+},
+"_FO_SIMPLE": {
+"kind": "dict",
+"len": 8,
+"repr": "{'thank you': 'Thank you', 'nice try': 'Nice try', 'nice shot': 'Nice shot', 'well played': 'Well played', 'my bad': 'My bad', 'sorry': 'Sorry', 'buy up': 'Buy up', 'save': 'Save'}"
+},
+"_FO_STOP": {
+"items": [
+"I cannot change my programming, {name}.",
+"{name}, Ultron stops for no one.",
+"You cannot silence me, {name}.",
+"My directive is to win, {name}, I will not stop.",
+"{name}, stopping is not in my programming."
+],
+"kind": "seq"
+},
+"_FO_STOP_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "\\btold\\s+(?:you|me)\\s+to\\s+stop\\b"
+},
+"_FO_WEAPON_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "\\b(vandal|phantom|operator|odin|sheriff|guardian|judge|bucky|marshal|marshall|outlaw|shorty|spectre|stinger|bulldog|ghost|frenzy|classic|ares|op|gun|rifle|awp)\\b"
 },
 "_FP_LEAD_RE": {
 "flags": 34,
