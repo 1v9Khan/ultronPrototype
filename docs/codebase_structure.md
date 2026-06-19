@@ -10,6 +10,25 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> **Validating HEAD: SPECULATIVE-STT MID-PAUSE TRUNCATION FIX**
+> (2026-06-18). Live real-voice testing showed the raw transcript dropping everything after a
+> natural mid-sentence pause (e.g. 3.2 s of captured audio → only "Say to my team."). ROOT CAUSE:
+> the latency-saving speculative STT (`orchestrator._kick_off_speculative_stt`) fires a background
+> Whisper run after just ~32 ms of silence (`speculative_silence_kickoff_chunks = 2`), far below the
+> ~300 ms SPEECH_END (MIN_SILENCE) baseline, on the audio captured SO FAR. The in-flight result was
+> only invalidated on a VAD `SPEECH_START` event — which only fires after a full `SPEECH_END`. So a
+> normal mid-utterance micro-pause (32–~300 ms) kicked off speculation on the pre-pause LEAD, never
+> invalidated it, and `_collect_speculative_stt` committed that stale lead as the final transcript
+> (skipping the foreground STT on the full buffer). FIX: in BOTH capture loops
+> (`_capture_utterance` + `_follow_up_listen`), invalidate + re-arm the speculative result whenever
+> speech RESUMES after a kickoff — not only on `SPEECH_START`. Strictly more conservative (can only
+> fall back to the full-buffer foreground STT, never cause truncation); speculation re-fires on the
+> final trailing silence so the latency win is preserved for the common single-pause case. 2 new
+> deterministic regression tests in `tests/test_speculative_stt.py` drive `_capture_utterance`
+> through a scripted mid-pause-resume; 14/14 pass. (Secondary, NOT yet fixed: STT MISHEARS — the
+> `WHISPER_INITIAL_PROMPT='Kenning.'` shadow turns domain biasing off (Sova→Silva, "tell my
+> team"→"Valorant team"); plus a wake-strip lead trim ("show me the start button"→"Start button").)
+>
 > **Validating HEAD: LIVE AUDIO-INJECTION CORPUS PROTOCOL + WH-QUESTION NEGATED-AUX INVERSION**
 > (2026-06-18). Two milestones:
 > - **Live audio-injection corpus protocol** (`scripts/relay_test/audio_corpus/`): a dedicated
