@@ -157,6 +157,17 @@ _PHRASE_MISHEARS: tuple[tuple[re.Pattern[str], object], ...] = (
     # to an agent-reference lead so a literal "rain" elsewhere is untouched.
     (re.compile(r"\b(my|our|the|tell|ask|told|for)\s+rain\s+(?:a|uh)\b", re.I),
      lambda m: m.group(1) + " Reyna"),
+    # Joined multi-word LOCATIONS (STT drops the space): "back site" -> "Backsite",
+    # "top mid" -> "topmid", etc. _LOC_TOKENS holds the words SEPARATELY, so the
+    # joined form is not a valid location and a multi-agent callout SILENTLY DROPS
+    # that segment ("Cypher backsite, Sova heaven" -> just "Sova heaven" -- the
+    # live "Sova deletes the rest" report). Re-split them. (\s*-? also matches the
+    # already-correct spaced form, so this is idempotent.)
+    (re.compile(r"\bback\s*-?site\b", re.I), "back site"),
+    (re.compile(r"\bfront\s*-?site\b", re.I), "front site"),
+    (re.compile(r"\bmid\s*-?site\b", re.I), "mid site"),
+    (re.compile(r"\btop\s*-?mid\b", re.I), "top mid"),
+    (re.compile(r"\bmid\s*-?top\b", re.I), "mid top"),
     # site letters heard as words.
     (re.compile(r"\b(?:bee?|be)\s+(main|site|long|short)\b", re.I),
      lambda m: "B " + m.group(1).lower()),

@@ -1060,3 +1060,26 @@ class TestFlavorOffYesNoTerse:
             assert _line("say no") not in ("No.", "No, team.")  # persona pool
         finally:
             _RS.set_flavor_tails_enabled(prev)
+
+
+class TestJoinedLocationMultiCallout:
+    """2026-06-19: a multi-agent callout SILENTLY DROPPED any segment whose
+    location was a JOINED STT rendering ("Cypher backsite, Sova heaven" -> just
+    "Sova heaven" -- reported as "Sova deletes the rest"). _LOC_TOKENS holds the
+    words separately, so "backsite" wasn't a valid location and the segment was
+    discarded. STT correction now re-splits the joined forms."""
+
+    @_pytest.mark.parametrize("text,must_have", [
+        ("tell my team Cypher backsite, Sova heaven", ["back site", "sova heaven"]),
+        ("tell my team Sova heaven, Cypher backsite", ["sova heaven", "back site"]),
+        ("tell my team Raze topmid, Sova heaven", ["top mid", "sova heaven"]),
+    ])
+    def test_joined_location_segments_survive(self, _tails_off, text, must_have) -> None:
+        line = _line(text).lower()
+        for frag in must_have:
+            assert frag in line, f"{text!r} dropped {frag!r}: {line!r}"
+
+    @_pytest.mark.parametrize("word", ["website", "campsite", "backside"])
+    def test_joined_location_guards(self, word) -> None:
+        from kenning.audio._stt_correct import correct_callout_stt
+        assert correct_callout_stt(word) == word
