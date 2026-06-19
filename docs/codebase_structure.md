@@ -26,6 +26,12 @@
 > WARNING it logs ("capture stall … restarting") also instruments the diagnosis. 3 regression tests
 > in `tests/test_capture_stall_watchdog.py`. NB: not yet added to the (default-disabled)
 > `_follow_up_listen` loop.
+> - **Lead-clip follow-up** (`5ecad3a`): "Ultron, show me the stop button" was REFUSED — the
+>   speculative STT (cruder `_trim_wake_from_capture` onset-trim) clipped the lead → "Start button"
+>   → `desktop_refuse`, and the min-speech floor extended the capture but left that stale partial in
+>   place. The floor downgrade now also `_invalidate_speculative_stt()` so the foreground STT
+>   re-runs on the full buffer with the accurate `_strip_wake_audio`. Deeper root (noted): the
+>   speculative vs foreground wake-trim discrepancy — only bites when the speculative is committed.
 >
 > **Validating HEAD: TEAM-RELAY PINNED TO THE ULTRON PERSONA (NEVER KENNING)**
 > (2026-06-18). A real-game LLM trace showed the relay rephrase's SYSTEM message was literally
