@@ -299,10 +299,15 @@ wake_word:
   # for many frames; a confusable spikes for one). 2 is a light filter.
   min_consecutive_frames: 2
   # PER-WORD consecutive-frame gate (2026-06-15): overrides min_consecutive_frames
-  # for the named word. "ultron" needs 3 sustained frames so a transient
+  # for the named word. "ultron" needs N sustained frames so a transient
   # confusable can't fire it; a real "ultron" sustains the score and still fires.
+  # 2026-06-18: 3 -> 4. The model false-fired at 0.93 on "Oh, we shouldn't..." --
+  # too high a score for a threshold change to reject without hurting real-callout
+  # recall, so tighten the SUSTAIN gate instead: a brief confusable ("Oh we")
+  # spikes for ~3 frames; a 2-syllable "Ultron" sustains 4 easily. Lower back to 3
+  # if it ever misses a real, fast "Ultron".
   consecutive_frames:
-    ultron: 3
+    ultron: 4
   cooldown_seconds: 1.5         # debounce repeated triggers
 
 # ---------------------------------------------------------------------------
