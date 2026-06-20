@@ -2758,6 +2758,23 @@ def _apply_snap_registry(
     return None
 
 
+def _name_social_snap(line: Optional[str], command: "RelayCommand") -> Optional[str]:
+    """Prepend the addressed teammate to a social-snap line so flavor-ON names the
+    agent like flavor-OFF does ("Nice try. <tail>" -> "Sage, nice try. <tail>").
+    Team-addressed snaps and already-named lines are returned unchanged. 2026-06-19
+    flavor parity: the consolation/nice-try snap was the one form that dropped the
+    name with tails on (the registry / _as_consolation_or_praise render only from
+    the payload, which carries no addressee)."""
+    if not line:
+        return line
+    addr = getattr(command, "addressee", "team")
+    if not addr or str(addr).lower() == "team":
+        return line
+    if line.lower().startswith(str(addr).lower()):
+        return line                                   # already names the agent
+    return f"{addr}, {line[:1].lower()}{line[1:]}"
+
+
 def _match_target_registry(cleaned: str, text: str):
     """Part C target-based snaps: iterate ``voice_lines.TARGET_SNAP_REGISTRY`` and
     return a RelayCommand for the FIRST rule whose regex matches AND whose target
@@ -6165,7 +6182,7 @@ def build_relay_line(
         # remain as the fallback when the registry is disabled or unmatched.
         reg = _apply_snap_registry(getattr(command, "payload", ""), recent_lines)
         if reg is not None:
-            return _cap_line(reg, max_chars)
+            return _cap_line(_name_social_snap(reg, command), max_chars)
         # Clutch confidence ('tell my team I got this') -> curated Ultron round-
         # clutch line. Before consolation/praise so "I'll clutch this" -> the
         # clutch pool (a bare "clutch" after a teammate's play stays praise).
@@ -6176,7 +6193,7 @@ def build_relay_line(
         # -- short formulaic morale the 3B mangles; curated + varied.
         cp = _as_consolation_or_praise(getattr(command, "payload", ""), recent_lines)
         if cp is not None:
-            return _cap_line(cp, max_chars)
+            return _cap_line(_name_social_snap(cp, command), max_chars)
 
     # Deterministic SNAP callout (positions / counts / self+enemy status /
     # possession / last / damage / ults / movement) -- short, literal,
