@@ -76,7 +76,9 @@ def test_match_relay_positive(text: str, expected_payload: str) -> None:
         "My teammates are bad",
         # Relay verbs without a group addressee.
         "tell her I said hi",
-        "say hello",
+        # NB: bare "say hello" now DOES relay -- it defaults to the team hello
+        # snap ("Hello.") rather than falling to the LLM (2026-06-19). See
+        # TestSayHelloDefaultAndStop in test_corpus_audit_fixes.py.
         # Names OUTSIDE the closed vocabulary never relay.
         "tell sarah I'll be late",
         "ask bob to bring snacks",

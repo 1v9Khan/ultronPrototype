@@ -818,7 +818,7 @@ def test_existing_negative_pins_still_hold() -> None:
         "tell me a story about my team",
         "What time is it in Paris?",
         "My teammates are bad",
-        "say hello",
+        # NB: bare "say hello" now relays (team hello snap, 2026-06-19) -- removed.
     ):
         assert match_relay_command(text) is None, text
 
