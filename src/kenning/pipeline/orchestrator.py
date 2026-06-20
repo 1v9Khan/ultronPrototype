@@ -3281,6 +3281,32 @@ class Orchestrator:
         )
         return True
 
+    def _maybe_handle_thinking_toggle(self, user_text: str) -> bool:
+        """Voice toggle for THINKING MODE -- whether the relay path may author via
+        the LLM. OFF (the default) snaps every "compose" command from its
+        deterministic pool (the identity probes, flaming / cringe / shut-up /
+        arguing, flame-enemy/agent, backhanded praise, think-and-respond): instant
+        and predictable, even with flavor tails on. ON routes them back to the 3B.
+        Independent of the flavor-tails toggle. Strict matcher -> ordinary
+        utterances fall through. Process-global; resets to the env default on
+        restart."""
+        try:
+            from kenning.audio.relay_speech import (
+                match_thinking_toggle, set_thinking_mode_enabled,
+            )
+            verdict = match_thinking_toggle(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("thinking toggle probe failed: %s", e)
+            return False
+        if verdict is None:
+            return False
+        set_thinking_mode_enabled(verdict)
+        logger.info("relay:thinking_toggle | enabled=%s", verdict)
+        self._speak(
+            "Thinking mode on." if verdict else "Thinking mode off."
+        )
+        return True
+
     def _maybe_handle_llm_device_switch(self, user_text: str) -> bool:
         """Voice command to hot-switch the 3B model between CPU and GPU
         ("switch to the GPU" / "move the model back to the CPU"). Each device
@@ -3501,10 +3527,19 @@ class Orchestrator:
                 recent_lines=list(ring),
             )
         else:
+            # THINKING MODE gates the LLM: when off (the default), force
+            # rephrase=False so every compose command snaps from its
+            # deterministic pool instead of authoring via the 3B. Fail-open.
+            _rephrase = bool(getattr(cfg, "rephrase", True))
+            try:
+                from kenning.audio.relay_speech import thinking_mode_enabled
+                _rephrase = _rephrase and thinking_mode_enabled()
+            except Exception as e:                                   # noqa: BLE001
+                logger.debug("thinking-mode gate skipped: %s", e)
             line = build_relay_line(
                 command,
                 getattr(self, "llm", None),
-                rephrase=bool(getattr(cfg, "rephrase", True)),
+                rephrase=_rephrase,
                 max_chars=int(getattr(cfg, "max_line_chars", 280)),
                 recent_lines=list(ring),
             )
@@ -6299,6 +6334,17 @@ class Orchestrator:
                             via="flavor_toggle", follow_up=False,
                         )
                         continue
+                    # Thinking-mode toggle: "thinking mode off" (deterministic
+                    # snaps, the default) vs "thinking mode on" (LLM-authored).
+                    # Checked alongside the flavor toggle, before the relay handler.
+                    if self._maybe_handle_thinking_toggle(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="thinking_toggle", follow_up=False,
+                        )
+                        continue
                     # Relay mute toggle: "mute the team chat" / "you can
                     # talk to my team again" -- session-scoped streaming
                     # safety switch. Checked BEFORE the relay handler.
@@ -6626,6 +6672,14 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="flavor_toggle-lean", follow_up=False,
+                        )
+                        continue
+                    if self._maybe_handle_thinking_toggle(_raw_stt):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="thinking_toggle-lean", follow_up=False,
                         )
                         continue
                     if self._maybe_handle_relay_toggle(user_text):
