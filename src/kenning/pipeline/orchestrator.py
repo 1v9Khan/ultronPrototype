@@ -3335,6 +3335,63 @@ class Orchestrator:
             self._speak(f"Couldn't switch. {msg}")
         return True
 
+    def _maybe_handle_model_lab_switch(self, user_text: str) -> bool:
+        """Voice command to hot-swap the live LLM between the Ultron 0.1.1
+        MODEL-LAB roster of abliterated presets ("switch to heretic" / "load
+        model four" / "try the 7B") so they can be A/B'd in real time WITHOUT a
+        restart. Distinct from ``_maybe_handle_llm_device_switch``: that moves
+        WHERE the loaded model runs (CPU<->GPU); this swaps WHICH model is
+        loaded. The device switch still applies to whatever model is loaded, and
+        gaming mode keeps every lab preset on CPU by default (gpu_layers=0).
+
+        Strict matcher -> ordinary callouts / banter fall through. Anticheat-safe:
+        only changes which model GGUF is in memory; no input/capture surface.
+        Fail-open: any error -> False (the turn falls through to normal routing).
+        """
+        try:
+            from kenning.audio.relay_speech import (
+                MODEL_LAB_SPOKEN,
+                match_model_lab_switch,
+            )
+            preset = match_model_lab_switch(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("model lab switch probe failed: %s", e)
+            return False
+        if preset is None:
+            return False
+        spoken = MODEL_LAB_SPOKEN.get(preset, preset)
+        llm = getattr(self, "llm", None)
+        if llm is None or not hasattr(llm, "reload_for_preset"):
+            self._speak("I can't switch models right now.")
+            return True
+        # Already on this preset? Acknowledge and stop -- skip the reload.
+        try:
+            from kenning.config import get_config
+            current = get_config().llm.preset
+        except Exception:                                            # noqa: BLE001
+            current = None
+        if current == preset:
+            self._speak(f"Already on the {spoken}.")
+            return True
+        # Acknowledge BEFORE the (multi-second) reload so the user isn't left in
+        # silence; the model load blocks this thread but the ack already played.
+        self._speak(f"Loading the {spoken}.")
+        try:
+            ok, msg = llm.reload_for_preset(preset)
+        except Exception as e:                                       # noqa: BLE001
+            logger.error("reload_for_preset(%s) raised: %s", preset, e)
+            self._speak("That didn't work. Staying on the current model.")
+            return True
+        logger.info("llm:model_lab_switch | preset=%s ok=%s (%s)", preset, ok, msg)
+        if ok:
+            if isinstance(msg, str) and msg.startswith("already"):
+                self._speak(f"Already on the {spoken}.")
+            else:
+                self._speak(f"Running the {spoken} now.")
+        else:
+            self._speak(f"Couldn't switch. {msg}")
+        return True
+
     def _trace_turn_flow(self, *, raw: str, route: str, reason: str = "",
                          final: str = "", channel: str = "",
                          normalized: Optional[str] = None,
@@ -6288,6 +6345,18 @@ class Orchestrator:
                             via="llm_device_switch", follow_up=False,
                         )
                         continue
+                    # Model-lab hot-swap: "switch to heretic" / "load model
+                    # four" -- swaps WHICH abliterated preset is loaded so they
+                    # can be A/B'd live. Next to the device switch; strict
+                    # matcher so callouts/banter fall through.
+                    if self._maybe_handle_model_lab_switch(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="model_lab_switch", follow_up=False,
+                        )
+                        continue
                     # Flavor-tail toggle: "disable the flavor" / "flavor off"
                     # vs "flavor back on" -- strips the in-character tails to
                     # bare callouts mid-game. Checked before the relay handler.
@@ -6618,6 +6687,14 @@ class Orchestrator:
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="llm_device_switch-lean", follow_up=False,
+                        )
+                        continue
+                    if self._maybe_handle_model_lab_switch(user_text):
+                        self._last_response_finished_monotonic = time.monotonic()
+                        follow_up_until = None
+                        trace.tlog(
+                            logger, "loop:iteration_end",
+                            via="model_lab_switch-lean", follow_up=False,
                         )
                         continue
                     if self._maybe_handle_flavor_toggle(_raw_stt):

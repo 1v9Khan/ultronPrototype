@@ -786,6 +786,35 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "draft_model_path": None,
         "gpu_layers": 0,
     },
+    # 2026-06-19 -- Ultron 0.1.1 model-lab roster. Two extra abliterated
+    # presets so the voice "model lab" hot-swap can A/B them live against the
+    # existing 3B / 4B / 8B presets WITHOUT a restart (see
+    # relay_speech.match_model_lab_switch + orchestrator
+    # ._maybe_handle_model_lab_switch). Both run FULLY ON CPU (gpu_layers=0)
+    # by default so a gaming session keeps the GPU free; the existing
+    # CPU<->GPU device-switch still borrows the card on demand on whatever
+    # model is loaded.
+    #
+    # Heretic-4B = p-e-w "heretic" automated-abliteration over
+    # Qwen3-4B-Instruct-2507 (refusal directions removed by the heretic
+    # optimizer). Q5_K_M (~2.9 GB on disk). n_ctx=6144 matches the
+    # josiefied-4b budget (voice history caps well under 4k tokens).
+    "heretic-4b": {
+        "model_path": "models/Qwen3-4B-Instruct-2507-heretic.Q5_K_M.gguf",
+        "n_ctx": 6144,
+        "draft_model_path": None,
+        "gpu_layers": 0,
+    },
+    # Huihui Qwen2.5-7B-Instruct abliterated-v2 (huihui-ai). A larger 7B
+    # abliterated comparison point between the 4B presets and the 8B
+    # josiefied. Q5_K_M (~5.4 GB on disk); n_ctx=8192 like the other 7B/8B
+    # presets. No matching draft published -> speculative decoding off.
+    "huihui-qwen25-7b": {
+        "model_path": "models/Qwen2.5-7B-Instruct-abliterated-v2.Q5_K_M.gguf",
+        "n_ctx": 8192,
+        "draft_model_path": None,
+        "gpu_layers": 0,
+    },
 }
 
 
@@ -843,6 +872,10 @@ class LLMConfig(_Strict):
         # for swap-readiness contract (GGUFs must be on disk first).
         "gemma-3-4b-abliterated",
         "llama-3.2-3b-abliterated",
+        # 2026-06-19: Ultron 0.1.1 model-lab presets (voice hot-swap A/B).
+        # NOT default; require the GGUFs on disk before a swap succeeds.
+        "heretic-4b",
+        "huihui-qwen25-7b",
         "custom",
     ] = "josiefied-qwen3-4b"
     # Where the model actually runs:

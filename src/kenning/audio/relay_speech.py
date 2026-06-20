@@ -35,7 +35,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Callable, Iterable, NamedTuple, Optional, Sequence
 
 import numpy as np
 
@@ -57,6 +57,11 @@ __all__ = [
     "pick_line",
     "resolve_relay_device",
     "play_to_device",
+    "match_llm_device_switch",
+    "match_model_lab_switch",
+    "ModelLabEntry",
+    "MODEL_LAB_ROSTER",
+    "MODEL_LAB_SPOKEN",
 ]
 
 # Maximum characters of the final spoken relay line (a voice-chat line
@@ -1048,6 +1053,159 @@ def match_llm_device_switch(text: str) -> Optional[str]:
     if _LLM_TO_CPU_RE.match(cleaned):
         return "cpu"
     return None
+
+
+# --- Model-lab hot-swap ("switch to heretic" / "load model two") --------------
+# 2026-06-19 (Ultron 0.1.1): a voice command to hot-swap the live LLM between a
+# small ROSTER of abliterated presets so they can be A/B'd in real time during a
+# session, without a restart. Distinct from the CPU<->GPU device switch above:
+# that moves WHERE the loaded model runs; THIS swaps WHICH model is loaded.
+#
+# The roster maps each lab model to (preset_name, spoken_name, alias_regex).
+# ``match_model_lab_switch`` returns the PRESET NAME (a key of config.LLM_PRESETS)
+# or None. Strict shape: a switch VERB + an alias (+ optional trailing "model"),
+# anchored start-to-end, so ordinary callouts / banter never trip it. A very
+# ASR-robust numbered fallback ("model one".."model five") is also accepted.
+#
+# Each alias group is ASR-robust: it tolerates the common mishears Whisper
+# produces for these model names (heretic ~ "heretical" / "her ethic";
+# josiefied ~ "josie fied" / "josephied"; huihui ~ "hway hway" / "we we" /
+# "hoy hoy"). Module-level compiled regex only; the public matcher is fail-open.
+
+
+class ModelLabEntry(NamedTuple):
+    """One model in the voice model-lab roster.
+
+    ``preset`` is the config.LLM_PRESETS key the swap loads. ``spoken`` is the
+    human name used in spoken acks ("Loading the heretic 4B."). ``alias`` is the
+    ASR-robust regex fragment (a non-capturing group) that matches the spoken
+    name and its common mishears, NOT including the numbered "model N" fallback
+    (that is handled separately so it can map by position).
+    """
+
+    preset: str
+    spoken: str
+    alias: str
+
+
+# Ordered roster: position N (1-based) is the "model one".."model five" fallback.
+MODEL_LAB_ROSTER: tuple[ModelLabEntry, ...] = (
+    # 1 -- the 3B baseline (gaming default).
+    ModelLabEntry(
+        preset="llama-3.2-3b-abliterated",
+        spoken="3B baseline",
+        alias=r"(?:the\s+)?(?:3\s*b|three\s*b|baseline|llama(?:\s*3(?:\.2)?)?)",
+    ),
+    # 2 -- heretic 4B (heretic ~ "heretical" / "her ethic" / "heritage").
+    ModelLabEntry(
+        preset="heretic-4b",
+        spoken="heretic 4B",
+        alias=(
+            r"(?:the\s+)?(?:heretic(?:al)?|her\s*ethic|heritage|heredic)"
+            r"(?:\s+(?:4\s*b|four\s*b))?"
+        ),
+    ),
+    # 3 -- josiefied 4B / "small josiefied".
+    ModelLabEntry(
+        preset="josiefied-qwen3-4b",
+        spoken="josiefied 4B",
+        alias=(
+            r"(?:the\s+)?(?:small\s+)?"
+            r"(?:josie\s*fied|josiefied|josi?phied|josephied|jossified|"
+            r"josie\s*feed)(?:\s+(?:4\s*b|four\s*b))?"
+            r"|(?:the\s+)?small\s+josiefied"
+        ),
+    ),
+    # 4 -- huihui Qwen2.5 7B (huihui ~ "hway hway" / "we we" / "hoy hoy").
+    ModelLabEntry(
+        preset="huihui-qwen25-7b",
+        spoken="7B",
+        alias=(
+            r"(?:the\s+)?(?:hui\s*hui|huihui|hway\s*hway|we\s*we|hoy\s*hoy|"
+            r"hooey\s*hooey|whey\s*whey)"
+            r"|(?:the\s+)?(?:7\s*b|seven\s*b)"
+            r"|qwen\s*(?:2\.?5|two\s*(?:point\s*)?five)"
+        ),
+    ),
+    # 5 -- josiefied 8B / "big josiefied" / "the 8B".
+    ModelLabEntry(
+        preset="josiefied-qwen3-8b",
+        spoken="8B",
+        alias=(
+            r"(?:the\s+)?(?:big\s+)?"
+            r"(?:josie\s*fied|josiefied|josi?phied|josephied|jossified|"
+            r"josie\s*feed)\s+(?:8\s*b|eight\s*b)"
+            r"|(?:the\s+)?big\s+(?:josie\s*fied|josiefied)"
+            r"|(?:the\s+)?(?:8\s*b|eight\s*b)"
+        ),
+    ),
+)
+
+# preset -> spoken name, for the handler's acks.
+MODEL_LAB_SPOKEN: dict[str, str] = {e.preset: e.spoken for e in MODEL_LAB_ROSTER}
+
+# The switch verb. A tight set so a bare alias inside a callout/banter never
+# trips the matcher -- the verb MUST lead.
+_LAB_SWITCH_VERB = (
+    r"(?:switch(?:\s+(?:to|over\s+to))?|change(?:\s+to)?|swap(?:\s+(?:to|in))?|"
+    r"load(?:\s+up)?|try|use|run|give\s+me|put\s+on|bring\s+up|go\s+(?:to|with))")
+
+# Numbered fallback ("model one".."model five"), index by spelled/digit number.
+_LAB_NUMBER_WORDS: dict[str, int] = {
+    "one": 1, "1": 1, "two": 2, "2": 2, "three": 3, "3": 3,
+    "four": 4, "4": 4, "five": 5, "5": 5,
+}
+_LAB_NUMBERED_RE = re.compile(
+    rf"^(?:please\s+)?{_LAB_SWITCH_VERB}\s+"
+    r"(?:the\s+)?model\s+(?P<num>one|two|three|four|five|[1-5])\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
+# Per-entry alias matchers: "<verb> [to] <alias> [model]". The trailing "model"
+# is optional ("switch to heretic" / "switch to the heretic model").
+_LAB_ALIAS_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (
+        entry.preset,
+        re.compile(
+            rf"^(?:please\s+)?{_LAB_SWITCH_VERB}\s+"
+            rf"(?:{entry.alias})(?:\s+model)?\s*[.!?]*$",
+            re.IGNORECASE,
+        ),
+    )
+    for entry in MODEL_LAB_ROSTER
+)
+
+
+def match_model_lab_switch(text: str) -> Optional[str]:
+    """Match the model-lab hot-swap voice command.
+
+    Returns the PRESET NAME (a key of ``config.LLM_PRESETS``) to swap to, or
+    ``None`` when the utterance is not a model-lab switch. Strict shape (a switch
+    verb + a model alias, or the numbered "model one".."model five" fallback);
+    ordinary callouts / banter fall through. Fail-open: any error -> ``None``.
+    """
+    try:
+        if not text:
+            return None
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        # Numbered fallback first ("model three") -- the most ASR-robust form.
+        m = _LAB_NUMBERED_RE.match(cleaned)
+        if m is not None:
+            idx = _LAB_NUMBER_WORDS.get(m.group("num").lower())
+            if idx is not None and 1 <= idx <= len(MODEL_LAB_ROSTER):
+                return MODEL_LAB_ROSTER[idx - 1].preset
+            return None
+        # Named aliases. Roster order is most-specific-friendly: the 8B alias
+        # requires an explicit "8b"/"eight b", so "big josiefied 8b" cannot be
+        # mis-claimed by the 4B entry (which only matches a bare/4b josiefied).
+        for preset, pattern in _LAB_ALIAS_RES:
+            if pattern.match(cleaned):
+                return preset
+        return None
+    except Exception:                                                # noqa: BLE001
+        return None
 
 
 # Narration / private-thought / external-chat framing that is relay-SHAPED but
