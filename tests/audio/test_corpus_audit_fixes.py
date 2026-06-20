@@ -729,6 +729,57 @@ class TestFlavorOffSets:
         assert line.lower().startswith("thank you")
 
 
+class TestNiceTryParity:
+    """2026-06-19 flavor parity: an agent-directed "nice try" must NAME the agent
+    in BOTH flavor states. With tails OFF it was "Nice try, Sage."; with tails ON
+    the consolation render (registry / _as_consolation_or_praise) dropped the name
+    ("Nice try. <tail>") -- the one snap that only half-worked. _name_social_snap
+    now prepends the addressee for the named form while leaving team-form alone."""
+
+    AGENTS = ["Sage", "Iso", "Clove", "Reyna"]
+
+    @_pytest.mark.parametrize("agent", AGENTS)
+    def test_agent_nice_try_names_in_both_states(self, agent) -> None:
+        cmd = f"{agent} nice try"
+        prev = _RS.flavor_tails_enabled()
+        try:
+            _RS.set_flavor_tails_enabled(True)
+            on = _line(cmd)
+            _RS.set_flavor_tails_enabled(False)
+            off = _line(cmd)
+        finally:
+            _RS.set_flavor_tails_enabled(prev)
+        assert agent.lower() in on.lower(), f"tails ON dropped the agent: {on!r}"
+        assert agent.lower() in off.lower(), f"tails OFF dropped the agent: {off!r}"
+        # no double-naming ("Sage, sage, ...") and the agent leads with tails on
+        assert on.lower().count(agent.lower()) == 1, f"double-named: {on!r}"
+
+    @_pytest.mark.parametrize("text", [
+        "say nice try to the team", "tell my team nice try",
+    ])
+    def test_team_nice_try_unnamed_both_states(self, text) -> None:
+        prev = _RS.flavor_tails_enabled()
+        try:
+            _RS.set_flavor_tails_enabled(True)
+            on = _line(text)
+            _RS.set_flavor_tails_enabled(False)
+            off = _line(text)
+        finally:
+            _RS.set_flavor_tails_enabled(prev)
+        # team-form keeps the bare consolation -- no spurious vocative either way
+        assert on.lower().startswith("nice try"), on
+        assert off == "Nice try.", off
+
+    def test_clutch_stays_unnamed(self) -> None:
+        # the helper only fires for a named addressee -> team clutch is untouched
+        prev = _RS.flavor_tails_enabled()
+        try:
+            _RS.set_flavor_tails_enabled(True)
+            assert "sage" not in _line("tell my team I got this").lower()
+        finally:
+            _RS.set_flavor_tails_enabled(prev)
+
+
 class TestSayHelloDefaultAndStop:
     """2026-06-19: bare "say hello" defaults to the TEAM (was falling to the
     semantic router -> identity -> LLM); "<agent> told you to stop" matches
