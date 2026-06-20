@@ -1340,6 +1340,70 @@ def match_flavor_toggle(text: str) -> Optional[bool]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# THINKING MODE (2026-06-19): a runtime toggle for whether the relay path may
+# AUTHOR via the LLM. When OFF (the DEFAULT), the orchestrator passes
+# rephrase=False to build_relay_line so every "compose" command -- the identity
+# probes (soundboard / voice-changer / streamer), the social reactions (flaming /
+# cringe / shut-up / arguing), flame-enemy/agent, backhanded praise, and
+# think-and-respond -- snaps from its DETERMINISTIC pool instead of the 3B:
+# instant and predictable, even with flavor tails ON. "Ultron, thinking mode on"
+# routes them back to the LLM. Independent of the flavor-tails toggle (tails =
+# persona suffix on a snap; thinking = LLM on/off). Process-global; resets to the
+# env default (KENNING_THINKING_MODE, default off) on restart.
+_thinking_mode_enabled: bool = _os_flavor.getenv(
+    "KENNING_THINKING_MODE", "0").strip().lower() not in (
+    "0", "false", "no", "off", "")
+
+
+def set_thinking_mode_enabled(enabled: bool) -> None:
+    """Enable/disable THINKING MODE (LLM authoring on the relay path) at runtime."""
+    global _thinking_mode_enabled
+    _thinking_mode_enabled = bool(enabled)
+
+
+def thinking_mode_enabled() -> bool:
+    return _thinking_mode_enabled
+
+
+# "thinking"/"think mode"/"reasoning"/"llm" -- in-vocab, so the mishear surface is
+# small (sinking/syncing for thinking). Bare "think" is excluded (collides with
+# ordinary speech); "think MODE" is allowed.
+_THINKING_WORD = r"(?:thinking|thinkin|sinking|syncing|reasoning)"
+_THINKING_NOUN = rf"(?:{_THINKING_WORD}(?:\s+mode)?|think\s+mode|llm\s+mode|llm)"
+_THINKING_OFF_RE = re.compile(
+    r"^(?:please\s+)?(?:ultron[\s,]+)?(?:"
+    rf"(?:disable|turn\s+off|stop|cut|kill|drop|no|no\s+more)\s+(?:the\s+|your\s+)?{_THINKING_NOUN}"
+    rf"|turn\s+(?:the\s+|your\s+)?{_THINKING_NOUN}\s+off"
+    rf"|{_THINKING_NOUN}\s+off"
+    r")\s*[.!?]*$",
+    re.IGNORECASE,
+)
+_THINKING_ON_RE = re.compile(
+    r"^(?:please\s+)?(?:ultron[\s,]+)?(?:"
+    rf"(?:enable|turn\s+on|re-?enable|allow|start)\s+(?:the\s+|your\s+)?{_THINKING_NOUN}"
+    rf"|turn\s+(?:the\s+|your\s+)?{_THINKING_NOUN}\s+(?:back\s+)?on"
+    rf"|{_THINKING_NOUN}\s+(?:back\s+on|on|back)"
+    r")\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def match_thinking_toggle(text: str) -> Optional[bool]:
+    """Match the THINKING-MODE toggle voice command. Returns True for "thinking
+    mode on" forms, False for "thinking mode off" forms, None otherwise. Strict
+    phrasings only -- ordinary speech falls through. Callers pass the RAW
+    transcript (pre-normalization). OFF is checked before ON."""
+    if not text:
+        return None
+    cleaned = text.strip()
+    if _THINKING_OFF_RE.match(cleaned):
+        return False
+    if _THINKING_ON_RE.match(cleaned):
+        return True
+    return None
+
+
 # _HELLO_RE / _HELLO_TEAM_WORDS -> kenning.audio.voice_lines (Part B; imported above).
 
 
