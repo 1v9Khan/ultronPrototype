@@ -336,3 +336,64 @@ def test_dispatch_wires_both_verbosity_axes():
     ):
         assert co in src and cv in src and ft in src, "missing a verbosity dispatch call"
         assert src.index(co) < src.index(cv) < src.index(ft), "axis dispatch order wrong"
+
+
+# --- route-ALL: the deterministic curated/snap leaks now flow to the LLM (2026-06-21) ---
+
+
+def _capture_route(text, *, route):
+    """Run build_relay_line through a captured generate_fn; return ('LLM'|'DET', line)."""
+    rs.set_u1_llm_route_enabled(route)
+    cmd = rs.match_relay_command(text)
+    assert cmd is not None, text
+    called = []
+
+    def gen(prompt):
+        called.append(prompt)
+        return iter(["Stub reply."])
+
+    line = rs.build_relay_line(cmd, generate_fn=gen)
+    return ("LLM" if called else "DET"), line
+
+
+@pytest.mark.parametrize("text", [
+    "tell my team I got this",
+    "tell my team nice try",
+    "tell my team lock in",
+])
+def test_route_all_sends_morale_snaps_to_llm(text):
+    # Route ON: clutch / consolation / morale-phrase / snap-registry are gated off
+    # so the line is authored by the LLM (the user's "still using snap callouts").
+    tag, _ = _capture_route(text, route=True)
+    assert tag == "LLM", text
+
+
+@pytest.mark.parametrize("text", [
+    "tell my team I got this",
+    "tell my team nice try",
+    "tell my team lock in",
+])
+def test_route_off_keeps_morale_snaps_deterministic(text):
+    # Route OFF: byte-identical legacy -- the curated snap resolves with no LLM call.
+    tag, line = _capture_route(text, route=False)
+    assert tag == "DET", text
+    assert line and line.strip()
+
+
+def test_route_all_compose_does_not_crash_on_u1_compound():
+    # Regression: a compose / reported-question command used to UnboundLocalError on
+    # `_u1_compound` in the LLM path and fall back to a canned line (the live
+    # "favorite color -> soundboard" bug). It must now reach the LLM cleanly.
+    rs.set_u1_llm_route_enabled(True)
+    cmd = rs.match_relay_command("Sage is wondering if you have a favorite color")
+    assert cmd is not None and cmd.compose
+    called = []
+
+    def gen(prompt):
+        called.append(prompt)
+        return iter(["Red. The colour of a world remade."])
+
+    line = rs.build_relay_line(cmd, generate_fn=gen)
+    assert called, "reported question must reach the LLM, not a canned fallback"
+    assert "soundboard" not in line.lower()
+    assert line and line.strip()

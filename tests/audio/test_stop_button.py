@@ -285,3 +285,27 @@ def test_construction_wires_on_flag() -> None:
     src = inspect.getsource(Orchestrator.__init__)
     assert "on_flag=self._stop_button_flag" in src
     assert "flag_height=_sb.flag_height" in src
+
+
+# --- always-listening robustness (2026-06-21): command buried in filler + statement guard ---
+
+
+@pytest.mark.parametrize("text", [
+    # always-listening captures the command amid surrounding speech -- the clause
+    # scan must still summon it (the live bug: it fell through to PRIVATE_REPLY).
+    "Oh, oh, oh, Ultron, Ultron started talking. Show me the stop button.",
+    "wait hold on, show me the stop button",
+    "okay umm, pull up the stop button please",
+])
+def test_open_within_noisy_always_listening_capture(text: str) -> None:
+    assert match_stop_button_command(text) == "open"
+
+
+@pytest.mark.parametrize("text", [
+    "the stop button interface is not working",
+    "the stop button isn't responding",
+    "my kill switch is broken",
+])
+def test_button_complaint_does_not_summon(text: str) -> None:
+    # A STATEMENT about the button (a complaint / narration) must NOT summon it.
+    assert match_stop_button_command(text) is None

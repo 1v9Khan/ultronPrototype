@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:">
+<meta name="referrer" content="no-referrer">
+<title>Ultron Overlay</title>
+<style>
+  /* Animation is CSS transform/opacity ONLY (style-src allows 'unsafe-inline'
+     style; script-src is NOT granted, so no inline/script-driven layout). */
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+    font-family: "Segoe UI", system-ui, sans-serif; color: #e8e8ff;
+    -webkit-font-smoothing: antialiased;
+  }
+  #stage { position: fixed; inset: 0; pointer-events: none; }
+
+  /* --- spinning wheel ---------------------------------------------------- */
+  #wheel-wrap {
+    position: absolute; top: 50%; left: 50%;
+    width: 320px; height: 320px; margin: -160px 0 0 -160px;
+    opacity: 0; transition: opacity 400ms ease;
+  }
+  #wheel-wrap.show { opacity: 1; }
+  #wheel {
+    width: 100%; height: 100%; border-radius: 50%;
+    border: 6px solid rgba(120,140,255,0.55);
+    background:
+      conic-gradient(from 0deg,
+        #2b2f55 0deg 45deg, #3a3f73 45deg 90deg,
+        #2b2f55 90deg 135deg, #3a3f73 135deg 180deg,
+        #2b2f55 180deg 225deg, #3a3f73 225deg 270deg,
+        #2b2f55 270deg 315deg, #3a3f73 315deg 360deg);
+    box-shadow: 0 0 40px rgba(80,100,255,0.45);
+    transform: rotate(0deg);
+    /* per-spin duration overridden via the --spin-ms custom property (set with
+       element.style.setProperty in script — a property write, never markup). */
+    transition: transform var(--spin-ms, 4000ms) cubic-bezier(0.12, 0.7, 0.12, 1);
+  }
+  #wheel-pointer {
+    position: absolute; top: -14px; left: 50%; margin-left: -12px;
+    width: 0; height: 0;
+    border-left: 12px solid transparent; border-right: 12px solid transparent;
+    border-top: 22px solid #ffd166;
+  }
+  #wheel-label {
+    position: absolute; top: 340px; left: 50%; transform: translateX(-50%);
+    white-space: nowrap; font-size: 28px; font-weight: 700;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+  }
+
+  /* --- alert toast ------------------------------------------------------- */
+  #alert {
+    position: absolute; top: 48px; left: 50%; transform: translate(-50%, -24px);
+    min-width: 320px; max-width: 60%; padding: 18px 28px;
+    background: rgba(20,22,48,0.92); border: 1px solid rgba(120,140,255,0.6);
+    border-radius: 14px; box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+    opacity: 0; transition: opacity 350ms ease, transform 350ms ease;
+  }
+  #alert.show { opacity: 1; transform: translate(-50%, 0); }
+  #alert-title { font-size: 24px; font-weight: 800; color: #aab4ff; }
+  #alert-body  { font-size: 18px; margin-top: 6px; color: #e8e8ff; }
+
+  /* --- points ticker ----------------------------------------------------- */
+  #ticker {
+    position: absolute; bottom: 28px; left: 50%; transform: translateX(-50%);
+    padding: 10px 22px; background: rgba(20,22,48,0.88);
+    border: 1px solid rgba(120,140,255,0.5); border-radius: 999px;
+    font-size: 20px; font-weight: 700; letter-spacing: 0.3px;
+    opacity: 0; transition: opacity 300ms ease;
+  }
+  #ticker.show { opacity: 1; }
+  #ticker-label { color: #aab4ff; }
+  #ticker-points { color: #8effc1; margin-left: 10px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="wheel-wrap">
+    <div id="wheel-pointer"></div>
+    <div id="wheel"></div>
+    <div id="wheel-label"></div>
+  </div>
+
+  <div id="alert">
+    <div id="alert-title"></div>
+    <div id="alert-body"></div>
+  </div>
+
+  <div id="ticker">
+    <span id="ticker-label"></span>
+    <span id="ticker-points"></span>
+  </div>
+</div>
+
+<!--
+  DUMB RENDERER. This page never decides an outcome: the server's crypto RNG
+  picks the wheel winner FIRST and sends the target angle; we only animate to it.
+  Every dynamic value is written with textContent so a hostile display name is
+  rendered as inert literal text rather than parsed as markup. There are NO
+  inline DOM event-handler attributes; the EventSource handlers are attached via
+  addEventListener below. The connect-src 'self' CSP directive is what permits
+  the EventSource subscription. The token is read from this document's own URL
+  (window.location.search).
+-->
+<script>
+(function () {
+  "use strict";
+
+  // --- element handles ----------------------------------------------------
+  var wheelWrap   = document.getElementById("wheel-wrap");
+  var wheelEl     = document.getElementById("wheel");
+  var wheelLabel  = document.getElementById("wheel-label");
+  var alertEl     = document.getElementById("alert");
+  var alertTitle  = document.getElementById("alert-title");
+  var alertBody   = document.getElementById("alert-body");
+  var tickerEl    = document.getElementById("ticker");
+  var tickerLabel = document.getElementById("ticker-label");
+  var tickerPts   = document.getElementById("ticker-points");
+
+  var alertTimer  = null;
+  var wheelTurns  = 0; // accumulate full turns so each spin rotates forward
+
+  // setText: the ONLY way dynamic strings reach the DOM. textContent escapes
+  // everything; markup-setting sinks are deliberately never used.
+  function setText(el, value) {
+    el.textContent = (value === undefined || value === null) ? "" : String(value);
+  }
+
+  function num(value, fallback) {
+    var n = Number(value);
+    return isFinite(n) ? n : fallback;
+  }
+
+  // --- renderers (pure: data in -> DOM text/transform out) -----------------
+  function renderWheel(ev) {
+    var angle = num(ev.angle, 0);
+    var dur   = num(ev.duration_ms, 4000);
+    setText(wheelLabel, ""); // clear until the spin lands
+    wheelWrap.classList.add("show");
+    // Always rotate FORWARD past several whole turns, then settle on `angle`.
+    wheelTurns += 5;
+    var target = wheelTurns * 360 + angle;
+    wheelEl.style.setProperty("--spin-ms", Math.max(0, dur) + "ms");
+    // Force a reflow read so the transition re-triggers reliably.
+    void wheelEl.offsetWidth;
+    wheelEl.style.transform = "rotate(" + target + "deg)";
+    window.setTimeout(function () {
+      setText(wheelLabel, ev.label);
+    }, Math.max(0, dur));
+  }
+
+  function renderAlert(ev) {
+    setText(alertTitle, ev.title);
+    setText(alertBody, ev.body);
+    alertEl.classList.add("show");
+    if (alertTimer) { window.clearTimeout(alertTimer); }
+    var dur = num(ev.duration_ms, 6000);
+    alertTimer = window.setTimeout(function () {
+      alertEl.classList.remove("show");
+    }, Math.max(0, dur));
+  }
+
+  function renderTicker(ev) {
+    setText(tickerLabel, ev.label);
+    setText(tickerPts, ev.points);
+    tickerEl.classList.add("show");
+  }
+
+  function dispatch(ev) {
+    if (!ev || typeof ev !== "object") { return; }
+    switch (ev.type) {
+      case "wheel":  renderWheel(ev);  break;
+      case "alert":  renderAlert(ev);  break;
+      case "ticker": renderTicker(ev); break;
+      default: /* unknown type -> ignore (the server already rejects these) */ break;
+    }
+  }
+
+  // --- SSE wiring ----------------------------------------------------------
+  function connect() {
+    var token = new URLSearchParams(window.location.search).get("token") || "";
+    var src = new EventSource("/events?token=" + encodeURIComponent(token));
+
+    function onMessage(e) {
+      var parsed;
+      try { parsed = JSON.parse(e.data); }
+      catch (err) { return; } // malformed frame -> drop, never throw
+      dispatch(parsed);
+    }
+
+    // Named SSE event ("event: overlay") AND the default message event.
+    src.addEventListener("overlay", onMessage);
+    src.addEventListener("message", onMessage);
+    src.addEventListener("error", function () {
+      // EventSource auto-reconnects on a transient drop; nothing to do.
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", connect);
+  } else {
+    connect();
+  }
+})();
+</script>
+</body>
+</html>

@@ -3995,6 +3995,127 @@ class PushToTalkConfig(_Strict):
     max_hold_seconds: float = Field(default=8.0, ge=0.5, le=30.0)
 
 
+# ---------------------------------------------------------------------------
+# Twitch chat-interaction + content-creation capability (2026-06-21).
+# ALL default-OFF. With ``twitch.enabled=False`` (the default) NOTHING about
+# this subsystem touches the runtime: no sidecar spawns, no port binds, no DB
+# opens, no hotkey hooks, and no ``kenning.twitch.*`` module is imported into
+# the import-pinned voice/relay process -> main runtime is byte-identical
+# (anticheat BR-P1; regression yardstick = the frozen 24-fail control set).
+# Design: docs/twitch_integration/03_spec/{REQUIREMENTS,DESIGN,constitution}.md
+# + 02_board/MASTER.md. Every nested switch is independently default-OFF/safe.
+# ---------------------------------------------------------------------------
+
+
+class TwitchAuthConfig(_Strict):
+    """OAuth identity. Secrets live OUTSIDE the repo in the token store
+    (``~/.kenning/twitch.json``, gitignored, pre-push secret-denied). Only the
+    public ``client_id`` and account logins live in config."""
+    client_id: Optional[str] = None                  # public app client id (NOT a secret)
+    token_path: str = "~/.kenning/twitch.json"       # OS-secure-wrapped when available
+    broadcaster_login: Optional[str] = None
+    bot_login: Optional[str] = None                  # dedicated bot account (Chat-Bot-Badge transparency)
+    validate_interval_seconds: int = 3600            # startup + hourly /oauth2/validate
+    device_code_flow: bool = True                    # no client_secret on disk
+
+
+class TwitchSafetyConfig(_Strict):
+    """The layered L0-L7 chat-safety stack. The guard model is REQUIRED when
+    chat-reply mode is ON; if it cannot load/canary, chat-reply auto-disables
+    (fail-CLOSED on the FEATURE, never on the relay)."""
+    guard_model: str = "llama-guard-3-1b"            # selectable: shieldgemma-2b / granite-guardian-3b / mrguard-3b
+    guard_endpoint: str = "http://127.0.0.1:8774"    # loopback guard sidecar
+    guard_required: bool = True                      # chat-reply refuses to enable without a healthy guard
+    prompt_guard_model: str = "meta-llama/Llama-Prompt-Guard-2-22M"
+    prompt_guard_endpoint: str = "http://127.0.0.1:8774"
+    blocklist_path: str = "src/kenning/twitch/safety/data/blocklist.yaml"
+    # danger_score -> action bands (HEURISTIC; calibrate live on the streamer's chat, BR-P3).
+    tau_review: float = 0.25
+    tau_deflect: float = 0.55
+    tau_block: float = 0.80
+    phoneme_gate_enabled: bool = True                # L6 phoneme-domain (needs sidecar deps; fail-CLOSED if absent)
+    asr_backstop_enabled: bool = True                # L7 post-TTS Whisper (needs live stack; fail-CLOSED if absent)
+    fail_closed: bool = True                         # supersedes fail-quiet; never relax
+    trajectory_window: int = 5                       # per-channel crescendo rolling window (K)
+
+
+class TwitchModerationConfig(_Strict):
+    """Voice-commanded moderation. The abliterated 8B is NEVER in the action
+    decision path; roster-grounded name resolution + read-back confirm."""
+    voice_commands_enabled: bool = True
+    require_readback_confirm: bool = True            # spoken read-back before ban+delete (two-phase)
+    mass_action_limit_per_60s: int = 5              # circuit-breaker
+    protect_roles: bool = True                       # never ban self / mod / broadcaster
+    actions_log_path: str = "logs/twitch_actions.jsonl"
+
+
+class TwitchEconomyConfig(_Strict):
+    """Local Ultron currency + games. Append-only event-sourced SQLite-WAL
+    ledger; net-negative-EV gambling; the wheel 'lose ALL' segment is AT-4."""
+    enabled: bool = False
+    db_path: str = "data/twitch/economy.db"
+    currency_name: str = "cores"
+    earn_per_minute: int = 10
+    gamble_rtp: float = 0.90                          # house edge => sink (anti-hyperinflation)
+    per_stream_loss_cap: int = 5000
+    transfers_enabled: bool = False                  # viewer->viewer transfers OFF by default
+    lose_all_segment_enabled: bool = False           # AT-4: wheel 'lose ALL points' big-consequence
+    refund_safety_cancels: bool = False              # safety-CANCELED redeems NOT refunded (anti-probe)
+
+
+class TwitchOverlayConfig(_Strict):
+    """Local HTTP+WebSocket overlay server for an OBS Browser Source. Dumb
+    renderer: textContent-only, strict CSP, 127.0.0.1 + per-session token."""
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8775
+    obs_websocket_enabled: bool = False              # optional source show/hide (obsws-python); NEVER edits scenes
+
+
+class TwitchChatConfig(_Strict):
+    """The chat-reply 'risky core'. ``reply_enabled`` is the live Stream-Deck
+    toggle; OFF = Ultron buffers chat but speaks nothing (relay stays free)."""
+    reply_enabled: bool = False                      # live chat-mode toggle (Stream Deck / voice)
+    reply_model: str = "default"                     # 'default' = the abliterated 8B; or a non-abliterated head id
+    batch_max_messages: int = 40
+    reply_max_chars: int = 240
+    addressing_endpoint: str = "http://127.0.0.1:8772"   # reuse the EmbeddingGemma router sidecar
+    allow_during_ranked: bool = False                # strongest mitigation: OFF (cannot read game state)
+    per_user_cooldown_seconds: int = 30
+    datamarking: bool = True                         # interleave a marker in untrusted DATA (spotlighting++)
+
+
+class TwitchSpeakToTeamConfig(_Strict):
+    """The chat->team-mic redeem. AT-4, hardest-gated: default OFF, NO hotkey
+    binding, ranked-disabled, allowlist checked in the TRUSTED relay process."""
+    enabled: bool = False
+    mode: str = "tier_a_allowlist"                   # tier_a_allowlist (enumerated low-tactical) | tier_b_manual
+    disabled_during_ranked: bool = True
+
+
+class TwitchHelperConfig(_Strict):
+    """Optional tiny helper model (Qwen2.5-0.5B/1.5B, CPU) for game/command
+    routing. Constrained to a closed action enum; moderation is unreachable."""
+    enabled: bool = False
+    model: str = "qwen2.5-1.5b-instruct"
+    endpoint: str = "http://127.0.0.1:8776"
+
+
+class TwitchConfig(_Strict):
+    """Master Twitch capability switch + sub-sections. ALL default-OFF."""
+    enabled: bool = False                            # master switch; env KENNING_TWITCH_ENABLED
+    read_sidecar_endpoint: str = "http://127.0.0.1:8773"   # EventSub read sidecar (read-scope token)
+    write_sidecar_endpoint: str = "http://127.0.0.1:8777"  # Helix write sidecar (write-scope token, least-privilege)
+    auth: TwitchAuthConfig = Field(default_factory=TwitchAuthConfig)
+    safety: TwitchSafetyConfig = Field(default_factory=TwitchSafetyConfig)
+    chat: TwitchChatConfig = Field(default_factory=TwitchChatConfig)
+    moderation: TwitchModerationConfig = Field(default_factory=TwitchModerationConfig)
+    economy: TwitchEconomyConfig = Field(default_factory=TwitchEconomyConfig)
+    overlay: TwitchOverlayConfig = Field(default_factory=TwitchOverlayConfig)
+    speak_to_team: TwitchSpeakToTeamConfig = Field(default_factory=TwitchSpeakToTeamConfig)
+    helper: TwitchHelperConfig = Field(default_factory=TwitchHelperConfig)
+
+
 class KenningConfig(_Strict):
     """Top-level configuration. Matches the structure of ``config.yaml``."""
     version: str = "1.0"
@@ -4062,6 +4183,9 @@ class KenningConfig(_Strict):
     # 2026-05-12 Phase 2 -- runtime tool-call validator (paired with the
     # abliterated Josiefied Qwen3-8B default LLM).
     safety: "SafetyConfig" = Field(default_factory=lambda: SafetyConfig())
+    # 2026-06-21 -- Twitch chat-interaction + content-creation capability.
+    # ALL default-OFF -> main runtime byte-identical when twitch.enabled=False.
+    twitch: TwitchConfig = Field(default_factory=TwitchConfig)
     # 2026-05-22 -- engine-agnostic intent recognizer (Gemma-300M
     # embeddings via moonshine_voice). Works with any STT engine.
     intent: "IntentConfig" = Field(default_factory=lambda: IntentConfig())
@@ -4327,6 +4451,8 @@ _ENV_OVERRIDE_NOTES: dict[str, str] = {
     "KENNING_CODING_MCP_ALLOW_ANY_ROOT": (
         "coding.mcp sandbox escape (test-only; should NEVER be set in production)"
     ),
+    "KENNING_TWITCH_ENABLED": "twitch.enabled (master switch; default OFF)",
+    "KENNING_TWITCH_CHAT_REPLY": "twitch.chat.reply_enabled (live chat-mode toggle; default OFF)",
 }
 
 

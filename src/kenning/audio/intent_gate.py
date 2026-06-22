@@ -20,7 +20,7 @@ proven components (no new ML in-process):
   * ASR-confidence PRE-REJECT (``no_speech_prob`` / ``avg_logprob`` from faster-whisper) -> IGNORE --
     a free, high-value signal (Apple DDSD: +6.9% rel. EER) that also catches Whisper hallucinations
     on non-speech (which are ~40-52% on short/silent audio).
-The 8B is consulted ONLY in the undecided band (PRIVATE vs IGNORE), with ``enable_thinking=False`` and a
+The LLM is consulted ONLY in the undecided band (PRIVATE vs IGNORE), with ``enable_thinking=False`` and a
 single-token, fail-CLOSED parse (grammar+thinking conflict, llama.cpp #20345).
 
 DEFAULT OFF (opt-in via ``addressing.always_listening``). The wake word stays the competitive default;
@@ -34,6 +34,7 @@ Anticheat-safe: stdlib + the existing loopback embedder sidecar; nothing on a de
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Sequence
@@ -52,7 +53,7 @@ class ScenarioVerdict:
     confidence: float
     reason: str
     # True when the cheap layers were undecided (PRIVATE vs IGNORE) and the caller MAY escalate to the
-    # 8B (resolve_with_llm). Until escalation, ``scenario`` holds the fail-closed default (IGNORE).
+    # LLM (resolve_with_llm). Until escalation, ``scenario`` holds the fail-closed default (IGNORE).
     needs_llm: bool = False
 
 
@@ -69,8 +70,23 @@ _NO_SPEECH_REJECT = _envf("KENNING_GATE_NO_SPEECH_REJECT", 0.60)
 # faster-whisper avg_logprob below this -> very low-confidence transcript -> IGNORE (guard: gunfire
 # bleed lowers avg_logprob even on clear speech, so keep this permissive).
 _AVG_LOGPROB_REJECT = _envf("KENNING_GATE_AVG_LOGPROB_REJECT", -1.6)
-# addressing-rule confidence needed to commit a NO (-> IGNORE) or a YES (-> PRIVATE) without the 8B.
+# addressing-rule confidence needed to commit a NO (-> IGNORE) or a YES (-> PRIVATE) without the LLM.
 _RULE_TAU = _envf("KENNING_GATE_RULE_TAU", 0.80)
+
+# Pre-LLM reaction filter (2026-06-21): a bare agreement / reaction opener with no
+# question and no name for Ultron is friend-chatter -- drop it WITHOUT spending the
+# LLM (the live leak was "Yeah, I can." / "It's okay." / "I pranked you..." reaching
+# the LLM band and being mislabelled PRIVATE). Conservative -- a real "Ultron, ..."
+# carries the name token below, so this never suppresses a genuinely-addressed line.
+_REACTION_OPENERS: frozenset[str] = frozenset({
+    "yeah", "yep", "yup", "nah", "naw", "sure", "okay", "ok", "kay", "nice",
+    "lol", "lmao", "haha", "hahaha", "lmfao", "damn", "dang", "bruh", "oh", "ah",
+    "huh", "alright", "aight", "right", "true", "fair", "bet", "its", "it's",
+    "thats", "that's", "mhm", "mmhm", "yikes", "oof", "sheesh", "welp", "mm",
+})
+# A direct name/address token for Ultron -- its presence vetoes the reaction filter.
+_NAME_TOKEN_RE = re.compile(
+    r"\b(?:ultron|kenning|machine|robot|hey\s+ai|the\s+ai)\b", re.IGNORECASE)
 
 
 def _wake_present(text: str) -> bool:
@@ -145,13 +161,15 @@ def _relay_signal(text: str, names: Optional[Sequence[str]]) -> Optional[float]:
             return 0.88
     except Exception:  # noqa: BLE001
         pass
-    try:
-        from kenning.audio._relay_intent import relay_intent_ok
-        verdict = relay_intent_ok(norm)  # True / False / None (sidecar down)
-        if verdict is True:
-            return 0.75
-    except Exception:  # noqa: BLE001
-        pass
+    # NB (2026-06-21): the semantic relay-intent gate (_relay_intent.relay_intent_ok)
+    # is deliberately NOT used here as a positive RELAY signal. It is a VETO tool
+    # (tuned for recall in the normalizer -- biased to "plausibly a relay"), so as a
+    # positive classifier it FALSE-POSITIVES conversation ("nice shot dude", "hey mom
+    # how are you", "that's not even that long") into RELAY whenever the sidecar is
+    # reachable -- and a false RELAY is broadcast to the team (the worst case in this
+    # cost-asymmetric gate). RELAY_TO_TEAM therefore requires a STRONG, PRECISE signal
+    # (strict matcher / complete tactical callout / agent+fact-token, above); a bare
+    # directive-only callout the slot grammar can't structure is left to the wake word.
     return None
 
 
@@ -212,25 +230,46 @@ def classify_scenario(
             return ScenarioVerdict(Scenario.PRIVATE_REPLY,
                                    max(hit.confidence, 0.85 if wake else hit.confidence),
                                    "addressed to Ultron (private)")
-        # 6) Undecided band (UNCERTAIN, or sub-tau) -> fail-closed IGNORE, flag for 8B escalation.
+        # 6) Undecided band (UNCERTAIN, or sub-tau) -> fail-closed IGNORE, flag for LLM escalation.
         return ScenarioVerdict(Scenario.IGNORE, 0.50, f"undecided: {hit.reason}", needs_llm=True)
 
-    # No addressing hit at all: wake word alone still routes to PRIVATE; else fail-closed IGNORE.
+    # No addressing hit at all: wake word alone still routes to PRIVATE.
     if wake:
         return ScenarioVerdict(Scenario.PRIVATE_REPLY, 0.85, "leading wake word")
+    # Pre-LLM reaction filter: a bare reaction/agreement opener with no question and
+    # no name for Ultron is friend-chatter -- drop it cheaply rather than letting the
+    # LLM band mislabel it PRIVATE (the live "Yeah, I can." / "It's okay." leak).
+    _low = (raw or "").strip().lower()
+    _first = re.split(r"[\s,.!?]+", _low, maxsplit=1)[0] if _low else ""
+    if (_first in _REACTION_OPENERS and "?" not in _low
+            and not _NAME_TOKEN_RE.search(_low)):
+        return ScenarioVerdict(Scenario.IGNORE, 0.70, "reaction opener (no address)")
+    # Else fail-closed IGNORE, flagged for the LLM escalation.
     return ScenarioVerdict(Scenario.IGNORE, 0.55, "no addressing signal (fail-closed)", needs_llm=True)
 
 
-# Single-token classification prompt for the 8B escalation in the undecided band (PRIVATE vs IGNORE).
+# Single-token classification prompt for the LLM escalation in the undecided band (PRIVATE vs IGNORE).
 _LLM_GATE_SYSTEM = (
-    "You decide if a transcribed line is the player TALKING TO YOU (their AI teammate, wanting a reply) "
-    "or NOT (talking to other people, their stream, or themselves). Answer with ONE word only: "
-    "PRIVATE if it is addressed to you and wants a response; IGNORE otherwise. No other output."
+    "You are Ultron, an AI teammate in a live Valorant match. The player is on voice with friends and "
+    "their stream, so MOST of what you hear is NOT for you. Decide if a transcribed line is the player "
+    "speaking DIRECTLY TO YOU and wanting a reply. Answer PRIVATE only when the line clearly names you "
+    "(Ultron / the machine / hey AI), asks YOU a direct question, or gives YOU a direct command. Answer "
+    "IGNORE for everything else: agreements and reactions ('yeah I can', \"it's okay\", 'sure', 'nice'); "
+    "talking to teammates, the stream, or themselves; jokes, banter, narration; anything ambiguous. When "
+    "unsure, answer IGNORE. Output ONE word only: PRIVATE or IGNORE.\n"
+    "Examples:\n"
+    "Ultron, what's their economy? -> PRIVATE\n"
+    "hey can you tell me the round number -> PRIVATE\n"
+    "machine, mute yourself -> PRIVATE\n"
+    "Yeah, I can. -> IGNORE\n"
+    "It's okay, it's okay. -> IGNORE\n"
+    "I pranked you into thinking we could play. -> IGNORE\n"
+    "nice shot dude -> IGNORE"
 )
 
 
 def resolve_with_llm(verdict: ScenarioVerdict, text: str, llm) -> ScenarioVerdict:
-    """Escalate an undecided verdict to the 8B for a single-token {PRIVATE, IGNORE} decision.
+    """Escalate an undecided verdict to the LLM for a single-token {PRIVATE, IGNORE} decision.
 
     FAIL-CLOSED: any non-PRIVATE token, parse failure, or error -> keep IGNORE. enable_thinking=False
     (grammar/thinking conflict). Returns the resolved verdict (or the original if no escalation needed).
@@ -250,6 +289,9 @@ def resolve_with_llm(verdict: ScenarioVerdict, text: str, llm) -> ScenarioVerdic
     import re
     out = re.sub(r"<think>.*?</think>", "", out, flags=re.DOTALL)
     first = next((w for w in re.findall(r"[A-Z]+", out)), "")
-    if first.startswith("PRIVATE"):
-        return ScenarioVerdict(Scenario.PRIVATE_REPLY, 0.70, "8B band escalation -> PRIVATE")
-    return ScenarioVerdict(Scenario.IGNORE, 0.70, "8B band escalation -> IGNORE (fail-closed)")
+    # Fail-closed: ONLY an exact PRIVATE escalates; any other token (including a
+    # PRIVATE-prefixed hallucination) stays IGNORE, and IGNORE carries the HIGHER
+    # confidence so the default genuinely favours dropping non-addressed chatter.
+    if first == "PRIVATE":
+        return ScenarioVerdict(Scenario.PRIVATE_REPLY, 0.65, "LLM band escalation -> PRIVATE")
+    return ScenarioVerdict(Scenario.IGNORE, 0.75, "LLM band escalation -> IGNORE (fail-closed)")

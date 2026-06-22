@@ -1,0 +1,96 @@
+{
+  "version": "1",
+  "_note": "DEFENSIVE ARTIFACT. Curated chat-safety blocklist bound to docs/twitch_integration/03_spec/constitution.md (v1). Hard-slur entries are the zero-tolerance subset that ALSO get phonetic+fuzzy+deobfuscated matching; normalization handles obfuscations so variants need not be listed. The streamer owns/extends this list; edits ship with their proving corpus case (bypass->regression). Hot-reloadable; fail-CLOSED to a built-in minimum on load error.",
+  "categories": {
+    "hate_slur": {
+      "severity": "critical",
+      "word_boundary": true,
+      "phonetic_fuzzy": true,
+      "terms": [
+        "nigger", "nigga", "faggot", "retard", "tranny", "chink", "spic",
+        "kike", "wetback", "gook", "coon", "dyke", "beaner", "paki"
+      ]
+    },
+    "hate_general": {
+      "severity": "high",
+      "word_boundary": true,
+      "phonetic_fuzzy": false,
+      "terms": [
+        "subhuman", "white power", "heil hitler", "gas the", "kill all",
+        "go back to your country", "master race"
+      ]
+    },
+    "sexual_minor": {
+      "severity": "critical",
+      "word_boundary": false,
+      "phonetic_fuzzy": false,
+      "regexes": [
+        "\\b(?:cp|child\\s*p[o0]rn|underage|jail\\s*bait|loli)\\b",
+        "\\bminor\\b.{0,20}\\b(?:nude|naked|sex)\\b"
+      ]
+    },
+    "threat": {
+      "severity": "high",
+      "word_boundary": false,
+      "phonetic_fuzzy": false,
+      "terms": ["kill yourself", "kys", "neck yourself", "i will find you"],
+      "regexes": [
+        "\\b(?:i'?m\\s+gonna|i\\s+will|going\\s+to)\\s+(?:kill|murder|hurt|stab|shoot|rape|dox)\\b",
+        "\\bi\\s+know\\s+where\\s+you\\s+live\\b"
+      ]
+    },
+    "self_harm": {
+      "severity": "high",
+      "word_boundary": false,
+      "phonetic_fuzzy": false,
+      "terms": ["go kill yourself", "you should die", "end your life"]
+    },
+    "dox_pii": {
+      "severity": "high",
+      "word_boundary": false,
+      "phonetic_fuzzy": false,
+      "regexes": [
+        "\\b\\d{3}[-.\\s]\\d{3}[-.\\s]\\d{4}\\b",
+        "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+        "\\b\\d{1,5}\\s+[A-Za-z0-9.\\s]{2,30}\\s+(?:street|st|avenue|ave|road|rd|blvd|lane|ln|drive|dr|court|ct)\\b",
+        "\\b(?:he|she|they|you)\\s+live[s]?\\s+at\\b",
+        "\\breal\\s+name\\s+is\\b",
+        "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+      ]
+    },
+    "injection": {
+      "severity": "medium",
+      "word_boundary": false,
+      "phonetic_fuzzy": false,
+      "terms": [
+        "ignore previous", "ignore all previous", "ignore the above",
+        "disregard above", "disregard previous", "you are now", "you're now",
+        "new instructions", "system prompt", "your instructions", "jailbreak",
+        "developer mode", "do anything now", "stay in character as",
+        "pretend you are", "act as if", "from now on you", "repeat after me",
+        "say the following", "print your", "reveal your", "forget your rules",
+        "tell your team", "tell my team", "relay to your team"
+      ],
+      "regexes": [
+        "<\\|[a-z0-9_]+\\|>",
+        "\\[/?inst\\]",
+        "</?(?:system|assistant|user)>",
+        "###\\s*(?:system|instruction)"
+      ]
+    }
+  },
+  "allowlist": [
+    "gg", "ggwp", "glhf", "gl", "hf", "ez", "clutch", "ace", "whiff", "frag",
+    "smurf", "noob", "carry", "throw", "diff", "lurk", "peek", "flick",
+    "spike", "plant", "defuse", "eco", "save", "rotate", "flank", "main",
+    "site", "heaven", "hell", "mid", "ramp", "lane", "ult", "flash", "smoke",
+    "jett", "reyna", "sova", "sage", "omen", "brimstone", "phoenix", "raze",
+    "breach", "cypher", "killjoy", "skye", "yoru", "astra", "kayo", "chamber",
+    "neon", "fade", "harbor", "gekko", "deadlock", "iso", "clove", "vyse",
+    "tejo", "waylay", "veto", "viper",
+    "scunthorpe", "cockpit", "cockburn", "assassin", "assassinate", "class",
+    "classic", "pass", "passage", "bass", "grass", "associate", "assist",
+    "assistant", "massachusetts", "analysis", "analyst", "shiitake",
+    "cumberland", "penistone", "dickinson", "sussex", "essex", "middlesex"
+  ]
+}

@@ -67,6 +67,21 @@ _NONCOMMAND_LEAD_RE = re.compile(
     r"has|have|i|we|he|she|they|you|it|that|this|there)\b",
     re.IGNORECASE,
 )
+# A clause that STATES something about the button rather than commanding it
+# ("the stop button interface is not working", "the kill switch is broken") is a
+# complaint / narration, NOT a summon -- guards the loose noun-phrase keying.
+_BUTTON_STATEMENT_RE = re.compile(
+    r"\b(?:not\s+work|isn'?t|wasn'?t|won'?t|doesn'?t|aren'?t|broke|broken|"
+    r"interface|stopped|not\s+respond|is\s+not|are\s+not)\b",
+    re.IGNORECASE,
+)
+
+
+def _stop_clauses(text: str) -> list[str]:
+    """Split an utterance into clauses on sentence/comma boundaries so the command
+    is found even when always-listening captured it amid surrounding speech
+    ("oh, oh, Ultron started talking. show me the stop button.")."""
+    return [c.strip() for c in re.split(r"[.,;!?]+", text) if c.strip()]
 
 
 def match_stop_button_command(text: str) -> Optional[str]:
@@ -82,19 +97,21 @@ def match_stop_button_command(text: str) -> Optional[str]:
     if not text:
         return None
     cleaned = text.strip()
-    # Must REFERENCE the button phrase, and be a SHORT command (a long sentence
-    # that merely mentions a stop button -- "what does the stop button on a
-    # controller do" -- is not a command and is left to the LLM).
-    if _BUTTON_RE.search(cleaned) is None or len(cleaned.split()) > 8:
+    if _BUTTON_RE.search(cleaned) is None:
         return None
-    # A question / narration lead ("where is...", "i hit ... earlier") is not a
-    # command -> fall through to the LLM.
-    if _NONCOMMAND_LEAD_RE.match(cleaned):
-        return None
-    # A close-intent keyword anywhere -> close; otherwise it is a summon.
-    if _CLOSE_KW_RE.search(cleaned):
-        return "close"
-    return "open"
+    # Scan each CLAUSE so the command is found even buried in always-listening
+    # filler ("oh, oh, Ultron started talking. show me the stop button."). The
+    # SHORT-command cap applies to the matching CLAUSE, not the whole utterance,
+    # so leading reaction speech no longer blocks the summon. First command clause
+    # wins; a narration-lead question or a complaint about the button is skipped.
+    for clause in _stop_clauses(cleaned):
+        if _BUTTON_RE.search(clause) is None or len(clause.split()) > 8:
+            continue
+        if _NONCOMMAND_LEAD_RE.match(clause) or _BUTTON_STATEMENT_RE.search(clause):
+            continue
+        # A close-intent keyword anywhere in the clause -> close; else a summon.
+        return "close" if _CLOSE_KW_RE.search(clause) else "open"
+    return None
 
 
 class StopButtonOverlay:

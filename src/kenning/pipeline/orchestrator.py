@@ -3682,7 +3682,9 @@ class Orchestrator:
         except Exception:                                            # noqa: BLE001
             pass
 
-    def _maybe_handle_relay_speech(self, user_text: str, *, force: bool = False) -> bool:
+    def _maybe_handle_relay_speech(
+        self, user_text: str, *, force: bool = False, provenance: object = None,
+    ) -> bool:
         """Voice relay -- "tell my teammates X" speaks a rephrased line on
         the configured secondary output device (a VoiceMeeter virtual
         input routed to the mic B-bus) so the user's game voice chat
@@ -3696,7 +3698,27 @@ class Orchestrator:
         Fail-open: once MATCHED, the turn is always consumed -- a
         device / synth / rephrase failure speaks a short error on the
         NORMAL output instead of letting the command fall into the
-        conversational LLM path and get role-played."""
+        conversational LLM path and get role-played.
+
+        ``provenance`` (S7 team-mic isolation): only LOCAL_VOICE -- the streamer's
+        own mic -- may key the team bus. Existing callers pass nothing -> defaults
+        to LOCAL_VOICE -> behavior unchanged. A chat/redeem-sourced call (or a
+        future bug) is REFUSED here, belt-and-suspenders over the static
+        import-graph wall that keeps kenning.twitch from referencing this path."""
+        try:
+            from kenning.audio.provenance import Provenance, is_team_eligible
+            _prov = provenance if provenance is not None else Provenance.LOCAL_VOICE
+            if not is_team_eligible(_prov):
+                logger.error(
+                    "relay REFUSED (team isolation): non-LOCAL_VOICE provenance %r "
+                    "attempted to reach the team mic", getattr(_prov, "value", _prov),
+                )
+                return False
+        except Exception as e:                                       # noqa: BLE001
+            # The isolation guard must never itself break the proven relay path:
+            # a provenance-module import error fails SAFE to the legacy behavior
+            # (existing callers are all LOCAL_VOICE anyway).
+            logger.debug("relay provenance guard skipped (%s)", e)
         try:
             from kenning.audio.relay_speech import (
                 build_relay_line,
@@ -6048,8 +6070,81 @@ class Orchestrator:
                     "shutdown backstop: reaped %d residual child process(es)", n)
         except Exception:                                            # noqa: BLE001
             pass
+        # Catch-all #2: reap any sidecar orphan NOT in our process tree (started by
+        # a different python / detached / re-parented) by cmdline, across ALL roles
+        # (embedder + twitch guard/read/overlay). With the per-sidecar exclusive
+        # bind + each sidecar's start-time guard_singleton + parent-death deadman,
+        # this makes a stale sidecar of ANY role unable to survive cleanup.
+        try:
+            from kenning.subprocess.sidecar_lock import reap_stray_sidecars
+            m = reap_stray_sidecars()
+            if m:
+                logger.info("shutdown backstop: reaped %d stray sidecar(s) by cmdline", m)
+        except Exception:                                            # noqa: BLE001
+            pass
 
     # --- main loop -----------------------------------------------------------
+
+    def _start_twitch_chat_mode(self) -> None:
+        """Boot the Twitch chat-mode background loop IFF ``twitch.enabled``.
+
+        FAIL-OPEN + FLAG-GATED: with the flag OFF (default) this returns before
+        importing anything from ``kenning.twitch`` -> the voice/relay runtime is
+        byte-identical. When ON it connects to the already-running guard + read
+        sidecars and runs a daemon loop that reconciles chat-reply to the live
+        ``twitch.chat.reply_enabled`` toggle and ticks one safety-gated batch. The
+        loop holds NO relay handle and any error leaves chat-mode off; it can never
+        damage the team-callout path."""
+        try:
+            from kenning.config import get_config
+            tcfg = getattr(get_config(), "twitch", None)
+            if tcfg is None or not getattr(tcfg, "enabled", False):
+                return
+            if getattr(self, "llm", None) is None:
+                logger.warning("twitch chat-mode: no LLM engine loaded; chat-mode disabled")
+                return
+            from kenning.twitch.service import ChatModeService
+
+            def _llm_fn(system: str, user: str) -> str:
+                return "".join(self.llm.generate_stream(
+                    user, system_prompt=system,
+                    sampling={"max_tokens": 160, "temperature": 0.7},
+                    enable_thinking=False, suppress_memory_context=True,
+                    record_history=False,
+                ))
+
+            embed_fn = None
+            try:
+                from kenning.audio._router_backends import EmbeddingBackend
+                _eb = EmbeddingBackend()
+                embed_fn = lambda t: (_eb.embed([t]) or [None])[0]  # noqa: E731
+            except Exception:                                        # noqa: BLE001
+                embed_fn = None
+
+            svc = ChatModeService(
+                tcfg, llm_fn=_llm_fn, orchestrator_speak=self._speak,
+                embed_fn=embed_fn, on_flagged=None,
+            )
+            self._twitch_chat_service = svc
+            self._twitch_chat_stop = False
+            import threading
+            import time as _time
+
+            def _loop() -> None:
+                from kenning.config import get_config as _gc
+                while not getattr(self, "_twitch_chat_stop", False):
+                    _time.sleep(1.0)
+                    try:
+                        want = bool(_gc().twitch.chat.reply_enabled)
+                        svc.sync_and_tick(want)
+                    except Exception as e:                           # noqa: BLE001
+                        logger.debug("twitch chat loop tick error: %s", e)
+
+            threading.Thread(target=_loop, daemon=True, name="twitch-chat-mode").start()
+            logger.info("twitch chat-mode loop started (toggle via twitch.chat.reply_enabled; "
+                        "guard required to enable)")
+        except Exception as e:                                       # noqa: BLE001 — never break boot
+            logger.warning("twitch chat-mode init failed (chat-mode off): %s", e)
 
     def run(self) -> None:
         """Block forever, processing wake events until shutdown."""
@@ -6070,6 +6165,9 @@ class Orchestrator:
             in ("1", "true", "yes", "on")
         )
         self.audio.start()
+        # Twitch chat-mode (flag-gated default-OFF; no-op + zero twitch import when
+        # twitch.enabled is False -> voice/relay runtime byte-identical).
+        self._start_twitch_chat_mode()
         word = self.wake.active_word
         print(f"\n  Kenning is listening. Say '{word}' to wake.\n")
         if self.wake.using_fallback:

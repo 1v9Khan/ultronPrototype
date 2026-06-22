@@ -1288,12 +1288,14 @@ def thinking_mode_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# ULTRON 1.0 (2026-06-20): the route-everything-through-the-8B relay path. When
+# ULTRON 1.0 (2026-06-20): the route-everything-through-the-LLM relay path (the
+# LLM is the loaded preset -- josiefied-qwen3-4b-2507g by default, model-agnostic;
+# the "8B" was the pivot's original M0 default). When
 # KENNING_U1_LLM_ROUTE is ON, the generic (non-tactical, non-snap) relay rephrase
 # uses the LEAN templated prompt (kenning.audio.ultron_prompt.build_relay_prompt)
 # -- the validated route-all design (persona + no/low/high verbosity + flavor
 # toggle + exemplars) -- instead of the legacy ~4.8k-token _build_rephrase_prompt
-# monolith (which yields EMPTY output from the 8B in live probing). DEFAULT OFF:
+# monolith (which yields EMPTY output from the LLM in live probing). DEFAULT OFF:
 # the proven deterministic path stays live until this is A/B-validated. Research
 # C_route_llm recommends a HYBRID (deterministic center, LLM only at the edges) --
 # this PRESERVES that: the tactical-literal pre-route + the snap pools still fire
@@ -3891,7 +3893,7 @@ def _social_llm_line(
     canned: "Optional[str]" = None,
 ) -> str:
     """A SOCIAL / CONVERSATIONAL response (identity / encouragement / calm / flame / criticize /
-    compliment / defiance). When the u1.0 LLM route is ON and an LLM is available, the 8B authors a
+    compliment / defiance). When the u1.0 LLM route is ON and an LLM is available, the LLM authors a
     NOVEL in-character line -- the curated ``pool`` is supplied only as STYLE exemplars the model is
     told NOT to repeat. Otherwise -- or on ANY LLM failure / empty / meta-leak -- fall back to
     ``canned`` (a pre-formatted curated line) or ``pick_line(pool)``. This keeps Ultron from sounding
@@ -6351,6 +6353,19 @@ def build_relay_line(
         deterministic fallback ("Team: <payload>" / "<Name>: <payload>" /
         a stock encouragement line) rather than raising.
     """
+    # u1.0 ROUTE-EVERYTHING precompute (2026-06-21): with the LLM-route flag on,
+    # every callout is authored by the model. Define the route + compound flags
+    # ONCE here so EVERY path has them -- a compose/context/reported-question
+    # command skips the tactical-callout block where these used to be (and only)
+    # defined, so the LLM relay path crashed with an UnboundLocalError on
+    # `_u1_compound` and silently fell back to a canned line (the live
+    # "favorite color -> soundboard" bug). `_u1_route` also gates the
+    # deterministic curated/snap handlers below OFF so the callout flows to the
+    # LLM relay path instead of resolving deterministically.
+    _u1_route = (u1_llm_route_enabled()
+                 and not getattr(command, "verbatim", False))
+    _u1_compound = (_u1_route and len(
+        _split_compound(getattr(command, "payload", "") or "")) >= 2)
     # FLAVOR-TAILS-OFF override (2026-06-18): when the user has turned flavor
     # tails off, the overlapping social / identity / economy / banter commands
     # use a dedicated curated set (tail-free, addressee-adapted). Checked FIRST
@@ -6411,7 +6426,7 @@ def build_relay_line(
     # Curated COMMAND ('that's a stupid question', 'good job', 'they are throwing'):
     # an explicit, fully-curated full-Ultron response, no LLM. Takes priority.
     cc = _as_curated_command(command)
-    if cc:
+    if cc and not _u1_route:
         return _cap_line(cc, max_chars)
 
     # Curated SOCIAL reaction -- a teammate's compliment / insult / surrender /
@@ -6567,6 +6582,23 @@ def build_relay_line(
             canned=_cap_line(line, max_chars),
         )
 
+    # Reported QUESTION to answer ("Sage is wondering if X" / "Jett asked you Y,
+    # respond") that is NOT an identity probe and carries no tactical payload:
+    # answer it IN-CHARACTER via the LLM social path (the relay prompt expects a
+    # tactical callout, so an empty-payload reported question would otherwise
+    # reach build_relay_prompt with nothing to relay -- the "favorite color"
+    # case). u1 route only; the curated identity lines are the style/fallback.
+    if (_u1_route
+            and getattr(command, "directive", None) == "respond"
+            and (getattr(command, "context", None) or "").strip()
+            and not (getattr(command, "payload", "") or "").strip()):
+        return _social_llm_line(
+            command, "respond", DEFAULT_IDENTITY_LINES,
+            max_chars=max_chars, llm=llm, generate_fn=generate_fn,
+            recent_lines=recent_lines,
+            context=getattr(command, "context", "") or "",
+        )
+
     # Curated CORRECT answer to a recognized general-knowledge question -- the
     # 3B gets several wrong ('first president' -> 'Lincoln'). Spoken in Ultron's
     # voice; unrecognized questions still fall through to the model's own answer.
@@ -6580,7 +6612,7 @@ def build_relay_line(
     if (not getattr(command, "compose", False)
             and not getattr(command, "context", None)
             and not getattr(command, "verbatim", False)):
-        if _is_morale_phrase(getattr(command, "payload", "")):
+        if _is_morale_phrase(getattr(command, "payload", "")) and not _u1_route:
             return _cap_line(
                 pick_line(DEFAULT_ENCOURAGEMENT_LINES, recent_lines=recent_lines),
                 max_chars,
@@ -6590,18 +6622,18 @@ def build_relay_line(
         # match wins. Identical order/result to the hardcoded snaps below, which
         # remain as the fallback when the registry is disabled or unmatched.
         reg = _apply_snap_registry(getattr(command, "payload", ""), recent_lines)
-        if reg is not None:
+        if reg is not None and not _u1_route:
             return _cap_line(_name_social_snap(reg, command), max_chars)
         # Clutch confidence ('tell my team I got this') -> curated Ultron round-
         # clutch line. Before consolation/praise so "I'll clutch this" -> the
         # clutch pool (a bare "clutch" after a teammate's play stays praise).
         clutch = _as_clutch(getattr(command, "payload", ""), recent_lines)
-        if clutch is not None:
+        if clutch is not None and not _u1_route:
             return _cap_line(clutch, max_chars)
         # Consolation ('nice try', 'unlucky') / praise ('good half', 'clutch')
         # -- short formulaic morale the 3B mangles; curated + varied.
         cp = _as_consolation_or_praise(getattr(command, "payload", ""), recent_lines)
-        if cp is not None:
+        if cp is not None and not _u1_route:
             return _cap_line(_name_social_snap(cp, command), max_chars)
 
     # Deterministic SNAP callout (positions / counts / self+enemy status /
@@ -6629,10 +6661,8 @@ def build_relay_line(
         # (_output_keeps_facts / _repair_against_input / _literal_relay) are the
         # backstop. _u1_compound stays the >=2-fact signal for the prompt's
         # combine-into-one-line instruction. u1 OFF -> byte-identical legacy path.
-        _u1_route = (u1_llm_route_enabled()
-                     and not getattr(command, "verbatim", False))
-        _u1_compound = (_u1_route
-                        and len(_split_compound(command.payload or "")) >= 2)
+        # _u1_route / _u1_compound are precomputed at the top of build_relay_line
+        # (so the LLM path never UnboundLocalErrors on a compose/context command).
         det_line, leftover = (
             (None, None) if _u1_route
             else _as_compound_callout(command, recent_lines))
@@ -6719,13 +6749,13 @@ def build_relay_line(
             else:
                 # ULTRON 1.0 route (flag-gated, default OFF): the LEAN templated
                 # prompt (validated to author correct in-character relays; the
-                # legacy monolith yields EMPTY 8B output). Adds no/low/high
+                # legacy monolith yields EMPTY model output). Adds no/low/high
                 # verbosity + the flavor-tail toggle. Legacy path otherwise.
                 if u1_llm_route_enabled():
                     from kenning.audio.ultron_prompt import build_relay_prompt
                     from kenning.audio.agent_kits import kit_facts_for
                     # M3: inject accurate kit facts for the agents this callout names
-                    # (addressee first) so the 8B never hallucinates a kit.
+                    # (addressee first) so the LLM never hallucinates a kit.
                     _addr = getattr(command, "addressee", "team") or "team"
                     _agents = _roster_agents(command.payload or "")
                     if _addr != "team":

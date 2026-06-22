@@ -1,13 +1,13 @@
 """Ultron 1.0 — Valorant agent-kit reference for LLM context injection.
 
-Hot-swappable, VERSION-STAMPED per-agent kit facts injected into the relay/answer prompt so the 8B
+Hot-swappable, VERSION-STAMPED per-agent kit facts injected into the relay/answer prompt so the LLM
 never hallucinates an agent's kit (it mis-stated Sova's kit in early probing). The compact format
 (~30 tokens/agent) is sourced from ``docs/ultron_1_0/02_research/board/B_valorant_kits.md`` with the
 adversarially-verified corrections from ``C_domain.md`` applied inline (Iso Undercut now also
 suppresses; Clove Not Dead Yet = 8 pts; Veto Evolution = 7 pts).
 
 To update for a new patch/agent: edit ``AGENT_KITS`` below and bump ``KITS_VERSION`` — NO code change
-(the loader just reads this dict). The 8B's training cutoff (~late 2024) cannot know Waylay (Mar 2025),
+(the loader just reads this dict). The LLM's training cutoff (~late 2024) cannot know Waylay (Mar 2025),
 Veto (Oct 2025), or Miks (Mar 2026), nor Iso's Feb-2025 suppression change, so those are grounded here.
 
 Anticheat-safe: pure data + stdlib (no heavy imports, nothing on a desktop-interaction surface).

@@ -73,6 +73,37 @@
 >   ("FLAG LAST"). Tests: `tests/audio/test_stop_button.py` (+8: overlay wiring/defaults, the log record,
 >   append-not-overwrite, fail-open, construction wiring) — 54 pass.
 >
+> **Validating HEAD: u1.0 TRUE ROUTE-ALL + REPORTED-Q ANSWER + GATE TIGHTENING + "8B"→"LLM" RENAME (2026-06-21)**
+> On LOCAL `main` (route-all shipped 2026-06-20). Three live-testing fixes in `relay_speech.build_relay_line` +
+> `intent_gate`, all regression-clean vs the frozen baseline:
+> - **TRUE route-all (was incomplete).** The `relay_speech.llm_route` flag previously only swapped the relay
+>   PROMPT for lines that already reached the LLM; the deterministic curated/morale-snap handlers still fired
+>   FIRST. A single `_u1_route` flag (computed once at the top of `build_relay_line`) now gates the curated-leak
+>   handlers OFF under route-all — `_as_curated_command` + the morale-phrase / `_apply_snap_registry` /
+>   `_as_clutch` / `_as_consolation_or_praise` block — so "I got this" / "nice try" / "lock in" / tactical snaps
+>   flow to the LLM relay path. KEPT deterministic: verbatim, known-facts, identity (anticheat/persona safety —
+>   already LLM via `_social_llm_line` + a meta-leak guard), the explicit set-pieces (greet/farewell/hello/
+>   ask-day/roast/fun-fact), and the voice commands (handled before `build_relay_line`). Route OFF = byte-identical.
+> - **`_u1_compound` UnboundLocalError fix (the "favorite color → soundboard" root cause).** `_u1_route` /
+>   `_u1_compound` were defined ONLY inside the tactical-callout block, so a compose/reported-question command
+>   reaching the LLM path crashed with `UnboundLocalError` → canned fallback. Now precomputed at the top. + a new
+>   reported-question route: a `directive="respond"` reported question with an empty payload ("Sage is wondering
+>   if you have a favorite color") is answered IN-CHARACTER via `_social_llm_line(kind="respond", context=...)`
+>   instead of `build_relay_prompt` (which expects a tactical payload).
+> - **Always-listening gate tightening (`intent_gate`).** Fixes the friend-chatter leak ("Yeah, I can." /
+>   "It's okay." / "I pranked you..." → `PRIVATE_REPLY` at the LLM-band escalation). `resolve_with_llm`'s system
+>   prompt rewritten to default-to-IGNORE with few-shot anchors; the parse is fail-closed on an EXACT `PRIVATE`
+>   (IGNORE conf 0.75 > PRIVATE 0.65); + a pre-LLM reaction filter (`_REACTION_OPENERS` + `_NAME_TOKEN_RE`) drops
+>   bare reaction openers without spending the LLM, while a line naming Ultron survives.
+> - **"8B" → "LLM" rename (MODEL-AGNOSTIC clarification).** The relay/gate/prompt path uses whatever preset is
+>   loaded — the **4B `josiefied-qwen3-4b-2507g` by default**, NOT an 8B. The pivot's original "8B" framing (M0's
+>   default was `josiefied-qwen3-8b`) was renamed to "the LLM"/"the model" in `intent_gate.py` / `relay_speech.py`
+>   / `ultron_prompt.py` / `agent_kits.py` comments, docstrings, and the LOG reason strings ("8B band escalation"
+>   → "LLM band escalation"); the literal `josiefied-qwen3-8b` preset name + genuinely-historical 8B probe refs
+>   are kept. **NB: many historical "8B" mentions remain in this doc + `docs/ultron_1_0/` — they reflect the
+>   M0-era default; the running model is the 4B.** Tests: `tests/audio/test_u1_llm_route.py` + `test_intent_gate.py`
+>   (+9 regression).
+>
 > **Validating HEAD: ULTRON 1.0 PIVOT — route-all-through-8B (ACTIVE, 2026-06-20)**
 > Branch `claude/infallible-kepler-0a865d` (off `main` @ `6064e5f`); NOT on `main`/`origin/main` yet — the
 > whole pivot is gated behind `KENNING_U1_LLM_ROUTE` (default OFF), so `main` runtime behavior is unchanged.
@@ -2413,6 +2444,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-06-21 | `main` (local) | **Enforcement layer WIRED (Option 1) + canon ON MAIN.** The canon (`CLAUDE.md`/`docs/canon/`/`docs/ultron_1_0/CONSTRAINTS.md`) + the live enforcement bundle are committed to **local `main`** so every new worktree/session auto-loads the rules + hooks (kept OFF origin by the pre-push hook). NEW `.claude/settings.json` (deny = real secrets + dangerous-git ONLY; ask = canon-edits/push/installs/curl-wget; **NO** bare-tool deny / **NO** `disableBypassPermissionsMode` → bypass/web/MCP/subagents/worktrees preserved) + 5 fail-open Node hooks `.claude/hooks/*.mjs` (pretool-guard [dangerous-git deny + WebFetch SSRF + BR-P3 one-instance ask] · posttool-advise [advisory ruff/stub/anticheat] · sessionstart-reground · precompact-snapshot · stop-advise). NEW `.github/workflows/enforce.yml` (light runner-agnostic CI backstop). ruff 0.15.18 + mypy 2.1.0 added (`pyproject` `[tool.ruff]`/`[tool.mypy]` ratchet; `orchestrator.py` grandfathered). 40-agent board design of record: `docs/ultron_1_0/02_research/enforcement_synthesis.md`. | green (ruff: orchestrator grandfathered) | [project_enforcement_bundle_2026_06_20.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_enforcement_bundle_2026_06_20.md) |
 | 2026-06-20 | branch `claude/infallible-kepler-0a865d` | **Ultron 1.0 pivot — route-all-through-8B (flag-gated, NOT on main).** Default LLM preset → `josiefied-qwen3-8b` @ `n_ctx 4096` (M0). NEW modules `audio/ultron_prompt.py` (lean ~165-word prompt assembler, M1), `audio/agent_kits.py` (version-stamped 29-agent kit injection, M3), `audio/intent_gate.py` (4-class always-listening gate CLASSIFIER, M5 — not yet loop-wired). `relay_speech` gains the `KENNING_U1_LLM_ROUTE` branch in `build_relay_line` (lean prompt + agent-kit context + compound→one-LLM-call M4) + `match_verbosity_command`/`relay_verbosity` (no/low/high, M2) + `build_private_prompt` fix (M6a). NEW harness `scripts/relay_test/u1_text_harness.py` (text-injection PRIMARY) + `trace_corpus_full.py`. Tests `tests/audio/{test_ultron_prompt,test_u1_llm_route,test_agent_kits,test_intent_gate}.py`. ALL behind `KENNING_U1_LLM_ROUTE` (default OFF) → main behavior unchanged; each increment regression-clean vs the frozen 22-fail baseline. Spec + live status: `docs/ultron_1_0/` (read `00_process_log/STATUS.md` first). | green (22 baseline) | [project_ultron_1_0_pivot.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_1_0_pivot.md) |
 | 2026-06-19 | `6064e5f` (main) | **Thinking-mode toggle + nice-try flavor parity + E3 snap-early-endpoint.** NEW `relay_speech.thinking_mode_enabled()`/`match_thinking_toggle()` (env `KENNING_THINKING_MODE`, default OFF) gates the LLM on the relay path so compose commands (soundboard/voice-changer/flame/praise) SNAP deterministically on flavor-ON unless thinking is on; `orchestrator._maybe_handle_thinking_toggle` in both dispatch points. `_name_social_snap` names the addressee on the flavor-ON nice-try render (parity). E3 latency: `relay_speech.is_complete_tactical_callout` + `orchestrator._snap_early_endpoint` (`KENNING_SNAP_EARLY_ENDPOINT`, default OFF) close capture early on a complete tactical callout (detail in the validating-HEAD header). | green | [project_thinking_mode_flavor_parity_2026_06_19.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_thinking_mode_flavor_parity_2026_06_19.md) |
 | 2026-06-18 | `0b5da79` (main) | **Un-silence hotfix + per-chunk blip + follow-up addressing + "thank you" snap** (reapplied on the rolled-back `9711e2e` base; the `a9818af` probe-safe-firewall / wake-clip / mic-preprocessing batch was reverted, only these targeted fixes kept plus one new snap). **ANTICHEAT:** removed `pytesseract` from the import-firewall blocklist — `transformers` (pulled in by Kokoro TTS + Whisper) probes it at IMPORT time via `importlib.util.find_spec("pytesseract")`, and this finder RAISES inside that probe, so the whole transformers import fails → Kokoro/Whisper/Smart-Turn never load and Ultron goes silent; pytesseract isn't installed and the OCR capability stays blocked via the `kenning.desktop` prefix, so omitting the bare name costs zero protection. **TTS BLIP** (`tts/kokoro_engine.py`): run `trim_and_fade` on EACH sentence chunk before joining — an empirical per-utterance probe showed the inter-sentence gap *edges* were already clean; the real artifact is the undertrained fine-tune's noise burst at every *internal* sentence onset/offset, which the single OUTER `trim_and_fade` never reached. Supersedes the cosine edge-fade. **ADDRESSING (follow-up window)** (`pipeline/orchestrator.py`): a leading wake word ("Ultron, show me the stop button") now bypasses the borderline zero-shot gate via `_FOLLOWUP_WAKE_RE` — it was scoring 0.75 < the 0.80 ADDRESSED threshold and silently dropping the command despite the user saying the name (the rules side keyed direct-address to "kenning" ONLY, so the real "ultron" wake word was invisible to the classifier); narrow regex (real wake words, leading position) so it can't false-accept room chatter. This is the *blunt* fix — the board-designed confidence-fusion (real flan probability + graded features + cost-asymmetric threshold) is the deferred clean replacement. **NEW — gratitude snap** (`audio/relay_speech.py`): deterministic "thank you" relay snap (`_THANK_YOU_RE` + a dedicated 10-tail `_THANK_YOU_TAILS` Ultron-persona pool — cold, superior acknowledgment, never warmth), routed off the LLM like the other snaps; matches bare gratitude only ("thank you" / "thanks team" / "thank you so much"), a contextual thanks ("thank you for the heal") keeps its real content. 7 frozen tests (`TestThankYouSnap`). | green | [project_prelaunch_hardening_2026_06_17.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_prelaunch_hardening_2026_06_17.md) |
@@ -5015,9 +5047,10 @@ Public API:
   -> ScenarioVerdict` — cascade: ASR-confidence pre-reject (`no_speech_prob`/`avg_logprob`, env
   `KENNING_GATE_*`) → COMMAND_LOCAL (toggle/Spotify/stop matchers) → RELAY_TO_TEAM (`correct_callout_stt`
   L1-only [NOT `normalize_command`, which over-injects the relay lead] → `match_relay_command` 0.95 /
-  `is_complete_tactical_callout` 0.90 / agent+`_fact_tokens` 0.88 / `relay_intent_ok` 0.75) → addressing
+  `is_complete_tactical_callout` 0.90 / agent+`_fact_tokens` 0.88 — the weak semantic `relay_intent_ok`
+  signal was DROPPED 2026-06-21 (it false-relayed conversation to the team; RELAY needs a strong signal)) → addressing
   rules NO→IGNORE / YES+wake→PRIVATE_REPLY → undecided → fail-closed IGNORE with `needs_llm=True`.
-- `resolve_with_llm(verdict, text, llm) -> ScenarioVerdict` — single-token {PRIVATE, IGNORE} 8B escalation
+- `resolve_with_llm(verdict, text, llm) -> ScenarioVerdict` — single-token {PRIVATE, IGNORE} LLM escalation
   for the undecided band (`enable_thinking=False`, fail-CLOSED on any non-PRIVATE token / error).
 - DEFAULT OFF (opt-in `addressing.always_listening`); wake-word stays the competitive default; thresholds
   are heuristic starting points to calibrate on the labeled battery + `logs/addressing.jsonl`. PREREQUISITE:
@@ -6649,8 +6682,19 @@ Valorant/Vanguard account (see `feedback_no_default_load_anticheat.md`).
 Production infra for never leaking child processes (the embedder sidecar + any spawned tools).
 - `kill_tree.py` — `kill_process_tree()`, `KillTreeResult`, `kill_own_children()`.
 - `process_registry.py` — `ProcessRegistry`, `JobState`, `get_process_registry()` (T12 process discipline).
-- `sidecar_lock.py` — embedder-sidecar SINGLETON enforcer: `sweep()` (boot orphan reap), `default_pidfile()`,
-  `reap_stray_embedders()`.
+- `sidecar_lock.py` — sidecar SINGLETON enforcer. Embedder: `sweep()` (boot orphan reap), `default_pidfile()`,
+  `reap_stray_embedders()`. **Generalized to ALL sidecar roles (2026-06-21, anti-stale-sidecar):**
+  `SIDECAR_HINTS` (role→cmdline marker: embedder / twitch_guard / twitch_read / twitch_overlay),
+  `reap_stray_sidecars(hints=None, keep_pid=None)` (cmdline reaper across roles; `reap_stray_embedders` now
+  delegates), `reclaim_port(host, port)` (kill the LISTEN holder so a restart reclaims the port; never self),
+  `guard_singleton(host, port, role)` (pre-bind: reap strays + reclaim port), per-role pidfiles
+  (`role_pidfile`/`write_role`/`clear_role`).
+- `sidecar_server.py` — **`SingletonThreadingHTTPServer`** (2026-06-21): exclusive bind (`allow_reuse_address=False`
+  + Windows `SO_EXCLUSIVEADDRUSE`) so a SECOND process can never co-bind a sidecar port (the fix for the stale
+  guard sidecars co-bound to :8774). Used by the twitch guard/read/overlay sidecars; `embedder_server.py` has an
+  inline pure-stdlib equivalent (isolated venv, no kenning import). The orchestrator shutdown also runs
+  `reap_stray_sidecars()` as a catch-all. Each sidecar: guard_singleton(pre-bind) + exclusive-bind + per-role
+  pidfile + parent-death deadman.
 - `zombie_killer.py` — `ZombieKiller`, `TrackedProcess`, `get_zombie_killer()` (tracked daemon reaper).
 
 ### `src/kenning/agent_loop/` (bounded agentic loop backbone)

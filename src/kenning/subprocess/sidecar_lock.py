@@ -121,14 +121,30 @@ def _kill(pid: Optional[int]) -> int:
         return 0
 
 
-def reap_stray_embedders(keep_pid: Optional[int] = None,
-                         script_hint: str = "embedder_server") -> int:
-    """Reap ANY lingering ``embedder_server`` process (matched by command line)
-    that we are NOT keeping -- the backstop the port-listener sweep can't cover:
-    a DUPLICATE/orphan that FAILED to bind the port (so it owns no LISTEN socket)
-    but is still resident burning RAM/VRAM, incl. one spawned by a *different*
-    python (the 20 GB system-Python orphan that survived 24 h). Never reaps the
-    current process or ``keep_pid``. Returns the count reaped. Fail-open (0)."""
+# Registry of sidecar ROLES -> a substring that uniquely identifies the role's
+# process by command line (its script / module name). Reaping by cmdline is the
+# backstop the port-listener sweep can't cover: a DUPLICATE/orphan that FAILED to
+# bind the port (owns no LISTEN socket) but is still resident burning RAM/VRAM,
+# incl. one spawned by a *different* python. Every loopback sidecar registers here
+# so NO stale sidecar of ANY role ever survives cleanup.
+SIDECAR_HINTS: dict[str, str] = {
+    "embedder": "embedder_server",
+    "twitch_guard": "twitch_guard_sidecar",
+    "twitch_read": "twitch_read_sidecar",
+    "twitch_overlay": "twitch_overlay",
+}
+
+
+def reap_stray_sidecars(hints: "list[str] | None" = None,
+                        keep_pid: Optional[int] = None) -> int:
+    """Reap ANY lingering sidecar process matched by command line against
+    ``hints`` (default: ALL :data:`SIDECAR_HINTS`). The generic backstop for a
+    duplicate/orphan that failed to bind its port (so it owns no LISTEN socket)
+    yet is still resident. Never reaps the current process or ``keep_pid``.
+    Returns the count reaped. Fail-open (0) — never raises into boot/shutdown."""
+    markers = [m for m in (hints if hints is not None else list(SIDECAR_HINTS.values())) if m]
+    if not markers:
+        return 0
     try:
         import psutil
     except Exception:                                            # noqa: BLE001
@@ -144,15 +160,82 @@ def reap_stray_embedders(keep_pid: Optional[int] = None,
             if "python" not in name:
                 continue
             cmd = " ".join(proc.info.get("cmdline") or [])
-            if script_hint in cmd:
+            if any(m in cmd for m in markers):
                 killed = _kill(pid)
                 if killed:
                     reaped += 1
-                    logger.warning("reaped STRAY embedder pid=%s killed=%d cmd=%r",
+                    logger.warning("reaped STRAY sidecar pid=%s killed=%d cmd=%r",
                                    pid, killed, cmd[:140])
         except Exception:                                        # noqa: BLE001
             continue
     return reaped
+
+
+def reap_stray_embedders(keep_pid: Optional[int] = None,
+                         script_hint: str = "embedder_server") -> int:
+    """Back-compat wrapper: reap stray ``embedder_server`` processes by cmdline.
+    Delegates to the generalized :func:`reap_stray_sidecars`."""
+    return reap_stray_sidecars([script_hint], keep_pid=keep_pid)
+
+
+def reclaim_port(host: str, port: int) -> int:
+    """Kill whatever currently LISTENs on ``port`` so a fresh sidecar can bind it
+    EXCLUSIVELY. The deterministic reclaim that makes a sidecar restart idempotent
+    even after a force-kill left the predecessor bound. Returns killed count.
+    Fail-open (0)."""
+    try:
+        lp = _listener_pid(port)
+        if lp and lp != os.getpid():
+            n = _kill(lp)
+            if n:
+                logger.warning("reclaimed port %s: killed listener pid=%s (%d procs)",
+                               port, lp, n)
+            return n
+    except Exception as e:                                       # noqa: BLE001
+        logger.debug("reclaim_port(%s) failed (%s)", port, e)
+    return 0
+
+
+def guard_singleton(host: str, port: int, role: str) -> int:
+    """Pre-bind guard for a loopback sidecar: reap same-role strays by cmdline
+    AND reclaim the port, so that binding it with an EXCLUSIVE
+    :class:`~kenning.subprocess.sidecar_server.SingletonThreadingHTTPServer`
+    yields exactly ONE live instance. Call this immediately before constructing
+    the server. Returns total processes reaped. Never raises (fail-open)."""
+    reaped = 0
+    try:
+        hint = SIDECAR_HINTS.get(role)
+        reaped += reap_stray_sidecars([hint] if hint else None)
+        reaped += reclaim_port(host, port)
+    except Exception as e:                                       # noqa: BLE001
+        logger.debug("guard_singleton(%s:%d, %s) failed (%s)", host, port, role, e)
+    return reaped
+
+
+# --- per-role pidfiles (one lock file per sidecar role) ----------------------
+def role_pidfile(role: str) -> Path:
+    return Path.home() / ".kenning" / "sidecars" / f"{role}.json"
+
+
+def write_role(role: str, pid: int, port: int) -> None:
+    """Atomically record a sidecar role's owner. Never raises."""
+    p = role_pidfile(role)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps({
+            "pid": int(pid), "port": int(port), "role": role, "owner_pid": os.getpid(),
+        }), encoding="utf-8")
+        tmp.replace(p)
+    except Exception as e:                                       # noqa: BLE001
+        logger.debug("role pidfile write failed (%s)", e)
+
+
+def clear_role(role: str) -> None:
+    try:
+        role_pidfile(role).unlink()
+    except Exception:                                            # noqa: BLE001
+        pass
 
 
 def sweep(host: str, port: int, model: str,

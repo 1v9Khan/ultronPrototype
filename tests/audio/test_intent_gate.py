@@ -100,3 +100,80 @@ def test_resolve_with_llm_noop_when_not_needed():
     v = ig.classify_scenario("tell my team to rush B")   # RELAY, needs_llm False
     out = ig.resolve_with_llm(v, "tell my team to rush B", _StubLLM("PRIVATE"))
     assert out.scenario is Scenario.RELAY_TO_TEAM        # unchanged
+
+
+# --- friend-chatter filter (2026-06-21): reaction openers IGNORE'd without the 8B ---
+
+
+@pytest.mark.parametrize("text", [
+    "Yeah, I can.",
+    "It's okay, it's okay.",
+    "nice shot dude",
+    "sure thing",
+    "lol no way",
+    "oh damn",
+])
+def test_reaction_openers_ignored_without_8b(text):
+    v = ig.classify_scenario(text, seconds_since_response=5.0)
+    assert v.scenario is Scenario.IGNORE, (text, v)
+    assert v.needs_llm is False, (text, v)  # dropped cheaply, no 8B spend
+
+
+@pytest.mark.parametrize("text", [
+    "Ultron, what is their economy?",
+    "machine, mute yourself",
+    "hey ai are you there",
+])
+def test_addressed_line_not_reaction_filtered(text):
+    # A line that names Ultron must NOT be swallowed by the reaction filter.
+    v = ig.classify_scenario(text, seconds_since_response=5.0)
+    assert "reaction opener" not in v.reason, (text, v)
+
+
+class _StubGateLLM:
+    def __init__(self, token):
+        self._token = token
+
+    def generate_stream(self, *a, **k):
+        return iter([self._token])
+
+
+@pytest.mark.parametrize("token,scenario,conf", [
+    ("IGNORE", Scenario.IGNORE, 0.75),
+    ("PRIVATE", Scenario.PRIVATE_REPLY, 0.65),
+    ("PRIVATELY yours", Scenario.IGNORE, 0.75),   # not exactly PRIVATE -> fail-closed
+    ("Sure, PRIVATE", Scenario.IGNORE, 0.75),     # leading non-PRIVATE token -> fail-closed
+])
+def test_resolve_with_llm_fail_closed_exact_private(token, scenario, conf):
+    base = ig.ScenarioVerdict(Scenario.IGNORE, 0.55, "undecided", needs_llm=True)
+    v = ig.resolve_with_llm(base, "some ambiguous line", _StubGateLLM(token))
+    assert v.scenario is scenario, (token, v)
+    assert abs(v.confidence - conf) < 1e-6, (token, v)
+
+
+# --- opinion-with-location-word guard (2026-06-21): "that's not even that long" ---
+
+
+@pytest.mark.parametrize("text", [
+    "that's not even that long",
+    "that's pretty long honestly",
+    "it was so long",
+    "i think that's too long",
+])
+def test_opinion_with_location_word_not_relayed(text: str) -> None:
+    # A conversational opinion that merely contains a location word ("long") must
+    # NOT be classified RELAY_TO_TEAM (the live 'long' false-positive).
+    v = ig.classify_scenario(text, seconds_since_response=5.0)
+    assert v.scenario is not Scenario.RELAY_TO_TEAM, (text, v)
+
+
+@pytest.mark.parametrize("text", [
+    "they are pushing long",
+    "one long",
+    "tell my team to rush B",
+])
+def test_real_callout_still_relays(text: str) -> None:
+    # Strong relay signals (complete tactical callout / strict matcher) are
+    # unaffected by the opinion guard -- these must still relay.
+    v = ig.classify_scenario(text, seconds_since_response=5.0)
+    assert v.scenario is Scenario.RELAY_TO_TEAM, (text, v)

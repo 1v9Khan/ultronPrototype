@@ -193,6 +193,26 @@ def _parent_watchdog() -> None:
             os._exit(0)
 
 
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    """Single-instance bind (anti-stale-sidecar): never SO_REUSEADDR, and
+    SO_EXCLUSIVEADDRUSE on Windows so no other process can co-bind the port -- a
+    duplicate fails LOUDLY at bind instead of silently co-serving stale code.
+    Pure stdlib so it works in the ISOLATED embedder venv (no kenning import)."""
+
+    allow_reuse_address = False
+
+    def server_bind(self):
+        import socket
+        if sys.platform == "win32":
+            excl = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if excl is not None:
+                try:
+                    self.socket.setsockopt(socket.SOL_SOCKET, excl, 1)
+                except OSError:
+                    pass
+        super().server_bind()
+
+
 def main():
     _load()
     # Parent-death deadman: the strongest orphan guard -- the child cleans itself
@@ -200,7 +220,7 @@ def main():
     # in-parent cleanup can cover.
     threading.Thread(target=_parent_watchdog, daemon=True,
                      name="parent-watchdog").start()
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), _Handler)
+    server = _ExclusiveHTTPServer(("127.0.0.1", PORT), _Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

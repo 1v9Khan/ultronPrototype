@@ -1,4 +1,8 @@
-"""Ultron 1.0 — lean prompt assembler for the route-everything-through-the-8B pivot.
+"""Ultron 1.0 — lean prompt assembler for the route-everything-through-the-LLM pivot.
+
+NOTE: "the LLM" / "the model" throughout this module is MODEL-AGNOSTIC -- it is whatever preset is
+loaded (the 4B ``josiefied-qwen3-4b-2507g`` by default). "8B" appears only where it names the literal
+``josiefied-qwen3-8b`` preset or a specific historical probe; it is NOT the default model.
 
 The legacy relay prompt (``relay_speech._build_rephrase_prompt`` / ``_REPHRASE_PROMPT``) is a
 ~3,375-word (~4.8k token) monolith that overflows the u1.0 ``n_ctx=4096`` cap and yielded *empty*
@@ -17,7 +21,7 @@ Design (per ``docs/ultron_1_0/03_plan`` + ``02_research/02_research_synthesis.md
 - Flavor becomes a **verbosity** axis (``none``/``low``/``high``) PLUS a separate flavor-tail on/off,
   both prompt-driven. Thinking is always OFF here (research: reasoning harms roleplay + breaks grammar).
 
-HARD RULE (validated by a live fact-drift where the 8B added "on B" to "Jett hit 84"): callers MUST
+HARD RULE (validated by a live fact-drift where the LLM added "on B" to "Jett hit 84"): callers MUST
 run the existing fact-preservation guards (``relay_speech._output_keeps_facts`` /
 ``_repair_against_input`` / ``_literal_relay`` fallback) on the model output. This module only builds
 the prompt; it does not relax the correctness backstop.
@@ -194,7 +198,7 @@ _DEFAULT_RELAY_EXEMPLARS: Tuple[Tuple[str, str], ...] = (
 )
 
 # Private (me-only) reply exemplars -- in-character Q&A, NOT relay callouts. Using the relay-callout
-# exemplars on a private question made the 8B emit empty/callout-shaped output (M1 live finding #3),
+# exemplars on a private question made the LLM emit empty/callout-shaped output (M1 live finding #3),
 # so the private path gets its own answer-shaped exemplars.
 _DEFAULT_PRIVATE_EXEMPLARS: Tuple[Tuple[str, str], ...] = (
     ("what map is this", "Ascent. Vertical control decides it."),
@@ -238,7 +242,7 @@ def _recent_block(recent_lines: Optional[Sequence[str]]) -> str:
 
 
 def _reconcile_block(raw_text: Optional[str], callout: str) -> str:
-    """When the RAW speech-to-text differs from the normalized callout, show the 8B BOTH so it
+    """When the RAW speech-to-text differs from the normalized callout, show the LLM BOTH so it
     can recover the player's true intent -- the STT may have misheard a word and the normalizer
     may have mangled or over-corrected it. Empty when there is no distinct raw transcript, so
     callers that don't supply one get the unchanged prompt."""
@@ -285,7 +289,7 @@ def build_relay_prompt(
         exemplars: ``(player_input, ultron_line)`` pairs the router selected (e.g. via MMR over the
             matched snap pool / AGENT_FLAVOR). Empty -> a small default set.
         agent_context: short kit/situation facts for the addressed agent(s), to prevent kit
-            hallucination (the 8B mis-stated Sova's kit without this).
+            hallucination (the LLM mis-stated Sova's kit without this).
         recent_lines: lines already spoken this session (anti-repeat).
         compound: True -> instruct the model to combine all callouts into ONE line (single LLM call).
         raw_text: the RAW speech-to-text (pre-normalization). When it differs from ``callout`` a
@@ -361,7 +365,7 @@ def build_private_prompt(
 
 
 # ---------------------------------------------------------------------------
-# SOCIAL / CONVERSATIONAL responses (NOT tactical callouts). 2026-06-20: the 8B
+# SOCIAL / CONVERSATIONAL responses (NOT tactical callouts). 2026-06-20: the LLM
 # authors a NOVEL in-character line for identity deflections, encouragement, team
 # de-escalation, flaming, criticism/compliments, banter -- the curated pools
 # become STYLE EXAMPLES the model must NOT repeat (so Ultron never sounds like a
@@ -436,7 +440,7 @@ def build_social_prompt(
     recent_lines: Optional[Sequence[str]] = None,
     raw_text: Optional[str] = None,
 ) -> PromptResult:
-    """Build a SOCIAL / CONVERSATIONAL prompt -- the 8B authors a NOVEL in-character line.
+    """Build a SOCIAL / CONVERSATIONAL prompt -- the LLM authors a NOVEL in-character line.
 
     Used for non-tactical responses (identity questions, encouragement, team de-escalation,
     flaming, criticism/compliments, banter). The curated ``exemplars`` are STYLE references only;
