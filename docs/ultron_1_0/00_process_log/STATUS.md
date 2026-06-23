@@ -1,6 +1,14 @@
 # Ultron 1.0 — Live Status
 
-**RELEASE 2026-06-23 — GAP-C + MISTRAL DEFAULT + SPEC-DECODING AUTO-TOGGLE folded + pushed:** local `main` at
+**ACTIVE (2026-06-23) — STOP-WINDOW CHAT TOGGLE:** Added CHAT ON/OFF button to the stop-button GUI
+(`stop_button.py` + `config.py` `StopButtonConfig.chat_height`/`chat_label` + `orchestrator.py`
+`_set_twitch_chat_reply_enabled` setter + loop reads `self._twitch_chat_reply_enabled`).
+Purple/grey accent (Twitch brand). Only wired when `twitch.enabled: true`. 8 new tests + fixed
+`test_orchestrator_hook.py::test_start_twitch_chat_mode_is_noop_when_disabled` (was reading live
+config.yaml which now has `twitch.enabled: true` — now uses `set_config(disabled_cfg)` pattern).
+Targeted suite: 859 passed, 0 failed. PENDING: commit + push origin/main + reboot.
+
+**PREVIOUS — GAP-C + MISTRAL DEFAULT + SPEC-DECODING AUTO-TOGGLE folded + pushed:** local `main` at
 `ee3b2ba`; published to `origin/main` as a canon-excluded snapshot. **Wrapper regression-clean: 22 failed = exact
 frozen baseline, 12176 passed, 39 skipped.** All twitch/turbo/gap-c tests green.
 

@@ -146,6 +146,10 @@ class StopButtonOverlay:
         turbo_enabled: bool = False,
         turbo_height: int = 26,
         turbo_label: str = "TURBO",
+        on_toggle_chat: Optional[Callable[[bool], None]] = None,
+        chat_enabled: bool = False,
+        chat_height: int = 26,
+        chat_label: str = "CHAT",
         on_restart: Optional[Callable[[], None]] = None,
         on_exit: Optional[Callable[[], None]] = None,
         restart_height: int = 28,
@@ -182,6 +186,12 @@ class StopButtonOverlay:
         self._turbo_enabled = bool(turbo_enabled)
         self._turbo_h = max(0, int(turbo_height))
         self._turbo_label = turbo_label or "TURBO"
+        # Optional CHAT toggle row: flips twitch.chat.reply_enabled at runtime
+        # (Ultron speaks to or goes silent in Twitch chat without restarting).
+        self._on_toggle_chat = on_toggle_chat
+        self._chat_enabled = bool(chat_enabled)
+        self._chat_h = max(0, int(chat_height))
+        self._chat_label = chat_label or "CHAT"
         # Optional RESTART + EXIT action buttons (orchestrator-wired). Restart =
         # full cleanup then relaunch the same build; Exit = full cleanup then quit.
         self._on_restart = on_restart
@@ -263,13 +273,15 @@ class StopButtonOverlay:
             ptt_h = self._ptt_h if _has_ptt else 0
             _has_turbo = self._on_toggle_turbo is not None and self._turbo_h > 0
             turbo_h = self._turbo_h if _has_turbo else 0
+            _has_chat = self._on_toggle_chat is not None and self._chat_h > 0
+            chat_h = self._chat_h if _has_chat else 0
             _has_restart = self._on_restart is not None and self._restart_h > 0
             _has_exit = self._on_exit is not None and self._exit_h > 0
             _has_flag = self._on_flag is not None and self._flag_h > 0
             restart_h = self._restart_h if _has_restart else 0
             exit_h = self._exit_h if _has_exit else 0
             flag_h = self._flag_h if _has_flag else 0
-            height = bar_h + btn_h + restart_h + exit_h + flag_h + ptt_h + turbo_h
+            height = bar_h + btn_h + restart_h + exit_h + flag_h + ptt_h + turbo_h + chat_h
             root = tk.Tk()
             root.title("ULTRON // STOP")
             root.geometry(f"{w}x{height}+{self._x}+{self._y}")
@@ -386,6 +398,52 @@ class StopButtonOverlay:
                 turbo_btn.configure(command=_toggle_turbo)
                 turbo_btn.pack(fill="x", side="bottom")
                 turbo_btn.bind("<Button-3>", lambda _e: self.hide())
+
+            # CHAT toggle -- purple "CHAT ON" = Ultron speaks to Twitch chat;
+            # grey "CHAT OFF" = reads chat but stays silent. Distinct purple
+            # accent (Twitch brand). Flips the same runtime flag that
+            # _set_twitch_chat_reply_enabled writes.
+            if _has_chat:
+                _ch_on_fg, _ch_on_fill = "#bf7fff", "#150d20"    # purple = ON
+                _ch_off_fg, _ch_off_fill = "#8a8f98", "#141414"  # grey = OFF
+
+                def _chat_colors():
+                    return ((_ch_on_fg, _ch_on_fill) if self._chat_enabled
+                            else (_ch_off_fg, _ch_off_fill))
+
+                _chfg0, _chfill0 = _chat_colors()
+                chat_btn = tk.Button(
+                    root,
+                    text=f"{self._chat_label} {'ON' if self._chat_enabled else 'OFF'}",
+                    bg=_chfill0, fg=_chfg0,
+                    activebackground=_chfill0, activeforeground="#ffffff",
+                    relief="flat", bd=0, highlightthickness=1,
+                    highlightbackground=_chfg0, highlightcolor=_chfg0,
+                    font=("Segoe UI Semibold", 9), cursor="hand2",
+                )
+
+                def _toggle_chat():
+                    self._chat_enabled = not self._chat_enabled
+                    fg, fill = _chat_colors()
+                    try:
+                        chat_btn.configure(
+                            text=f"{self._chat_label} "
+                                 f"{'ON' if self._chat_enabled else 'OFF'}",
+                            bg=fill, fg=fg, activebackground=fill,
+                            highlightbackground=fg, highlightcolor=fg)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        if self._on_toggle_chat is not None:
+                            self._on_toggle_chat(self._chat_enabled)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("chat toggle callback failed: %s", e)
+                    logger.info("chat toggle -> %s",
+                                "ON" if self._chat_enabled else "OFF")
+
+                chat_btn.configure(command=_toggle_chat)
+                chat_btn.pack(fill="x", side="bottom")
+                chat_btn.bind("<Button-3>", lambda _e: self.hide())
 
             # RESTART + EXIT action buttons -- packed at the bottom (above PTT,
             # below STOP). Each runs Ultron's full cleanup; Restart then relaunches

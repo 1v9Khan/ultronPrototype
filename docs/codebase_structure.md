@@ -27,7 +27,21 @@
 > - Full runbook: **`docs/ultron_0_1_baseline.md`**. Post-0.1 roadmap:
 >   **`docs/latency_optimizations_V1.md`**.
 >
-> **Validating HEAD: GAP-C ECONOMY GAMES + TRIVIA + MISTRAL DEFAULT + SPEC-DECODING AUTO-TOGGLE (2026-06-23)**
+> **Validating HEAD: STOP-WINDOW CHAT TOGGLE (2026-06-23)**
+> Targeted regression: 859 passed, 0 failed (turbo + twitch + new chat-toggle tests).
+>
+> **Stop-window CHAT toggle (2026-06-23):** `src/kenning/audio/stop_button.py` — new
+> `on_toggle_chat`/`chat_enabled`/`chat_height`/`chat_label` params on `StopButtonOverlay`; purple ON (`#bf7fff`)
+> / grey OFF accent (Twitch brand); packed above TURBO in the bottom strip. `src/kenning/config.py`
+> `StopButtonConfig` — `chat_height: int = 26` + `chat_label: str = "CHAT"`. `src/kenning/pipeline/orchestrator.py`
+> — `_set_twitch_chat_reply_enabled(enabled)` setter updates `self._twitch_chat_reply_enabled`; the chat-mode loop
+> reads `getattr(self, "_twitch_chat_reply_enabled", cfg_value)` so the GUI click takes effect within 1 s without a
+> restart; stop-button wired with `on_toggle_chat=self._set_twitch_chat_reply_enabled` (only when `twitch.enabled`).
+> `tests/audio/test_twitch_chat_toggle.py` — 8 new tests. Also fixed
+> `tests/twitch/test_orchestrator_hook.py::test_start_twitch_chat_mode_is_noop_when_disabled` (now uses
+> `set_config(disabled_cfg)` pattern so it is independent of the live config.yaml state).
+>
+> **PREVIOUS — GAP-C ECONOMY GAMES + TRIVIA + MISTRAL DEFAULT + SPEC-DECODING AUTO-TOGGLE (2026-06-23)**
 > **Wrapper result (22 failed = exact frozen baseline, 12176 passed, 39 skipped; local `main` `ee3b2ba`).**
 >
 > **Gap-c chat economy (commit `aaedc26`, spec `docs/twitch_integration/03_spec/gap_c_chat_economy_spec.md`):**

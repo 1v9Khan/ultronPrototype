@@ -1451,6 +1451,20 @@ class Orchestrator:
                         get_config().relay_speech, "turbo_mode", False)),
                     turbo_height=getattr(_sb, "turbo_height", 26),
                     turbo_label=getattr(_sb, "turbo_label", "TURBO"),
+                    # CHAT toggle: only wired when twitch is enabled so the row
+                    # is hidden entirely in non-Twitch (gaming-only) sessions.
+                    on_toggle_chat=(
+                        self._set_twitch_chat_reply_enabled
+                        if getattr(getattr(get_config(), "twitch", None),
+                                   "enabled", False)
+                        else None
+                    ),
+                    chat_enabled=bool(getattr(
+                        getattr(getattr(get_config(), "twitch", None),
+                                "chat", None),
+                        "reply_enabled", False)),
+                    chat_height=getattr(_sb, "chat_height", 26),
+                    chat_label=getattr(_sb, "chat_label", "CHAT"),
                 )
                 if getattr(_sb, "show_at_startup", False):
                     self._stop_button.show()
@@ -6388,6 +6402,11 @@ class Orchestrator:
             )
             self._twitch_chat_service = svc
             self._twitch_chat_stop = False
+            # Seed the runtime override from config; _set_twitch_chat_reply_enabled
+            # (called from the stop-button CHAT toggle) updates this attr so the
+            # loop picks up the GUI change within one tick without a config reload.
+            self._twitch_chat_reply_enabled = bool(
+                getattr(getattr(tcfg, "chat", None), "reply_enabled", False))
             import threading
             import time as _time
 
@@ -6396,7 +6415,9 @@ class Orchestrator:
                 while not getattr(self, "_twitch_chat_stop", False):
                     _time.sleep(1.0)
                     try:
-                        want = bool(_gc().twitch.chat.reply_enabled)
+                        want = bool(getattr(
+                            self, "_twitch_chat_reply_enabled",
+                            _gc().twitch.chat.reply_enabled))
                         svc.sync_and_tick(want)
                     except Exception as e:                           # noqa: BLE001
                         logger.debug("twitch chat loop tick error: %s", e)
@@ -11694,6 +11715,14 @@ class Orchestrator:
             logger.warning("turbo toggle (stop-window) failed: %s", e)
             return
         logger.info("TURBO mode %s (stop-window toggle)",
+                    "ON" if enabled else "OFF")
+
+    def _set_twitch_chat_reply_enabled(self, enabled: bool) -> None:
+        """STOP-window CHAT toggle callback: flip whether Ultron speaks to
+        Twitch chat at runtime without restarting. Updates the instance attr
+        that the twitch-chat-mode loop reads on every tick. Fail-open."""
+        self._twitch_chat_reply_enabled = bool(enabled)
+        logger.info("twitch chat reply %s (stop-window toggle)",
                     "ON" if enabled else "OFF")
 
     def _stop_watcher_enabled(self) -> bool:
