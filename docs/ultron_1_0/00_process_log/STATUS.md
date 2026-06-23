@@ -1,12 +1,20 @@
 # Ultron 1.0 — Live Status
 
-**ACTIVE (2026-06-23) — STOP-WINDOW CHAT TOGGLE:** Added CHAT ON/OFF button to the stop-button GUI
+**ACTIVE (2026-06-23) — TWITCH SIDECAR PYTHONPATH FIX:** `orchestrator._start_twitch_sidecars` now
+injects `PYTHONPATH=<repo>/src` into each sidecar's env before spawn, so the sidecar can import
+kenning even when `sys.executable` is the system Python (launched via a launcher that patches its
+own sys.path at start-up but does NOT propagate the patch to child processes via the inherited env).
+Root cause: Twitch auth tokens also needed refresh (both expired ~4 hr TTL); rotated via
+`auth.TokenStore.refresh()` without re-auth (refresh tokens still valid). Both fixes committed;
+restart required to pick them up.
+
+**PREVIOUS — STOP-WINDOW CHAT TOGGLE (2026-06-23):** Added CHAT ON/OFF button to the stop-button GUI
 (`stop_button.py` + `config.py` `StopButtonConfig.chat_height`/`chat_label` + `orchestrator.py`
 `_set_twitch_chat_reply_enabled` setter + loop reads `self._twitch_chat_reply_enabled`).
 Purple/grey accent (Twitch brand). Only wired when `twitch.enabled: true`. 8 new tests + fixed
 `test_orchestrator_hook.py::test_start_twitch_chat_mode_is_noop_when_disabled` (was reading live
 config.yaml which now has `twitch.enabled: true` — now uses `set_config(disabled_cfg)` pattern).
-Targeted suite: 859 passed, 0 failed. PENDING: commit + push origin/main + reboot.
+Targeted suite: 859 passed, 0 failed. Commit `0253300` on local main; published to origin/main `bc2d09d`.
 
 **PREVIOUS — GAP-C + MISTRAL DEFAULT + SPEC-DECODING AUTO-TOGGLE folded + pushed:** local `main` at
 `ee3b2ba`; published to `origin/main` as a canon-excluded snapshot. **Wrapper regression-clean: 22 failed = exact

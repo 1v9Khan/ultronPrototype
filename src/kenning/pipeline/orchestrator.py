@@ -6455,6 +6455,12 @@ class Orchestrator:
         procs: list = []
         parent_pid = str(os.getpid())
         zk = getattr(self, "_zombie_killer", None)
+        # Ensure kenning is importable in sidecars even when sys.executable is the
+        # system Python (launched via a launcher that patches its own sys.path at
+        # start-up but does NOT propagate that patch to child processes via env).
+        _src_dir = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
+        _src_dir = _src_dir if os.path.isdir(_src_dir) else None
         for spec in specs:
             script_path = os.path.abspath(spec.script)
             if not os.path.exists(script_path):
@@ -6462,6 +6468,9 @@ class Orchestrator:
                 continue
             env = dict(os.environ)
             env["KENNING_TWITCH_PARENT_PID"] = parent_pid
+            if _src_dir:
+                _pp = env.get("PYTHONPATH", "")
+                env["PYTHONPATH"] = _src_dir + (os.pathsep + _pp if _pp else "")
             env.update(spec.env)
             try:
                 proc = subprocess.Popen(
