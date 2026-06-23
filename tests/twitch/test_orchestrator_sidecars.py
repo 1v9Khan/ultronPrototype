@@ -171,6 +171,20 @@ def test_moderation_handler_not_a_command_falls_through() -> None:
     assert spoken == []
 
 
+def test_moderation_sidecar_error_falls_through() -> None:
+    """A sidecar HTTP error dict must NOT trigger 'I cannot do that' — fall through."""
+    orch, spoken = _mod_orch(_FakeRemote({"ok": False, "error": "http_500"}))
+    assert orch._maybe_handle_twitch_moderation("say hello") is False
+    assert spoken == []
+
+
+def test_moderation_sidecar_unavailable_falls_through() -> None:
+    """A transport-failure response (error=unavailable) must fall through silently."""
+    orch, spoken = _mod_orch(_FakeRemote({"ok": False, "error": "unavailable"}))
+    assert orch._maybe_handle_twitch_moderation("relay hello to the team") is False
+    assert spoken == []
+
+
 def test_moderation_two_phase_confirm_yes() -> None:
     remote = _FakeRemote({"ok": True, "token": "tok123", "readback": "Ban viewer xqc. Confirm?",
                           "action": "ban", "target": "xqc"})

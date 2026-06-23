@@ -6601,7 +6601,7 @@ class Orchestrator:
             prop = remote.prepare(text)
         except Exception:                                            # noqa: BLE001
             return False
-        if not isinstance(prop, dict) or prop.get("not_a_command"):
+        if not isinstance(prop, dict) or prop.get("not_a_command") or prop.get("error"):
             return False
         if prop.get("ok"):
             self._twitch_mod_pending = {
