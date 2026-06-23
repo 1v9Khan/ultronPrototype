@@ -2114,22 +2114,17 @@ safety:
   audit_log_path: "logs/safety_audit.jsonl"
 
 # ===========================================================================
-# Twitch integration — flag-gated, DEFAULT-OFF. This block is a TEMPLATE
-# (enabled: false -> byte-identical to no block at all). To go live:
-#   1. Run the device-flow ONCE per identity to mint tokens under ~/.kenning/:
-#        python scripts/twitch_setup.py --client-id <ID> --identity broadcaster
-#        python scripts/twitch_setup.py --client-id <ID> --identity bot --path ~/.kenning/twitch_bot.json
-#   2. Fill auth.client_id / broadcaster_login / bot_login below.
-#   3. Point safety.guard_model_path at the guard GGUF.
-#   4. Flip enabled: true; boot Ultron (it auto-spawns the sidecar fleet). Keep
-#      chat.reply_enabled: false until you confirm the guard /canary passes,
-#      THEN flip it true to let Ultron speak to chat.
+# Twitch integration — 2026-06-23 TESTING: all features enabled.
+# Flip individual subsections back to false to disable (twitch.enabled: false
+# = byte-identical to no twitch block at all; the main runtime is unchanged).
 # Guide: docs/twitch_integration/WAKEUP.md. Pydantic extra=forbid -> a typo'd
 # key FAILS boot; run scripts/validate_config.py after editing. All omitted
 # keys use the schema defaults (config.py TwitchConfig).
+# Setup: python scripts/twitch_setup.py --client-id <ID> --identity broadcaster
+#        python scripts/twitch_setup.py --client-id <ID> --identity bot
 # ===========================================================================
 twitch:
-  enabled: false                  # MASTER switch. true => boot auto-spawns read/guard/write sidecars + overlay + redeem router + moderation + chat loop (ports 8773-8777)
+  enabled: true                   # MASTER switch. true => boot auto-spawns read/guard/write sidecars + overlay + redeem router + moderation + chat loop (ports 8773-8777)
   auth:
     client_id: ""                 # public Twitch app client id (dev.twitch.tv/console/apps, Device Code Grant) — NOT a secret
     broadcaster_login: ""         # your channel login
@@ -2137,15 +2132,16 @@ twitch:
     # token VALUES live in ~/.kenning/twitch.json + twitch_bot.json (gitignored) — minted by scripts/twitch_setup.py, never in config
   safety:
     guard_model_path: ""          # GGUF for the non-abliterated guard, e.g. E:/UltronModels/Llama-Guard-3-1B.Q5_K_M.gguf. EMPTY => the guard sidecar is skipped => chat-reply CANNOT enable
-    # tau_review/tau_deflect/tau_block default 0.25/0.55/0.80 (heuristic) — calibrate on your real chat. Leave blocklist_path UNSET (the real file is .json, the schema default points at .yaml).
+    # tau_review/tau_deflect/tau_block default 0.25/0.55/0.80 (heuristic) — calibrate on your real chat
   chat:
-    reply_enabled: false          # the live chat-mode toggle (Ultron SPEAKS to chat). Keep OFF until the guard /canary passes; needs the LLM loaded + the guard healthy (fail-CLOSED)
+    reply_enabled: true           # Ultron speaks to chat. Requires guard /canary pass + LLM loaded (fail-CLOSED)
     allow_during_ranked: false    # strongest mitigation — leave OFF (Ultron can't read game state)
   moderation:
-    voice_commands_enabled: true  # "ban <chatter>" -> spoken read-back -> "yes" -> Helix ban/timeout. Arms only when auth.client_id + broadcaster_login are set
+    voice_commands_enabled: true  # "ban <chatter>" -> spoken read-back -> "yes" -> Helix ban/timeout
   economy:
-    enabled: false                # true => currency ledger + channel-point redeem->game router (create rewards titled: spin the wheel / slots / heist / duel / trivia / raffle)
+    enabled: true                 # currency ledger + channel-point redeem->game router
+    chat_commands_enabled: true   # !gamble / !slots / !points / !balance / !leaderboard / !trivia
   overlay:
-    enabled: false                # true => OBS Browser Source server on :8775 (token-gated URL printed at boot)
+    enabled: true                 # OBS Browser Source server on :8775 (token-gated URL printed at boot)
   speak_to_team:
-    enabled: false                # AT-4 — chat phrases reaching your TEAM voice. Leave OFF unless deliberately demoing
+    enabled: true                 # AT-4 — chat phrases reaching your TEAM voice (tier_a_allowlist only)
