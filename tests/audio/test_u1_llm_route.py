@@ -625,6 +625,17 @@ def test_reported_question_reaches_llm_under_route_all():
         rs.set_u1_llm_route_enabled(False)
 
 
+def test_answer_sampling_has_no_leading_blankline_stop():
+    # ROOT-CAUSE GUARD (2026-06-23, proven by scripts/_qa_empty_probe.py): a
+    # quantized Qwen3 leads its answer with "\n\n", so a "\n\n" stop fired at
+    # position 0 -> 0 chars -> the relay dropped to the deterministic pool. The
+    # qa/answer sampling must NEVER stop on a bare blank line again (max_tokens +
+    # _cap_sentences bound length instead).
+    from kenning.audio._ultron_answer import _ANSWER_SAMPLING
+    assert "\n\n" not in _ANSWER_SAMPLING["stop"], _ANSWER_SAMPLING["stop"]
+    assert "\n" not in _ANSWER_SAMPLING["stop"], _ANSWER_SAMPLING["stop"]
+
+
 class _ScriptedLLM:
     """A fake LLMEngine whose generate_stream returns a scripted sequence of
     outputs (one per call) -- used to simulate an EMPTY primary result followed

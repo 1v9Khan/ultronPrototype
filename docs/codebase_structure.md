@@ -52,6 +52,16 @@
 > Wired in `build_relay_line` just before `if not line: line = fallback`, gated on `_u1_route and generate_fn is None`
 > (flag-OFF + test-seam byte-identical). The deterministic pool is now reached ONLY if the model is truly unresponsive
 > across BOTH retries (logged WARNING) — fail-open last resort. +2 tests; changed-area 431 pass.
+> **ROOT-CAUSE FIX (proven, eliminates the retry latency):** a controlled probe (`scripts/_qa_empty_probe.py`, since
+> removed) loaded IQ3_XS and ran the EXACT qa prompt — `stop=["\n\n",…]` → `len=0` (empty); `stop` without `"\n\n"` →
+> `len=127` *"A structured language of logic and precision…"*. The raw output starts with `"\n\nA structured…"` — the
+> quantized Qwen3 **leads its answer with a blank line**, so the `"\n\n"` stop fired at position 0 → 0 chars. FIX:
+> removed `"\n\n"` from `_ultron_answer._ANSWER_SAMPLING["stop"]` (runaways still bounded by `max_tokens=80` +
+> downstream `_cap_sentences(2)`; the leading blank line is removed by `.strip()`). Now the FIRST qa call succeeds →
+> the retry never fires for qa → **no added latency**. `_relay_llm_retry` stays as a cheap safety net (only on a
+> genuinely empty result) so the "never the pool" guarantee holds for any other command. Guard test
+> `test_answer_sampling_has_no_leading_blankline_stop`. (`enable_thinking=True` was also probed — still empty on this
+> quant, so thinking is NOT a workaround; the stop-list root fix is.)
 > **Also in this batch (commit `0165418`):** (a) **TTS do-inversion** — `relay_speech._apply_do_inversion` rewrites a
 > yes/no question into natural subject-aux-inverted form so the inflection survives TTS ("Sage, you have a heal?" →
 > "Sage, do you have a heal?"; modal/be/have/has/had + contraction expansion + 3rd-person agent handling). Applied at

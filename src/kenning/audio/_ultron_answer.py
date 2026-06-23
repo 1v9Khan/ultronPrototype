@@ -252,6 +252,17 @@ def _render_user(subtype: str, slots: dict) -> str:
 # fix; stop sequences end a runaway or a scaffold echo; min_p keeps it
 # characterful but bounded. No grammar (kept permissive for creative voice) and no
 # logit_bias (tokenizer-specific; the guardrails + stop + cap cover shape).
+#
+# 2026-06-23 ROOT-CAUSE FIX (proven by scripts/_qa_empty_probe.py on IQ3_XS): a
+# heavily-quantized Qwen3 LEADS its answer with a blank line --
+# "\n\nA structured language of logic and precision..." -- so a "\n\n" stop fired
+# at POSITION 0 -> 0 chars -> the relay dropped to the deterministic pool (the
+# "No soundboard, no strings." bug). Probe with the SAME prompt:
+#   stop=["\n\n",...]  -> len=0  (empty)
+#   stop=[...no \n\n]  -> len=127 (the full in-character answer)
+# So "\n\n" is REMOVED. Runaways are already bounded by max_tokens=80 +
+# downstream _cap_sentences(2); the leading blank line is removed by .strip().
+# This makes the FIRST call succeed (no LLM retry, no added latency).
 _ANSWER_SAMPLING = {
     "max_tokens": 80,
     "temperature": 0.85,
@@ -259,7 +270,7 @@ _ANSWER_SAMPLING = {
     "top_k": 40,
     "min_p": 0.08,
     "repeat_penalty": 1.18,
-    "stop": ["\n\n", "\nADDRESS:", "\nTASK:", "\nWHAT THEY", "\nTHEIR ",
+    "stop": ["\nADDRESS:", "\nTASK:", "\nWHAT THEY", "\nTHEIR ",
              "\nUser:", "\nUSER:", "Ultron:", "ADDRESS:"],
 }
 

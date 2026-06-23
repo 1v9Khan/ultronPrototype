@@ -7,8 +7,11 @@ every time. Gate is now `thinking_mode_enabled() OR u1_llm_route_enabled()`. **F
 showed IQ3_XS STILL spoke "No soundboard" — the gate fix made the LLM be CALLED, but the quantized model returned
 **0 chars** on the qa answer path (its `"\n\n"` stop fires at position 0) → empty → pool. NEW `relay_speech._relay_llm_retry`
 re-prompts the LLM (generic prompt, then relaxed+thinking) whenever route-all is ON and the primary result is empty —
-the pool is now a fail-open last resort only if the model is unresponsive across both retries. +5 regression tests total;
-changed-area 431 pass. **Prior (`0165418`):** TTS do-inversion ("Sage, do you have a heal?") at both
+the pool is now a fail-open last resort only if the model is unresponsive across both retries. **ROOT-CAUSE FIX
+(proven by probe, no added latency):** the quantized Qwen3 leads its answer with a blank line, so the qa sampling's
+`"\n\n"` stop fired at position 0 → empty. Removed `"\n\n"` from `_ultron_answer._ANSWER_SAMPLING["stop"]` → the FIRST
+qa call now succeeds (probe: empty→`len=127`), so the retry never fires for qa. +6 regression tests total; changed-area
+335 pass. **Prior (`0165418`):** TTS do-inversion ("Sage, do you have a heal?") at both
 question-relay entry points + `josiefied-qwen3-8b-iq3xs` preset (IQ3_XS + 0.6B draft + n_batch 2048 + q8_0 KV; ~9.3 GB
 peak). VRAM line: IQ4_XS `3f78191` + q8_0 KV `a8c37c0`. STILL-PENDING: FLAG-button stale-`_last_response_text` on relay
 turns; live IQ3_XS-vs-Mistral quality A/B (user-driven).
