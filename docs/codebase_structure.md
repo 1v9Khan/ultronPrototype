@@ -40,6 +40,18 @@
 > behavior is unchanged when route-all is OFF). 3 new regression tests in `tests/audio/test_u1_llm_route.py`
 > (`test_compose_directive_reaches_llm_under_route_all` ×2 + `test_reported_question_reaches_llm_under_route_all`);
 > `test_u1_llm_route.py` 104 pass, `test_relay_speech.py` 128 pass. Commit `8f08254`.
+> **FOLLOW-UP (live re-test — IQ3_XS still spoke "No soundboard"):** the gate fix let the LLM be CALLED, but the
+> heavily-quantized IQ3_XS 8B returned **0 chars** on the qa answer path (`LLM stream: 0 chars in 0.27s`) — its `qa`
+> sampling (`_ultron_answer._ANSWER_SAMPLING`) has `stop` leading with `"\n\n"` and the model leads with a blank line,
+> so the stop fires at position 0 → empty → `build_relay_line` dropped to `_fallback_line` (the pool). Per the user's
+> hard rule ("absolutely everything runs through the LLM, nothing through the deterministic pool"), NEW
+> `relay_speech._relay_llm_retry`: when route-all is ON and the primary LLM result is empty, RE-PROMPT the LLM —
+> (1) the GENERIC `build_relay_prompt` with normal sampling (no leading `\n\n` stop), then (2) RELAXED: thinking
+> ENABLED (Qwen3 often emits the answer only after a think pass, then stripped) + `\n\n`/`\n` stops removed + larger
+> token budget. The qa question lives in `command.context` (empty `payload`), so the retry folds context→payload.
+> Wired in `build_relay_line` just before `if not line: line = fallback`, gated on `_u1_route and generate_fn is None`
+> (flag-OFF + test-seam byte-identical). The deterministic pool is now reached ONLY if the model is truly unresponsive
+> across BOTH retries (logged WARNING) — fail-open last resort. +2 tests; changed-area 431 pass.
 > **Also in this batch (commit `0165418`):** (a) **TTS do-inversion** — `relay_speech._apply_do_inversion` rewrites a
 > yes/no question into natural subject-aux-inverted form so the inflection survives TTS ("Sage, you have a heal?" →
 > "Sage, do you have a heal?"; modal/be/have/has/had + contraction expansion + 3rd-person agent handling). Applied at

@@ -6580,6 +6580,102 @@ def is_complete_tactical_callout(text: str) -> bool:
         return False
 
 
+def _relay_llm_retry(
+    command: object,
+    llm: object,
+    recent_lines: Optional[Sequence[str]],
+    raw_stt: Optional[str],
+    *,
+    compound: bool,
+) -> str:
+    """Last-resort LLM RE-PROMPT for the route-everything rule (2026-06-23).
+
+    The user's hard rule: with route-all ON, NOTHING may fall to the
+    deterministic pool -- every spoken line must come from the LLM. A heavily
+    quantized model (e.g. the IQ3_XS 8B) can return an EMPTY primary result: it
+    emits only a leading stop token or an empty think block -> 0 chars (live:
+    the qa answer path's ``"\\n\\n"`` stop firing at position 0 ->
+    ``LLM stream: 0 chars``), which previously dropped to ``_fallback_line``
+    ("No soundboard, no strings."). Instead, re-prompt the LLM:
+
+      1. the GENERIC relay prompt with its normal sampling (whose stop list
+         lacks the qa path's leading ``"\\n\\n"``);
+      2. RELAXED -- thinking ENABLED (Qwen3 frequently emits the real answer
+         only after a think pass, which is then stripped), the ``"\\n\\n"`` /
+         ``"\\n"`` stops removed, and a larger token budget.
+
+    Returns a cleaned non-empty line, or ``""`` only if the model is truly
+    unresponsive across both attempts (logged at WARNING). Never raises
+    (fail-open to the caller's deterministic fallback). The qa/answer commands
+    carry the question in ``context`` (empty ``payload``); it is folded into the
+    prompt payload so the generic relay prompt has the text to work with."""
+    try:
+        from kenning.audio.ultron_prompt import (
+            build_relay_prompt, strip_prompt_echo,
+        )
+        from kenning.audio.agent_kits import kit_facts_for
+    except Exception:                                            # noqa: BLE001
+        return ""
+    if llm is None or not hasattr(llm, "generate_stream"):
+        return ""
+    _addr = getattr(command, "addressee", "team") or "team"
+    _payload = (getattr(command, "payload", "") or "").strip()
+    if not _payload:
+        _payload = (getattr(command, "context", "") or "").strip()
+    if not _payload:
+        return ""
+    _agents = _roster_agents(_payload)
+    if _addr != "team":
+        _agents = [_addr] + [a for a in _agents if a.lower() != _addr.lower()]
+    _kits = kit_facts_for(_agents) or None
+    try:
+        _pr = build_relay_prompt(
+            _payload, addressee=_addr, verbosity=callout_verbosity(),
+            flavor_tail=flavor_tails_enabled(),
+            exemplars=_find_exemplars_for_command(command),
+            agent_context=_kits, recent_lines=list(recent_lines or ()),
+            compound=compound, raw_text=raw_stt,
+        )
+    except Exception as e:                                       # noqa: BLE001
+        logger.debug("relay LLM retry: prompt build failed: %s", e)
+        return ""
+
+    def _run(enable_thinking: bool, sampling: object) -> str:
+        try:
+            toks = llm.generate_stream(
+                _pr.user, system_prompt=_pr.system, sampling=sampling,
+                record_history=False, suppress_memory_context=True,
+                enable_thinking=enable_thinking,
+            )
+            out = "".join(toks).strip()
+        except Exception as e:                                  # noqa: BLE001
+            logger.debug("relay LLM retry attempt failed: %s", e)
+            return ""
+        if "<think>" in out or "</think>" in out:
+            out = re.sub(r"<think>.*?</think>", "", out, flags=re.DOTALL)
+            out = out.replace("<think>", "").replace("</think>", "").strip()
+        return strip_prompt_echo(out).strip() if out else ""
+
+    line = _run(False, _pr.sampling)
+    if line:
+        logger.info("relay: recovered empty primary via generic LLM retry")
+        return line
+    relaxed = dict(_pr.sampling) if isinstance(_pr.sampling, dict) else {}
+    relaxed["stop"] = [
+        s for s in (relaxed.get("stop") or []) if s not in ("\n\n", "\n")
+    ]
+    relaxed["max_tokens"] = max(int(relaxed.get("max_tokens", 80) or 80), 160)
+    line = _run(True, relaxed)
+    if line:
+        logger.info(
+            "relay: recovered empty primary via relaxed (thinking) LLM retry")
+        return line
+    logger.warning(
+        "relay: all LLM attempts empty for %r -- deterministic fallback",
+        _payload[:60])
+    return ""
+
+
 def build_relay_line(
     command: RelayCommand,
     llm: Optional[object] = None,
@@ -7150,6 +7246,17 @@ def build_relay_line(
         if line:
             from kenning.audio.ultron_prompt import strip_prompt_echo
             line = strip_prompt_echo(line)
+        # u1.0 HARD RULE (2026-06-23): with route-all ON, an EMPTY primary LLM
+        # result must RE-PROMPT THE LLM, never drop to the deterministic pool
+        # (the user's "absolutely everything runs through the LLM, nothing through
+        # the pool"). A quantized model can emit 0 chars (qa "\n\n" stop at
+        # position 0 / empty think block); _relay_llm_retry re-prompts (generic
+        # prompt, then relaxed+thinking) before the canned fallback below is ever
+        # reached. Gated on _u1_route + the real-llm path (generate_fn None) so
+        # flag-OFF and test-seam behaviour are byte-identical.
+        if _u1_route and not line and generate_fn is None:
+            line = _relay_llm_retry(
+                command, llm, recent_lines, raw_stt, compound=_u1_compound)
     if not line:
         line = fallback
     # One breath: strip newlines/quotes the model may add, cap length.

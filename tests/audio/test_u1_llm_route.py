@@ -623,3 +623,56 @@ def test_reported_question_reaches_llm_under_route_all():
         assert "soundboard" not in line.lower(), line
     finally:
         rs.set_u1_llm_route_enabled(False)
+
+
+class _ScriptedLLM:
+    """A fake LLMEngine whose generate_stream returns a scripted sequence of
+    outputs (one per call) -- used to simulate an EMPTY primary result followed
+    by a non-empty retry."""
+
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.calls = []
+
+    def generate_stream(self, prompt, **kwargs):
+        i = len(self.calls)
+        self.calls.append(prompt)
+        out = self.outputs[i] if i < len(self.outputs) else ""
+        return iter([out])
+
+
+def test_empty_primary_llm_result_reprompts_never_pool():
+    # u1.0 HARD RULE (2026-06-23): with route-all ON, an EMPTY primary LLM result
+    # must RE-PROMPT the LLM, never drop to the deterministic "No soundboard" pool.
+    # A quantized model returning 0 chars on the qa answer path (the live IQ3_XS
+    # bug) must be recovered by _relay_llm_retry, not the canned fallback.
+    rs.set_u1_llm_route_enabled(True)
+    try:
+        cmd = rs.match_relay_command("Explain to my team the concept of math")
+        assert cmd is not None
+        # call 0 (primary answer path) -> EMPTY; call 1 (generic retry) -> content.
+        llm = _ScriptedLLM(["", "Mathematics is the architecture of certainty."])
+        line = rs.build_relay_line(cmd, llm=llm, rephrase=True)
+        assert len(llm.calls) >= 2, (
+            f"empty primary must re-prompt the LLM (calls={len(llm.calls)})")
+        assert "soundboard" not in line.lower(), line
+        assert "no strings" not in line.lower(), line
+        assert line.strip(), "must speak the LLM retry output, not empty"
+    finally:
+        rs.set_u1_llm_route_enabled(False)
+
+
+def test_all_empty_llm_attempts_still_fail_open():
+    # If the model is TRULY unresponsive (every attempt empty), build_relay_line
+    # must still return a non-empty line (fail-open) rather than crash or speak
+    # nothing -- the deterministic fallback is the documented last resort.
+    rs.set_u1_llm_route_enabled(True)
+    try:
+        cmd = rs.match_relay_command("Explain to my team the concept of math")
+        llm = _ScriptedLLM([""])  # every call returns empty
+        line = rs.build_relay_line(cmd, llm=llm, rephrase=True)
+        assert line.strip(), "must fail open to a spoken line"
+        # multiple LLM attempts were made before giving up
+        assert len(llm.calls) >= 2, len(llm.calls)
+    finally:
+        rs.set_u1_llm_route_enabled(False)

@@ -3,8 +3,12 @@
 **LIVE-FIX 2026-06-23 (`8f08254`):** Route-all compose commands now reach the LLM. `_maybe_handle_relay_speech`'s
 thinking-mode gate forced `rephrase=False` (thinking mode default OFF) even with route-all ON → every conversational
 relay ("explain to my team X", "Reyna asked you X") fell to `_fallback_line` = the canned "No soundboard, no strings."
-every time. Gate is now `thinking_mode_enabled() OR u1_llm_route_enabled()`. +3 regression tests; `test_u1_llm_route`
-104 pass, `test_relay_speech` 128 pass. **Prior (`0165418`):** TTS do-inversion ("Sage, do you have a heal?") at both
+every time. Gate is now `thinking_mode_enabled() OR u1_llm_route_enabled()`. **FOLLOW-UP (same day):** live re-test
+showed IQ3_XS STILL spoke "No soundboard" — the gate fix made the LLM be CALLED, but the quantized model returned
+**0 chars** on the qa answer path (its `"\n\n"` stop fires at position 0) → empty → pool. NEW `relay_speech._relay_llm_retry`
+re-prompts the LLM (generic prompt, then relaxed+thinking) whenever route-all is ON and the primary result is empty —
+the pool is now a fail-open last resort only if the model is unresponsive across both retries. +5 regression tests total;
+changed-area 431 pass. **Prior (`0165418`):** TTS do-inversion ("Sage, do you have a heal?") at both
 question-relay entry points + `josiefied-qwen3-8b-iq3xs` preset (IQ3_XS + 0.6B draft + n_batch 2048 + q8_0 KV; ~9.3 GB
 peak). VRAM line: IQ4_XS `3f78191` + q8_0 KV `a8c37c0`. STILL-PENDING: FLAG-button stale-`_last_response_text` on relay
 turns; live IQ3_XS-vs-Mistral quality A/B (user-driven).
