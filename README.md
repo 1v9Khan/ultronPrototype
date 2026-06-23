@@ -6,7 +6,7 @@
 
 *Say "kenning." Talk. Get answers in a custom voice. Everything runs on your GPU.*
 
-[![tests](https://img.shields.io/badge/tests-12044%20passing-brightgreen?style=flat-square)](https://github.com/1v9Khan/ultronPrototype)
+[![tests](https://img.shields.io/badge/tests-12188%20passing-brightgreen?style=flat-square)](https://github.com/1v9Khan/ultronPrototype)
 [![latency](https://img.shields.io/badge/TTFA-~266ms-blueviolet?style=flat-square)](#-at-a-glance)
 [![VRAM](https://img.shields.io/badge/VRAM-6.3GB%20standby-orange?style=flat-square)](#-at-a-glance)
 [![python](https://img.shields.io/badge/python-3.11+-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
@@ -85,7 +85,7 @@ Live calibration of the gate thresholds and the latency pass remain before the f
 
 |  |  |
 |---|---|
-| 🧪 &nbsp;**Tests** | 12044 passing · 39 skipped · 27 pre-existing baseline/env fails (~240 s sweep) |
+| 🧪 &nbsp;**Tests** | 12188 passing · 39 skipped · 27 pre-existing baseline/env fails (~240 s sweep) |
 | ⚡ &nbsp;**Latency (TTFA)** | ~266 ms composite cache-hit turn (LLM TTFT 172 ms, TTS synth 78 ms, STT 16 ms) |
 | 🧠 &nbsp;**VRAM** | ~6.3 GB standby on RTX 4070 Ti (peak ~6.7 GB) → ~2.1 GB in gaming mode |
 | 🛠️ &nbsp;**Active stack** | Parakeet TDT STT (CUDA) · Qwen 3.5 4B Q4_K_M (CUDA) · Kokoro StyleTTS2 (CUDA, fine-tuned voice) · OpenClaw bridge live |

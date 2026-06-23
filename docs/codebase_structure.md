@@ -27,7 +27,29 @@
 > - Full runbook: **`docs/ultron_0_1_baseline.md`**. Post-0.1 roadmap:
 >   **`docs/latency_optimizations_V1.md`**.
 >
-> **Validating HEAD: STOP-WINDOW CHAT TOGGLE (2026-06-23)**
+> **Validating HEAD: PERSONA LOCK (BR-P2) + TWITCH TOKEN AUTO-REFRESH (2026-06-23 `338040b`)**
+> Targeted: 12 new tests green (test_token_auto_refresh.py × 9, test_persona_lock.py × 3).
+>
+> **BR-P2 persona lock:** `orchestrator._gaming_conversational_prompt()` — added a third guard: when
+> `u1_llm_route_enabled()` is True the method returns `ULTRON_GAMING_PERSONA` unconditionally. Previously
+> Mistral-7B (and any model without "abliterat"/"gaming" in its path) returned `None`, causing `_resolve_system_prompt`
+> to fall through to the workspace PersonaLoader → "You are Kenning" in the LLM context during route-all — a
+> direct BR-P2 persona-integrity violation.
+>
+> **Twitch token auto-refresh:** `src/kenning/twitch/auth.py` `TokenStore.is_expired(margin_seconds)` — returns
+> True when the stored `expires_at` is absent/corrupt or within `margin_seconds` of now. `TwitchAuth.ensure_valid(margin_seconds=300)`
+> — proactively rotates the access token using the stored `refresh_token` if `is_expired(300)` is True; on any
+> failure falls through to the old token (fail-open). `scripts/twitch_read_sidecar.py:_load_token` and
+> `scripts/twitch_write_sidecar.py:_load_access_token` both call `ensure_valid(300)` on startup, so tokens
+> are silently refreshed before the first Helix/EventSub call. `call_with_auth` reactive-401 path is unchanged
+> as a second net. `tests/twitch/test_token_auto_refresh.py` (9) + `tests/audio/test_persona_lock.py` (3).
+>
+> **PREVIOUS — TWITCH SIDECAR PYTHONPATH FIX (2026-06-23 `62a213c`):** `orchestrator._start_twitch_sidecars`
+> injects `PYTHONPATH=<repo>/src` into every sidecar's subprocess env (computed pre-loop from `__file__`).
+> Fixes `ModuleNotFoundError: No module named 'kenning'` when the orchestrator is started via the system Python
+> launcher (env carries no `PYTHONPATH`); sidecar `Popen` inherits `dict(os.environ)` which lacked the src path.
+>
+> **PREVIOUS — STOP-WINDOW CHAT TOGGLE (2026-06-23 `0253300`):**
 > Targeted regression: 859 passed, 0 failed (turbo + twitch + new chat-toggle tests).
 >
 > **Stop-window CHAT toggle (2026-06-23):** `src/kenning/audio/stop_button.py` — new
