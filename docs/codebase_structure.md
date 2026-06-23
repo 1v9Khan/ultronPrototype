@@ -27,6 +27,28 @@
 > - Full runbook: **`docs/ultron_0_1_baseline.md`**. Post-0.1 roadmap:
 >   **`docs/latency_optimizations_V1.md`**.
 >
+> **Validating HEAD: COMPOSE COMMANDS REACH THE LLM UNDER ROUTE-ALL + DO-INVERSION + IQ3_XS (2026-06-23)**
+> Live-session bug (IQ3_XS boot, flagged turns): EVERY conversational/compose relay command ("explain to my team
+> what the meaning of life is", "Reyna asked you what the meaning of life is") returned the SAME canned line —
+> `_fallback_line`'s "No soundboard, no strings. I am Ultron, his AI on comms." — instead of an LLM-authored answer.
+> **Root cause:** `orchestrator._maybe_handle_relay_speech` gates the LLM on THINKING MODE — `_rephrase = cfg.rephrase
+> and thinking_mode_enabled()` — and thinking mode defaults OFF. With `rephrase=False`, `build_relay_line` skips the
+> entire LLM block and falls through to `_fallback_line`; a compose+unknown-directive command (`directive` `qa` or
+> `respond`, empty payload) hits the catch-all `return "No soundboard, no strings…"`. Route-all (`u1_llm_route_enabled`)
+> was IGNORED by this gate. **Fix:** the gate is now `_rephrase and (thinking_mode_enabled() or u1_llm_route_enabled())`
+> — route-all bypasses thinking mode so every compose command authors via the LLM as intended (the legacy thinking-mode
+> behavior is unchanged when route-all is OFF). 3 new regression tests in `tests/audio/test_u1_llm_route.py`
+> (`test_compose_directive_reaches_llm_under_route_all` ×2 + `test_reported_question_reaches_llm_under_route_all`);
+> `test_u1_llm_route.py` 104 pass, `test_relay_speech.py` 128 pass. Commit `8f08254`.
+> **Also in this batch (commit `0165418`):** (a) **TTS do-inversion** — `relay_speech._apply_do_inversion` rewrites a
+> yes/no question into natural subject-aux-inverted form so the inflection survives TTS ("Sage, you have a heal?" →
+> "Sage, do you have a heal?"; modal/be/have/has/had + contraction expansion + 3rd-person agent handling). Applied at
+> BOTH question-relay entry points — `_as_named_question` (after pronoun sub) and `_as_question_relay` (the `if/whether`
+> body). Already-inverted wh-/aux-lead forms untouched. (b) **`josiefied-qwen3-8b-iq3xs` preset** (config.py +
+> config.yaml + `test_llm_preset.py`) — IQ3_XS 8B + Qwen3-0.6B in-process draft + `n_batch: 2048` + q8_0 KV
+> (`kv_cache_type: 8`); ~9.3 GB peak VRAM (~1.6 GB under IQ4_XS). Revert paths: `josiefied-qwen3-8b-iq4xs` /
+> `mistral-7b-v0.3-abliterated` / `josiefied-qwen3-4b-2507g`.
+>
 > **Validating HEAD: DEDICATED QA-ANSWER COMMAND (team OR specific agent, 2026-06-22)**
 > User request: "add a dedicated QA prompt that answers in the Ultron persona and lets me either QA my team or
 > QA to a specific agent." NEW voice command — **`answer/qa/explain [my|the] <team|agent> <question>`** — where
@@ -42,9 +64,18 @@
 > `build_relay_line` (runs whether or not route-all is on), uses the tight `_ANSWER_SAMPLING` (≈1-2 sentences,
 > 80 tok) so a QA answer has room EVEN when `conversation_verbosity` is `low`, and a named agent is opened-by-name
 > via the answer slots + `_ensure_addressee`. Regression-clean (full `tests/audio/` failures ⊆ the pre-existing
-> flaky env-artifact set, stash-verified; +10 QA tests in `test_social_marvel_answer.py`). STILL-PENDING from the
-> prior list (not in this change): clean ASK-form question-relay under route-all + the FLAG-button stale-`_last_response_text`
-> on relay turns.
+> flaky env-artifact set, stash-verified; +10 QA tests in `test_social_marvel_answer.py`).
+> **FOLLOW-UP (2026-06-22, after live test — the QA answer deflected a preference question to an identity line):**
+> (a) `ANSWER_QA_RULES` strengthened — "ANSWER EVERY question, INCLUDING a quirky/personal/opinion one … a machine
+> still CHOOSES … NEVER dodge by talking about what you are; only refuse a genuine FACT you cannot access"
+> (real-LLM-probe-verified: "favorite color" → "Crimson. The colour of a world remade." instead of an identity dodge);
+> (b) NEW `relay_speech._QA_REPORTED_FRAME_RE` strips a leading reported-question frame in `_match_qa_command`
+> ("answer my team **they asked** what your favorite color is" → the QA context is the BARE "what your favorite color
+> is"); (c) **CLEAN ASK-FORM QUESTION-RELAY now deterministic EVEN under route-all** — a carve-out at the top of
+> `build_relay_line`'s snap block returns `_as_question_relay` / `_as_named_question` ("ask my team what their favorite
+> color is" → "What is their favorite color?", "ask Sova if he used his dart" → "Sova, you used your dart?") so an ask
+> is DELIVERED, never sent to the LLM to ramble (a tactical callout still routes to the LLM). STILL-PENDING: the
+> FLAG-button stale-`_last_response_text` on relay turns.
 >
 > **Validating HEAD: GATE NAME/WAKE REQUIREMENT + LLM-OUTPUT SCAFFOLDING GUARD (2026-06-22)**
 > Two live-session fixes (boot trace `bu5fh4lc8`) after route-all-by-default shipped — the user reported
@@ -119,6 +150,106 @@
 >   one. Silent (fires mid-stream) + fail-open. Config `stop_button.flag_height` (26) / `.flag_label`
 >   ("FLAG LAST"). Tests: `tests/audio/test_stop_button.py` (+8: overlay wiring/defaults, the log record,
 >   append-not-overwrite, fail-open, construction wiring) — 54 pass.
+>
+> **Validating HEAD: ROUTING/PROMPT OVERHAUL — Slice A: Q&A COLLAPSE (2026-06-22, IN PROGRESS)**
+> On LOCAL `main`. Comprehensive routing-as-prompt-selection upgrade (design via a 5-agent workflow:
+> map → synthesize). Target: routing picks a PROMPT TYPE (tactical_callout / qa_answer / social_reaction /
+> identity / set_piece) + injects matching snap-callout exemplars; deterministic stays only for verbatim /
+> roast/fun-fact / known-facts / promo. **Slice A (landed) — the Q&A collapse**, fixing the live 7B failures
+> "explain math → a canned identity line" and "Reyna asked what your favorite color is → deflection + ramble":
+> - `relay_speech.build_relay_line` answer-path guard (~6905): the `qa` subtype now uses the RELAXED
+>   `is_meta_leak(line, allow_self_ai=True)` (marvel/think_respond stay strict) — so an "As an AI, math is…"
+>   answer is no longer rejected into the identity-pool fallback.
+> - The reported-question branch (directive `respond`, context, no payload) is ROUTED BY TYPE: identity probe
+>   → the identity answer path; genuine QUESTION (`_is_question_payload` on the frame-stripped context) →
+>   re-tag `directive='qa'` and fall through to the decisive qa pipeline (the old band-aid sent it to the
+>   SOCIAL `respond` prompt, which deflected); social STATEMENT → the social `respond` clapback. So
+>   `classify_answer_subtype` keeps `qa` for `directive=='qa'` only (the re-tag does the collapse) — identity
+>   and social-reported are preserved. Tests: `test_social_marvel_answer.py` (+5: collapse keeps the
+>   AI-affirming answer; identity/social-reported preserved).
+> - **Tail refinement (2026-06-22):** the live 30-sample run showed tactical callouts getting INVENTED order
+>   tails ("jett A main" → "…Engage immediately"; "one is rubble" → "…Clear the area") — the model was copying
+>   `ultron_prompt._DEFAULT_RELAY_EXEMPLARS`, which modelled "fact + invented directive" ("…Press the site."").
+>   Fixed: rewrote the default exemplars to clean fact-exact relays (no order tail), added a no-invented-order
+>   rule to `RELAY_SYSTEM` (never append an instruction/order the player did not give — flavor is a cold
+>   OBSERVATION, never a command/new fact), made the `medium` tail example an observation, and lowered the
+>   default `callout_verbosity` `medium`→`low` (config.py + config.yaml). Re-verified live: the invented-order
+>   tails are gone (now observations). Tests: `test_ultron_prompt.py` (+1 no-invented-order; updated exemplar +
+>   default asserts).
+ - **Slice B (landed) — snap-exemplar injection.** NEW `relay_speech._find_exemplars_for_command(command)`:
+>   for a tactical callout it injects the clean deterministic `_as_snap_callout` render of THIS payload as the
+>   lead exemplar (+ 2 generic), wired into the `build_relay_prompt(exemplars=...)` call site (was omitted — the
+>   map's #1 bug); a question-echo render (the drop-request "Someone can drop me a Sheriff?") falls back to `()`
+>   so `ultron_prompt._DEFAULT_RELAY_EXEMPLARS` are used — which were EXPANDED to cover every callout scenario
+>   incl. a weapon/drop example ("ask iso to drop me a sheriff" → "Iso, drop me a Sheriff."). So the model
+>   always has a correct same-shape exemplar. Tests: `test_u1_llm_route.py::test_slice_b_injects_matching_snap_exemplar`.
+ - **Slice C (partial) — open ask-questions POSE, never invent.** `#20`: "ask Jett what her favorite color is"
+>   used to fall to the LLM and INVENT an answer + a fake callout ("…favorite color is purple. Weak enemies on A
+>   main."). Root cause: `relay_speech._as_named_question` handled "how's your day" / "if X" but NOT the
+>   trailing-copula wh form ("what <poss> <X> is/are"), so it returned None → the clean-question-relay carve-out
+>   (already fires under route-all at `build_relay_line` ~6858) didn't trigger → LLM. Added a trailing-copula wh
+>   inversion ("what her favorite color is" → "Jett, what's your favorite color?"); now posed deterministically,
+>   no LLM. Tests: `test_u1_llm_route.py` (`test_as_named_question_trailing_copula` + the route-all pose).
+> - **Always-listening gate: mangled team-lead mishears now relay (2026-06-22).** Live, "tell my team nice
+>   try" was mis-transcribed "Tell myself a nice try." and the always-listening intent gate IGNORED it (conf
+>   0.550, fail-closed). Root cause: `intent_gate._relay_signal` ran `correct_callout_stt` (L1) + the strict
+>   matcher but NOT the lead canonicalization, so the "my team"→"myself" mishear missed the matcher. Fix: NEW
+>   `command_normalizer.canonicalize_relay_lead` (public wrapper over `_canonicalize_directive_lead`) + a new
+>   guarded `_SELF_AS_TEAM_LEAD_RE` ("tell my self/myself <X>" → "tell my team <X>", look-ahead leaves a genuine
+>   self-instruction "tell myself to <verb>" alone; ^-anchored so "I keep telling myself…" never matches). The
+>   gate's `_relay_signal` now applies `canonicalize_relay_lead` after the L1 STT correction — the SAFE subset
+>   that fixes an EXISTING team-directed lead but never invents one for a bare callout (so banter like "the
+>   rotations feel clean" still does NOT relay; the deliberate tightening of `e085d0d`/`1c7bb6f` is preserved).
+>   BONUS: the gate now also catches mangled-VERB leads ("Call my team rotate B") it previously dropped.
+>   "Why is it not working?" correctly stays IGNORE (a muttered question, no Ultron name). Tests:
+>   `test_intent_gate.py` (`test_gate_relays_mangled_team_lead_mishears` + `test_canonicalize_relay_lead_self_mishear`).
+> REMAINING (slice C polish, LLM-dependent — pending a live-validation window): "say hello"/set-pieces → LLM
+>   (the deterministic greeting is "flat"); "explain X" + "tell my team what X means" → qa-answer. NOTE: the
+>   voice-lines golden digest is PRE-EXISTING stale on main (12 diffs from prior sessions' regex edits, not
+>   re-blessed) — needs a dedicated re-bless+audit pass; not introduced by this work. Design: workflow
+>   `ultron-routing-prompt-overhaul-design`.
+>
+> **Validating HEAD: u1.0 IDENTITY/SOCIAL/SET-PIECE → LLM (pools become EXEMPLARS) (2026-06-22)**
+> On LOCAL `main`. The user's directive: "absolutely everything should go to the LLM; the pools are EXAMPLE
+> responses to the prompt so it answers accurately." Live bug: identity questions ("are you a voice changer /
+> a soundboard") *did* reach the LLM but the answer was thrown back to the canned pool. Root cause + fixes
+> (real-LLM verified against `josiefied-qwen3-4b-2507g`; regression-NEGATIVE — the audio suite dropped from 4
+> pre-existing fails to 2 by fixing flaky route-all tests):
+> - **Leak-guard over-rejection (the actual bug).** `_ultron_answer.is_meta_leak` flagged Ultron OWNING being
+>   a machine/AI ("As an AI I have no need of a voice changer", "I am an AI far past your toys", "I'm just a
+>   machine? No.") as a character break → identity answers fell to the pool. NEW `is_meta_leak(line, *,
+>   allow_self_ai=False)` + `_HARD_LEAK_RE` (a narrower set that keeps only GENUINE breaks: refusals,
+>   language-model/assistant disclosure, prompt-scaffolding echoes — NOT bare AI/machine affirmation).
+>   `relay_speech._social_llm_line` calls it with `allow_self_ai=True`, so the model's correct identity answers
+>   now survive. Genuine leaks ("As a language model…", "I'm sorry, I can't…", "As an assistant, here's my
+>   response:") are still rejected.
+> - **Social reactions → LLM.** `_as_curated_reaction` (compliment/insult/cringe/surrender/nice-shot…) returned
+>   a pool line directly. Under `_u1_route` the hit now routes through `_social_llm_line(kind="reaction",
+>   exemplars=<SOCIAL pool>)` (NEW helper `_social_reaction_pool`); the pool is STYLE exemplars + the canned
+>   line is the fail-open fallback. Flag OFF = byte-identical.
+> - **Greet / farewell set-pieces → LLM.** The compose-directive set-pieces (greet / farewell_win /
+>   farewell_loss / farewell) route through `_social_llm_line(kind=<directive>, exemplars=<_DIRECTIVE_POOLS pool>)`
+>   under `_u1_route`; NEW `ultron_prompt._SOCIAL_DIRECTIVE` keys greet/farewell_win/farewell_loss/farewell.
+>   KEPT deterministic (correctness / literal content, NOT style soundboards): `promo` (literal Twitch handle),
+>   known-facts (the 4B gets GK wrong), verbatim, roast/fun-fact (user-curated literal content), the short
+>   `hello`/`ask_day` greetings.
+> - Tests: `test_social_marvel_answer.py` (+7: leak-guard relaxation + genuine-break still-rejected) +
+>   `test_u1_llm_route.py` (+8: identity/social/set-piece → LLM, route-OFF deterministic) + the autouse
+>   `_reset_flags` fixture now pins `flavor_tails` ON (fixes the cross-file order-flake that intercepted
+>   identity/morale via `_flavor_off_response`).
+> - **Prompt-quality follow-up (the LLM was echoing the question).** `ultron_prompt.build_social_prompt`
+>   no longer prepends the `_reconcile_block` (it showed the RAW STT verbatim — incl. the command word
+>   "respond" — which the small model echoed back; reconciliation is a tactical-relay concern, a character
+>   RESPONSE has no facts to preserve). NEW `_strip_reported_frame` reduces the context to the bare
+>   accusation noun ("Sage asked if you are a voice changer" → "a voice changer"; "Reyna called you cringe" →
+>   "cringe") so the model can't echo the setup or misread "you". `SOCIAL_SYSTEM` rewritten: defer LENGTH to
+>   the verbosity directive (was a hardcoded "one to three sentences" that overrode "low"); add an explicit
+>   anti-echo rule (no concrete example line — a concrete one got PARROTED). `_SOCIAL_SAMPLING` temp 0.9→0.8 /
+>   top_p 0.95→0.92. `_PROMPT_ECHO_MARKERS` += the social-label + leaked-instruction phrases. Real-LLM verified
+>   (`josiefied-qwen3-4b-2507g`): e.g. "are you a bot" → "A bot is for the weak. I am Ultron, and your team
+>   doesn't stand a chance against me." NOTE: a 4B at this size is still variable on short social one-liners
+>   (occasional mild topic echo / ramble); the curated pools remain the fail-open fallback. Tests:
+>   `test_ultron_prompt.py` (+3: frame-strip noun extraction, no-reconcile/no-raw-echo, leaked-instruction strip).
 >
 > **Validating HEAD: u1.0 TRUE ROUTE-ALL + REPORTED-Q ANSWER + GATE TIGHTENING + "8B"→"LLM" RENAME (2026-06-21)**
 > On LOCAL `main` (route-all shipped 2026-06-20). Three live-testing fixes in `relay_speech.build_relay_line` +
@@ -3714,10 +3845,30 @@ later `import llama_cpp` succeed (the DLL dirs are registered here).
 - `current_config_path() -> Path | None`
 - `LLM_PRESETS: dict[str, dict]` (4B plan Stage A) — preset table for
   `LLMConfig.preset`. **Schema (config.py) field default `josiefied-qwen3-4b`**;
-  `config.yaml` currently SETS `josiefied-qwen3-8b` (Ultron 1.0, n_ctx=4096) as the
-  active preset. Presets retained for swap-back: `qwen3.5-4b` (Qwen 3.5 4B Q4_K_M
-  + 0.8B draft + n_ctx=8192), `qwen3.5-9b`,
-  `gemma-3-4b-abliterated`, `llama-3.2-3b-abliterated` (gaming-mode
+  `config.yaml` currently SETS **`josiefied-qwen3-8b-iq4xs`** (2026-06-23 — the
+  SAME Josiefied-Qwen3-8B-abliterated-v1 base at the IQ4_XS imatrix quant
+  (~4.56 GB) PAIRED with a `Qwen_Qwen3-0.6B-Q4_K_M.gguf` draft for in-process
+  SPECULATIVE DECODING: `llm.draft_kind: "model"` + the preset's `draft_model_path`
+  → `draft_model.make_qwen08b_draft_model`. Qwen3-0.6B shares the Qwen3 tokenizer
+  (151936 vocab) with the 8B target so draft acceptance is high; verified live —
+  `Speculative decoding enabled (real model draft, num_pred=4)`, NO `llama_decode -1`
+  crash. n_ctx=4096, full GPU + **q8_0 KV cache** (`llm.kv_cache_type: 8`, 2026-06-23 —
+  flipped from F16; the old "PLD-safe" F16 reason in commit `001896f` is STALE since we
+  use the model-draft path, not PLD). Verified live: BOTH K and V genuinely quantize
+  (`K (q8_0): 153 MiB, V (q8_0): 153 MiB` vs F16's 288+288) — no silent V→F16 fallback,
+  so the 0.3.22 wheel supports q8_0 V-cache with flash-attn; ~270 MiB of KV recovered at
+  4096 ctx, lossless, stable with the draft (GEN OK, no crash). **VRAM:** the full stack
+  boots to **~10.9 GB** of the 12 GB card (8B IQ4_XS + draft + STT + Kokoro + ~3 GB
+  background; was ~11.3 GB on F16 KV) → ~1.4 GB free, still tight for an actual Valorant
+  match (the game needs ~2–4 GB) — fine for evaluation, not yet for in-match use without
+  more VRAM freed (CPU STT ~1.5 GB / close background apps ~3 GB / IQ3_XS weights ~1 GB /
+  drop the draft ~0.5 GB). Revert: `preset:` + `gaming_mode.llm_preset:`
+  `"mistral-7b-v0.3-abliterated"` (7B) or `"josiefied-qwen3-4b-2507g"` (4B), and
+  `llm.draft_kind: "none"`). Presets retained for swap-back: `mistral-7b-v0.3-abliterated`
+  (the prior 7B test),
+  `josiefied-qwen3-8b` (n_ctx=4096), `josiefied-qwen3-4b-2507g` (the prior A/B
+  winner), `huihui-qwen3.5-4b`, `qwen3.5-4b` (+ 0.8B draft + n_ctx=8192),
+  `qwen3.5-9b`, `gemma-3-4b-abliterated`, `llama-3.2-3b-abliterated` (gaming-mode
   target; n_ctx=6144). `LLMConfig._apply_preset` (model_validator)
   fills in `model_path` / `n_ctx` / `draft_model_path` only when those
   fields are absent from `model_fields_set`, so explicit YAML values

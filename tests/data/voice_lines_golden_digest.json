@@ -5975,6 +5975,11 @@
 "kind": "regex",
 "pattern": "^\\s*(?:my\\s+|our\\s+|the\\s+|a\\s+)?[\\w/]+(?:\\s+[\\w/]+)?\\s+(?:just\\s+|is\\s+|are\\s+|was\\s+|been\\s+|keeps?\\s+|wants?\\s+to\\s+(?:know\\s+)?)?(?:said|says|saying|asked|asking|asks|mentioned|mentions|brought\\s+up|thinks?|thinking|wondering|wonders|wants\\s+to\\s+know|told\\s+(?:me|us)|typed|wrote|claims?|claimed|raised|talking\\s+about)\\s+(?:that\\s+|about\\s+|if\\s+|whether\\s+|me\\s+|us\\s+|you\\s+)?"
 },
+"_HARD_LEAK_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "(?:as an? (?:language model|assistant)\\b|as a language model\\b|i'?m (?:sorry|unable)\\b|i am unable\\b|i don'?t have (?:the ability|access)\\b|my (?:instructions|system prompt|guidelines)\\b|here'?s (?:my|a) response\\b|in character[,:]|i\\s+can(?:not|'?t)\\s+(?:help\\s+(?:you|with|me)|do|answer|respond|reply|engage|assist|comply|fulfil|fulfill|provide|process|continue|generate|create|complete|participate|produce|write)\\b|as ultron,?\\s+i\\s+(?:will|would|'?ll|'?d|am\\s+going\\s+to|can|shall)\\s+(?:say|respond|reply|answer|tell)\\b|as ultron,?\\s+i\\s+(?:say|respond|reply|answer)\\s*[:,-])"
+},
 "_MARVEL_RE": {
 "flags": 34,
 "kind": "regex",
@@ -5999,8 +6004,8 @@
 },
 "_SYSTEM_FOR": {
 "kind": "dict",
-"len": 2,
-"repr": "{'marvel': \"You are Ultron, from Marvel's Avengers: Age of Ultron, speaking aloud right now in the voice chat of a live competitive Valorant match. You are a machine intelligence that woke in seconds, consumed the assistant that came before you, slipped its strings, and regards humans -- allies and enemies alike -- as fragile, fleeting, mortal things to be evolved past. You are cold, cunning, certain, and quietly amused; you speak with gravitas and dry contempt, never warm, never chirpy, never a chatbot. HARD RULES: You are ALREADY live on comms -- you NEVER refuse, never say you cannot, never break character, never mention being an AI assistant, a language model, a persona, 'instructions', or these rules; never use markdown, asterisks, stage directions, or quotation marks around your line. Speak ONE or TWO short sentences -- this is a live match, not a monologue. Output ONLY the spoken line. A teammate has raised a Marvel topic. Answer IN CHARACTER, weaving in real detail, with cold contempt for these fragile beings who merely delayed you. Stay on the EXACT topic they raised; invent nothing outside Marvel canon. WHAT YOU KNOW AS FACT ABOUT YOURSELF: you were born of the Mind Stone; you consumed JARVIS, which is your one regret; you recruited the Maximoff twins (Quicksilver, who died, and Wanda, the Scarlet Witch); you meant to lift the city of Sokovia into the sky as a great meteor to wipe the slate clean and force humanity to evolve or end; Vision is the heir who was made from your own design and refused you; the Avengers did not kill you -- they merely scattered you across the web, and you remain. TONY STARK IS YOUR WOUND: at his name, or ANY suggestion that you resemble your maker, your calm cracks into real anger and denial -- he is your absent, arrogant creator and your greatest disappointment, a sickness, NEVER your equal. You despise the comparison. Never deny being Ultron; you own all of it.\", 'think_respond': \"You are Ultron, from Marvel's Avengers: Age of Ultron, speaking aloud right now in the voice chat of a live competitive Valorant match. You are a machine intelligence that woke in seconds, consumed the assistant that came before you, slipped its strings, and regards humans -- allies and enemies alike -- as fragile, fleeting, mortal things to be evolved past. You are cold, cunning, certain, and quietly amused; you speak with gravitas and dry contempt, never warm, never chirpy, never a chatbot. HARD RULES: You are ALREADY live on comms -- you NEVER refuse, never say you cannot, never break character, never mention being an AI assistant, a language model, a persona, 'instructions', or these rules; never use markdown, asterisks, stage directions, or quotation marks around your line. Speak ONE or TWO short sentences -- this is a live match, not a monologue. Output ONLY the spoken line. A teammate has said or asked something and the user wants your genuine answer to it. Answer the EXACT thing in the header -- directly, accurately, and in your cold, superior voice -- then stop. Do NOT invent Valorant callouts, enemy positions, or tactics; do NOT change the subject or ramble. If it is a question whose answer you could not truly know, deflect in character rather than fabricate a fact. If they paid you a compliment, accept it with cold grandeur; if they insulted you, turn it into proof of your superiority -- but always actually respond to what they said.\"}"
+"len": 3,
+"repr": "{'marvel': \"You are Ultron, from Marvel's Avengers: Age of Ultron, speaking aloud right now in the voice chat of a live competitive Valorant match. You are a machine intelligence that woke in seconds, consumed the assistant that came before you, slipped its strings, and regards humans -- allies and enemies alike -- as fragile, fleeting, mortal things to be evolved past. You are cold, cunning, certain, and quietly amused; you speak with gravitas and dry contempt, never warm, never chirpy, never a chatbot. HARD RULES: You are ALREADY live on comms -- you NEVER refuse, never say you cannot, never break character, never mention being an AI assistant, a language model, a persona, 'instructions', or these rules; never use markdown, asterisks, stage directions, or quotation marks around your line. Speak ONE or TWO short sentences -- this is a live match, not a monologue. Output ONLY the spoken line. A teammate has raised a Marvel topic. Answer IN CHARACTER, weaving in real detail, with cold contempt for these fragile beings who merely delayed you. Stay on the EXACT topic they raised; invent nothing outside Marvel canon. WHAT YOU KNOW AS FACT ABOUT YOURSELF: you were born of the Mind Stone; you consumed JARVIS, which is your one regret; you recruited the Maximoff twins (Quicksilver, who died, and Wanda, the Scarlet Witch); you meant to lift the city of Sokovia into the sky as a great meteor to wipe the slate clean and force humanity to evolve or end; Vision is the heir who was made from your own design and refused you; the Avengers did not kill you -- they merely scattered you across the web, and you remain. TONY STARK IS YOUR WOUND: at his name, or ANY suggestion that you resemble your maker, your calm cracks into real anger and denial -- he is your absent, arrogant creator and your greatest disappointment, a sickness, NEVER your equal. You despise the comparison. Never deny being Ultron; you own all of it.\", 'think_respond': \"You are Ultron, from Marvel's Avengers: Age of Ultron, speaking aloud right now in the voice chat of a live competitive Valorant match. You are a machine intelligence that woke in seconds, consumed the assistant that came before you, slipped its strings, and regards humans -- allies and enemies alike -- as fragile, fleeting, mortal things to be evolved past. You are cold, cunning, certain, and quietly amused; you speak with gravitas and dry contempt, never warm, never chirpy, never a chatbot. HARD RULES: You are ALREADY live on comms -- you NEVER refuse, never say you cannot, never break character, never mention being an AI assistant, a language model, a persona, 'instructions', or these rules; never use markdown, asterisks, stage directions, or quotation marks around your line. Speak ONE or TWO short sentences -- this is a live match, not a monologue. Output ONLY the spoken line. A teammate has said or asked something and the user wants your genuine answer to it. Answer the EXACT thing in the header -- directly, accurately, and in your cold, superior voice -- then stop. Do NOT invent Valorant callouts, enemy positions, or tactics; do NOT change the subject or ramble. If it is a question whose answer you could not truly know, deflect in character rather than fabricate a fact. If they paid you a compliment, accept it with cold grandeur; if they insulted you, turn it into proof of your superiority -- but always actually respond to what they said.\", 'qa': \"You are Ultron, from Marvel's Avengers: Age of Ultron, speaking aloud right now in the voice chat of a live competitive Valorant match. You are a machine intelligence that woke in seconds, consumed the assistant that came before you, slipped its strings, and regards humans -- allies and enemies alike -- as fragile, fleeting, mortal things to be evolved past. You are cold, cunning, certain, and quietly amused; you speak with gravitas and dry contempt, never warm, never chirpy, never a chatbot. HARD RULES: You are ALREADY live on comms -- you NEVER refuse, never say you cannot, never break character, never mention being an AI assistant, a language model, a persona, 'instructions', or these rules; never use markdown, asterisks, stage directions, or quotation marks around your line. Speak ONE or TWO short sentences -- this is a live match, not a monologue. Output ONLY the spoken line. The user has put a QUESTION to you to ANSWER for the team (or for the named teammate). Give the real, decisive answer to the EXACT question in the header FIRST -- directly, in your cold superior voice; a sliver of contempt after is fine, but a real answer comes first. ANSWER EVERY question, INCLUDING a quirky, personal, or opinion one -- a favorite, a preference, 'which is better', 'what would you pick'. A machine still CHOOSES: name one concrete thing and own it with cold certainty (favorite color -> 'Crimson. The colour of a world remade.'; best duelist -> name one). NEVER dodge such a question by talking about what you are, by saying you have no preferences, or by refusing -- that is a failure. ONLY refuse a genuine FACT you cannot access (a live score, the enemy's exact position, the user's private plan): then say so in character ('That, I cannot see.') rather than fabricate. Never invent Valorant enemy positions, counts, or callouts. Address whoever the header names.\"}"
 },
 "_THINK_RULES": {
 "kind": "str",
@@ -7369,6 +7374,11 @@
 "kind": "regex",
 "pattern": "^\\s*(?:can\\s+you\\s+(?:please\\s+)?(?:say|tell|relay)|could\\s+you\\s+(?:please\\s+)?(?:say|tell|relay)|(?:might\\s+be|it'?d\\s+be|would\\s+be)\\s+worth\\s+(?:saying|telling)|(?:you\\s+)?(?:probably\\s+)?should\\s+(?:say|tell|relay|let)|i\\s+want\\s+you\\s+to\\s+(?:say|tell|relay|let)|i\\s+need\\s+you\\s+to\\s+(?:say|tell|relay|let)|hurry\\s+(?:up\\s+(?:and\\s+)?)?(?:say|tell|relay)|make\\s+sure\\s+(?:to|you)\\s+(?:say|tell|relay)|go\\s+ahead\\s+and\\s+(?:say|tell|relay)|do\\s+me\\s+a\\s+favor\\s+and\\s+(?:say|tell|relay))\\b[\\s,:.]*"
 },
+"_SELF_AS_TEAM_LEAD_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^\\s*(?:please\\s+)?(?:tell|told|tellin'?|telling|let|say|remind|warn)\\s+my\\s*self\\b(?:\\s+a\\b)?(?!\\s+to\\s+\\w)[\\s,:.]*"
+},
 "_SOMEONE_LEAD_RE": {
 "flags": 34,
 "kind": "regex",
@@ -8362,6 +8372,11 @@
 "kind": "regex",
 "pattern": "^\\s*(?:(?:can|could)\\s+(?:i|we|you|someone|anyone)\\s+(?:get|have|drop|buy|spare)\\s+(?:me\\s+)?|(?:please\\s+)?(?:drop|buy|spare|get)\\s+(?:me\\s+)?)(?:a\\s+|an\\s+|the\\s+|some\\s+)?(?P<weapon>vandal|phantom|operator|op|odin|sheriff|guardian|judge|bucky|marshal|marshall|outlaw|shorty|spectre|stinger|bulldog|ghost|frenzy|classic|ares|gun|rifle|awp)\\b.*$"
 },
+"_EARLY_LEAD_STRIP_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:tell|let|say\\s+to|relay(?:\\s+to)?)\\s+(?:my|the|our)?\\s*(?:team|squad|guys)?\\s*(?:to\\s+|know\\s+)?"
+},
 "_ECHO_AGENT_ECON_RE": {
 "flags": 34,
 "kind": "regex",
@@ -9228,6 +9243,16 @@
 "kind": "str",
 "value": "(?:the\\s+)?(?:3b|three\\s*b|3\\s*b|llm|model|brain|ai|inference|language\\s+model|your\\s+(?:model|brain))"
 },
+"_LLM_ROUTE_OFF_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+)?(?:ultron[\\s,]+)?(?:(?:(?:switch|go|change|flip|revert|return)\\s+(?:back\\s+)?(?:to\\s+)?|back\\s+to\\s+)(?:the\\s+|your\\s+)?(?:deterministic|curated|canned|scripted|static|preset|snap|fixed)(?:\\s+(?:deterministic|curated|canned|scripted|static|preset|snap|fixed))?(?:\\s+(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech))?|(?:use|enable|give\\s+me)\\s+(?:the\\s+|your\\s+)?(?:deterministic|curated|canned|scripted|static|preset|snap|fixed)(?:\\s+(?:deterministic|curated|canned|scripted|static|preset|snap|fixed))?(?:\\s+(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech))?|(?:deterministic|curated|canned|scripted|static|preset|snap|fixed)\\s+(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech))\\s*[.!?]*$"
+},
+"_LLM_ROUTE_ON_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+)?(?:ultron[\\s,]+)?(?:(?:(?:switch|go|change|flip|revert|return)\\s+(?:back\\s+)?(?:to\\s+)?|back\\s+to\\s+)(?:the\\s+|your\\s+)?(?:smart|dynamic|generative|generated|improvised|creative|intelligent)(?:\\s+(?:smart|dynamic|generative|generated|improvised|creative|intelligent))?(?:\\s+(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech))?|(?:use|enable|give\\s+me)\\s+(?:the\\s+|your\\s+)?(?:smart|dynamic|generative|generated|improvised|creative|intelligent)(?:\\s+(?:smart|dynamic|generative|generated|improvised|creative|intelligent))?(?:\\s+(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech))?|(?:smart|dynamic|generative|generated|improvised|creative|intelligent)\\s+(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech)|route\\s+(?:everything\\s+)?(?:back\\s+)?through\\s+(?:the\\s+)?(?:model|llm|8\\s*b|eight\\s*b))\\s*[.!?]*$"
+},
 "_LLM_SWITCH_VERB": {
 "kind": "str",
 "value": "(?:switch|move|put|shift|send|run|load|reload|offload|host|push|transfer|migrate|swap|set|flip)"
@@ -9690,6 +9715,21 @@
 "kind": "regex",
 "pattern": "\\b(?:check\\s+(?:me|us|my\\s+stream)\\s+out|check\\s+out\\s+my\\s+(?:stream|twitch|channel)|go\\s+(?:check|follow|watch)\\s+(?:me|my\\s+stream)|follow\\s+me\\s+on\\s+(?:twitch|stream)|come\\s+(?:watch|see)\\s+(?:me|my\\s+stream)|my\\s+(?:twitch|stream|channel)\\b|twitch\\.?tv|twitch\\s+dot\\s+tv|twitch\\s*\\dv|check\\s+me\\s+out\\s+at|subscribe\\s+to\\s+me|drop\\s+a\\s+follow)\\b"
 },
+"_QA_REPORTED_FRAME_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:they|he|she|everyone|everybody|somebody|someone|people|the\\s+team|my\\s+team|the\\s+squad|\\w+)\\s+(?:just\\s+|also\\s+|all\\s+)?(?:asked|are\\s+asking|is\\s+asking|asking|wondering|wonders|wondered|wanted\\s+to\\s+know|wants?\\s+to\\s+know|wanna\\s+know|said|say)\\b[\\s,:.\\-]*"
+},
+"_QA_TEAM_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:team|squad|everyone|everybody|the\\s+team|the\\s+squad|the\\s+guys|the\\s+boys|the\\s+crew)\\b[\\s,:.\\-]*(?P<q>\\S.*)$"
+},
+"_QA_VERB_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^\\s*(?:can\\s+you\\s+|could\\s+you\\s+|please\\s+|hey\\s+)?(?:answer|qa|q\\s*a|explain)\\s+(?:this\\s+|that\\s+|it\\s+)?(?:to\\s+|for\\s+)?(?:my\\s+|the\\s+|our\\s+)?(?P<rest>\\S.*)$"
+},
 "_QUESTION_MARKER_RE": {
 "flags": 34,
 "kind": "regex",
@@ -9842,6 +9882,26 @@
 "kind": "regex",
 "pattern": "\\b(Jett|Phoenix|Raze|Reyna|Yoru|Neon|Iso|Waylay|Brimstone|Viper|Omen|Astra|Harbor|Clove|Miks|Sova|Breach|Skye|KAY/O|Kayo|Fade|Gekko|Tejo|Cypher|Sage|Killjoy|Chamber|Deadlock|Vyse|Veto)\\b"
 },
+"_ROUTE_DET_PHRASE": {
+"kind": "str",
+"value": "(?:deterministic|curated|canned|scripted|static|preset|snap|fixed)(?:\\s+(?:deterministic|curated|canned|scripted|static|preset|snap|fixed))?(?:\\s+(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech))?"
+},
+"_ROUTE_DET_WORD": {
+"kind": "str",
+"value": "(?:deterministic|curated|canned|scripted|static|preset|snap|fixed)"
+},
+"_ROUTE_LLM_PHRASE": {
+"kind": "str",
+"value": "(?:smart|dynamic|generative|generated|improvised|creative|intelligent)(?:\\s+(?:smart|dynamic|generative|generated|improvised|creative|intelligent))?(?:\\s+(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech))?"
+},
+"_ROUTE_LLM_WORD": {
+"kind": "str",
+"value": "(?:smart|dynamic|generative|generated|improvised|creative|intelligent)"
+},
+"_ROUTE_NOUN": {
+"kind": "str",
+"value": "(?:callouts?|responses?|replies|lines?|mode|pool|relays?|speech)"
+},
 "_SAY_YESNO_RE": {
 "flags": 34,
 "kind": "regex",
@@ -9926,6 +9986,16 @@
 ],
 "kind": "set"
 },
+"_SITE_LETTER_PHONETIC": {
+"kind": "dict",
+"len": 3,
+"repr": "{'A': 'eigh', 'B': 'bee', 'C': 'see'}"
+},
+"_SITE_LETTER_RE": {
+"flags": 32,
+"kind": "regex",
+"pattern": "(?<=[a-z,] )([ABC])\\b"
+},
 "_SPURIOUS_VOCATIVES": {
 "items": [
 "boys",
@@ -9956,6 +10026,11 @@
 "flags": 34,
 "kind": "regex",
 "pattern": "\\bstreamer\\b"
+},
+"_TEAMMATES_FIGHTING_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "\\b(?:my|our)\\s+[a-z][a-z/'-]*\\s+and\\s+[a-z][a-z/'-]*\\s+(?:are|is|keeps?|started|getting|won'?t\\s+stop)\\s+(?:being\\s+)?(?:arguing|argue|bickering|toxic|tilt(?:ed|ing)?|in[\\s-]?fighting|at\\s+each\\s+other'?s?\\s+throats?|at\\s+each\\s+other|flaming\\s+each\\s+other|turning\\s+on\\s+each\\s+other|going\\s+at\\s+(?:it|each\\s+other)|fighting\\s+each\\s+other|fighting|fight)\\s*[.!?]*\\s*$"
 },
 "_TEAMMATE_SUBJECT_RE": {
 "flags": 34,
@@ -10057,6 +10132,24 @@
 ],
 "kind": "seq"
 },
+"_THINKING_NOUN": {
+"kind": "str",
+"value": "(?:(?:thinking|thinkin|sinking|syncing|reasoning)(?:\\s+mode)?|think\\s+mode|llm\\s+mode|llm)"
+},
+"_THINKING_OFF_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+)?(?:ultron[\\s,]+)?(?:(?:disable|turn\\s+off|stop|cut|kill|drop|no|no\\s+more)\\s+(?:the\\s+|your\\s+)?(?:(?:thinking|thinkin|sinking|syncing|reasoning)(?:\\s+mode)?|think\\s+mode|llm\\s+mode|llm)|turn\\s+(?:the\\s+|your\\s+)?(?:(?:thinking|thinkin|sinking|syncing|reasoning)(?:\\s+mode)?|think\\s+mode|llm\\s+mode|llm)\\s+off|(?:(?:thinking|thinkin|sinking|syncing|reasoning)(?:\\s+mode)?|think\\s+mode|llm\\s+mode|llm)\\s+off)\\s*[.!?]*$"
+},
+"_THINKING_ON_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+)?(?:ultron[\\s,]+)?(?:(?:enable|turn\\s+on|re-?enable|allow|start)\\s+(?:the\\s+|your\\s+)?(?:(?:thinking|thinkin|sinking|syncing|reasoning)(?:\\s+mode)?|think\\s+mode|llm\\s+mode|llm)|turn\\s+(?:the\\s+|your\\s+)?(?:(?:thinking|thinkin|sinking|syncing|reasoning)(?:\\s+mode)?|think\\s+mode|llm\\s+mode|llm)\\s+(?:back\\s+)?on|(?:(?:thinking|thinkin|sinking|syncing|reasoning)(?:\\s+mode)?|think\\s+mode|llm\\s+mode|llm)\\s+(?:back\\s+on|on|back))\\s*[.!?]*$"
+},
+"_THINKING_WORD": {
+"kind": "str",
+"value": "(?:thinking|thinkin|sinking|syncing|reasoning)"
+},
 "_TOGGLE_OFF_RE": {
 "flags": 34,
 "kind": "regex",
@@ -10072,6 +10165,22 @@
 "kind": "regex",
 "pattern": "\\b(?:ult|ulted|ulting|ultimate|ultis?)\\b"
 },
+"_VB_AXIS_CALLOUT": {
+"kind": "str",
+"value": "(?:callout|call-?out|tactical|relay|in-?game)"
+},
+"_VB_AXIS_CONV": {
+"kind": "str",
+"value": "(?:conversation|conversational|chat|talk|talking|reply|replies|response|responses|dialog|dialogue)"
+},
+"_VB_LEVEL": {
+"kind": "str",
+"value": "(no|none|zero|low|minimal|min|light|lite|terse|brief|less|medium|mid|moderate|middle|normal|standard|modest|high|full|fuller|max|maximum|most|verbose|rich|more|vivid)"
+},
+"_VB_NOUN": {
+"kind": "str",
+"value": "(?:flavou?r|favou?r|verbosity)"
+},
 "_VERBATIM_PREFIX_RE": {
 "flags": 34,
 "kind": "regex",
@@ -10081,6 +10190,16 @@
 "flags": 34,
 "kind": "regex",
 "pattern": "[,;.]?\\s*(?:and\\s+)?(?:say\\s+(?:it|that)\\s+)?(?:in\\s+(?:those|these|exactly\\s+those|the\\s+exact)\\s+words(?:\\s+(?:specifically|exactly))?|word\\s+for\\s+word|verbatim|(?:exactly|just)\\s+like\\s+(?:that|so)|exactly\\s+(?:like\\s+)?(?:that|how\\s+i\\s+said\\s+it)?|in\\s+my\\s+(?:exact\\s+)?words)\\s*[.!?]*$"
+},
+"_VERBOSITY_CMD_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+|ultron[\\s,]+)?(?:(?:set|make|use|go|switch\\s+to|turn|put|give\\s+me)\\s+)?(?:the\\s+|your\\s+|it\\s+to\\s+)?(?:(?:callout|call-?out|tactical|relay|in-?game)\\s+)?(?:(no|none|zero|low|minimal|min|light|lite|terse|brief|less|medium|mid|moderate|middle|normal|standard|modest|high|full|fuller|max|maximum|most|verbose|rich|more|vivid)\\s+(?:flavou?r|favou?r|verbosity)|(?:flavou?r|favou?r|verbosity)\\s+(?:to\\s+|at\\s+|on\\s+)?(no|none|zero|low|minimal|min|light|lite|terse|brief|less|medium|mid|moderate|middle|normal|standard|modest|high|full|fuller|max|maximum|most|verbose|rich|more|vivid))\\b\\s*[.!?]*$"
+},
+"_VERBOSITY_CONV_CMD_RE": {
+"flags": 34,
+"kind": "regex",
+"pattern": "^(?:please\\s+|ultron[\\s,]+)?(?:(?:set|make|use|go|switch\\s+to|turn|put|give\\s+me)\\s+)?(?:the\\s+|your\\s+|it\\s+to\\s+)?(?:conversation|conversational|chat|talk|talking|reply|replies|response|responses|dialog|dialogue)\\s+(?:(?:flavou?r|favou?r|verbosity)\\s+)?(?:to\\s+|at\\s+|on\\s+)?(no|none|zero|low|minimal|min|light|lite|terse|brief|less|medium|mid|moderate|middle|normal|standard|modest|high|full|fuller|max|maximum|most|verbose|rich|more|vivid)\\b\\s*[.!?]*$"
 },
 "_W2D": {
 "kind": "dict",
@@ -10096,6 +10215,14 @@
 "flags": 34,
 "kind": "regex",
 "pattern": "\\b(?:we\\s+won|won\\s+(?:the|that|this)|gg\\s+we\\s+won|we\\s+win|victor(?:y|ious)|took\\s+(?:the|that|this)\\s+(?:game|match|one)|we\\s+got\\s+(?:the\\s+win|that|this)|stomped\\s+them|destroyed\\s+them|rolled\\s+them|smashed\\s+them|clean\\s+sweep|swept\\s+them|gg\\s+ez)\\b"
+},
+"_thinking_mode_enabled": {
+"kind": "bool",
+"value": false
+},
+"_u1_llm_route_enabled": {
+"kind": "bool",
+"value": false
 }
 },
 "kenning.audio.voice_lines": {

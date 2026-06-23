@@ -3830,11 +3830,21 @@ class Orchestrator:
         else:
             # THINKING MODE gates the LLM: when off (the default), force
             # rephrase=False so every compose command snaps from its
-            # deterministic pool instead of authoring via the 3B. Fail-open.
+            # deterministic pool instead of authoring via the 3B.
+            # EXCEPTION: when u1_llm_route_enabled() is on, EVERYTHING goes
+            # through the LLM -- thinking mode is irrelevant. Without this
+            # bypass, compose commands ("explain to my team X") fell through
+            # to _fallback_line() → "No soundboard, no strings." even with
+            # route-all active (the live bug where all conversational commands
+            # returned the same canned response). Fail-open.
             _rephrase = bool(getattr(cfg, "rephrase", True))
             try:
-                from kenning.audio.relay_speech import thinking_mode_enabled
-                _rephrase = _rephrase and thinking_mode_enabled()
+                from kenning.audio.relay_speech import (
+                    thinking_mode_enabled, u1_llm_route_enabled,
+                )
+                _rephrase = _rephrase and (
+                    thinking_mode_enabled() or u1_llm_route_enabled()
+                )
             except Exception as e:                                   # noqa: BLE001
                 logger.debug("thinking-mode gate skipped: %s", e)
             line = build_relay_line(

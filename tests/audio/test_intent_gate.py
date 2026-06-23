@@ -233,3 +233,31 @@ def test_common_noun_machine_robot_not_private(text: str) -> None:
     # unambiguous names (ultron / kenning / hey ai / the ai) gate a private reply.
     v = ig.classify_scenario(text, seconds_since_response=5.0)
     assert v.scenario is not Scenario.PRIVATE_REPLY, (text, v)
+
+
+# --- 2026-06-22: mangled team-lead mishears relay (the "tell myself" ignore) ---
+
+
+def test_gate_relays_mangled_team_lead_mishears():
+    # "tell my team nice try" mis-heard "Tell myself a nice try." was IGNORED by
+    # the always-listening gate (the relay signal missed the mangled lead). The
+    # gate now canonicalizes an EXISTING mangled team-directed lead before the
+    # strict matcher -- WITHOUT inventing a lead for a bare callout.
+    assert ig._relay_signal("Tell myself a nice try.", None) == 0.95
+    assert ig._relay_signal("tell my self good job", None) == 0.95
+    assert ig._relay_signal("Call my team to rotate B", None) == 0.95
+    # a genuine self-instruction is NOT relayed (the "to <verb>" guard)
+    assert ig._relay_signal("tell myself to calm down", None) is None
+    assert ig._relay_signal("tell myself to relax", None) is None
+    # banter still never false-relays (the reason the gate was tightened)
+    assert ig._relay_signal("the rotations feel clean", None) is None
+    assert ig._relay_signal("nice shot dude", None) is None
+
+
+def test_canonicalize_relay_lead_self_mishear():
+    from kenning.audio.command_normalizer import canonicalize_relay_lead
+    assert canonicalize_relay_lead("tell myself a nice try") == "tell my team nice try"
+    assert canonicalize_relay_lead("tell my self good job") == "tell my team good job"
+    # guarded: a self-instruction + a mid-utterance "telling myself" are left alone
+    assert canonicalize_relay_lead("tell myself to calm down") == "tell myself to calm down"
+    assert "tell my team" not in canonicalize_relay_lead("I keep telling myself to relax")

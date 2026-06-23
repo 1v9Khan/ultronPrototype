@@ -159,6 +159,17 @@ def _relay_signal(text: str, names: Optional[Sequence[str]]) -> Optional[float]:
         norm = correct_callout_stt(text) or text
     except Exception:  # noqa: BLE001
         norm = text
+    # Canonicalize a MANGLED but EXISTING team-directed relay lead -- "Call my team
+    # rotate B" / "tell myself a nice try" (== "tell my team nice try") mis-heard --
+    # so the strict matcher fires. This is the SAFE subset of normalization: it only
+    # fixes an EXISTING team-directed lead (team-noun-gated / the guarded self mishear),
+    # it NEVER invents one for a bare callout the way recover_relay_lead does, so it
+    # cannot false-relay banter ("the rotations feel clean" stays untouched).
+    try:
+        from kenning.audio.command_normalizer import canonicalize_relay_lead
+        norm = canonicalize_relay_lead(norm)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from kenning.audio import relay_speech as rs
         if rs.match_relay_command(norm, names=names) is not None:

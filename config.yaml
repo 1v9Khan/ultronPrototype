@@ -558,7 +558,7 @@ llm:
   # Kokoro adds ~1.5 GB) -> ~3 GB freed vs the 8B, which fixes the sysmem-fallback
   # spike. The voice model lab switches live (8B / 4B / 3.5 / 2507); "switch the
   # model to the CPU" hands the card back mid-match. Swap back: preset: "josiefied-qwen3-8b".
-  preset: "josiefied-qwen3-4b-2507g"  # 2026-06-20 VRAM A/B winner (was the 8B); voice lab still switches: "the 8B / the 4B / the 3.5 / 2507"
+  preset: "josiefied-qwen3-8b-iq3xs"  # 2026-06-23 8B IQ3_XS (~3.4GB) + Qwen3-0.6B Q4 draft, in-process speculative decoding (draft_kind: model below). full GPU, n_ctx 4096. QUALITY A/B vs IQ4_XS -- observe persona/instruction precision. Revert: "josiefied-qwen3-8b-iq4xs" (4.6GB), "mistral-7b-v0.3-abliterated" (7B), or "josiefied-qwen3-4b-2507g" (4B)
   # u1.0 VRAM hard cap: the research synthesis (C_model) shows >8K context
   # risks exceeding 10 GB and 40K OOMs; relay prompts fit well under 4k.
   # This explicit value overrides the preset's 8192.
@@ -580,8 +580,16 @@ llm:
   #              30-50% gen speedup. Caveat: uses the same llama-cpp
   #              verification batch as PLD, so MAY hit the same bug.
   #              Flip with verification.
-  draft_kind: "none"
+  draft_kind: "model"  # 2026-06-23: load the preset's Qwen3-0.6B draft as a real model-based draft for the IQ3_XS/IQ4_XS 8B preset. Revert to "none" if it crashes (llama_decode -1).
   model_draft_num_pred_tokens: 4
+  # 2026-06-23 TTFT/prefill batch change: llama-cpp-python defaults n_batch to
+  # 512 (NOT 2048 like llama-server). Bumping it lets the GPU prefill a longer
+  # prompt in one pass. NOTE: with the stable RELAY_SYSTEM prefix auto-reused by
+  # llama.cpp's in-context prefix match, per-call prefill is usually the short
+  # variable tail (< 512 tokens) so the win is modest -- it mainly helps the
+  # first (cold) call + any prompt that grows past 512 tokens. n_ubatch left at
+  # the 512 default to keep the CUDA compute buffer small (VRAM is tight).
+  n_batch: 2048
   # n_ctx: 16384
   # 4B optimization plan Stage G — where retrieved Qdrant memories
   # land in the LLM context.
@@ -626,7 +634,7 @@ llm:
   # ~20 ms TTFT win we get from in-process speculative decoding.
   # Reversible: set back to 8 if a future llama-cpp-python fixes the
   # flash_attn + Q8 + PLD interaction.
-  kv_cache_type: 1             # 8 = GGML_TYPE_Q8_0 (legacy); 1 = F16 (PLD-safe)
+  kv_cache_type: 8             # 2026-06-23: q8_0 (halves KV VRAM, ~lossless). Needs flash_attn (above). The old F16 "PLD-safe" reason (commit 001896f) is STALE -- we use the model-draft path now, not PLD. Revert to 1 (F16) if unstable.
   # 2026-05-16 latency pass 2: prefix KV cache (host RAM only). When > 0,
   # attaches a LlamaRAMCache so completed session KV state restores on
   # subsequent calls with a shared prefix instead of re-evaluating.
@@ -1690,7 +1698,7 @@ gaming_mode:
   barebones_skip_intent: true          # skip the in-process intent recognizer (duplicate embeddinggemma-300m q4; redundant while gaming)
   barebones_skip_ack_prewarm: true     # skip prewarming the ack-clip cache (conversational acks are suppressed in gaming)
   barebones_skip_reranker_warmup: true # skip the cross-encoder reranker warmup
-  barebones_direct_gaming_llm: true    # construct the LLM directly as the gaming preset (u1.0: the 4B 2507g on GPU, see llm_preset below)
+  barebones_direct_gaming_llm: true    # construct the LLM directly as the gaming preset (u1.0: the Mistral-7B on GPU, see llm_preset below)
   barebones_lazy_zero_shot_addressee: true  # lazy-load the flan-t5 addressee classifier
   llm_gpu_layers: -1                   # 2026-06-20 u1.0: the 4B relay model on GPU for fast LLM-authored relays (was 0=CPU; -1=all layers GPU)
   anticheat_with_gaming_mode: true     # (retained for back-compat; tie is unconditional)
@@ -1707,7 +1715,7 @@ gaming_mode:
   # Smaller LLM swapped in on engage to free ~1.5 GB VRAM for the game.
   # Disengage restores the prior preset. Set "" to disable the swap and
   # keep the standby LLM during gaming.
-  llm_preset: "josiefied-qwen3-4b-2507g"  # 2026-06-20 VRAM A/B: the 2507g 4B winner for relays (was the 8B); on GPU via llm_gpu_layers=-1; fixes the sysmem-fallback spike + frees ~3 GB
+  llm_preset: "josiefied-qwen3-8b-iq3xs"  # 2026-06-23 8B IQ3_XS + 0.6B draft; the lean gaming boot loads THIS preset (not llm.preset), on GPU via llm_gpu_layers=-1; the draft loads because llm.draft_kind=model + the preset's draft_model_path. QUALITY A/B vs IQ4_XS. Revert: "josiefied-qwen3-8b-iq4xs", "mistral-7b-v0.3-abliterated", or "josiefied-qwen3-4b-2507g"
 
 # ---------------------------------------------------------------------------
 # Desktop control (V1-spec gap C3) — voice routing for the OpenClaw
@@ -1856,7 +1864,7 @@ relay_speech:
   llm_route: true             # ULTRON 1.0: route EVERY response through the LLM by default
                               # (curated pools become style examples; the model writes fresh).
                               # Voice: "switch to deterministic callouts" <-> "back to smart callouts".
-  callout_verbosity: "medium"      # CALLOUT flavor-tail length: none/low/medium/high/max
+  callout_verbosity: "low"         # CALLOUT flavor-tail length: none/low/medium/high/max (2026-06-22: low = a brief cold tag, tight for live play; raise by voice)
                                    # (none=clean snap, low=+1 word, medium=+short tail, high/max=+more).
                                    # Voice: "<level> flavor" / "callout flavor <level>".
   conversation_verbosity: "low"    # reply length for private/social/non-tactical: low/medium/high/max.

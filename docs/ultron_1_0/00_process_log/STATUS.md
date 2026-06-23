@@ -1,5 +1,14 @@
 # Ultron 1.0 — Live Status
 
+**LIVE-FIX 2026-06-23 (`8f08254`):** Route-all compose commands now reach the LLM. `_maybe_handle_relay_speech`'s
+thinking-mode gate forced `rephrase=False` (thinking mode default OFF) even with route-all ON → every conversational
+relay ("explain to my team X", "Reyna asked you X") fell to `_fallback_line` = the canned "No soundboard, no strings."
+every time. Gate is now `thinking_mode_enabled() OR u1_llm_route_enabled()`. +3 regression tests; `test_u1_llm_route`
+104 pass, `test_relay_speech` 128 pass. **Prior (`0165418`):** TTS do-inversion ("Sage, do you have a heal?") at both
+question-relay entry points + `josiefied-qwen3-8b-iq3xs` preset (IQ3_XS + 0.6B draft + n_batch 2048 + q8_0 KV; ~9.3 GB
+peak). VRAM line: IQ4_XS `3f78191` + q8_0 KV `a8c37c0`. STILL-PENDING: FLAG-button stale-`_last_response_text` on relay
+turns; live IQ3_XS-vs-Mistral quality A/B (user-driven).
+
 **Updated:** 2026-06-20 (M0+M1+M2 + text-injection harness landed; all regression-clean)
 **Current phase:** Phase 5/6 — next concrete step = M1-wire (flag-gated) + audio MP3 E2E harness
 **DONE+committed:** M0 (8B default, verified, 0 new regress) · M1 (ultron_prompt.py module, 12 tests, live-validated) · M2 (verbosity differentiation, live-validated) · Phase5 text-injection harness (`scripts/relay_test/u1_text_harness.py`, REAL-fails=0, tracks 4 u1.0-gate-targets). Full-suite regression with all of this: 22 fail (same pre-existing) / 10978 pass / 39 skip.

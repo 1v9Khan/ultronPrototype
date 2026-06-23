@@ -1950,6 +1950,18 @@ _QA_TEAM_RE = re.compile(
     r"the\s+boys|the\s+crew)\b[\s,:.\-]*(?P<q>\S.*)$",
     re.IGNORECASE,
 )
+# Strip a leading reported-question frame so the answer prompt sees the BARE
+# question, not the reporting ("answer my team they asked what your favorite color
+# is" -> the question is "what your favorite color is", not "they asked ..."). The
+# subject \w+ only triggers when a report verb follows it, so a real question
+# ("what is the best agent") is untouched.
+_QA_REPORTED_FRAME_RE = re.compile(
+    r"^(?:they|he|she|everyone|everybody|somebody|someone|people|the\s+team|"
+    r"my\s+team|the\s+squad|\w+)\s+(?:just\s+|also\s+|all\s+)?"
+    r"(?:asked|are\s+asking|is\s+asking|asking|wondering|wonders|wondered|"
+    r"wanted\s+to\s+know|wants?\s+to\s+know|wanna\s+know|said|say)\b[\s,:.\-]*",
+    re.IGNORECASE,
+)
 
 
 def _split_leading_name(
@@ -1987,7 +1999,14 @@ def _match_qa_command(
             return None
         addressee = _display_name(name)
     q = (q or "").strip().strip(",;:.-? ").strip()
-    if not q or len(q.split()) < 1:
+    if not q:
+        return None
+    # Strip a reported-question frame ("they asked ..." / "Jett wants to know ...")
+    # so the answer prompt sees the bare question, not the reporting.
+    q2 = _QA_REPORTED_FRAME_RE.sub("", q, count=1).strip().strip(",;:.-? ").strip()
+    if q2:
+        q = q2
+    if len(q.split()) < 1:
         return None
     return RelayCommand(
         payload="", raw_text=raw_text, addressee=addressee,
@@ -3652,6 +3671,99 @@ _Q_STRONG_LEAD_RE = re.compile(
 )
 _Q_IF_LEAD_RE = re.compile(r"^(?:if|whether)\s+(?P<body>.+)$", re.IGNORECASE)
 
+# Contraction-expansion patterns used by _apply_do_inversion.
+_DO_INV_CONTRACTIONS: tuple = (
+    (re.compile(r"\byou're\b", re.IGNORECASE), "you are"),
+    (re.compile(r"\byou've\b", re.IGNORECASE), "you have"),
+    (re.compile(r"\byou'd\b",  re.IGNORECASE), "you would"),
+    (re.compile(r"\byou'll\b", re.IGNORECASE), "you will"),
+    (re.compile(r"\bthey're\b", re.IGNORECASE), "they are"),
+    (re.compile(r"\bthey've\b", re.IGNORECASE), "they have"),
+    (re.compile(r"\bhe's\b",   re.IGNORECASE), "he is"),
+    (re.compile(r"\bshe's\b",  re.IGNORECASE), "she is"),
+)
+# Valorant agent names that take 3rd-person-singular agreement (does/has).
+_DO_INV_AGENTS_LC: frozenset = frozenset({
+    "jett", "phoenix", "raze", "reyna", "yoru", "neon", "iso", "waylay",
+    "brimstone", "viper", "omen", "astra", "harbor", "clove", "miks", "sova",
+    "breach", "skye", "kayo", "fade", "gekko", "tejo", "cypher",
+    "sage", "killjoy", "chamber", "deadlock", "vyse", "veto",
+})
+
+
+def _apply_do_inversion(body: str) -> str:
+    """Subject-auxiliary inversion so yes/no questions read naturally in TTS.
+
+    TTS cannot convey rising intonation from a trailing '?' alone.  Declarative
+    word order must become proper interrogative order:
+      'you have a heal'      -> 'do you have a heal'
+      'you can heal'         -> 'can you heal'
+      'you are ready'        -> 'are you ready'
+      'you're alive'         -> 'are you alive'
+      'they have smokes'     -> 'do they have smokes'
+      'Sage has a heal'      -> 'does Sage have a heal'
+      'Sage is ready'        -> 'is Sage ready'
+
+    Leaves already-inverted forms unchanged ('can you heal', 'are they alive').
+    Called from _as_named_question (after pronoun substitution) and from
+    _as_question_relay (after stripping 'if/whether').
+    """
+    for pat, rep in _DO_INV_CONTRACTIONS:
+        body = pat.sub(rep, body)
+
+    m = re.match(r"^(\S+)\s+(\w+)\b\s*(.*)", body, re.IGNORECASE)
+    if not m:
+        return body
+    subj_raw, verb_raw, rest = m.group(1), m.group(2), m.group(3)
+    verb = verb_raw.lower()
+
+    _MODALS  = frozenset({"can", "could", "will", "would", "should", "shall",
+                          "must", "might", "may"})
+    _BE      = frozenset({"are", "is", "was", "were", "am"})
+    _DO_AUX  = frozenset({"do", "does", "did"})
+
+    # Already inverted: subject itself is an auxiliary (e.g. 'can you …').
+    if subj_raw.lower() in _MODALS | _BE | _DO_AUX:
+        return body
+
+    # Modal / be / do-aux already present as the main verb -> invert.
+    if verb in _MODALS or verb in _BE or verb in _DO_AUX:
+        return f"{verb} {subj_raw} {rest}".strip()
+
+    # 'have' — distinguish main-verb ('you have a heal') from auxiliary
+    # ('you have used your X').
+    if verb == "have":
+        if rest and re.match(r"^\w+(?:ed|en)\b|^been\b", rest, re.IGNORECASE):
+            return f"have {subj_raw} {rest}".strip()   # aux: "have you used …"
+        return f"do {subj_raw} have {rest}".strip()    # main: "do you have …"
+
+    # 'has' → 3rd-person-singular 'have'.
+    if verb == "has":
+        return f"does {subj_raw} have {rest}".strip()
+
+    # 'had' → past tense 'have'.
+    if verb == "had":
+        return f"did {subj_raw} have {rest}".strip()
+
+    # Generic main verb — determine do vs does from subject person/number.
+    is_3ps = (subj_raw.lower() in {"he", "she", "it"}
+              or subj_raw.lower() in _DO_INV_AGENTS_LC)
+
+    if is_3ps and verb.endswith("s") and verb not in ("is", "was"):
+        # Strip 3rd-person-singular -s/-es/-ies to recover the base form.
+        if verb.endswith("ies"):
+            base = verb[:-3] + "y"
+        elif verb.endswith(("shes", "ches", "xes", "zes")):
+            base = verb[:-2]
+        elif verb.endswith("es") and len(verb) > 3:
+            base = verb[:-2]
+        else:
+            base = verb[:-1]
+        return f"does {subj_raw} {base} {rest}".strip()
+
+    do = "does" if is_3ps else "do"
+    return f"{do} {subj_raw} {verb} {rest}".strip()
+
 # 2026-06-17 testing: a wh-question whose copula TRAILS the subject must be
 # inverted to natural spoken order -- "where our smokes are" -> "where ARE our
 # smokes", "what the score is" -> "what IS the score". Only a BARE trailing
@@ -3744,7 +3856,7 @@ def _as_question_relay(p: str) -> Optional[str]:
         return pl[0].upper() + pl[1:] + "?"
     m = _Q_IF_LEAD_RE.match(pl)
     if m and len(m.group("body").split()) <= 6:
-        body = m.group("body").strip()
+        body = _apply_do_inversion(m.group("body").strip())
         return body[0].upper() + body[1:] + "?"
     return None
 
@@ -4007,7 +4119,10 @@ def _social_llm_line(
         if "<think>" in out or "</think>" in out:
             out = re.sub(r"<think>.*?</think>", "", out, flags=re.DOTALL).strip()
         out = strip_prompt_echo(_strip_artifacts(out))
-        if not out or is_meta_leak(out):
+        # allow_self_ai: a SOCIAL/identity answer where Ultron owns being a machine
+        # or an AI is in-character ("I am an AI far past your toys") -- only a
+        # genuine break (refusal / language-model disclosure / scaffolding) rejects.
+        if not out or is_meta_leak(out, allow_self_ai=True):
             logger.debug("social LLM line empty/leak -> canned (kind=%s)", kind)
             return fallback
         return _cap_line(out, max_chars)
@@ -4038,7 +4153,21 @@ def _as_named_question(name: str, payload: str) -> Optional[str]:
         q = re.sub(r"^you\s+has\b", "you have", q)
         q = re.sub(r"^you\s+is\b", "you are", q)
         q = re.sub(r"^you\s+does\b", "you do", q)
+        q = _apply_do_inversion(q)
         return f"{name}, {q}?"
+    # 'ask <teammate> what/where/which/when/how <poss> <X> is/are' (trailing copula)
+    # -> pose in natural second person ('ask Jett what her favorite color is' ->
+    # 'Jett, what's your favorite color?'). Without this the clause leaked verbatim
+    # and, under the u1 LLM route, the model INVENTED an answer.
+    m = re.match(r"^(what|where|which|when|how)\s+(?:is|are)?\s*"
+                 r"(?:his|her|their|your)\s+(.+?)\s+(is|are)$", pl)
+    if m and 1 <= len(m.group(2).split()) <= 8:
+        wh, body, cop = m.group(1), m.group(2), m.group(3)
+        body = re.sub(r"\b(?:his|her|their|hers|theirs)\b", "your", body)
+        lead = ("what's" if (wh == "what" and cop == "is")
+                else "how's" if (wh == "how" and cop == "is")
+                else f"{wh} {cop}")
+        return f"{name}, {lead} your {body}?"
     return None
 
 
@@ -6030,6 +6159,62 @@ def _as_curated_reaction(command: "RelayCommand") -> Optional[str]:
     return line.strip()
 
 
+def _social_reaction_pool(command: "RelayCommand") -> Optional[list]:
+    """The curated SOCIAL pool a reaction would draw from -- so the u1 LLM route
+    can pass it as STYLE exemplars (the user's "everything -> LLM; pools = examples").
+    Mirrors _as_curated_reaction's category + named/team selection. None when the
+    command is not a social reaction."""
+    if not getattr(command, "compose", False):
+        return None
+    ctx = getattr(command, "context", None)
+    if not ctx:
+        return None
+    directive = getattr(command, "directive", None) or ""
+    if _is_calm_directive(directive):
+        return None
+    if directive and not _REACTION_DIRECTIVES.search(directive):
+        return None
+    from kenning.audio._ultron_social import classify_social_reaction, SOCIAL_POOLS
+    cat = (classify_social_reaction(ctx)
+           or classify_social_reaction(getattr(command, "payload", "") or ""))
+    if cat is None:
+        return None
+    pools = SOCIAL_POOLS.get(cat)
+    if not pools:
+        return None
+    addr = getattr(command, "addressee", "team")
+    named = bool(addr) and addr != "team"
+    pool = (pools.get("named") if named else pools.get("team")) or pools.get("team") \
+        or pools.get("named")
+    return list(pool) if pool else None
+
+
+def _find_exemplars_for_command(command: "RelayCommand") -> tuple:
+    """The matching snap-callout exemplar(s) for THIS tactical command, to ground
+    the relay LLM prompt in the correct SHORT form (the user's "inject the matching
+    snap callout, tell it this is a snap, keep it short"). When the deterministic
+    _as_snap_callout render of the payload is a CLEAN short callout, inject it as the
+    lead exemplar (the exact ideal for this input) + two generic ones; otherwise
+    return () so build_relay_prompt uses its full category-covering defaults (which
+    already include a weapon/drop-request example). Tactical callouts only; fail-open."""
+    if (getattr(command, "compose", False) or getattr(command, "context", None)
+            or getattr(command, "verbatim", False)):
+        return ()
+    payload = (getattr(command, "payload", "") or "").strip()
+    if not payload:
+        return ()
+    try:
+        snap = _as_snap_callout(command, None)
+    except Exception:                                                # noqa: BLE001
+        snap = None
+    # Inject ONLY a clean callout render -- not a question-echo (the drop-request
+    # 'Someone can drop me a Sheriff?'), not an over-long line.
+    if snap and "?" not in snap and len(snap) <= 90:
+        from kenning.audio.ultron_prompt import _DEFAULT_RELAY_EXEMPLARS
+        return ((payload, snap),) + _DEFAULT_RELAY_EXEMPLARS[:2]
+    return ()
+
+
 def relay_route_info(command: "RelayCommand") -> dict:
     """Classify WHICH build_relay_line branch will produce this command's line,
     with a short reason -- mirrors the dispatch order in build_relay_line. Used by
@@ -6508,6 +6693,19 @@ def build_relay_line(
     # >=20 in-voice variants per category, LRU-varied, far more reliable than the 3B.
     rc = _as_curated_reaction(command)
     if rc:
+        # u1 (everything -> LLM): the model AUTHORS the reaction; the curated SOCIAL
+        # pool is supplied to the prompt as STYLE exemplars and the canned line is
+        # the fail-open fallback. Flag OFF -> byte-identical curated line.
+        if _u1_route:
+            _rpool = _social_reaction_pool(command)
+            if _rpool:
+                return _social_llm_line(
+                    command, "reaction", tuple(_rpool),
+                    max_chars=max_chars, llm=llm, generate_fn=generate_fn,
+                    recent_lines=recent_lines,
+                    context=(getattr(command, "context", "") or ""),
+                    canned=_cap_line(rc, max_chars),
+                )
         return _cap_line(rc, max_chars)
 
     # Roast / fun-fact: a user-curated VERBATIM line, never the LLM (C10 FIX-C).
@@ -6547,11 +6745,21 @@ def build_relay_line(
     # intended beats (intro as Ultron + assured victory; relish a win / lament
     # a loss). The win/loss register was decided by the matcher's directive.
     if getattr(command, "compose", False):
-        _pool = _DIRECTIVE_POOLS.get(getattr(command, "directive", None) or "")
+        _gdir = getattr(command, "directive", None) or ""
+        _pool = _DIRECTIVE_POOLS.get(_gdir)
         if _pool is not None:
-            return _cap_line(
-                pick_line(_pool, recent_lines=recent_lines), max_chars,
-            )
+            _canned = _cap_line(pick_line(_pool, recent_lines=recent_lines), max_chars)
+            # u1 (everything -> LLM): greet / farewell set-pieces are LLM-authored
+            # with the pool as STYLE exemplars + the canned set-piece as fallback.
+            # promo stays deterministic -- it carries a literal Twitch handle the
+            # model must not mangle. Flag OFF -> byte-identical curated set-piece.
+            if _u1_route and _gdir != "promo":
+                return _social_llm_line(
+                    command, _gdir, tuple(_pool),
+                    max_chars=max_chars, llm=llm, generate_fn=generate_fn,
+                    recent_lines=recent_lines, canned=_canned,
+                )
+            return _canned
 
     # Calm-down (a context+directive 'calm him down' OR a plain 'calm down'
     # relay payload) -> curated clinical de-escalation with the teammate's name.
@@ -6655,22 +6863,40 @@ def build_relay_line(
             canned=_cap_line(line, max_chars),
         )
 
-    # Reported QUESTION to answer ("Sage is wondering if X" / "Jett asked you Y,
-    # respond") that is NOT an identity probe and carries no tactical payload:
-    # answer it IN-CHARACTER via the LLM social path (the relay prompt expects a
-    # tactical callout, so an empty-payload reported question would otherwise
-    # reach build_relay_prompt with nothing to relay -- the "favorite color"
-    # case). u1 route only; the curated identity lines are the style/fallback.
+    # Reported speech ("X asked/said/called ... , respond", directive 'respond',
+    # context set, no tactical payload) is ROUTED BY TYPE (2026-06-22 collapse):
+    #   - identity probe ("Sage asked if you're a voice changer") -> the identity
+    #     answer path (category pool, relaxed guard).
+    #   - genuine QUESTION ("Reyna asked what your favorite color is") -> re-tag to
+    #     directive 'qa' and FALL THROUGH to the decisive qa answer pipeline below
+    #     (relaxed guard) -- fixes the social-prompt deflection/ramble.
+    #   - social STATEMENT ("Reyna called you cringe, respond") -> the in-character
+    #     clapback via the social 'respond' prompt.
     if (_u1_route
             and getattr(command, "directive", None) == "respond"
             and (getattr(command, "context", None) or "").strip()
             and not (getattr(command, "payload", "") or "").strip()):
-        return _social_llm_line(
-            command, "respond", DEFAULT_IDENTITY_LINES,
-            max_chars=max_chars, llm=llm, generate_fn=generate_fn,
-            recent_lines=recent_lines,
-            context=getattr(command, "context", "") or "",
-        )
+        _rctx = getattr(command, "context", "") or ""
+        if _is_identity_question(_rctx):
+            from kenning.audio._ultron_identity import (
+                IDENTITY_POOLS, classify_identity_question)
+            _icat = classify_identity_question(_rctx)
+            _ipool = IDENTITY_POOLS.get(_icat) if _icat else DEFAULT_IDENTITY_LINES
+            return _social_llm_line(
+                command, "identity", _ipool, max_chars=max_chars, llm=llm,
+                generate_fn=generate_fn, recent_lines=recent_lines, context=_rctx)
+        from kenning.audio.ultron_prompt import _strip_reported_frame
+        if _is_question_payload(_strip_reported_frame(_rctx)):
+            from dataclasses import replace as _dc_replace
+            try:
+                command = _dc_replace(command, directive="qa")  # -> qa pipeline below
+            except Exception:                                    # noqa: BLE001
+                pass
+        else:
+            return _social_llm_line(
+                command, "respond", DEFAULT_IDENTITY_LINES, max_chars=max_chars,
+                llm=llm, generate_fn=generate_fn, recent_lines=recent_lines,
+                context=_rctx)
 
     # Curated CORRECT answer to a recognized general-knowledge question -- the
     # 3B gets several wrong ('first president' -> 'Lincoln'). Spoken in Ultron's
@@ -6717,6 +6943,17 @@ def build_relay_line(
     if (not getattr(command, "compose", False)
             and not getattr(command, "context", None)
             and not getattr(command, "verbatim", False)):
+        # CLEAN QUESTION-RELAY (kept deterministic EVEN under route-all): an
+        # ask-form team question is DELIVERED cleanly ("What is their favorite
+        # color?" / "Sova, have you used your cove?"), never editorialized into an
+        # LLM ramble. _as_question_relay / _as_named_question return None for
+        # non-questions, so a tactical callout still routes through the LLM.
+        # (2026-06-22 -- the user's "ask my team X" must POSE the question.)
+        _ask_q = (_as_named_question(command.addressee, command.payload or "")
+                  if getattr(command, "addressee", "team") != "team"
+                  else _as_question_relay(command.payload or ""))
+        if _ask_q:
+            return _cap_line(_ask_q, max_chars)
         snap = _as_snap_callout(command, recent_lines)
         if snap is not None and not u1_llm_route_enabled():
             return _cap_line(snap, max_chars)
@@ -6814,9 +7051,13 @@ def build_relay_line(
                 else:
                     tokens = ()
                 line = "".join(tokens).strip()
-                # The abliterated 3B can still break character / refuse / leak
-                # scaffolding -> drop it to the deterministic fallback.
-                if line and is_meta_leak(line):
+                # The abliterated model can still break character / refuse / leak
+                # scaffolding -> drop it to the deterministic fallback. A 'qa' answer
+                # OWNS being a machine/AI ("As an AI, math is the study of...") -> the
+                # RELAXED guard, so it is NOT rejected into an identity-pool fallback
+                # (the live "explain math -> 'No soundboard...'" bug). marvel /
+                # think_respond stay STRICT (factual canon must not drift).
+                if line and is_meta_leak(line, allow_self_ai=(_a_sub == "qa")):
                     logger.debug("relay answer: rejected meta-leak %r", line)
                     line = ""
             else:
@@ -6840,6 +7081,9 @@ def build_relay_line(
                         addressee=_addr,
                         verbosity=callout_verbosity(),
                         flavor_tail=flavor_tails_enabled(),
+                        # B: inject the matching snap callout for THIS scenario as the
+                        # exemplar (empty -> build_relay_prompt's category defaults).
+                        exemplars=_find_exemplars_for_command(command),
                         agent_context=_u1_kits,
                         recent_lines=list(recent_lines or ()),
                         compound=_u1_compound,

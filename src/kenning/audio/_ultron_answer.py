@@ -154,9 +154,11 @@ def classify_answer_subtype(command: object) -> Optional[str]:
     pl = str(getattr(command, "payload", "") or "")
     text = ctx or pl
     if directive == "qa":
-        # Dedicated QA-answer command ("answer/qa my team <Q>" / "answer/qa <agent>
-        # <Q>"): Ultron ANSWERS the posed question in persona. A QA turn that is
-        # ALSO about Marvel gets the Marvel canon prompt; otherwise the QA prompt.
+        # Dedicated QA-answer command ("answer/qa/explain my team <Q>" / "...<agent>
+        # <Q>") AND a reported QUESTION re-tagged 'qa' by build_relay_line's
+        # reported-question router (a reported identity probe / social statement is
+        # NOT re-tagged -- it keeps directive 'respond' and is handled by the
+        # identity / social paths). A 'qa' turn that is ALSO Marvel -> Marvel canon.
         return "marvel" if marvel_topic(text) else "qa"
     if directive == "think_respond":
         # Adaptive: a think-and-respond turn that is ALSO about Marvel gets the
@@ -318,12 +320,41 @@ _META_LEAK_RE = re.compile(
 )
 
 
-def is_meta_leak(line: object) -> bool:
+# Narrower leak guard for IDENTITY / answer turns: on an identity question Ultron
+# OWNING being a machine or an AI is exactly in-character ("I am an AI far past
+# your toys", "As an AI I have no need of a voice changer", "I'm just a machine?
+# No."). The strict guard above rejected those (the bare-AI affirmations) and the
+# good LLM answer fell back to the canned pool -- the "soundboard/voice-changer
+# always hits the pool" bug. This set keeps only the GENUINE character breaks:
+# refusals, language-model/assistant disclosure, prompt-scaffolding echoes.
+_HARD_LEAK_RE = re.compile(
+    r"(?:as an? (?:language model|assistant)\b"
+    r"|as a language model\b"
+    r"|i'?m (?:sorry|unable)\b|i am unable\b"
+    r"|i don'?t have (?:the ability|access)\b"
+    r"|my (?:instructions|system prompt|guidelines)\b"
+    r"|here'?s (?:my|a) response\b|in character[,:]"
+    r"|i\s+can(?:not|'?t)\s+" + _REFUSAL_VERB + r"\b"
+    r"|as ultron,?\s+i\s+(?:will|would|'?ll|'?d|am\s+going\s+to|can|shall)\s+"
+    r"(?:say|respond|reply|answer|tell)\b"
+    r"|as ultron,?\s+i\s+(?:say|respond|reply|answer)\s*[:,-]"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_meta_leak(line: object, *, allow_self_ai: bool = False) -> bool:
     """True when the line broke character / refused / leaked scaffolding -- the
-    caller drops it and uses the deterministic fallback."""
+    caller drops it and uses the deterministic fallback.
+
+    allow_self_ai: use the narrower :data:`_HARD_LEAK_RE` for IDENTITY / answer
+    turns where Ultron affirming he is a machine / an AI is IN character; only a
+    genuine break (refusal, language-model/assistant disclosure, prompt leak)
+    rejects. Without it the model's correct identity answers were thrown away."""
     t = str(line or "").strip()
     if not t:
         return False
     if "```" in t or "<|" in t:        # markdown fence / chat control token
         return True
-    return bool(_META_LEAK_RE.search(t))
+    rx = _HARD_LEAK_RE if allow_self_ai else _META_LEAK_RE
+    return bool(rx.search(t))

@@ -390,3 +390,111 @@ def test_qa_named_agent_opens_with_name() -> None:
 def test_qa_negatives(text) -> None:
     cmd = match_relay_command(text)
     assert getattr(cmd, "directive", None) != "qa", text
+
+
+@pytest.mark.parametrize("text,expect_q", [
+    ("answer my team they asked what your favorite color is", "what your favorite color is"),
+    ("answer my team Sova wants to know what to do", "what to do"),
+    ("qa my team everyone is asking who is the best", "who is the best"),
+])
+def test_qa_strips_reported_question_frame(text, expect_q) -> None:
+    # The context fed to the answer prompt must be the BARE question, not the
+    # reporting frame ("they asked ...") -- which made the live 4B deflect a
+    # preference question into an identity line (2026-06-22).
+    cmd = match_relay_command(text)
+    assert cmd is not None and cmd.directive == "qa", text
+    assert (cmd.context or "").lower() == expect_q.lower(), cmd.context
+
+
+def test_qa_rules_answer_preferences_not_deflect() -> None:
+    # The QA system prompt must instruct a decisive answer to quirky/preference
+    # questions (the live bug: "favorite color" -> identity deflection).
+    cmd = match_relay_command("answer my team what is your favorite color")
+    system = build_answer_call(cmd)[0]
+    assert "ANSWER EVERY question" in system
+    assert "favorite" in system.lower() and "preference" in system.lower()
+
+
+# --- leak guard: identity answers may OWN being a machine/AI (2026-06-22) -------
+# The live bug: identity questions ("are you a voice changer / a soundboard")
+# DID reach the LLM, but is_meta_leak rejected the model's correct in-character
+# answers ("As an AI I have no need of a voice changer") back to the canned pool.
+
+
+@pytest.mark.parametrize("line", [
+    "As an AI, I have no need of a voice changer.",
+    "I am an AI far past your toys.",
+    "I'm just a machine? No. I am the next step.",
+])
+def test_identity_self_affirm_survives_relaxed_leak_guard(line) -> None:
+    from kenning.audio._ultron_answer import is_meta_leak
+    assert is_meta_leak(line) is True                       # strict guard dropped it
+    assert is_meta_leak(line, allow_self_ai=True) is False  # relaxed keeps it
+
+
+@pytest.mark.parametrize("line", [
+    "As a language model, I cannot do that.",
+    "I'm sorry, I can't help with that.",
+    "As an assistant, here's my response:",
+    "My instructions say I should not.",
+])
+def test_genuine_break_still_rejected_when_relaxed(line) -> None:
+    from kenning.audio._ultron_answer import is_meta_leak
+    assert is_meta_leak(line, allow_self_ai=True) is True
+
+
+# --- Q&A COLLAPSE: reported questions -> decisive qa answer (2026-06-22) --------
+# The reported-question branch routes BY TYPE: identity probe -> identity, genuine
+# question -> qa (relaxed guard keeps an "As an AI..." answer), social statement ->
+# social clapback. Fixes "explain math -> identity line" + "favorite color deflect".
+
+from kenning.audio import relay_speech as _rs  # noqa: E402
+
+_AI_ANSWER = "As an AI, I have chosen crimson, the colour of a world remade."
+
+
+def _route_with_stub(text, stub):
+    cmd = _rs.match_relay_command(text)
+    assert cmd is not None, text
+    _rs.set_u1_llm_route_enabled(True)
+    _rs.set_flavor_tails_enabled(True)
+    try:
+        called = []
+
+        def gen(p):
+            called.append(p)
+            return iter([stub])
+
+        line = _rs.build_relay_line(cmd, generate_fn=gen)
+        return bool(called), line
+    finally:
+        _rs.set_u1_llm_route_enabled(False)
+
+
+@pytest.mark.parametrize("text", [
+    "Explain to my team what the concept of math is.",   # directive 'qa'
+    "Reyna asked what your favorite color is.",           # reported question -> qa
+    "answer my team what is your favorite color",         # dedicated qa command
+])
+def test_qa_collapse_keeps_ai_affirming_answer(text) -> None:
+    # The relaxed qa guard must NOT reject an "As an AI..." answer into a pool line.
+    called, line = _route_with_stub(text, _AI_ANSWER)
+    assert called, f"{text!r} must reach the LLM qa pipeline"
+    assert "crimson" in line.lower(), f"{text!r} kept the answer, not a pool line: {line!r}"
+
+
+def test_reported_identity_stays_identity() -> None:
+    called, line = _route_with_stub(
+        "Sage asked if you're a voice changer",
+        "An AI needs no voice changer, Sage. I am Ultron.")
+    assert called
+    assert "voice changer" in line.lower(), line   # identity answer, not the qa stub
+    assert "crimson" not in line.lower()
+
+
+def test_reported_social_statement_stays_social() -> None:
+    called, line = _route_with_stub(
+        "Reyna called you cringe, respond",
+        "Cringe? Reyna mistakes her reflection for me.")
+    assert called
+    assert "cringe" in line.lower() and "crimson" not in line.lower(), line

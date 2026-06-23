@@ -70,13 +70,25 @@ def test_flavor_toggle():
     assert up._FLAVOR_OFF in poff.user and up._FLAVOR_OFF not in pon.user
 
 
+def test_relay_prompt_forbids_invented_orders():
+    # 2026-06-22: a callout must NOT get an invented tactical order tail (the live
+    # bug: "jett A main" -> "...Engage immediately." / "one is rubble" -> "...Clear
+    # the area."). The system prompt forbids it AND the default exemplars no longer
+    # model "fact + invented directive".
+    r = up.build_relay_prompt("jett a main")
+    assert "relay only what the player said" in r.system.lower()
+    assert "never invent or append a tactical instruction" in r.system.lower()
+    for bad in ("press the site", "take the space", "overwhelm them"):
+        assert bad not in r.user.lower()   # old default exemplars are gone
+
+
 def test_exemplars_injected_custom_and_default():
     default = up.build_relay_prompt("rush B")
     assert "Examples of your voice:" in default.user
-    assert "Sova tagged one for 84" in default.user  # default exemplar
+    assert "Sova hit one for 84" in default.user  # default exemplar
     custom = up.build_relay_prompt("rush B", exemplars=(("foo bar", "Foo. Bar."),))
     assert 'player: "foo bar" -> "Foo. Bar."' in custom.user
-    assert "Sova tagged one for 84" not in custom.user  # custom replaces default
+    assert "Sova hit one for 84" not in custom.user  # custom replaces default
 
 
 def test_agent_context_and_recent_lines():
@@ -136,10 +148,10 @@ def test_private_uses_private_exemplars_not_relay_callouts():
     # (the relay default made the 8B emit empty/callout-shaped output on a question).
     r = up.build_private_prompt("what should I buy this round")
     assert "should I buy this round" in r.user            # a private exemplar present
-    assert "Sova tagged one for 84" not in r.user         # relay default must NOT leak in
+    assert "Sova hit one for 84" not in r.user         # relay default must NOT leak in
     # relay path still uses relay exemplars
     rr = up.build_relay_prompt("rush B")
-    assert "Sova tagged one for 84" in rr.user
+    assert "Sova hit one for 84" in rr.user
 
 
 @pytest.mark.parametrize("v", ["none", "low", "high"])
@@ -264,3 +276,39 @@ def test_strip_prompt_echo_keeps_curated_do_not_repeat_line():
     # in-character curated imperative "...Do not repeat it." -- which must survive.
     line = "The error is nothing. Do not repeat it."
     assert up.strip_prompt_echo(line) == line
+
+
+# --- social prompt no longer echoes the input (2026-06-22) --------------------
+
+
+@pytest.mark.parametrize("ctx,expect", [
+    ("Sage asked if you are a voice changer", "a voice changer"),
+    ("if you are a voice changer", "a voice changer"),
+    ("Reyna called you cringe", "cringe"),
+    ("the team thinks you are a recording", "a recording"),
+    ("you are a bot", "a bot"),
+])
+def test_strip_reported_frame_extracts_bare_provocation(ctx, expect):
+    assert up._strip_reported_frame(ctx) == expect
+
+
+def test_social_prompt_has_no_reconcile_block_or_raw_echo():
+    # The reconcile block showed the RAW STT verbatim ("...respond") and the model
+    # echoed it. The social prompt must NOT carry it, and must present the stripped
+    # provocation, not the raw reported frame.
+    pr = up.build_social_prompt(
+        "identity", addressee="Sage",
+        context="Sage asked if you are a voice changer",
+        raw_text="Sage asked if you are a voice changer, respond",
+        verbosity="low",
+    )
+    assert "speech-to-text" not in pr.user.lower()
+    assert "reconcile" not in pr.user.lower()
+    assert "respond" not in pr.user.lower()           # the command word never reaches the model
+    assert "Sage asked if" not in pr.user             # no reported frame
+    assert "a voice changer" in pr.user               # the bare accusation IS present
+
+
+def test_strip_prompt_echo_drops_leaked_instructions():
+    leak = "Reyna, cringe is your word. You answer directly with the given style of Ultron's voice"
+    assert up.strip_prompt_echo(leak) == "Reyna, cringe is your word."

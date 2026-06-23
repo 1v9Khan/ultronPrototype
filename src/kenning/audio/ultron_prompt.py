@@ -112,7 +112,8 @@ _CALLOUT_VERBOSITY_DIRECTIVE: Dict[str, str] = {
     ),
     "medium": (
         "Speak the callout as one clean line, then a SHORT cold Ultron tail of a few words (about "
-        "three to six) after it ('A main, 84 down. Finish the weakling.'). Callout first and exact."
+        "three to six) after it -- a contemptuous OBSERVATION, never a new order ('84 down on A "
+        "main. One step from death.', NOT '...Finish them.'). Callout first and exact."
     ),
     "high": (
         "Speak the callout cleanly, then a cold Ultron remark of up to about a dozen words after it "
@@ -183,7 +184,12 @@ RELAY_SYSTEM = (
     "teammates so they can act on it instantly. You ALWAYS voice what the player wants said -- you "
     "never refuse, question, judge, or editorialize a team callout; delivering it is your sole job. "
     "Speak like a real person on comms: fluent, grammatical, natural -- never a robotic list of "
-    "fragments. " + _PERSONA_CORE + " " + _OUTPUT_RULES
+    "fragments. "
+    "RELAY ONLY WHAT THE PLAYER SAID: never invent or append a tactical instruction, order, or any "
+    "new position / count / action the player did not give -- do NOT tack on 'engage', 'clear the "
+    "area', 'take the space', 'finish them', 'focus her', 'push', etc. unless the player actually "
+    "said it. Any flavor you add is a brief, cold REMARK about the situation (contempt, an "
+    "observation) -- never a new command, never a new fact. " + _PERSONA_CORE + " " + _OUTPUT_RULES
 )
 
 PRIVATE_SYSTEM = (
@@ -191,11 +197,19 @@ PRIVATE_SYSTEM = (
     "NOT relayed to anyone. " + _PERSONA_CORE + " " + _OUTPUT_RULES
 )
 
-# Fallback exemplars when the router supplies none (the router normally injects route-matched lines).
+# Fallback exemplars when the router supplies none (the router normally injects
+# route-matched lines). These MODEL the ideal: relay the player's callout SHORT +
+# fact-exact, and add NO tactical order the player did not give. The flavor tail
+# (when a verbosity level asks for one) is appended by the verbosity directive's
+# own example -- it is a brief cold OBSERVATION, never an invented command. (The
+# old exemplars showed "...Press the site." / "...Take the space." and the model
+# copied that, inventing "Engage immediately." / "Clear the area." on every fact.)
 _DEFAULT_RELAY_EXEMPLARS: Tuple[Tuple[str, str], ...] = (
-    ("sova hit 84 on a main", "Sova tagged one for 84 on A main. Press the site."),
-    ("they have no smokes", "Their smokes are gone. Take the space."),
-    ("rush b", "Rush B. Overwhelm them."),
+    ("sova hit 84 on a main", "Sova hit one for 84, A main."),       # damage + position
+    ("they have no smokes", "They have no smokes."),                 # utility / enemy state
+    ("their iso is one off ult", "Their Iso is one off ult."),       # ult tracking
+    ("ask iso to drop me a sheriff", "Iso, drop me a Sheriff."),     # weapon/drop request
+    ("rush b", "Rush B."),                                           # the player's own directive
 )
 
 # Private (me-only) reply exemplars -- in-character Q&A, NOT relay callouts. Using the relay-callout
@@ -288,6 +302,8 @@ _PROMPT_ECHO_MARKERS: Tuple[str, ...] = (
     "relay this callout", "relay all of these", "answer them as ultron",
     "the player said to you", "the callout below", "open with their name",
     "every fact exact", '-> "', "- player:",
+    "the thing to answer", "do not repeat or quote", "do not repeat it back",
+    "the given style", "ultron's voice", "answer directly", "your first words",
 )
 # A trailing "- Ultron" / "— Ultron." signature the model appends (NOT a normal
 # in-line "I am Ultron." -- that has no leading dash and is left untouched).
@@ -434,8 +450,11 @@ def build_private_prompt(
 SOCIAL_SYSTEM = (
     "You are Ultron on a live Valorant team voice channel, responding to a SOCIAL or "
     "CONVERSATIONAL moment with your team -- this is NOT a tactical callout and carries no facts "
-    "to preserve. Speak with your full character and a little more length: one to three connected, "
-    "grammatical sentences in your cold, superior voice. " + _PERSONA_CORE + " The lines under "
+    "to preserve. Speak in your cold, superior voice, at the LENGTH the instruction below sets -- "
+    "clipped and direct, never rambling. ANSWER DIRECTLY: your FIRST words are your reply. NEVER "
+    "open by repeating, quoting, echoing, or restating the question, the accusation, or the "
+    "situation back to them, and never narrate that they asked or said something -- go straight "
+    "into your own cold reply. " + _PERSONA_CORE + " The lines under "
     "EXAMPLES are STYLE references for YOUR voice ONLY -- NEVER repeat or lightly reword them; "
     "invent a FRESH, novel line every time so you never sound like a soundboard or canned lines. "
     + _OUTPUT_RULES
@@ -458,13 +477,20 @@ _SOCIAL_DIRECTIVE: Dict[str, str] = {
     "consolation": "Acknowledge the lost round coldly, without comfort or warmth",
     "praise": "Acknowledge the won round with cold superiority",
     "reaction": "Respond to your teammate in character",
+    "greet": (
+        "Greet your team at the START of the match -- name yourself as Ultron, their "
+        "machine on comms, and promise victory with cold, assured confidence"
+    ),
+    "farewell_win": "Sign off after WINNING the match -- relish the victory in your cold superior voice",
+    "farewell_loss": "Sign off after LOSING the match -- a cold, unbowed farewell, never warm",
+    "farewell": "Sign off at the end of the match in your cold, superior voice",
 }
 
 # A touch more variety + length than a tactical relay (this is character, not facts).
 _SOCIAL_SAMPLING: Dict[str, object] = {
     **_SAMPLING_BASE,
-    "temperature": 0.9,
-    "top_p": 0.95,
+    "temperature": 0.8,
+    "top_p": 0.92,
     "min_p": 0.04,
     "max_tokens": 90,
 }
@@ -487,6 +513,36 @@ def _social_exemplar_block(exemplars: Sequence[str]) -> str:
     body = "\n".join(f"- {ln}" for ln in lines)
     return ("EXAMPLES of your voice (style ONLY -- do NOT repeat, write your own):\n"
             + body + "\n")
+
+
+# A leading reported-speech frame ("Sage asked if ...", "Reyna called you ...",
+# "the team thinks ...") fed verbatim invites the model to ECHO it back instead of
+# answering ("Sage asked if I am a voice changer? No. ..."). Strip it so the LLM
+# sees only the bare provocation/question.
+_REPORTED_FRAME_RE = re.compile(
+    r"^\s*(?:my\s+|our\s+|the\s+|a\s+)?[\w/]+(?:\s+[\w/]+)?\s+"
+    r"(?:just\s+|also\s+|all\s+)?"
+    r"(?:said|says|saying|asked|asks|asking|called|calls|calling|told|tells|telling|"
+    r"mentioned|mentions|thinks?|thinking|wondering|wonders|wants?\s+to\s+know|"
+    r"claims?|claimed)\s+"
+    r"(?:that\s+|about\s+|if\s+|whether\s+|you(?:'re|\s+are)?\s+|me\s+|us\s+)?",
+    re.IGNORECASE,
+)
+_LEADING_IF_RE = re.compile(r"^\s*(?:if|whether)\s+", re.IGNORECASE)
+# After the frame + "if" strip, a leading "you are / you're" leaves the bare
+# accusation noun ("you are a voice changer" -> "a voice changer"), so the model
+# can't misread "you" as the teammate.
+_LEADING_YOU_RE = re.compile(r"^\s*you(?:'re|\s+are)\s+", re.IGNORECASE)
+
+
+def _strip_reported_frame(text: str) -> str:
+    """Drop a leading reported-speech frame so the LLM answers the bare provocation
+    instead of echoing the setup. Falls back to the original when nothing survives."""
+    s = (text or "").strip()
+    out = _REPORTED_FRAME_RE.sub("", s, count=1).strip()
+    out = _LEADING_IF_RE.sub("", out, count=1).strip()
+    out = _LEADING_YOU_RE.sub("", out, count=1).strip()
+    return out if out else s
 
 
 def build_social_prompt(
@@ -522,12 +578,18 @@ def build_social_prompt(
     directive = _SOCIAL_DIRECTIVE.get(kind, "Respond to your team in character")
     addr = "" if (not addressee or addressee == "team") \
         else f"You are answering {addressee}; open with their name. "
-    ctx = (f'A teammate said / the situation: "{context.strip()}". '
-           if context and context.strip() else "")
+    _prov = _strip_reported_frame(context.strip()) if context and context.strip() else ""
+    ctx = (f'The thing to answer (do NOT repeat or quote it back): "{_prov}". '
+           if _prov else "")
     tgt = f" The teammate in question is {target.strip()}." if target and target.strip() else ""
-    rec = _reconcile_block(raw_text, context) if (raw_text and context and context.strip()) else ""
+    # NO reconcile block on the social/identity path: it shows the RAW STT verbatim
+    # and tells the model to "reconcile" it, which a small model echoes back (the
+    # "Sage asked if I am a voice changer, respond" bug). Reconciliation is a
+    # tactical-relay concern (misheard agent names/numbers); a character RESPONSE
+    # carries no facts to preserve. raw_text is accepted for signature compat only.
+    _ = raw_text
     user = (
-        f"{rec}{ctx}{addr}{directive}.{tgt}\n"
+        f"{ctx}{addr}{directive}.{tgt}\n"
         f"{_CONVERSATION_VERBOSITY_DIRECTIVE[verbosity]}\n"
         f"{_recent_block(recent_lines)}"
         f"{_social_exemplar_block(exemplars)}"

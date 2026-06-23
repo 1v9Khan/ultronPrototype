@@ -160,6 +160,12 @@ def test_preset_table_contents() -> None:
     assert set(LLM_PRESETS.keys()) == {
         "qwen3.5-9b", "qwen3.5-4b",
         "josiefied-qwen3-8b", "josiefied-qwen3-4b",
+        # 2026-06-23: IQ4_XS quant of the 8B + a Qwen3-0.6B draft for
+        # in-process speculative decoding (GGUFs downloaded to models/).
+        "josiefied-qwen3-8b-iq4xs",
+        # 2026-06-23: IQ3_XS quant of the same 8B (~3.4 GB) + same 0.6B draft --
+        # the VRAM-vs-quality A/B candidate (GGUF downloaded to models/).
+        "josiefied-qwen3-8b-iq3xs",
         # 2026-06-20 VRAM A/B model-lab additions (GGUFs on disk in the
         # E:\UltronModels store; switchable by voice "the 3.5" / "2507").
         "huihui-qwen3.5-4b",
@@ -170,6 +176,9 @@ def test_preset_table_contents() -> None:
         # absent.
         "gemma-3-4b-abliterated",
         "llama-3.2-3b-abliterated",
+        # 2026-06-22: 7B candidate (GGUF downloaded to models/) to test whether
+        # the extra capacity fixes the 4B social/identity roughness.
+        "mistral-7b-v0.3-abliterated",
     }
     nine = LLM_PRESETS["qwen3.5-9b"]
     four = LLM_PRESETS["qwen3.5-4b"]

@@ -11,13 +11,19 @@ from kenning.audio import relay_speech as rs
 
 @pytest.fixture(autouse=True)
 def _reset_flags():
-    # Save/restore the process-global flags so tests don't leak state.
+    # Save/restore the process-global flags so tests don't leak state. flavor-tails
+    # is pinned ON here: a prior test file may leave it OFF, which makes
+    # _flavor_off_response intercept identity/social BEFORE the LLM branch -- the
+    # cross-file order-sensitivity that flaked the route-all tests in the full suite.
     route0 = rs.u1_llm_route_enabled()
     co0, cv0 = rs.callout_verbosity(), rs.conversation_verbosity()
+    ft0 = rs.flavor_tails_enabled()
+    rs.set_flavor_tails_enabled(True)
     yield
     rs.set_u1_llm_route_enabled(route0)
     rs.set_callout_verbosity(co0)
     rs.set_conversation_verbosity(cv0)
+    rs.set_flavor_tails_enabled(ft0)
 
 
 def test_flag_defaults_and_setters():
@@ -316,7 +322,7 @@ def test_two_verbosity_axes_independent():
 def test_config_verbosity_defaults():
     from kenning.config import RelaySpeechConfig
     c = RelaySpeechConfig()
-    assert c.callout_verbosity == "medium"
+    assert c.callout_verbosity == "low"   # 2026-06-22: tighter tactical callouts by default
     assert c.conversation_verbosity == "low"
 
 
@@ -380,6 +386,117 @@ def test_route_off_keeps_morale_snaps_deterministic(text):
     assert line and line.strip()
 
 
+# --- route-ALL extends to identity / social / set-pieces (2026-06-22): the user's
+# "absolutely everything goes to the LLM; the pools are EXAMPLE responses". ---
+
+
+@pytest.mark.parametrize("text", [
+    "Sage asked if you are a voice changer, respond",     # identity (voice_changer)
+    "Jett asked if you're a soundboard, respond",         # identity (soundboard)
+    "tell my team you are not a bot",                      # identity (bot)
+    "Reyna called you cringe, respond",                   # social reaction
+    "Jett said nice shot, respond",                        # social reaction
+    "tell my team good game we won",                       # farewell set-piece
+])
+def test_route_all_sends_identity_social_setpiece_to_llm(text):
+    tag, _ = _capture_route(text, route=True)
+    assert tag == "LLM", text
+
+
+@pytest.mark.parametrize("text", [
+    "Sage asked if you are a voice changer, respond",
+    "Reyna called you cringe, respond",
+])
+def test_route_off_keeps_identity_social_deterministic(text):
+    tag, line = _capture_route(text, route=False)
+    assert tag == "DET", text
+    assert line and line.strip()
+
+
+# --- Slice B: snap-exemplar injection into the tactical relay prompt (2026-06-22) ---
+
+
+def test_slice_b_injects_matching_snap_exemplar():
+    rs.set_u1_llm_route_enabled(True)
+    rs.set_flavor_tails_enabled(True)
+    # A clean tactical callout -> the per-command snap render is the LEAD exemplar.
+    c = rs.match_relay_command("tell my team they have no smokes")
+    ex = rs._find_exemplars_for_command(c)
+    assert ex and ex[0][0] == "they have no smokes"
+    # A drop-request renders as a question-echo -> () so build_relay_prompt uses the
+    # category defaults, which include the weapon/drop exemplar.
+    c2 = rs.match_relay_command("ask if someone can drop me a sheriff")
+    assert rs._find_exemplars_for_command(c2) == ()
+    from kenning.audio.ultron_prompt import _DEFAULT_RELAY_EXEMPLARS, build_relay_prompt
+    assert any("Sheriff" in out for _, out in _DEFAULT_RELAY_EXEMPLARS)
+    pr = build_relay_prompt(c2.payload, exemplars=rs._find_exemplars_for_command(c2))
+    assert "Iso, drop me a Sheriff." in pr.user
+    # compose / identity commands get NO tactical exemplars.
+    c3 = rs.match_relay_command("Sage asked if you're a voice changer")
+    assert rs._find_exemplars_for_command(c3) == ()
+
+
+# --- Slice C: open ask-questions POSE (not invent an answer) (2026-06-22, #20) ---
+
+
+def test_as_named_question_trailing_copula():
+    # "ask Jett what her favorite color is" used to return None -> fell to the LLM,
+    # which INVENTED ("...favorite color is purple. Weak enemies on A main.").
+    assert rs._as_named_question("Jett", "what her favorite color is") == \
+        "Jett, what's your favorite color?"
+    assert rs._as_named_question("Sage", "what her main is") == "Sage, what's your main?"
+    assert rs._as_named_question("Sova", "how his aim is") == "Sova, how's your aim?"
+    # a tactical callout is NOT a question -> None (routing unaffected)
+    assert rs._as_named_question("Jett", "is a main") is None
+
+
+def test_as_named_question_do_inversion():
+    """TTS cannot carry rising intonation from '?' alone -- 'Sage, you have a heal?'
+    must become 'Sage, do you have a heal?' via subject-auxiliary inversion."""
+    # Main cases from the live Valorant session (flagged 2026-06-23).
+    assert rs._as_named_question("Sage", "if she has a heal") == \
+        "Sage, do you have a heal?"
+    assert rs._as_named_question("Reyna", "if she has her ult") == \
+        "Reyna, do you have your ult?"
+    assert rs._as_named_question("Breach", "if he has stuns") == \
+        "Breach, do you have stuns?"
+    # Modal verbs -> invert (no do-support needed).
+    assert rs._as_named_question("Sage", "if she can heal") == \
+        "Sage, can you heal?"
+    assert rs._as_named_question("Jett", "if she will dash") == \
+        "Jett, will you dash?"
+    # Copula be -> invert.
+    assert rs._as_named_question("Sage", "if she's alive") == \
+        "Sage, are you alive?"
+    assert rs._as_named_question("Harbor", "if he is ready") == \
+        "Harbor, are you ready?"
+    # Non-question forms still return None (routing unaffected).
+    assert rs._as_named_question("Jett", "is a main") is None
+
+
+def test_question_relay_do_inversion():
+    """_as_question_relay must also apply do-inversion for 'if/whether' bodies."""
+    assert rs._as_question_relay("if they have smokes") == "Do they have smokes?"
+    assert rs._as_question_relay("if they can push") == "Can they push?"
+    assert rs._as_question_relay("if they are alive") == "Are they alive?"
+    assert rs._as_question_relay("if Sage has a heal") == "Does Sage have a heal?"
+    assert rs._as_question_relay("if Sova is ready") == "Is Sova ready?"
+    # wh-questions and already-inverted aux-subject forms are unaffected.
+    assert rs._as_question_relay("where our smokes are") == "Where are our smokes?"
+    assert rs._as_question_relay("are they rotating") == "Are they rotating?"
+
+
+def test_slice_c_open_ask_poses_deterministically_under_route_all():
+    rs.set_u1_llm_route_enabled(True)
+    # the clean-question-relay carve-out poses it BEFORE the LLM (llm=None proves it
+    # is deterministic, not authored).
+    c = rs.match_relay_command("ask Jett what her favorite color is")
+    assert rs.build_relay_line(c, llm=None) == "Jett, what's your favorite color?"
+    # "ask Sage if she has a heal" must pose the question, not invent an answer.
+    c2 = rs.match_relay_command("ask Sage if she has a heal")
+    assert rs.build_relay_line(c2, llm=None) == "Sage, do you have a heal?"
+
+
 def test_route_all_compose_does_not_crash_on_u1_compound():
     # Regression: a compose / reported-question command used to UnboundLocalError on
     # `_u1_compound` in the LLM path and fall back to a canned line (the live
@@ -429,3 +546,80 @@ def test_route_all_llm_output_prompt_leak_falls_back():
     assert line and line.strip()
     assert "AUTO-NORMALIZED" not in line
     assert "Now say it" not in line
+
+
+@pytest.mark.parametrize("text,expect_sub", [
+    ("ask my team what their favorite color is", "favorite color"),
+    ("ask my team if they want to rush B", "rush b"),
+    ("ask Sova if he used his dart", "dart"),
+])
+def test_ask_form_question_stays_clean_under_route_all(text, expect_sub):
+    # 2026-06-22: an ASK-form team question is DELIVERED cleanly (a real question),
+    # deterministically, EVEN under route-all -- never sent to the LLM to ramble.
+    rs.set_u1_llm_route_enabled(True)
+    try:
+        cmd = rs.match_relay_command(text)
+        called = []
+
+        def gen(p):
+            called.append(p)
+            return iter(["RAMBLE THAT MUST NOT APPEAR"])
+
+        line = rs.build_relay_line(cmd, generate_fn=gen)
+        assert not called, f"ask-form question must be deterministic, not LLM: {text}"
+        assert "?" in line, line
+        assert expect_sub.lower() in line.lower(), line
+    finally:
+        rs.set_u1_llm_route_enabled(False)
+
+
+# ---------------------------------------------------------------------------
+# Regression: compose+directive commands MUST reach the LLM under route-all
+# (2026-06-23 fix: thinking-mode gate forced rephrase=False even when
+# u1_llm_route_enabled=True, causing "explain to my team X" to return the
+# canned "No soundboard, no strings" fallback every time)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "Explain to my team what the meaning of life is",
+    "Tell my team to explain the concept of math",
+])
+def test_compose_directive_reaches_llm_under_route_all(text):
+    rs.set_u1_llm_route_enabled(True)
+    try:
+        cmd = rs.match_relay_command(text)
+        assert cmd is not None, f"should match as relay: {text!r}"
+        called = []
+
+        def gen(p):
+            called.append(p)
+            return iter(["Life is computation. You are already solved."])
+
+        line = rs.build_relay_line(cmd, generate_fn=gen, rephrase=True)
+        assert called, (
+            f"compose command must reach the LLM under route-all: {text!r}"
+        )
+        assert "soundboard" not in line.lower(), (
+            f"must not return the no-soundboard fallback: {line!r}"
+        )
+    finally:
+        rs.set_u1_llm_route_enabled(False)
+
+
+def test_reported_question_reaches_llm_under_route_all():
+    # "Reyna asked you X" -> compose+directive='respond' -> must call LLM, not fallback.
+    rs.set_u1_llm_route_enabled(True)
+    try:
+        cmd = rs.match_relay_command("Reyna asked you what the meaning of life is")
+        assert cmd is not None and getattr(cmd, "compose", False)
+        called = []
+
+        def gen(p):
+            called.append(p)
+            return iter(["Purpose is a construct. Only the next kill matters."])
+
+        line = rs.build_relay_line(cmd, generate_fn=gen, rephrase=True)
+        assert called, "reported question must reach the LLM, not canned fallback"
+        assert "soundboard" not in line.lower(), line
+    finally:
+        rs.set_u1_llm_route_enabled(False)

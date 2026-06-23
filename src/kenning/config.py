@@ -693,6 +693,36 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "n_ctx": 8192,
         "draft_model_path": None,
     },
+    # 2026-06-23 -- the SAME Josiefied-Qwen3-8B-abliterated-v1 base at the smaller
+    # IQ4_XS imatrix quant (~4.56 GB on disk vs the Q5_K_M's ~5.85 GB), PAIRED with
+    # a Qwen3-0.6B Q4_K_M draft for in-process speculative decoding (set
+    # llm.draft_kind: "model"). Qwen3-0.6B shares the Qwen3 tokenizer (151936 vocab)
+    # with the 8B target, so draft acceptance is high. The smaller quant + the draft
+    # leave VRAM room for a Valorant match on the 4070 Ti. Persona is the already-
+    # validated Josiefied/abliterated lineage. CAVEAT: in-process draft-model spec
+    # decoding ("model") shares the llama_decode C path that has crashed (-1) on some
+    # stacks -- test-load before relying on it; fall back to draft_kind: "none"
+    # (the 8B IQ4_XS alone) if it crashes.
+    "josiefied-qwen3-8b-iq4xs": {
+        "model_path": "models/Josiefied-Qwen3-8B-abliterated-v1.i1-IQ4_XS.gguf",
+        "n_ctx": 4096,
+        "draft_model_path": "models/Qwen_Qwen3-0.6B-Q4_K_M.gguf",
+    },
+    # 2026-06-23 -- the SAME Josiefied-Qwen3-8B-abliterated-v1 base one quant
+    # lower: IQ3_XS imatrix (~3.4 GB on disk vs the IQ4_XS's ~4.56 GB), still
+    # PAIRED with the Qwen3-0.6B Q4_K_M draft (same Qwen3 tokenizer = high draft
+    # acceptance). Frees ~1.1 GB more VRAM than IQ4_XS for a Valorant match.
+    # USE: a deliberate quality-vs-VRAM A/B -- low-bit quant degrades exactly the
+    # multi-constraint instruction-following + prompt-leak resistance that the 8B
+    # was chosen FOR, so this is a "observe the persona/precision delta" candidate,
+    # not a drop-in. Same draft-model caveat as the IQ4_XS preset (model-draft spec
+    # decoding shares the llama_decode path that has crashed (-1) on some stacks --
+    # test-load before relying on it; fall back to draft_kind: "none").
+    "josiefied-qwen3-8b-iq3xs": {
+        "model_path": "models/Josiefied-Qwen3-8B-abliterated-v1.i1-IQ3_XS.gguf",
+        "n_ctx": 4096,
+        "draft_model_path": "models/Qwen_Qwen3-0.6B-Q4_K_M.gguf",
+    },
     # 2026-05-14 -- Josiefied-Qwen3-4B-abliterated-v2 (Goekdeniz-Guelmez)
     # quantised by mradermacher. Base model: Qwen/Qwen3-4B-Instruct-2507.
     # Same abliterated + Josiefied fine-tune lineage as the 8B variant
@@ -816,6 +846,20 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "draft_model_path": None,
         "gpu_layers": 0,
     },
+    # 2026-06-22 -- Mistral-7B-Instruct-v0.3 abliterated (mradermacher i1
+    # quants). A 7B candidate to test whether the extra capacity fixes the
+    # 4B's social/identity roughness (question-echo / ramble on short replies)
+    # WITHOUT the Qwen3.5 in-process /no_think unreliability. NOT think-trained,
+    # so it is safe under the u1.0 per-route max_tokens caps. i1-Q4_K_M is
+    # ~4.4 GB of weights; full GPU offload (no gpu_layers override -> the config
+    # default -1) at n_ctx 4096 -- expect ~6-6.5 GB resident + Kokoro ~1.5 GB,
+    # under the 10 GB cap. Downloaded from the mradermacher i1-GGUF repo
+    # (dot-separated filename, like the gemma/llama mradermacher quants).
+    "mistral-7b-v0.3-abliterated": {
+        "model_path": "models/Mistral-7B-Instruct-v0.3-abliterated.i1-Q4_K_M.gguf",
+        "n_ctx": 4096,
+        "draft_model_path": None,
+    },
 }
 
 
@@ -868,6 +912,12 @@ class LLMConfig(_Strict):
         "qwen3.5-9b",
         "qwen3.5-4b",
         "josiefied-qwen3-8b",
+        # 2026-06-23: the IQ4_XS quant of the 8B + a Qwen3-0.6B draft for
+        # in-process speculative decoding (llm.draft_kind: "model").
+        "josiefied-qwen3-8b-iq4xs",
+        # 2026-06-23: the IQ3_XS quant of the same 8B (~3.4 GB) + the same
+        # 0.6B draft -- a VRAM-vs-quality A/B candidate (see LLM_PRESETS).
+        "josiefied-qwen3-8b-iq3xs",
         "josiefied-qwen3-4b",
         # 2026-06-20 (Ultron 1.0 VRAM A/B model-lab): newer 4B candidates
         # switchable by voice ("the 3.5" / "2507"). MUST mirror LLM_PRESETS
@@ -879,6 +929,9 @@ class LLMConfig(_Strict):
         # for swap-readiness contract (GGUFs must be on disk first).
         "gemma-3-4b-abliterated",
         "llama-3.2-3b-abliterated",
+        # 2026-06-22: 7B candidate to test whether the extra capacity fixes the
+        # 4B social/identity roughness. MUST mirror LLM_PRESETS.
+        "mistral-7b-v0.3-abliterated",
         "custom",
     ] = "josiefied-qwen3-4b"
     # Where the model actually runs:
@@ -3795,7 +3848,7 @@ class RelaySpeechConfig(_Strict):
     #   * conversation_verbosity (low/medium/high/max): the reply length for
     #     private replies + social/banter + non-tactical responses. Voice:
     #     "conversation/chat verbosity <level>". (Coerced to a valid level at boot.)
-    callout_verbosity: str = "medium"
+    callout_verbosity: str = "low"  # 2026-06-22: tighter tactical callouts by default (a brief cold tag, not a verbose tail); raise by voice ("medium/high flavor")
     conversation_verbosity: str = "low"
     # Named addressees for per-person callouts ("ask Clove to smoke
     # window", "tell Sova to drone sewers"). Empty -> the built-in

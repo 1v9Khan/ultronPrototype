@@ -212,6 +212,19 @@ _RUNON_TEAM_LEAD_RE = re.compile(
 )
 
 
+# "my team" addressee mis-heard as "my self"/"myself" after a tell-class lead
+# ("tell my team nice try" -> Whisper "tell myself a nice try", which then missed
+# the relay matcher AND, in always-listening mode, the intent gate IGNORED it).
+# GUARDED: NOT a genuine self-instruction "tell myself TO <verb>" ("tell myself to
+# calm down"), and ^-anchored so a mid-utterance "I keep telling myself ..." never
+# matches. The optional " a" absorbs the common "my team" -> "myself a" mishear.
+_SELF_AS_TEAM_LEAD_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:tell|told|tellin'?|telling|let|say|remind|warn)\s+"
+    r"my\s*self\b(?:\s+a\b)?(?!\s+to\s+\w)[\s,:.]*",
+    re.IGNORECASE,
+)
+
+
 def _canonicalize_directive_lead(s: str) -> str:
     """Rewrite a mangled / doubled relay-verb lead to a single canonical
     "tell my team " (or preserve a valid ask/relay verb), stripping any stacked
@@ -219,6 +232,14 @@ def _canonicalize_directive_lead(s: str) -> str:
     s = s.lstrip()
     if not s:
         return s
+    # (a0) the team addressee mis-heard as "self"/"myself" ("tell myself a nice
+    #      try" == "tell my team nice try") -> canonical team lead. The regex's
+    #      look-ahead leaves a genuine self-instruction "tell myself to <verb>".
+    m = _SELF_AS_TEAM_LEAD_RE.match(s)
+    if m:
+        payload = _strip_stacked_team_leads(s[m.end():])
+        if payload.strip():
+            return "tell my team " + payload
     # (a) outer lead is already a valid team verb (tell/ask/say/...) -> keep the
     #     verb, strip any junk lead stacked in the payload.
     m = _ANY_TEAM_LEAD_OUTER_RE.match(s)
@@ -233,6 +254,15 @@ def _canonicalize_directive_lead(s: str) -> str:
         if payload.strip():
             return "tell my team " + payload
     return s
+
+
+def canonicalize_relay_lead(text: str) -> str:
+    """Public: canonicalize a MANGLED but EXISTING team-directed relay lead
+    ("Call my team X" / "tell myself X" -> "tell my team X"). The SAFE subset of
+    normalize_command -- it only fixes an EXISTING team-directed lead, it NEVER
+    invents one for a bare callout the way recover_relay_lead does (so it cannot
+    false-relay banter). Used by the always-listening intent gate's relay signal."""
+    return _canonicalize_directive_lead(text)
 
 
 # ---------------------------------------------------------------------------
