@@ -558,7 +558,7 @@ llm:
   # Kokoro adds ~1.5 GB) -> ~3 GB freed vs the 8B, which fixes the sysmem-fallback
   # spike. The voice model lab switches live (8B / 4B / 3.5 / 2507); "switch the
   # model to the CPU" hands the card back mid-match. Swap back: preset: "josiefied-qwen3-8b".
-  preset: "mistral-7b-v0.3-abliterated"  # 2026-06-23 Mistral-7B i1-Q4_K_M (~4.4GB, ~6-6.5GB resident). No draft model -- spec decoding auto-OFF (see _apply_preset). Swap: "josiefied-qwen3-8b-iq4xs" (8B+draft, spec ON), "josiefied-qwen3-8b-iq3xs" (8B IQ3_XS+draft), "josiefied-qwen3-4b-2507g" (4B)
+  preset: "josiefied-qwen3-8b-iq3xs"  # 2026-06-23 8B IQ3_XS (~3.4GB) + Qwen3-0.6B Q4 draft -> in-process speculative decoding (draft_kind auto-set "model" by _apply_preset since the preset ships a draft). Full GPU, n_ctx 4096. The Mistral revert was over a "latency regression" that was actually the twitch-moderation HTTP stall (fixed 0ffbc11), NOT the model. Swap: "mistral-7b-v0.3-abliterated" (7B, no draft), "josiefied-qwen3-8b-iq4xs" (4.6GB), "josiefied-qwen3-4b-2507g" (4B)
   # u1.0 VRAM hard cap: the research synthesis (C_model) shows >8K context
   # risks exceeding 10 GB and 40K OOMs; relay prompts fit well under 4k.
   # This explicit value overrides the preset's 8192.
@@ -1718,7 +1718,7 @@ gaming_mode:
   # Smaller LLM swapped in on engage to free ~1.5 GB VRAM for the game.
   # Disengage restores the prior preset. Set "" to disable the swap and
   # keep the standby LLM during gaming.
-  llm_preset: "mistral-7b-v0.3-abliterated"  # 2026-06-23 Mistral-7B on GPU; spec decoding auto-OFF (no draft in preset). Swap to "josiefied-qwen3-8b-iq4xs" / "josiefied-qwen3-8b-iq3xs" for 8B+draft (spec decoding auto-ON).
+  llm_preset: "josiefied-qwen3-8b-iq3xs"  # 2026-06-23 8B IQ3_XS + 0.6B draft; the lean gaming boot loads THIS preset (not llm.preset), on GPU via llm_gpu_layers=-1; spec decoding auto-ON (preset ships a draft -> _apply_preset sets draft_kind="model"). Swap to "mistral-7b-v0.3-abliterated" (no draft, spec auto-OFF) / "josiefied-qwen3-8b-iq4xs" / "josiefied-qwen3-4b-2507g".
 
 # ---------------------------------------------------------------------------
 # Desktop control (V1-spec gap C3) — voice routing for the OpenClaw

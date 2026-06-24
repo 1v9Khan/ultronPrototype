@@ -32,16 +32,18 @@ import pytest
 from kenning.config import LLM_PRESETS, LLMConfig, load_config
 
 
-def test_default_preset_is_mistral_7b() -> None:
-    """2026-06-23: default changed to Mistral-7B-Instruct-v0.3-abliterated
-    (i1-Q4_K_M, ~4.4 GB). No paired draft model, so spec decoding is
-    auto-disabled. Reverted from iq3xs after a latency regression."""
+def test_default_preset_is_8b_iq3xs() -> None:
+    """2026-06-23: default returned to Josiefied-Qwen3-8B IQ3_XS + Qwen3-0.6B
+    draft. The Mistral revert was over a "latency regression" that was actually
+    the twitch-moderation HTTP stall (fixed 0ffbc11), not the model -- so the
+    8B + in-process speculative decoding is the default again. Because the preset
+    ships a draft_model_path, _apply_preset auto-sets draft_kind="model"."""
     cfg = LLMConfig()
-    assert cfg.preset == "mistral-7b-v0.3-abliterated"
-    assert cfg.model_path == "models/Mistral-7B-Instruct-v0.3-abliterated.i1-Q4_K_M.gguf"
+    assert cfg.preset == "josiefied-qwen3-8b-iq3xs"
+    assert cfg.model_path == "models/Josiefied-Qwen3-8B-abliterated-v1.i1-IQ3_XS.gguf"
     assert cfg.n_ctx == 4096
-    assert cfg.draft_model_path is None
-    assert cfg.draft_kind == "none"
+    assert cfg.draft_model_path == "models/Qwen_Qwen3-0.6B-Q4_K_M.gguf"
+    assert cfg.draft_kind == "model"
 
 
 def test_llm_presets_match_literal() -> None:
@@ -313,8 +315,9 @@ llm:
 def test_yaml_load_default_preset_back_compat(tmp_path: Path) -> None:
     """A YAML config that does not specify ``preset`` falls back to the
     schema default. As of 2026-06-23 the schema default is
-    mistral-7b-v0.3-abliterated (latency regression on iq3xs prompted the
-    revert). The production config.yaml always spells the preset explicitly."""
+    josiefied-qwen3-8b-iq3xs (the Mistral revert was over a stall later
+    traced to twitch moderation, not the model). The preset ships a draft, so
+    _apply_preset auto-sets draft_kind="model". config.yaml spells it explicitly."""
     yaml_text = """
 version: "1.0"
 llm:
@@ -323,13 +326,13 @@ llm:
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml_text, encoding="utf-8")
     cfg = load_config(cfg_path)
-    assert cfg.llm.preset == "mistral-7b-v0.3-abliterated"
+    assert cfg.llm.preset == "josiefied-qwen3-8b-iq3xs"
     assert cfg.llm.model_path == (
-        "models/Mistral-7B-Instruct-v0.3-abliterated.i1-Q4_K_M.gguf"
+        "models/Josiefied-Qwen3-8B-abliterated-v1.i1-IQ3_XS.gguf"
     )
     assert cfg.llm.n_ctx == 4096
-    assert cfg.llm.draft_model_path is None
-    assert cfg.llm.draft_kind == "none"
+    assert cfg.llm.draft_model_path == "models/Qwen_Qwen3-0.6B-Q4_K_M.gguf"
+    assert cfg.llm.draft_kind == "model"
 
 
 def test_yaml_load_custom_preset_with_explicit_paths(tmp_path: Path) -> None:

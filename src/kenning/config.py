@@ -933,7 +933,7 @@ class LLMConfig(_Strict):
         # 4B social/identity roughness. MUST mirror LLM_PRESETS.
         "mistral-7b-v0.3-abliterated",
         "custom",
-    ] = "mistral-7b-v0.3-abliterated"
+    ] = "josiefied-qwen3-8b-iq3xs"
     # Where the model actually runs:
     #   "in_process"  — load via llama-cpp-python in this Python process
     #                   (current default; what the voice pipeline uses today).
