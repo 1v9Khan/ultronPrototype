@@ -138,8 +138,10 @@ class _FakeRemote:
         self._prep = prep
         self.confirmed: list = []
         self.cancelled: list = []
+        self.prepared: list = []
 
     def prepare(self, text):
+        self.prepared.append(text)
         return dict(self._prep)
 
     def confirm(self, token):
@@ -172,17 +174,46 @@ def test_moderation_handler_not_a_command_falls_through() -> None:
 
 
 def test_moderation_sidecar_error_falls_through() -> None:
-    """A sidecar HTTP error dict must NOT trigger 'I cannot do that' — fall through."""
-    orch, spoken = _mod_orch(_FakeRemote({"ok": False, "error": "http_500"}))
-    assert orch._maybe_handle_twitch_moderation("say hello") is False
+    """A real mod command hitting a sidecar HTTP error must NOT trigger
+    'I cannot do that' — fall through so the utterance can route elsewhere."""
+    remote = _FakeRemote({"ok": False, "error": "http_500"})
+    orch, spoken = _mod_orch(remote)
+    assert orch._maybe_handle_twitch_moderation("ban xqc") is False
+    assert remote.prepared == ["ban xqc"]   # the verb passed the pre-filter
     assert spoken == []
 
 
 def test_moderation_sidecar_unavailable_falls_through() -> None:
     """A transport-failure response (error=unavailable) must fall through silently."""
-    orch, spoken = _mod_orch(_FakeRemote({"ok": False, "error": "unavailable"}))
-    assert orch._maybe_handle_twitch_moderation("relay hello to the team") is False
+    remote = _FakeRemote({"ok": False, "error": "unavailable"})
+    orch, spoken = _mod_orch(remote)
+    assert orch._maybe_handle_twitch_moderation("timeout xqc for 10 minutes") is False
     assert spoken == []
+
+
+def test_moderation_prefilter_skips_non_command_without_http() -> None:
+    """The cheap local verb pre-filter means ordinary relay/conversation text
+    NEVER reaches remote.prepare() — so a dead/slow write sidecar can't stall
+    the voice loop. This is the 2026-06-23 'say hello = 2s latency' fix."""
+    remote = _FakeRemote({"ok": False, "error": "unavailable"})
+    orch, spoken = _mod_orch(remote)
+    for utterance in ("say hello", "nice shot dude", "drop me a gun",
+                      "how was your day", "tell my team to push B"):
+        assert orch._maybe_handle_twitch_moderation(utterance) is False
+    assert remote.prepared == []   # zero HTTP round-trips for non-commands
+    assert spoken == []
+
+
+def test_moderation_prefilter_admits_real_commands() -> None:
+    """Every moderation verb in the sidecar grammar passes the pre-filter and
+    reaches remote.prepare() (a sound necessary condition — never drops one)."""
+    for cmd in ("ban xqc", "timeout bob for 5 min", "unban alice",
+                "untimeout carol", "remove the ban on dave",
+                "delete eve's last message", "to frank for spam"):
+        remote = _FakeRemote({"not_a_command": True, "ok": False})
+        orch, _ = _mod_orch(remote)
+        orch._maybe_handle_twitch_moderation(cmd)
+        assert remote.prepared == [cmd], f"pre-filter dropped real command: {cmd!r}"
 
 
 def test_moderation_two_phase_confirm_yes() -> None:

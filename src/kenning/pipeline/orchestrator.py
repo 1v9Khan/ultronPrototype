@@ -208,6 +208,25 @@ _WAKE_REMNANT_RE = re.compile(
 _FOLLOWUP_WAKE_RE = re.compile(
     r"^\s*(?:hey[\s,]+)?(?:ultron|kenning)\b", re.IGNORECASE)
 
+# 2026-06-23: a CHEAP local gate so non-moderation voice (the ~99% relay /
+# conversation case, e.g. "say hello") never pays the write-sidecar HTTP
+# round-trip in _maybe_handle_twitch_moderation. EVERY moderation command in
+# the sidecar's grammar (moderation/service.py _RE_BAN/_RE_TIMEOUT/_RE_UNBAN/
+# _RE_UNTIMEOUT/_RE_DELETE) STARTS with one of these verbs, so a leading-verb
+# match is a sound NECESSARY condition: it can over-admit (a stray "to ..." pays
+# one harmless round-trip the sidecar then rejects) but NEVER drops a real
+# command. Without this, a dead/slow write sidecar stalls every spoken turn on
+# the connect timeout (BR-9.6 surgical; the 2s "say hello" latency regression).
+_TWITCH_MOD_VERB_RE = re.compile(
+    r"^\s*(?:"
+    r"ban|permaban|perma[\s-]?ban|"
+    r"time[\s-]?out|to|"
+    r"un[\s-]?ban|un[\s-]?timeout|"
+    r"remove|lift|delete|purge"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # 2026-06-18: capture-stall watchdog thresholds. A healthy input stream delivers
 # a chunk every ~16 ms (and a quiet room still streams SILENCE chunks), so
 # get_chunk only times out when the stream has STOPPED producing callbacks -- a
@@ -6596,7 +6615,13 @@ class Orchestrator:
             # Neither yes nor no -> the streamer moved on; drop the stale proposal
             # and fall through to parse this utterance as a fresh command.
             self._twitch_mod_pending = None
-        # Phase 1: is this a moderation command at all?
+        # Phase 1: is this a moderation command at all? CHEAP local pre-filter
+        # FIRST -- every real command starts with a moderation verb, so any other
+        # utterance (relay, conversation, "say hello") bails here WITHOUT the
+        # blocking write-sidecar HTTP round-trip. A dead/slow sidecar therefore
+        # never stalls ordinary voice turns (BR-9.6).
+        if not _TWITCH_MOD_VERB_RE.match(text):
+            return False
         try:
             prop = remote.prepare(text)
         except Exception:                                            # noqa: BLE001
