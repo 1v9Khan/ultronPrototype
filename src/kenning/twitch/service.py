@@ -86,6 +86,7 @@ class ChatModeService:
         bot_user_id: str = "",
         streamer_user_id: str = "",
         busy_estimator: Optional[Any] = None,
+        chat_post_fn: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self._cfg = twitch_cfg
         safety_cfg = getattr(twitch_cfg, "safety", None)
@@ -104,6 +105,7 @@ class ChatModeService:
             streamer_user_id=streamer_user_id,
             on_flagged=on_flagged,
             busy_estimator=busy_estimator,
+            chat_post_fn=chat_post_fn,
         )
 
     @property

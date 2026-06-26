@@ -60,7 +60,8 @@ the anticheat-pinned main process never imports a network or automation library 
 
 - 💬 **In-character chat replies** — viewers address Ultron in chat; a Llama-Guard model gates every input *and*
   output (fail-closed — an unhealthy guard means silence), and the reply plays only on the stream bus, never the
-  team mic.
+  team mic. A **per-viewer 2-minute cooldown** stops one chatter monopolising him (over-cooldown he answers in chat
+  only — `@viewer`, no TTS), and every viewer-directed reply is `@`-tagged to them.
 - 🛡️ **Voice moderation** — `"Ultron, ban / timeout / unban / delete <viewer>"` (two-phase voice confirm with a
   spoken read-back) plus chat-settings (`slow mode` · `followers only` · `subscribers only` · `emote only` ·
   `clear chat`); all writes go through the broadcaster-token sidecar with idempotency + a mass-action breaker.
@@ -69,9 +70,19 @@ the anticheat-pinned main process never imports a network or automation library 
   channel-point game redeems are provably-fair, house-funded, and EventSub-replay-safe (a local idempotency layer
   over the SE points API).
 - 🗣️ **Viewer speak-redeems** — channel-point rewards let a viewer make Ultron say their message via TTS
-  (Llama-Guard-screened, length-capped, framed) — to the stream, or (pricier) onto the team voice bus.
+  (Llama-Guard-screened, length-capped, framed) — to the stream, or (pricier) onto the team voice bus; a stop-button
+  **SAY NAME** toggle controls whether the team relay names the viewer, and the team relay drives the voice waveform.
 - 🖼️ **Unified OBS overlay** — chat games, redeem games, and speak-redeems all render through one polished
-  bottom-left card renderer (spinning reels, wheel reveal, result cards), with a `?demo=1` preview mode.
+  bottom-left card renderer (spinning reels, wheel reveal, result cards), streamed live over SSE (a `script-src` CSP
+  grant lets it run inside OBS's embedded browser) with a small replay buffer so a freshly-connected source catches
+  up; `?demo=1` previews every card.
+- 🎉 **Raid welcome** — when another channel raids in, Ultron auto-`/shoutout`s the raider and vocally welcomes the
+  raiders (thanks them, invites them to stick around, points them to chat) — idempotent + fail-open, riding the
+  broadcaster-token EventSub session.
+- 🎛️ **Click-to-run panels** — two voice-summoned always-on-top windows: a **moderation control panel** (`"open
+  moderation panel"`) with a button per mod action (+ a username box) and a fuzzy-match confirm popup, and a dev
+  **test panel** (`"show me the test panel"`) that fires any redeem / chat game / raid / speak locally so you can
+  rehearse without real viewers — in-process tkinter (a click is the app's own window message, not input monitoring).
 - 📋 **Chat helpers** — `!ultron` posts the command list on demand; an auto commands-panel (15 min) and a
   "talk to Ultron" hint (10 min) both link a one-page viewer guide, plus an auto-trivia round every 8 min.
 

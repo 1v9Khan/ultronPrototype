@@ -227,6 +227,39 @@ def test_config_flag_defaults() -> None:
     assert c.flag_label == "FLAG LAST"
 
 
+def test_overlay_accepts_say_name_toggle() -> None:
+    hits = []
+    ov = StopButtonOverlay(on_stop=lambda: None,
+                           on_toggle_say_name=lambda v: hits.append(v),
+                           say_name_enabled=True,
+                           say_name_height=30, say_name_label="NAME IT")
+    assert ov._on_toggle_say_name is not None
+    assert ov._say_name_enabled is True
+    assert ov._say_name_h == 30
+    assert ov._say_name_label == "NAME IT"
+    ov._on_toggle_say_name(False)
+    assert hits == [False]
+
+
+def test_overlay_say_name_defaults_and_clamp() -> None:
+    ov = StopButtonOverlay(on_stop=lambda: None)
+    assert ov._on_toggle_say_name is None       # absent by default
+    assert ov._say_name_enabled is True         # default ON
+    assert ov._say_name_h == 26                 # default height
+    assert ov._say_name_label == "SAY NAME"
+    ov2 = StopButtonOverlay(on_stop=lambda: None,
+                            say_name_height=-5, say_name_label="")
+    assert ov2._say_name_h == 0                 # clamped to >= 0
+    assert ov2._say_name_label == "SAY NAME"    # empty -> default
+
+
+def test_config_say_name_defaults() -> None:
+    from kenning.config import StopButtonConfig
+    c = StopButtonConfig()
+    assert c.say_name_height == 26
+    assert c.say_name_label == "SAY NAME"
+
+
 def test_stop_button_flag_logs_last_turn(tmp_path, monkeypatch) -> None:
     import json
     import pathlib

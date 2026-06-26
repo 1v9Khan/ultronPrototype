@@ -187,6 +187,11 @@ class ChatGameRouter:
         chat_cfg: object | None = None,
     ) -> None:
         self._drain = drain_fn
+        # 2026-06-26: dev TEST PANEL injection buffer. inject() appends a synthetic
+        # FLAT chat dict; the next tick() drains it ALONGSIDE the live drain so a
+        # test command flows through the EXACT same parse/dedup/dispatch path as a
+        # real viewer's. Empty + unused in normal operation (byte-identical).
+        self._inject_buf: list[dict] = []
         self._ledger = ledger
         self._cfg = cfg
         # The CHAT config (TwitchChatConfig) — only ``commands_panel_doc_url`` is
@@ -233,6 +238,16 @@ class ChatGameRouter:
         self._nonce = 0
 
     # -- public surface ---------------------------------------------------- #
+    def inject(self, event: dict) -> None:
+        """Queue a SYNTHETIC chat event (the FLAT buffer dict shape) for the next
+        tick — the dev TEST PANEL seam. The event flows through the identical
+        parse/dedup/dispatch path as a live viewer's. Fail-safe."""
+        try:
+            if isinstance(event, dict):
+                self._inject_buf.append(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("chat-game inject failed: %s", exc)
+
     def last_message_id(self, login: str) -> Optional[str]:
         """The most-recent chat message_id seen for ``login`` (for voice
         delete-moderation), or None. Login is matched case-insensitively."""
@@ -260,6 +275,15 @@ class ChatGameRouter:
         except Exception as exc:  # noqa: BLE001
             logger.debug("chat-command drain raised: %s", exc)
             events = []
+        # Drain any TEST-PANEL injected synthetic events (FLAT dicts -> ChatEvent),
+        # processed through the SAME path below. Pop atomically (list ops are
+        # GIL-atomic) so a concurrent inject() is never lost.
+        if self._inject_buf:
+            pending, self._inject_buf = self._inject_buf, []
+            for raw in pending:
+                ce = chat_event_from_buffer(raw)
+                if ce is not None:
+                    events.append(ce)
         handled = 0
         for ev in events:
             try:

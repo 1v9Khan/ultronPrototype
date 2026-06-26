@@ -91,6 +91,7 @@ BROADCASTER_SCOPES = (
     "moderator:manage:chat_messages",
     "moderator:manage:shield_mode",
     "moderator:manage:banned_users",
+    "moderator:manage:shoutouts",
     "channel:moderate",
 )
 BOT_SCOPES = (

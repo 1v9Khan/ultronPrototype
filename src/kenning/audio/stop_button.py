@@ -154,6 +154,10 @@ class StopButtonOverlay:
         chat_audio_enabled: bool = False,
         chat_audio_height: int = 26,
         chat_audio_label: str = "HEAR CHAT",
+        on_toggle_say_name: Optional[Callable[[bool], None]] = None,
+        say_name_enabled: bool = True,
+        say_name_height: int = 26,
+        say_name_label: str = "SAY NAME",
         on_restart: Optional[Callable[[], None]] = None,
         on_exit: Optional[Callable[[], None]] = None,
         restart_height: int = 28,
@@ -205,6 +209,15 @@ class StopButtonOverlay:
         self._chat_audio_enabled = bool(chat_audio_enabled)
         self._chat_audio_h = max(0, int(chat_audio_height))
         self._chat_audio_label = chat_audio_label or "HEAR CHAT"
+        # Optional SAY-NAME toggle row: flips whether the "ultron tells my team"
+        # speak redeem announces the viewer name ("<viewer> says: ...") as a
+        # prefix (ON, default) or speaks ONLY the message (OFF). Distinct from the
+        # CHAT / HEAR-CHAT toggles (which govern chat-reply + its audio routing).
+        # ``_say_name_enabled`` tracks the displayed state across show/hide rebuilds.
+        self._on_toggle_say_name = on_toggle_say_name
+        self._say_name_enabled = bool(say_name_enabled)
+        self._say_name_h = max(0, int(say_name_height))
+        self._say_name_label = say_name_label or "SAY NAME"
         # Optional RESTART + EXIT action buttons (orchestrator-wired). Restart =
         # full cleanup then relaunch the same build; Exit = full cleanup then quit.
         self._on_restart = on_restart
@@ -291,6 +304,9 @@ class StopButtonOverlay:
             _has_chat_audio = (self._on_toggle_chat_audio is not None
                                and self._chat_audio_h > 0)
             chat_audio_h = self._chat_audio_h if _has_chat_audio else 0
+            _has_say_name = (self._on_toggle_say_name is not None
+                             and self._say_name_h > 0)
+            say_name_h = self._say_name_h if _has_say_name else 0
             _has_restart = self._on_restart is not None and self._restart_h > 0
             _has_exit = self._on_exit is not None and self._exit_h > 0
             _has_flag = self._on_flag is not None and self._flag_h > 0
@@ -298,7 +314,7 @@ class StopButtonOverlay:
             exit_h = self._exit_h if _has_exit else 0
             flag_h = self._flag_h if _has_flag else 0
             height = (bar_h + btn_h + restart_h + exit_h + flag_h + ptt_h
-                      + turbo_h + chat_h + chat_audio_h)
+                      + turbo_h + chat_h + chat_audio_h + say_name_h)
             root = tk.Tk()
             root.title("ULTRON // STOP")
             root.geometry(f"{w}x{height}+{self._x}+{self._y}")
@@ -509,6 +525,53 @@ class StopButtonOverlay:
                 chat_audio_btn.configure(command=_toggle_chat_audio)
                 chat_audio_btn.pack(fill="x", side="bottom")
                 chat_audio_btn.bind("<Button-3>", lambda _e: self.hide())
+
+            # SAY-NAME toggle -- purple "SAY NAME ON" (default) = the team speak
+            # redeem prefixes the viewer name ("<viewer> says: ..."); grey "SAY
+            # NAME OFF" = it speaks ONLY the message. Governs the TEAM redeem
+            # framing (redeem_router.set_say_name_enabled). Distinct violet accent.
+            if _has_say_name:
+                _sn_on_fg, _sn_on_fill = "#bf7fff", "#1a1024"    # violet = ON
+                _sn_off_fg, _sn_off_fill = "#8a8f98", "#141414"  # grey = OFF
+
+                def _say_name_colors():
+                    return ((_sn_on_fg, _sn_on_fill) if self._say_name_enabled
+                            else (_sn_off_fg, _sn_off_fill))
+
+                _snfg0, _snfill0 = _say_name_colors()
+                say_name_btn = tk.Button(
+                    root,
+                    text=f"{self._say_name_label} "
+                         f"{'ON' if self._say_name_enabled else 'OFF'}",
+                    bg=_snfill0, fg=_snfg0,
+                    activebackground=_snfill0, activeforeground="#ffffff",
+                    relief="flat", bd=0, highlightthickness=1,
+                    highlightbackground=_snfg0, highlightcolor=_snfg0,
+                    font=("Segoe UI Semibold", 9), cursor="hand2",
+                )
+
+                def _toggle_say_name():
+                    self._say_name_enabled = not self._say_name_enabled
+                    fg, fill = _say_name_colors()
+                    try:
+                        say_name_btn.configure(
+                            text=f"{self._say_name_label} "
+                                 f"{'ON' if self._say_name_enabled else 'OFF'}",
+                            bg=fill, fg=fg, activebackground=fill,
+                            highlightbackground=fg, highlightcolor=fg)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        if self._on_toggle_say_name is not None:
+                            self._on_toggle_say_name(self._say_name_enabled)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("say-name toggle callback failed: %s", e)
+                    logger.info("say-name toggle -> %s",
+                                "ON" if self._say_name_enabled else "OFF")
+
+                say_name_btn.configure(command=_toggle_say_name)
+                say_name_btn.pack(fill="x", side="bottom")
+                say_name_btn.bind("<Button-3>", lambda _e: self.hide())
 
             # RESTART + EXIT action buttons -- packed at the bottom (above PTT,
             # below STOP). Each runs Ultron's full cleanup; Restart then relaunches

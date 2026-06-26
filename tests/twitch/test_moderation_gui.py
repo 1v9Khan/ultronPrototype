@@ -21,7 +21,11 @@ import time
 import pytest
 
 import kenning.twitch.moderation_gui as mod_gui
-from kenning.twitch.moderation_gui import ModerationConfirmGUI
+from kenning.twitch.moderation_gui import (
+    ModerationConfirmGUI,
+    ModerationControlPanel,
+    make_control_panel,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -178,3 +182,294 @@ def test_fire_emits_result_once(monkeypatch: pytest.MonkeyPatch) -> None:
     gui._result_sent = False
     gui._fire("cancel")  # must not raise
     gui.close()
+
+
+# ===========================================================================
+# ModerationControlPanel -- the click-to-moderate sidebar.
+#
+# Like the confirm-window tests above, these run HEADLESS-SAFE: no REAL Tk root
+# is built. The autouse ``_force_headless`` fixture forces the fail-open path,
+# and the command-emit / validation LOGIC is driven DIRECTLY (we populate the
+# panel's ``_vars`` dict and call the pure ``_emit_*`` handlers), proving each
+# control invokes ``on_command`` with the right action / user / seconds /
+# enabled -- without ever creating a Tk widget or simulating a real click.
+# ===========================================================================
+
+
+def _record_panel(**kwargs):
+    """Build a headless panel whose on_command appends every call to a list."""
+    calls: list[tuple] = []
+
+    def _on_command(action: str, *, user: str = "", seconds: int = 0,
+                    enabled: bool = True) -> None:
+        calls.append((action, user, seconds, enabled))
+
+    panel = ModerationControlPanel(_on_command, **kwargs)
+    return panel, calls
+
+
+def test_panel_import_and_construct_never_raise() -> None:
+    panel, _calls = _record_panel()
+    assert isinstance(panel.available, bool)
+    assert panel.available is False  # forced headless
+    assert panel.shown is False
+    panel.close()
+
+
+def test_panel_factory_returns_inert_when_headless() -> None:
+    panel = make_control_panel(lambda *a, **k: None)
+    assert panel.available is False
+    assert panel.shown is False
+    # Every public method is a safe no-op.
+    panel.show()
+    panel.hide()
+    panel.toggle()
+    panel.close()
+    assert panel.shown is False
+
+
+def test_panel_show_hide_toggle_close_never_raise() -> None:
+    panel, _calls = _record_panel()
+    panel.show()
+    panel.hide()
+    panel.toggle()
+    panel.close()
+    panel.close()  # idempotent
+
+
+def test_ban_emits_action_with_user() -> None:
+    panel, calls = _record_panel()
+    panel._vars["ban_user"] = "spammer42"
+    assert panel._emit_user_action(mod_gui._ACT_BAN) is True
+    assert calls == [("ban", "spammer42", 0, True)]
+    panel.close()
+
+
+def test_unban_untimeout_delete_emit_user_only() -> None:
+    panel, calls = _record_panel()
+    panel._vars["unban_user"] = "redeemed"
+    panel._vars["untimeout_user"] = "freed"
+    panel._vars["delete_message_user"] = "noisy"
+    assert panel._emit_user_action(mod_gui._ACT_UNBAN) is True
+    assert panel._emit_user_action(mod_gui._ACT_UNTIMEOUT) is True
+    assert panel._emit_user_action(mod_gui._ACT_DELETE) is True
+    assert calls == [
+        ("unban", "redeemed", 0, True),
+        ("untimeout", "freed", 0, True),
+        ("delete_message", "noisy", 0, True),
+    ]
+    panel.close()
+
+
+def test_timeout_parses_seconds_field() -> None:
+    panel, calls = _record_panel()
+    panel._vars["timeout_user"] = "rude_guy"
+    panel._vars["timeout_seconds"] = "300"
+    assert panel._emit_user_action(mod_gui._ACT_TIMEOUT, default_seconds=600) is True
+    assert calls == [("timeout", "rude_guy", 300, True)]
+    panel.close()
+
+
+def test_timeout_blank_seconds_uses_default() -> None:
+    panel, calls = _record_panel()
+    panel._vars["timeout_user"] = "rude_guy"
+    panel._vars["timeout_seconds"] = ""  # blank -> the wired default
+    assert panel._emit_user_action(mod_gui._ACT_TIMEOUT, default_seconds=600) is True
+    assert calls == [("timeout", "rude_guy", 600, True)]
+    panel.close()
+
+
+def test_timeout_extracts_leading_int_from_noisy_field() -> None:
+    # A field like "600s" / "10 min" still parses the leading integer.
+    panel, calls = _record_panel()
+    panel._vars["timeout_user"] = "x"
+    panel._vars["timeout_seconds"] = "120 sec"
+    assert panel._emit_user_action(mod_gui._ACT_TIMEOUT, default_seconds=600) is True
+    assert calls == [("timeout", "x", 120, True)]
+    panel.close()
+
+
+def test_timeout_nonpositive_seconds_is_noop() -> None:
+    panel, calls = _record_panel()
+    panel._vars["timeout_user"] = "x"
+    panel._vars["timeout_seconds"] = "0"
+    assert panel._emit_user_action(mod_gui._ACT_TIMEOUT, default_seconds=600) is False
+    assert calls == []  # validation no-op: nothing fired
+    panel.close()
+
+
+def test_empty_username_is_validation_noop() -> None:
+    panel, calls = _record_panel()
+    # No username set at all.
+    assert panel._emit_user_action(mod_gui._ACT_BAN) is False
+    # Whitespace-only username.
+    panel._vars["timeout_user"] = "   "
+    assert panel._emit_user_action(mod_gui._ACT_TIMEOUT) is False
+    assert calls == []  # nothing fired
+    panel.close()
+
+
+def test_clear_chat_emits_channel_action() -> None:
+    panel, calls = _record_panel()
+    assert panel._emit_channel_action(mod_gui._ACT_CLEAR_CHAT, enabled=True) is True
+    assert calls == [("clear_chat", "", 0, True)]
+    panel.close()
+
+
+def test_slow_mode_on_carries_seconds_off_does_not() -> None:
+    panel, calls = _record_panel()
+    panel._vars["slow_seconds"] = "45"
+    assert panel._emit_channel_action(mod_gui._ACT_SLOW, enabled=True) is True
+    assert panel._emit_channel_action(mod_gui._ACT_SLOW, enabled=False) is True
+    assert calls == [
+        ("slow_mode", "", 45, True),
+        ("slow_mode", "", 0, False),
+    ]
+    panel.close()
+
+
+def test_slow_mode_blank_field_uses_default() -> None:
+    panel, calls = _record_panel(default_slow_seconds=30)
+    panel._vars["slow_seconds"] = ""
+    assert panel._emit_channel_action(mod_gui._ACT_SLOW, enabled=True) is True
+    assert calls == [("slow_mode", "", 30, True)]
+    panel.close()
+
+
+def test_followers_only_carries_minutes_as_seconds_value() -> None:
+    panel, calls = _record_panel()
+    panel._vars["followers_minutes"] = "10"
+    assert panel._emit_channel_action(mod_gui._ACT_FOLLOWERS, enabled=True) is True
+    # The numeric value (a MINUTE count) rides on the ``seconds`` slot; the
+    # orchestrator maps it to follower_mode_duration (minutes).
+    assert calls == [("followers_only", "", 10, True)]
+    panel.close()
+
+
+def test_followers_only_off_ignores_field() -> None:
+    panel, calls = _record_panel()
+    panel._vars["followers_minutes"] = "10"
+    assert panel._emit_channel_action(mod_gui._ACT_FOLLOWERS, enabled=False) is True
+    assert calls == [("followers_only", "", 0, False)]
+    panel.close()
+
+
+def test_boolean_only_toggles_emit_enabled() -> None:
+    panel, calls = _record_panel()
+    for action in (mod_gui._ACT_SUBSCRIBERS, mod_gui._ACT_EMOTE, mod_gui._ACT_UNIQUE):
+        assert panel._emit_channel_action(action, enabled=True) is True
+        assert panel._emit_channel_action(action, enabled=False) is True
+    assert calls == [
+        ("subscribers_only", "", 0, True),
+        ("subscribers_only", "", 0, False),
+        ("emote_only", "", 0, True),
+        ("emote_only", "", 0, False),
+        ("unique_chat", "", 0, True),
+        ("unique_chat", "", 0, False),
+    ]
+    panel.close()
+
+
+def test_every_action_token_is_reachable() -> None:
+    # Sanity: the user-targeted + channel-wide action sets cover exactly the
+    # commands the panel exposes, and each fires its expected token.
+    panel, calls = _record_panel()
+    for action in mod_gui._USER_TARGETED_ACTIONS:
+        panel._vars[f"{action}_user"] = "someone"
+        if action == mod_gui._ACT_TIMEOUT:
+            panel._vars[f"{action}_seconds"] = "60"
+        assert panel._emit_user_action(action, default_seconds=600) is True
+    fired_user = {c[0] for c in calls}
+    assert fired_user == set(mod_gui._USER_TARGETED_ACTIONS)
+
+    calls.clear()
+    for action in mod_gui._CHANNEL_ACTIONS:
+        assert panel._emit_channel_action(action, enabled=True) is True
+    fired_channel = {c[0] for c in calls}
+    assert fired_channel == set(mod_gui._CHANNEL_ACTIONS)
+    panel.close()
+
+
+def test_missing_on_command_never_raises() -> None:
+    # A panel built with a non-callable on_command stores no callback and every
+    # emit path is a safe no-op (fail-open).
+    panel = ModerationControlPanel(None)  # type: ignore[arg-type]
+    panel._vars["ban_user"] = "x"
+    # Returns True (validation passed) but the missing callback is just dropped.
+    assert panel._emit_user_action(mod_gui._ACT_BAN) is True
+    assert panel._emit_channel_action(mod_gui._ACT_CLEAR_CHAT, enabled=True) is True
+    panel.close()
+
+
+def test_throwing_on_command_never_propagates() -> None:
+    def _boom(action: str, *, user: str = "", seconds: int = 0,
+             enabled: bool = True) -> None:
+        raise RuntimeError("backend kaboom")
+
+    panel = ModerationControlPanel(_boom)
+    panel._vars["ban_user"] = "x"
+    # The throwing backend must not propagate out of the emit handler.
+    assert panel._emit_user_action(mod_gui._ACT_BAN) is True  # fired, swallowed
+    assert panel._emit_channel_action(mod_gui._ACT_CLEAR_CHAT, enabled=True) is True
+    panel.close()
+
+
+def test_panel_can_own_confirm_popup() -> None:
+    # with_confirm=True composes (but does not entangle) a ModerationConfirmGUI.
+    panel, _calls = _record_panel(with_confirm=True)
+    assert isinstance(panel.confirm, ModerationConfirmGUI)
+    # The composed popup is also headless/fail-open and never raises.
+    panel.confirm.prompt("BAN", "u", ["a"], lambda _r: None)
+    panel.close()  # tears down both
+
+
+def test_panel_confirm_can_be_injected() -> None:
+    cfm = ModerationConfirmGUI()
+    panel, _calls = _record_panel(confirm=cfm)
+    assert panel.confirm is cfm
+    panel.close()
+
+
+def test_panel_without_confirm_has_none() -> None:
+    panel, _calls = _record_panel()
+    assert panel.confirm is None
+    panel.close()
+
+
+def test_panel_headless_methods_are_true_noops() -> None:
+    panel, _calls = _record_panel()
+    panel.show()
+    panel.toggle()
+    panel.hide()
+    _settle()
+    assert panel.shown is False
+    panel.close()
+    assert panel.shown is False
+
+
+# ---------------------------------------------------------------------------
+# available=True path -- exercised WITHOUT a real Tk root by stubbing the UI
+# thread target, mirroring the confirm-window tests above. Proves
+# show/hide/toggle never raise when a window WOULD be built.
+# ---------------------------------------------------------------------------
+
+
+def test_panel_available_path_methods_never_raise(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ModerationControlPanel, "_probe_tk_available",
+                        staticmethod(lambda: True))
+    monkeypatch.setattr(ModerationControlPanel, "_ui_loop", lambda self: None)
+
+    panel, calls = _record_panel()
+    assert panel.available is True
+    panel.show()
+    panel.toggle()
+    panel.hide()
+    # Drain the queued window requests on THIS thread (the stubbed loop never
+    # does); they no-op gracefully because no root was built.
+    panel._drain_requests()
+    # The emit logic still works on the available path.
+    panel._vars["ban_user"] = "x"
+    assert panel._emit_user_action(mod_gui._ACT_BAN) is True
+    assert calls == [("ban", "x", 0, True)]
+    panel.close()

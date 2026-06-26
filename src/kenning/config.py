@@ -4032,6 +4032,12 @@ class StopButtonConfig(_Strict):
     # 0 hides the row entirely.
     chat_height: int = Field(default=26, ge=0, le=200)
     chat_label: str = "CHAT"
+    # SAY-NAME toggle row (2026-06-26): a violet ON (default) / grey OFF button
+    # that flips whether the "ultron tells my team" speak redeem prefixes the
+    # viewer name ("<viewer> says: ...") or speaks only the message. Only visible
+    # when twitch.enabled is True. 0 hides the row entirely.
+    say_name_height: int = Field(default=26, ge=0, le=200)
+    say_name_label: str = "SAY NAME"
     x: int = Field(default=60, ge=0, le=10000)   # initial top-left position
     y: int = Field(default=60, ge=0, le=10000)
 
@@ -4211,6 +4217,19 @@ class TwitchModerationConfig(_Strict):
     mass_action_limit_per_60s: int = 5              # circuit-breaker
     protect_roles: bool = True                       # never ban self / mod / broadcaster
     actions_log_path: str = "logs/twitch_actions.jsonl"
+    # 2026-06-26: an always-on-top, mouse-clickable MODERATION CONTROL PANEL (a
+    # vertical sidebar of ban/timeout/unban/delete + chat-mode toggles) so the
+    # streamer can CLICK to moderate alongside voice. In-process tkinter (a click
+    # is an ordinary window message, NOT input monitoring -> anticheat-neutral);
+    # it routes through the SAME write sidecar the voice path uses. Summon by voice
+    # ("open moderation panel"); default ON (built when twitch.enabled). Fail-open:
+    # no display / no Tk -> it simply never appears. 0 hides nothing here (it is a
+    # master switch); see kenning/twitch/moderation_gui.py.
+    control_panel_enabled: bool = True
+    # When a fuzzy username match surfaces multiple candidates, pop a small
+    # always-on-top CONFIRM window (YES/NO/CANCEL) instead of only speaking the
+    # ambiguity. Default ON; only meaningful when control_panel_enabled.
+    confirm_popup_enabled: bool = True
 
 
 class TwitchEconomyConfig(_Strict):
@@ -4290,6 +4309,13 @@ class TwitchChatConfig(_Strict):
     addressing_endpoint: str = "http://127.0.0.1:8772"   # reuse the EmbeddingGemma router sidecar
     allow_during_ranked: bool = False                # strongest mitigation: OFF (cannot read game state)
     per_user_cooldown_seconds: int = 30
+    # 2026-06-26: per-user chat-REPLY cooldown. When a viewer who talked to Ultron
+    # ("Ultron, <q>") was answered less than this many seconds ago, Ultron does NOT
+    # speak again for them — instead he POSTS a short "@<user> ... (N s left)" chat
+    # note (no TTS). Default 120s (2 minutes). The talk-to-Ultron hint advertises
+    # the same window. Distinct from per_user_cooldown_seconds (the legacy field,
+    # unused by the reply path) so the live tuning is explicit + back-compatible.
+    reply_cooldown_seconds: int = Field(default=120, ge=0, le=3600)
     datamarking: bool = True                         # interleave a marker in untrusted DATA (spotlighting++)
     # Periodic auto-post of the command list to chat (every N minutes) so viewers
     # always see how to play. Sent AS THE BOT via the write sidecar /say endpoint
@@ -4344,6 +4370,26 @@ class TwitchRedeemSpeakConfig(_Strict):
     announce_blocked_in_chat: bool = True            # post a brief chat note when a message is blocked as unsafe
 
 
+class TwitchRaidConfig(_Strict):
+    """Incoming-raid handling: when another channel RAIDS this one, Ultron (1)
+    VOCALLY announces it on the STREAM bus (announce the raid + thank the raider +
+    welcome the raiders + hope they stick around + introduce himself + how to chat
+    with him) and (2) auto-issues a Helix ``/shoutout`` to the raider.
+
+    Detection is the read sidecar's ``channel.raid`` subscription (rides the same
+    isolated broadcaster-token session as redeems); the orchestrator drains
+    ``{"type":"raid",...}`` events on its OWN cursor and handles each ONCE
+    (idempotent per raid so an EventSub replay never double-fires). The vocal
+    announce uses the chat-reply STREAM-bus speak path -- NEVER the team mic. The
+    shoutout is fail-open: a shoutout error never blocks the announcement.
+
+    Needs ``twitch.enabled``. Default ON (flag-gated; when ``enabled`` is False the
+    raid drain is inert and the read sidecar does not subscribe to raids -> main
+    runtime byte-identical)."""
+    enabled: bool = True             # master switch for raid detect + announce + shoutout
+    shoutout_enabled: bool = True    # auto-issue a Helix /shoutout to the raider
+
+
 class TwitchHelperConfig(_Strict):
     """Optional tiny helper model (Qwen2.5-0.5B/1.5B, CPU) for game/command
     routing. Constrained to a closed action enum; moderation is unreachable."""
@@ -4360,6 +4406,12 @@ class TwitchConfig(_Strict):
     enabled: bool = False                            # master switch; env KENNING_TWITCH_ENABLED
     read_sidecar_endpoint: str = "http://127.0.0.1:8773"   # EventSub read sidecar (read-scope token)
     write_sidecar_endpoint: str = "http://127.0.0.1:8777"  # Helix write sidecar (write-scope token, least-privilege)
+    # 2026-06-26: a streamer-facing dev TEST PANEL (always-on-top, clickable) that
+    # fires a SYNTHETIC event for every Twitch feature (speak redeem / raid / each
+    # chat-game / each redeem-game / chat-reply) exactly as if a real viewer did it,
+    # with NO real viewer or network. In-process tkinter (anticheat-neutral). Summon
+    # by voice ("show me the test panel"); default ON (built when twitch.enabled).
+    test_panel_enabled: bool = True
     auth: TwitchAuthConfig = Field(default_factory=TwitchAuthConfig)
     safety: TwitchSafetyConfig = Field(default_factory=TwitchSafetyConfig)
     chat: TwitchChatConfig = Field(default_factory=TwitchChatConfig)
@@ -4368,6 +4420,7 @@ class TwitchConfig(_Strict):
     overlay: TwitchOverlayConfig = Field(default_factory=TwitchOverlayConfig)
     speak_to_team: TwitchSpeakToTeamConfig = Field(default_factory=TwitchSpeakToTeamConfig)
     redeem_speak: TwitchRedeemSpeakConfig = Field(default_factory=TwitchRedeemSpeakConfig)
+    raid: TwitchRaidConfig = Field(default_factory=TwitchRaidConfig)
     helper: TwitchHelperConfig = Field(default_factory=TwitchHelperConfig)
 
 

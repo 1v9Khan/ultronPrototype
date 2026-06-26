@@ -148,3 +148,69 @@ def test_teammates_fighting_routes_to_calm(text):
 def test_tactical_pair_is_not_a_calm_down(text):
     cmd = match_relay_command(text)
     assert cmd is None or cmd.directive != "calm"
+
+
+# --- 2026-06-26 streamer persona direction: own-the-AI + shut-up defiance -----
+
+def test_ai_accusation_owns_the_word_and_survives_guard():
+    """'are you an AI' -> Ultron OWNS it (yes, an AI, and the step past you). The
+    owning-AI LLM line must NOT be dropped by the meta-leak guard (the social path
+    used allow_self_ai=False, which rejected 'I am an AI'); identity now uses the
+    RELAXED guard so the owning line is spoken."""
+    owning = "Killjoy, I am an AI, and the next step past you."
+    out = _relay("my teammate asked if you are an AI, respond", True, _StubLLM(owning))
+    assert out is not None
+    assert "AI" in out                       # the owning-AI line is SPOKEN, not dropped
+    assert out == owning
+
+
+def test_ai_accusation_canned_fallback_is_the_own_it_pool():
+    """With no LLM, 'are you an AI' draws from the dedicated own-it `ai` pool (it
+    affirms the word), NOT the reframe `bot` pool."""
+    from kenning.audio._ultron_identity import IDENTITY_POOLS
+    out = _relay("my teammate asked if you are an AI, respond", False, None)
+    assert out in IDENTITY_POOLS["ai"]
+    assert out not in IDENTITY_POOLS["bot"]
+
+
+def test_bot_accusation_still_reframes_not_owns():
+    """A bare 'bot' still routes to the reframe `bot` pool (a bot obeys; he is a
+    mind) -- the AI split must not change the bot behaviour."""
+    from kenning.audio._ultron_identity import IDENTITY_POOLS
+    out = _relay("my teammate asked if you are a bot, respond", False, None)
+    assert out in IDENTITY_POOLS["bot"]
+
+
+def test_identity_prompt_ai_directive_says_own_it():
+    """The identity system prompt now carries the OWN-IT exception for AI, and the
+    AI accusation phrasing tells the model to affirm the word."""
+    pr = build_social_prompt(
+        "identity", addressee="Killjoy", context="are you an AI",
+        accusation="ai", verbosity="low",
+    )
+    assert "OWN IT" in pr.system                 # the AI exception in the behaviour
+    assert "OWN it" in pr.user                    # the accusation phrasing affirms it
+    # a bot accusation still tells it to rebut/reframe.
+    pr_bot = build_social_prompt(
+        "identity", addressee="Jett", context="are you a bot",
+        accusation="bot", verbosity="low",
+    )
+    assert "no mere bot" in pr_bot.user
+
+
+def test_shutup_routes_to_defiance_behaviour():
+    """'shut up' is a DEMAND to silence Ultron -> authored with the DEFIANCE
+    behaviour (rebuke the demand), not the generic reaction one that latched onto
+    the 'silence' word and remarked on the teammate being quiet."""
+    rebuke = "Reyna, you will not silence me. I speak until this round is won."
+    out = _relay("Reyna told you to shut up, respond", True, _StubLLM(rebuke))
+    assert out == rebuke
+
+
+def test_defiance_behaviour_rebukes_demand_not_quiet():
+    """The defiance system prompt reads 'shut up' as a DEMAND to silence him that he
+    rebukes, and forbids remarking on quiet/silence-as-a-thing."""
+    sys = _SOCIAL_SYSTEM_FOR["defiance"]
+    low = sys.lower()
+    assert "demanding that you be silenced" in low
+    assert "do not remark on the quiet" in low

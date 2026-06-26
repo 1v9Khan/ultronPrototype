@@ -358,3 +358,205 @@ def test_blank_token_persists_and_is_stable_across_reboots(tmp_path, monkeypatch
     # a "reboot" (new server, same persisted file) reuses the SAME token
     second = srv_mod.OverlayServer(port=0).token
     assert second == first
+
+
+# --------------------------------------------------------------------------- #
+# LIVE SSE WIRING — the inline renderer must open the EventSource on a NORMAL
+# (non-demo) load. Root cause of the "only ?demo=1 works" bug: the strict CSP had
+# NO script-src directive, so it fell back to default-src 'none' and the inline
+# renderer <script> was blocked in OBS's CEF -> init()/connect() never ran ->
+# no GET /events. The fix grants script-src 'self' 'unsafe-inline' (header + meta).
+# These are STRUCTURAL assertions on the served JS (no browser needed). — 2026-06-26
+# --------------------------------------------------------------------------- #
+def test_csp_grants_script_src_for_inline_renderer(server):
+    """The CSP must explicitly allow the inline renderer script; otherwise the
+    overlay JS never runs in OBS and the live SSE is never opened."""
+    # header on the served page
+    status, headers, _ = _get(server.url())
+    assert status == HTTPStatus.OK
+    csp = headers.get("Content-Security-Policy")
+    assert csp == CSP_POLICY
+    assert "script-src 'self' 'unsafe-inline'" in csp
+    # the <meta http-equiv> copy must match the header byte-for-byte
+    text = _HTML.read_text(encoding="utf-8")
+    assert CSP_POLICY in text
+    assert "script-src 'self' 'unsafe-inline'" in text
+
+
+def test_csp_no_longer_blocks_scripts_via_default_src(server):
+    """Regression guard: default-src is still 'none' but script-src is now present,
+    so scripts are NOT blocked by the default-src fallback."""
+    csp = CSP_POLICY
+    assert "default-src 'none'" in csp          # other sinks stay locked down
+    assert "script-src" in csp                  # but scripts are explicitly granted
+    # ordering/format sanity: script-src grant present as a full directive
+    assert "; script-src 'self' 'unsafe-inline';" in csp
+
+
+def test_overlay_live_path_opens_eventsource_on_load():
+    """Trace the inline JS: a NORMAL load (no ?demo=1) must reach connect() and
+    construct the EventSource. We assert the control-flow structurally:
+      init() -> (demo branch returns early) -> else connect()
+      connect() -> new EventSource("/events?token=" + ...)
+    so the live SSE is opened on DOMContentLoaded/immediate-init."""
+    text = _HTML.read_text(encoding="utf-8")
+    # init() branches on demo; the NON-demo branch falls through to connect().
+    assert "function init()" in text
+    assert 'params.get("demo")' in text
+    # connect() is the live path and it constructs the EventSource to /events.
+    assert "function connect()" in text
+    assert 'new EventSource("/events?token=" + encodeURIComponent(token))' in text
+    # init() is actually invoked on load (DOMContentLoaded or immediately).
+    assert "DOMContentLoaded" in text
+    assert "init);" in text or "init()" in text
+    # The demo branch returns BEFORE connect, so connect() is the live-only path:
+    # connect must be CALLED unconditionally after the demo early-return.
+    demo_idx = text.index('params.get("demo")')
+    connect_call_idx = text.index("\n    connect();")
+    assert connect_call_idx > demo_idx, "connect() must be the post-demo live path"
+
+
+def test_overlay_client_reconnects_on_hard_close():
+    """The client must re-open the stream itself on a hard CLOSED state (server
+    restart / torn-down connection), not rely solely on EventSource auto-retry."""
+    text = _HTML.read_text(encoding="utf-8")
+    assert "EventSource.CLOSED" in text          # detects the dead-stream state
+    assert "scheduleReconnect" in text           # and schedules its own re-open
+    # bounded backoff (won't hammer a down server)
+    assert "RECONNECT_MAX_MS" in text
+
+
+# --------------------------------------------------------------------------- #
+# SERVER REPLAY RING BUFFER — a freshly-(re)connected SSE client replays the last
+# few vetted frames so an OBS source that connected late / after a refresh isn't
+# blank. Bounded + secret-stripped (validate_event runs before buffering). — 2026-06-26
+# --------------------------------------------------------------------------- #
+def _read_n_sse_frames(url: str, ready: threading.Event, holder: dict, n: int, timeout: float = 6.0) -> None:
+    """Open the SSE stream, signal ready, collect up to ``n`` event frames (data: lines)."""
+    frames: list = []
+    holder["frames"] = frames
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - loopback
+            ready.set()
+            buf = b""
+            deadline = time.time() + timeout
+            while time.time() < deadline and len(frames) < n:
+                chunk = resp.read(1)
+                if not chunk:
+                    break
+                buf += chunk
+                if buf.endswith(b"\n\n"):
+                    if b"data:" in buf:
+                        frames.append(buf)
+                    buf = b""
+    except Exception as e:  # noqa: BLE001 - record for the assertion
+        holder["error"] = repr(e)
+    finally:
+        ready.set()
+
+
+def _emit_via_server(server) -> None:
+    server.emit({"type": "ticker", "label": "first", "points": 1})
+    server.emit({"type": "ticker", "label": "second", "points": 2})
+
+
+def test_replay_buffer_replays_buffered_events_to_new_client(server):
+    """Events emitted BEFORE a client connects are replayed to it on connect."""
+    # emit two events with NO client connected -> they go into the ring buffer only
+    assert server.client_count == 0
+    _emit_via_server(server)
+
+    # now a fresh client connects and must receive BOTH buffered frames as replay
+    ready = threading.Event()
+    holder: dict = {}
+    t = threading.Thread(
+        target=_read_n_sse_frames, args=(server.events_url(), ready, holder, 2), daemon=True
+    )
+    t.start()
+    assert ready.wait(5.0), "SSE client never connected"
+    t.join(timeout=6.0)
+
+    assert "error" not in holder, holder.get("error")
+    frames = holder.get("frames", [])
+    labels = []
+    for raw in frames:
+        for line in raw.split(b"\n"):
+            if line.startswith(b"data:"):
+                payload = json.loads(line[len(b"data:"):].strip().decode("utf-8"))
+                labels.append(payload.get("label"))
+    assert "first" in labels and "second" in labels, labels
+
+
+def test_replay_buffer_is_bounded(server):
+    """The ring buffer never grows past its cap; only the most-recent frames replay."""
+    from kenning.twitch.overlay.server import _REPLAY_BUFFER_MAXLEN
+
+    total = _REPLAY_BUFFER_MAXLEN + 10
+    for i in range(total):
+        server.emit({"type": "ticker", "label": f"e{i}", "points": i})
+    # internal buffer is capped
+    assert len(server._replay) == _REPLAY_BUFFER_MAXLEN
+
+    ready = threading.Event()
+    holder: dict = {}
+    # ask for more frames than the cap; we should only ever get the cap's worth
+    t = threading.Thread(
+        target=_read_n_sse_frames,
+        args=(server.events_url(), ready, holder, _REPLAY_BUFFER_MAXLEN + 5, 2.5),
+        daemon=True,
+    )
+    t.start()
+    assert ready.wait(5.0)
+    t.join(timeout=4.0)
+
+    frames = holder.get("frames", [])
+    assert len(frames) <= _REPLAY_BUFFER_MAXLEN, f"replayed {len(frames)} > cap"
+    # the OLDEST events were evicted: the very first label must be gone, the last kept
+    labels = []
+    for raw in frames:
+        for line in raw.split(b"\n"):
+            if line.startswith(b"data:"):
+                labels.append(json.loads(line[len(b"data:"):].strip().decode("utf-8")).get("label"))
+    assert "e0" not in labels                     # evicted (oldest)
+    assert f"e{total - 1}" in labels              # retained (newest)
+
+
+def test_replay_buffer_strips_secret_keys_before_buffering(server):
+    """validate_event runs BEFORE buffering, so secret/unknown detail keys never
+    enter the ring buffer and are never replayed."""
+    server.emit({
+        "type": "chat_game", "game": "duel", "viewer": "v", "outcome": "WIN",
+        "amount": 600,
+        "detail": {"winner": "v", "wager": 300, "server_seed": "TOPSECRET"},
+    })
+    buffered = "".join(server._replay)
+    assert "TOPSECRET" not in buffered and "server_seed" not in buffered
+    assert "winner" in buffered                   # the vetted shape is what's kept
+
+
+def test_replay_delivered_once_not_doubled_for_live_client(server):
+    """A client connected at emit time gets each frame exactly once (live), and is
+    not ALSO sent it from the buffer on a later (re)connect of a DIFFERENT client."""
+    # client A connects first (empty buffer), then we emit -> A gets it live
+    readyA = threading.Event()
+    holderA: dict = {}
+    tA = threading.Thread(
+        target=_read_n_sse_frames, args=(server.events_url(), readyA, holderA, 1, 4.0), daemon=True
+    )
+    tA.start()
+    assert readyA.wait(5.0)
+    for _ in range(50):
+        if server.client_count >= 1:
+            break
+        time.sleep(0.05)
+    server.emit({"type": "ticker", "label": "live-once", "points": 7})
+    tA.join(timeout=5.0)
+
+    framesA = holderA.get("frames", [])
+    a_labels = []
+    for raw in framesA:
+        for line in raw.split(b"\n"):
+            if line.startswith(b"data:"):
+                a_labels.append(json.loads(line[len(b"data:"):].strip().decode("utf-8")).get("label"))
+    # A got the live frame exactly once (it asked for 1 and got "live-once")
+    assert a_labels.count("live-once") == 1

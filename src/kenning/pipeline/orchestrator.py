@@ -1556,6 +1556,18 @@ class Orchestrator:
                     chat_audio_enabled=bool(self._chat_audio_to_speakers),
                     chat_audio_height=getattr(_sb, "chat_audio_height", 26),
                     chat_audio_label=getattr(_sb, "chat_audio_label", "HEAR CHAT"),
+                    # SAY-NAME toggle: flips whether the "ultron tells my team"
+                    # SPEAK_TEAM redeem prefixes the viewer name. Default ON. Only
+                    # wired when twitch is enabled (hidden in gaming-only sessions).
+                    on_toggle_say_name=(
+                        self._set_twitch_say_name_enabled
+                        if getattr(getattr(get_config(), "twitch", None),
+                                   "enabled", False)
+                        else None
+                    ),
+                    say_name_enabled=True,
+                    say_name_height=getattr(_sb, "say_name_height", 26),
+                    say_name_label=getattr(_sb, "say_name_label", "SAY NAME"),
                 )
                 if getattr(_sb, "show_at_startup", False):
                     self._stop_button.show()
@@ -1563,6 +1575,14 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             logger.debug("stop button init failed (%s); disabled", e)
             self._stop_button = None
+
+        # Twitch clickable panels (built later in run() -> _start_twitch_panels):
+        # the always-on-top MODERATION CONTROL PANEL (click-to-moderate) + the dev
+        # TEST PANEL (synthetic-event injection). None until built; the voice-summon
+        # handlers + shutdown tolerate a None panel. Kept here so the attributes
+        # always exist (twitch off / panel disabled / pre-run).
+        self._twitch_mod_panel = None
+        self._twitch_test_panel = None
 
         # ULTRON 1.0: apply the route-everything-through-the-LLM default + the two
         # verbosity axes from config (relay_speech.llm_route / .callout_verbosity /
@@ -6233,6 +6253,14 @@ class Orchestrator:
                 _lv.close()
             except Exception as e:                                  # noqa: BLE001
                 logger.debug("log viewer close on shutdown failed: %s", e)
+        # Twitch clickable panels (moderation control panel + dev test panel).
+        for _attr_name in ("_twitch_mod_panel", "_twitch_test_panel"):
+            _panel = getattr(self, _attr_name, None)
+            if _panel is not None:
+                try:
+                    _panel.close()
+                except Exception as e:                              # noqa: BLE001
+                    logger.debug("%s close on shutdown failed: %s", _attr_name, e)
 
         # Release + close the push-to-talk link so the team-mic key can never be
         # left held after Ultron exits (the hardware deadman also releases it).
@@ -6533,6 +6561,10 @@ class Orchestrator:
                     _twitch_chat_post(text)
 
             self._twitch_chat_post = _twitch_chat_post
+            # Bind the speak-and-post path to self too, so the dev TEST PANEL's
+            # speak_say action can reach it (the routers receive it as a closure
+            # local; the test-panel dispatch reads it off self).
+            self._twitch_speak_and_post = _twitch_speak_and_post
 
             self._twitch_redeem_router = None
             self._twitch_ledger = None
@@ -6589,6 +6621,65 @@ class Orchestrator:
             except Exception as e:                                   # noqa: BLE001
                 logger.warning("twitch redeem router init failed: %s", e)
                 self._twitch_redeem_router = None
+
+            # Incoming-RAID handler — a THIRD own-cursor drain over the read sidecar
+            # (never acks). On a channel.raid: VOCALLY announce on the STREAM bus
+            # (_twitch_speak_and_post -> _chat_speak + chat post, NEVER the team mic)
+            # and auto-/shoutout the raider (loopback POST to the write sidecar's
+            # /shoutout -> Helix POST /chat/shoutouts). Idempotent per raid + fail-
+            # open (a shoutout error never blocks the announce). Default-ON, flag-
+            # gated on twitch.raid.enabled; the abliterated model is never in this
+            # path (the announce line is deterministic).
+            self._twitch_raid_handler = None
+            try:
+                _rcfg = getattr(tcfg, "raid", None)
+                if getattr(_rcfg, "enabled", False):
+                    from kenning.twitch.raid import RaidHandler, make_raid_drain_fn
+                    read_ep = str(getattr(tcfg, "read_sidecar_endpoint",
+                                          "http://127.0.0.1:8773"))
+                    _raid_write_ep = str(getattr(tcfg, "write_sidecar_endpoint",
+                                                 "http://127.0.0.1:8777")).rstrip("/")
+                    _raid_shoutout_enabled = bool(getattr(_rcfg, "shoutout_enabled", True))
+
+                    def _raid_shoutout(to_broadcaster_id: str) -> None:
+                        tid = (to_broadcaster_id or "").strip()
+                        if not tid:
+                            return
+                        import json as _sj
+                        import urllib.request as _su
+                        _body = _sj.dumps({"to_broadcaster_id": tid}).encode("utf-8")
+                        _req = _su.Request(f"{_raid_write_ep}/shoutout", data=_body,
+                                           method="POST",
+                                           headers={"Content-Type": "application/json"})
+                        with _su.urlopen(_req, timeout=5) as _r:  # nosec B310 - loopback
+                            _r.read()
+
+                    raid_handler = RaidHandler(
+                        make_raid_drain_fn(read_ep),
+                        announce_fn=_twitch_speak_and_post,   # raid: spoken on stream + posted to chat
+                        shoutout_fn=_raid_shoutout if _raid_shoutout_enabled else None,
+                        shoutout_enabled=_raid_shoutout_enabled,
+                    )
+                    self._twitch_raid_handler = raid_handler
+                    self._twitch_chat_stop = False
+                    import threading as _rdth
+                    import time as _rdtime
+
+                    def _raid_loop() -> None:
+                        while not getattr(self, "_twitch_chat_stop", False):
+                            _rdtime.sleep(1.5)
+                            try:
+                                raid_handler.tick()
+                            except Exception as rde:                  # noqa: BLE001
+                                logger.debug("twitch raid tick error: %s", rde)
+
+                    _rdth.Thread(target=_raid_loop, daemon=True,
+                                 name="twitch-raid").start()
+                    logger.info("twitch raid handler started (announce + shoutout=%s)",
+                                _raid_shoutout_enabled)
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning("twitch raid handler init failed: %s", e)
+                self._twitch_raid_handler = None
 
             # Gap-c: chat-command economy games (!gamble/!slots/!points) — a SECOND
             # own-cursor drain over the read sidecar, ledger-backed. Default-OFF
@@ -6718,6 +6809,17 @@ class Orchestrator:
                         _hchcfg, "talk_hint_text",
                         '💬 Just type "Ultron" followed by a statement or '
                         "question and he will talk to you!") or "").strip()
+                    # Advertise the per-user reply cooldown in the hint, derived
+                    # from twitch.chat.reply_cooldown_seconds (2026-06-26). A
+                    # non-positive cooldown leaves the hint unchanged.
+                    try:
+                        from kenning.twitch.panel import append_cooldown_hint
+                        _hint_text = append_cooldown_hint(
+                            _hint_text,
+                            float(getattr(_hchcfg, "reply_cooldown_seconds", 120) or 0),
+                        )
+                    except Exception as _che:                        # noqa: BLE001
+                        logger.debug("talk-hint cooldown suffix skipped: %s", _che)
                     # Offset the FIRST post by 30s so it never lands on the same
                     # instant as the commands panel (whose first post waits a full
                     # interval). Capped below the interval so the offset is harmless.
@@ -6805,6 +6907,8 @@ class Orchestrator:
                 orchestrator_speak=_twitch_speak_and_post,  # chat-reply: spoken on stream + posted to chat
                 embed_fn=embed_fn, on_flagged=None,
                 busy_estimator=busy_estimator,
+                # On-cooldown chat note path (no TTS) -> the write-sidecar /say POST.
+                chat_post_fn=_twitch_chat_post,
             )
             self._twitch_chat_service = svc
             self._twitch_chat_stop = False
@@ -6833,6 +6937,452 @@ class Orchestrator:
                         "guard required to enable)")
         except Exception as e:                                       # noqa: BLE001 — never break boot
             logger.warning("twitch chat-mode init failed (chat-mode off): %s", e)
+
+    # ------------------------------------------------------------------ #
+    # Twitch clickable panels (moderation control panel + dev test panel)
+    # ------------------------------------------------------------------ #
+    def _start_twitch_panels(self) -> None:
+        """Build the always-on-top, mouse-clickable MODERATION CONTROL PANEL and the
+        dev TEST PANEL, wiring each to the live backends already constructed by
+        ``_start_twitch_chat_mode`` (the write-sidecar mod-remote / the redeem +
+        chat-game routers / the raid handler / the chat-reply service + speak fns).
+
+        Both are in-process tkinter windows (a button click is an ordinary window
+        message, NOT input monitoring -> anticheat-neutral) and fail-open: no display
+        / no Tk / disabled -> the panel's ``available`` is False and every method is a
+        no-op. Default ON when twitch is enabled; summon by voice. A zero-cost no-op +
+        ZERO twitch import when twitch.enabled is False (main runtime byte-identical)."""
+        try:
+            from kenning.config import get_config
+            tcfg = getattr(get_config(), "twitch", None)
+            if tcfg is None or not getattr(tcfg, "enabled", False):
+                return
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("twitch panels: config read failed: %s", e)
+            return
+        # Force the GUIs headless under pytest / a lean headless boot (the modules
+        # already honour KENNING_MOD_GUI_HEADLESS / KENNING_TEST_PANEL_HEADLESS).
+        # --- MODERATION CONTROL PANEL ---
+        try:
+            mod_cfg = getattr(tcfg, "moderation", None)
+            if getattr(mod_cfg, "control_panel_enabled", True):
+                from kenning.twitch.moderation_gui import make_control_panel
+                want_confirm = bool(getattr(mod_cfg, "confirm_popup_enabled", True))
+                panel = make_control_panel(
+                    self._twitch_panel_mod_command,
+                    with_confirm=want_confirm,
+                )
+                self._twitch_mod_panel = panel
+                # Expose the confirm popup for the voice-mod fuzzy path.
+                self._twitch_mod_confirm = getattr(panel, "confirm", None)
+                logger.info("twitch moderation control panel ready (available=%s, "
+                            "confirm=%s)", getattr(panel, "available", False),
+                            self._twitch_mod_confirm is not None)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("twitch moderation panel init failed: %s", e)
+            self._twitch_mod_panel = None
+        # --- DEV TEST PANEL ---
+        try:
+            if getattr(tcfg, "test_panel_enabled", True):
+                from kenning.twitch.test_panel import make_test_panel
+                panel = make_test_panel(self._twitch_test_inject)
+                self._twitch_test_panel = panel
+                logger.info("twitch dev test panel ready (available=%s)",
+                            getattr(panel, "available", False))
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("twitch test panel init failed: %s", e)
+            self._twitch_test_panel = None
+
+    def _twitch_panel_mod_command(self, action: str, *, user: str = "",
+                                  seconds: int = 0, enabled: bool = True) -> None:
+        """``on_command`` backend for the moderation control panel: map a clicked
+        action to the SAME write-sidecar moderation path the voice path uses.
+
+        USER-targeted (ban/timeout/unban/untimeout/delete_message) build a TEXT
+        command and run the write sidecar's two-phase prepare -> auto-confirm (a
+        clicked button IS the confirmation, so no spoken read-back). A fuzzy /
+        ambiguous match surfaces the confirm popup. CHANNEL-wide actions (clear_chat
+        / slow_mode / followers_only / subscribers_only / emote_only / unique_chat)
+        go through the sidecar's chat-settings endpoint. The abliterated model is
+        NEVER in this path. Fail-open: a dead/unavailable remote logs + no-ops."""
+        remote = getattr(self, "_twitch_mod_remote", None)
+        if remote is None:
+            logger.info("mod panel: no write-sidecar remote; %s dropped", action)
+            return
+        try:
+            text = self._twitch_panel_mod_text(action, user=user, seconds=seconds,
+                                                enabled=enabled)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("mod panel: command build failed for %s: %s", action, e)
+            return
+        if not text:
+            return
+        # CHANNEL-wide chat-settings: applied directly (reversible, channel-scoped).
+        _CHANNEL = {"clear_chat", "slow_mode", "followers_only",
+                    "subscribers_only", "emote_only", "unique_chat"}
+        if action in _CHANNEL:
+            try:
+                res = remote.chat_settings(text)
+                logger.info("mod panel chat-settings %r -> ok=%s", text,
+                            isinstance(res, dict) and res.get("ok"))
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning("mod panel chat-settings failed: %s", e)
+            return
+        # USER-targeted: prepare -> (fuzzy -> confirm popup) | auto-confirm.
+        try:
+            prop = remote.prepare(text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("mod panel prepare failed: %s", e)
+            return
+        if not isinstance(prop, dict):
+            return
+        if prop.get("ok") and prop.get("token"):
+            self._twitch_panel_confirm_token(str(prop.get("token", "")), prop)
+            return
+        # Ambiguous / fuzzy -> surface the confirm popup if the streamer left it on.
+        if prop.get("reason_blocked") == "ambiguous":
+            self._twitch_panel_surface_confirm(remote, action, prop)
+            return
+        logger.info("mod panel %s blocked: %s", action,
+                    prop.get("reason_blocked") or prop.get("error") or "unknown")
+
+    @staticmethod
+    def _twitch_panel_mod_text(action: str, *, user: str, seconds: int,
+                               enabled: bool) -> str:
+        """Build the deterministic TEXT command the write sidecar parses for a
+        panel action (mirrors the voice grammar in moderation.service /
+        chat_settings)."""
+        u = (user or "").strip().lstrip("@")
+        if action == "ban":
+            return f"ban {u}" if u else ""
+        if action == "timeout":
+            secs = int(seconds) if int(seconds or 0) > 0 else 600
+            return f"timeout {u} for {secs} seconds" if u else ""
+        if action == "unban":
+            return f"unban {u}" if u else ""
+        if action == "untimeout":
+            # Twitch removes a timeout via the unban endpoint; the grammar accepts
+            # "untimeout <name>" / "remove timeout for <name>".
+            return f"untimeout {u}" if u else ""
+        if action in ("delete_message", "delete"):
+            return f"delete {u}'s last message" if u else ""
+        # --- channel-wide chat settings ---
+        on = "on" if enabled else "off"
+        if action == "clear_chat":
+            return "clear chat"
+        if action == "slow_mode":
+            secs = int(seconds) if int(seconds or 0) > 0 else 30
+            return f"slow mode {secs} seconds" if enabled else "slow mode off"
+        if action == "followers_only":
+            # The panel passes MINUTES in ``seconds`` -> follower_mode_duration.
+            mins = int(seconds) if int(seconds or 0) > 0 else 0
+            if not enabled:
+                return "followers only off"
+            return f"followers only {mins} minutes" if mins else "followers only"
+        if action == "subscribers_only":
+            return f"subscribers only {on}"
+        if action == "emote_only":
+            return f"emote only {on}"
+        if action == "unique_chat":
+            return f"unique chat {on}"
+        return ""
+
+    def _twitch_panel_confirm_token(self, token: str, prop: dict) -> None:
+        """Auto-confirm a prepared moderation proposal (a panel click IS the
+        confirmation -> no spoken read-back). Fail-open + logged."""
+        remote = getattr(self, "_twitch_mod_remote", None)
+        if remote is None or not token:
+            return
+        try:
+            res = remote.confirm(token)
+            ok = isinstance(res, dict) and res.get("ok")
+            logger.info("mod panel confirmed %s -> ok=%s",
+                        prop.get("action") or "?", ok)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("mod panel confirm failed: %s", e)
+
+    def _twitch_panel_surface_confirm(self, remote, action: str, prop: dict) -> None:
+        """Surface the fuzzy-username CONFIRM popup for an ambiguous panel match. On
+        YES, confirm the BEST candidate (re-prepare against its exact login); on NO /
+        CANCEL, cancel any pending token. Fail-open: no popup -> just logs."""
+        confirm = getattr(self, "_twitch_mod_confirm", None)
+        cands = prop.get("candidates") or []
+        names = [str(c.get("login", c) if isinstance(c, dict) else c)
+                 for c in cands if c]
+        if confirm is None or not getattr(confirm, "available", False) or not names:
+            logger.info("mod panel %s ambiguous; candidates=%s (no confirm popup)",
+                        action, names[:5])
+            return
+        best = names[0]
+        alts = names[1:6]
+
+        def _on_result(result: str, _best=best, _action=action) -> None:
+            if result != "yes":
+                logger.info("mod panel confirm popup -> %s (no action)", result)
+                return
+            # Re-prepare against the EXACT chosen login, then auto-confirm.
+            try:
+                exact = self._twitch_panel_mod_text(
+                    _action, user=_best, seconds=0, enabled=True)
+                p2 = remote.prepare(exact) if exact else None
+                if isinstance(p2, dict) and p2.get("ok") and p2.get("token"):
+                    self._twitch_panel_confirm_token(str(p2.get("token", "")), p2)
+                else:
+                    logger.info("mod panel confirm popup: re-prepare for %s not "
+                                "actionable", _best)
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning("mod panel confirm popup re-prepare failed: %s", e)
+
+        try:
+            confirm.prompt(action.upper(), best, alts, _on_result)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("mod panel confirm popup prompt failed: %s", e)
+
+    def _twitch_test_inject(self, action: str, *, message: str = "", login: str = "",
+                            viewers: int = 0, bet: int = 0, target: str = "",
+                            amount: int = 0, command: str = "") -> None:
+        """``on_test`` backend for the dev test panel: fire each live pipeline
+        DIRECTLY with a SYNTHETIC event, exactly as if a real viewer / raider did it
+        (no real viewer, redeem, raid, or network). Decoupled from the panel; all
+        backend behavior is here. Fail-open per action."""
+        try:
+            self._twitch_test_dispatch(
+                action, message=message, login=login, viewers=viewers, bet=bet,
+                target=target, amount=amount, command=command)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("test panel inject %s failed: %s", action, e)
+
+    def _twitch_test_speak_async(self, name: str, fn) -> None:
+        """Run a dev test-panel SPEAK action (TTS synthesis + playback, several
+        seconds) on a daemon thread. The Tk test panel invokes ``on_test``
+        callbacks DIRECTLY on its UI thread (unmarshalled), so a synchronous
+        speak would freeze the panel for the whole playback. Fail-open: a
+        synthesis/playback error logs and dies with the thread. The thread is
+        retained on ``self._twitch_test_speak_thread`` so tests can join it."""
+        import threading as _t
+
+        def _run() -> None:
+            try:
+                fn()
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning("test panel speak failed: %s", e)
+        th = _t.Thread(target=_run, name=name, daemon=True)
+        self._twitch_test_speak_thread = th
+        th.start()
+
+    def _twitch_test_dispatch(self, action: str, *, message: str, login: str,
+                              viewers: int, bet: int, target: str, amount: int,
+                              command: str) -> None:
+        """The synthetic-event injection table (see _twitch_test_inject)."""
+        # SPEAK redeems -> the same speak paths the redeem router uses.
+        if action == "speak_say":
+            fn = getattr(self, "_twitch_speak_and_post", None)
+            if fn is not None:
+                self._twitch_test_speak_async(
+                    "test-panel-speak-say", lambda: fn(f"A viewer says: {message}"))
+            return
+        if action == "speak_team":
+            from kenning.config import get_config
+            from kenning.twitch.redeem_router import frame_speak_line
+            rs_cfg = getattr(get_config().twitch, "redeem_speak", None)
+            framed = frame_speak_line("a viewer", message, to_team=True)
+            self._twitch_test_speak_async(
+                "test-panel-speak-team",
+                lambda: self._twitch_team_speak(framed, rs_cfg))
+            return
+        # RAID -> inject a synthetic raid event into the RaidHandler (next tick).
+        if action == "raid":
+            rh = getattr(self, "_twitch_raid_handler", None)
+            if rh is not None:
+                ln = login or "a_raider"
+                rh.inject({
+                    "type": "raid",
+                    "from_login": ln,
+                    "from_name": ln,
+                    "from_broadcaster_user_id": f"test_{ln}",
+                    "viewers": int(viewers or 0),
+                })
+            else:
+                logger.info("test panel: raid handler not running; raid dropped")
+            return
+        # CHAT-COMMAND games -> a synthetic chat event through the chat-game router.
+        if action.startswith("chat_") and action not in ("chat_reply",):
+            self._twitch_test_chat_command(command or action[len("chat_"):],
+                                           bet=bet, target=target, amount=amount)
+            return
+        # CHANNEL-POINT redeem games -> a synthetic redeem through the redeem router.
+        if action.startswith("redeem_"):
+            self._twitch_test_redeem(action[len("redeem_"):])
+            return
+        # CHAT-REPLY -> a synthetic "Ultron, <message>" chat event into chat-reply.
+        if action == "chat_reply":
+            self._twitch_test_chat_reply(message)
+            return
+        # EXTRAS -> the existing trigger fns.
+        if action == "auto_trivia":
+            self._twitch_test_chat_command("trivia", bet=0, target="", amount=0)
+            return
+        if action in ("commands_panel", "talk_hint"):
+            self._twitch_test_post_panel(action)
+            return
+        logger.info("test panel: unhandled action %s", action)
+
+    def _twitch_test_synthetic_chat_event(self, text: str, *, login: str = "tester",
+                                          name: str = "Tester") -> dict:
+        """Build the FLAT chat dict shape the read sidecar buffers + the routers
+        drain (chat_event_from_buffer / ChatEvent.from_buffer)."""
+        import time as _t
+        mid = f"test-{int(_t.time() * 1000)}"
+        return {
+            "type": "chat", "message_id": mid, "chatter_login": login,
+            "chatter_name": name, "chatter_user_id": f"test_{login}",
+            "text": text, "message": {"text": text},
+        }
+
+    def _twitch_test_chat_command(self, command: str, *, bet: int, target: str,
+                                  amount: int) -> None:
+        """Inject a synthetic "!<command> ..." chat event into the chat-game router."""
+        cgr = getattr(self, "_twitch_chat_game_router", None)
+        if cgr is None:
+            logger.info("test panel: chat-game router not running; !%s dropped", command)
+            return
+        parts = [f"!{command}"]
+        if command in ("slots", "heist") and bet:
+            parts.append(str(bet))
+        elif command == "duel" and target:
+            parts.append(f"@{target}")
+            if bet:
+                parts.append(str(bet))
+        elif command == "give" and target:
+            parts.append(f"@{target}")
+            if amount:
+                parts.append(str(amount))
+        text = " ".join(parts)
+        ev = self._twitch_test_synthetic_chat_event(text)
+        cgr.inject(ev)
+
+    def _twitch_test_redeem(self, game: str) -> None:
+        """Inject a synthetic channel-point redeem into the redeem router's game path."""
+        router = getattr(self, "_twitch_redeem_router", None)
+        if router is None:
+            logger.info("test panel: redeem router not running; %s redeem dropped", game)
+            return
+        title = {"wheel": "Spin the Wheel", "slots": "Slots",
+                 "heist": "Heist", "duel": "Duel"}.get(game, game)
+        import time as _t
+        # The FLAT redeem dict the read sidecar buffers + RedeemRouter._process_one
+        # reads (reward_title / chatter_login / chatter_user_id / user_input).
+        ev = {
+            "type": "redeem", "redemption_id": f"test-{int(_t.time() * 1000)}",
+            "reward_title": title,
+            "chatter_login": "tester", "chatter_name": "Tester",
+            "chatter_user_id": "test_tester", "user_id": "test_tester",
+            "user_input": "",
+        }
+        router.inject(ev)
+
+    def _twitch_test_chat_reply(self, message: str) -> None:
+        """Inject a synthetic "Ultron, <message>" chat event into the chat-reply
+        pipeline (one batch, fully safety-gated, spoken on the stream bus)."""
+        svc = getattr(self, "_twitch_chat_service", None)
+        if svc is None:
+            logger.info("test panel: chat-reply service not running; reply dropped")
+            return
+        runtime = getattr(svc, "_runtime", None)
+        pipeline = getattr(runtime, "_pipeline", None)
+        if pipeline is None:
+            logger.info("test panel: chat-reply pipeline unavailable")
+            return
+        text = message if message.lower().startswith("ultron") else f"Ultron, {message}"
+        ev = self._twitch_test_synthetic_chat_event(text)
+        from kenning.twitch.clients.eventsub import ChatEvent
+        chat_ev = ChatEvent.from_buffer(ev)
+        if chat_ev is None:
+            return
+        try:
+            pipeline.process_batch(
+                [chat_ev],
+                is_reply_target=lambda _e: True,
+                select_fn=lambda evs: list(evs),
+                reply_fn=getattr(runtime, "_reply"),
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("test panel chat-reply inject failed: %s", e)
+
+    def _twitch_test_post_panel(self, which: str) -> None:
+        """Post the commands panel / talk-to-Ultron hint to chat once (test trigger)."""
+        post = getattr(self, "_twitch_chat_post", None)
+        if post is None:
+            return
+        try:
+            from kenning.config import get_config
+            chcfg = getattr(get_config().twitch, "chat", None)
+            if which == "commands_panel":
+                from kenning.twitch.panel import build_commands_panel_text
+                post(build_commands_panel_text(chcfg))
+            else:
+                from kenning.twitch.panel import append_cooldown_hint
+                hint = str(getattr(chcfg, "talk_hint_text", "") or "").strip()
+                post(append_cooldown_hint(
+                    hint, float(getattr(chcfg, "reply_cooldown_seconds", 120) or 0)))
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("test panel post-panel %s failed: %s", which, e)
+
+    def _maybe_handle_moderation_panel(self, user_text: str) -> bool:
+        """Voice show/hide for the clickable MODERATION CONTROL PANEL. "open the
+        moderation panel" raises it; "close the moderation panel" hides it. Strict
+        matcher -> ordinary sentences fall through. Fail-open."""
+        try:
+            from kenning.twitch.moderation_gui import match_moderation_panel_command
+            action = match_moderation_panel_command(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("moderation panel matcher unavailable: %s", e)
+            return False
+        if action is None:
+            return False
+        panel = getattr(self, "_twitch_mod_panel", None)
+        if panel is None:
+            self._speak("The moderation panel isn't available.")
+            return True
+        try:
+            if action == "open":
+                panel.show()
+                self._speak("Moderation panel is up.")
+            else:
+                panel.hide()
+                self._speak("Hidden.")
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("moderation panel show/hide failed: %s", e)
+            self._speak("I couldn't move the moderation panel.")
+        return True
+
+    def _maybe_handle_test_panel(self, user_text: str) -> bool:
+        """Voice show/hide for the dev TEST PANEL. "show me the test panel" raises
+        it; "close the test panel" hides it. Strict matcher -> ordinary sentences
+        fall through. Fail-open."""
+        try:
+            from kenning.twitch.test_panel import match_test_panel_command
+            action = match_test_panel_command(user_text)
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("test panel matcher unavailable: %s", e)
+            return False
+        if action is None:
+            return False
+        panel = getattr(self, "_twitch_test_panel", None)
+        if panel is None:
+            self._speak("The test panel isn't available.")
+            return True
+        try:
+            if action == "open":
+                panel.show()
+                self._speak("Test panel is up.")
+            else:
+                panel.hide()
+                self._speak("Hidden.")
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("test panel show/hide failed: %s", e)
+            self._speak("I couldn't move the test panel.")
+        return True
 
     def _start_twitch_sidecars(self, tcfg: Any) -> None:
         """Spawn the Twitch loopback sidecars (read + optional guard/helper) as
@@ -7141,8 +7691,46 @@ class Orchestrator:
             self._speak(str(prop.get("readback", "") or "Confirm?"))
             return True
         # Recognized as a mod command but not actionable (ambiguous/protected/...).
+        # On an AMBIGUOUS fuzzy-username match, ALSO surface the clickable confirm
+        # popup (2026-06-26) so the streamer can pick the right viewer with a click,
+        # not just hear the candidates. Fail-open: no popup -> just the spoken line.
+        if prop.get("reason_blocked") == "ambiguous":
+            self._surface_voice_mod_confirm(remote, prop)
         self._speak(self._twitch_mod_block_line(prop))
         return True
+
+    def _surface_voice_mod_confirm(self, remote, prop: dict) -> None:
+        """Surface the fuzzy-username CONFIRM popup for an AMBIGUOUS voice-mod match.
+        On YES, re-prepare against the best candidate's exact login then run the
+        normal two-phase confirm; on NO/CANCEL, nothing happens. Fail-open: no popup
+        -> a no-op (the spoken ambiguity line already played)."""
+        confirm = getattr(self, "_twitch_mod_confirm", None)
+        if confirm is None or not getattr(confirm, "available", False):
+            return
+        action = str(prop.get("action", "") or "action")
+        cands = prop.get("candidates") or []
+        names = [str(c.get("login", c) if isinstance(c, dict) else c)
+                 for c in cands if c]
+        if not names:
+            return
+        best, alts = names[0], names[1:6]
+
+        def _on_result(result: str, _best=best, _action=action) -> None:
+            if result != "yes":
+                return
+            try:
+                exact = self._twitch_panel_mod_text(
+                    _action, user=_best, seconds=0, enabled=True)
+                p2 = remote.prepare(exact) if exact else None
+                if isinstance(p2, dict) and p2.get("ok") and p2.get("token"):
+                    self._twitch_panel_confirm_token(str(p2.get("token", "")), p2)
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning("voice-mod confirm popup re-prepare failed: %s", e)
+
+        try:
+            confirm.prompt(action.upper(), best, alts, _on_result)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("voice-mod confirm popup prompt failed: %s", e)
 
     def _maybe_handle_twitch_chat_settings(self, user_text: str) -> bool:
         """Voice chat-settings moderation: slow / followers-only / subscribers-only
@@ -7283,6 +7871,10 @@ class Orchestrator:
         # Twitch chat-mode (flag-gated default-OFF; no-op + zero twitch import when
         # twitch.enabled is False -> voice/relay runtime byte-identical).
         self._start_twitch_chat_mode()
+        # Twitch clickable panels (moderation control panel + dev test panel). Built
+        # AFTER chat-mode so they can wire to the live mod-remote / routers / chat
+        # service. No-op + zero twitch import when twitch.enabled is False.
+        self._start_twitch_panels()
         word = self.wake.active_word
         print(f"\n  Kenning is listening. Say '{word}' to wake.\n")
         if self.wake.using_fallback:
@@ -8100,7 +8692,9 @@ class Orchestrator:
                     # button" tears it down. Strict matcher -> ordinary
                     # utterances fall through.
                     if (self._maybe_handle_stop_button(user_text)
-                            or self._maybe_handle_logs_command(user_text)):
+                            or self._maybe_handle_logs_command(user_text)
+                            or self._maybe_handle_moderation_panel(user_text)
+                            or self._maybe_handle_test_panel(user_text)):
                         self._last_response_finished_monotonic = time.monotonic()
                         if _addr_cfg.follow_up_enabled:
                             follow_up_until = (
@@ -8319,7 +8913,9 @@ class Orchestrator:
                 # monitoring) and loopback-immune (no wake watcher).
                 if self.coding_voice is None:
                     if (self._maybe_handle_stop_button(user_text)
-                            or self._maybe_handle_logs_command(user_text)):
+                            or self._maybe_handle_logs_command(user_text)
+                            or self._maybe_handle_moderation_panel(user_text)
+                            or self._maybe_handle_test_panel(user_text)):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = (
                             self._last_response_finished_monotonic
@@ -9827,6 +10423,7 @@ class Orchestrator:
         try:
             from kenning.audio.relay_speech import (
                 play_to_device, relay_tts_text, resolve_relay_device,
+                resolve_speaker_device,
             )
             from kenning.config import get_config
             cfg = get_config().relay_speech
@@ -9846,6 +10443,18 @@ class Orchestrator:
         except Exception as e:                                       # noqa: BLE001
             logger.warning("redeem team-speak synth failed: %s", e)
             return
+        # Drive the on-stream waveform overlay (OBS window capture) so the GUI
+        # waveform/speaking indicator ANIMATES during the team-speak redeem too
+        # (2026-06-26 fix). The normal team-callout play submits to this sink, but
+        # this redeem path plays via play_to_device on a daemon thread and bypassed
+        # it -> the waveform sat still. Submit the SAME synthesized PCM the play
+        # uses, before playback, so the animation tracks the audio. Fail-open: any
+        # error just leaves the waveform idle; the speak proceeds.
+        try:
+            from kenning.audio.waveform import submit as _viz_submit
+            _viz_submit(pcm, sr)
+        except Exception:                                            # noqa: BLE001
+            pass
         # Tee to the broadcast mirror so stream viewers also hear it (same as the
         # LOCAL_VOICE relay does); the team mic + viewer feed stay separate devices.
         try:
@@ -9853,6 +10462,36 @@ class Orchestrator:
             _broadcast_submit(pcm, sr)
         except Exception:                                            # noqa: BLE001
             pass
+        # ALSO play the SAME clip to the streamer's OWN speakers so they hear what
+        # is being said to their team. This is ALWAYS on for the team redeem (it is
+        # NOT the chat-audio "HEAR CHAT" toggle, which only gates the SAY redeem /
+        # chat-reply path). Resolved to audio.output_device (empty '' = system
+        # default). Run on a daemon thread so it OVERLAPS the foreground PTT + team
+        # play (sequential playback would make the streamer hear it twice in a row).
+        # Full-band (shape_for_team=False): no Valorant comms DSP on the speakers.
+        # Fail-open: an unresolved/erroring speaker device logs + is skipped; the
+        # team play below (and the redeem) are never affected.
+        try:
+            speaker_index = resolve_speaker_device()
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("redeem team-speak: speaker device resolve failed: %s", e)
+            speaker_index = None
+        if speaker_index is not None:
+            def _speaker_play(_pcm=pcm, _sr=sr, _idx=speaker_index) -> None:
+                try:
+                    play_to_device(_pcm, _sr, _idx, shape_for_team=False)
+                except Exception as se:                              # noqa: BLE001
+                    logger.warning("redeem team-speak speaker play failed: %s", se)
+            try:
+                threading.Thread(
+                    target=_speaker_play, name="redeem-team-speaker",
+                    daemon=True,
+                ).start()
+            except Exception as e:                                   # noqa: BLE001
+                logger.warning("redeem team-speak: speaker thread start failed: %s", e)
+        else:
+            logger.info("redeem team-speak: speaker device unresolved; "
+                        "team play only")
         try:
             self._ptt_hold()
             try:
@@ -12738,6 +13377,19 @@ class Orchestrator:
         self._chat_audio_to_speakers = bool(enabled)
         logger.info("chat audio -> local speakers %s (stop-window toggle)",
                     "ON" if enabled else "OBS-ONLY")
+
+    def _set_twitch_say_name_enabled(self, enabled: bool) -> None:
+        """STOP-window SAY-NAME toggle callback: flip whether the "ultron tells my
+        team" SPEAK_TEAM redeem prefixes the viewer name ("<viewer> says: ...") or
+        speaks only the message. Flips the redeem_router runtime flag the team-redeem
+        framing (frame_speak_line) consults on every tick. Fail-open."""
+        try:
+            from kenning.twitch.redeem_router import set_say_name_enabled
+            set_say_name_enabled(bool(enabled))
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("say-name toggle apply skipped: %s", e)
+        logger.info("twitch team-speak SAY-NAME %s (stop-window toggle)",
+                    "ON" if enabled else "OFF")
 
     def _chat_speak(self, text: str) -> None:
         """Speak a CHAT-directed line, honoring the HEAR-CHAT routing toggle.

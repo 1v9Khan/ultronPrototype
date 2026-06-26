@@ -13,7 +13,9 @@ import types
 from kenning.twitch.clients.chat_send import MAX_MESSAGE_CHARS, ChatSendClient
 from kenning.twitch.panel import (
     MAX_CHAT_CHARS,
+    append_cooldown_hint,
     build_commands_panel_text,
+    cooldown_hint_suffix,
     run_interval_poster,
 )
 
@@ -146,6 +148,33 @@ def test_interval_poster_swallows_post_errors():
         sleep_fn=clock.sleep, first_offset_s=5.0,
     )
     assert calls["n"] == 3   # tried each scheduled post, none crashed the loop
+
+
+def test_cooldown_hint_suffix_minutes_and_seconds():
+    # whole minutes -> "(N minute cooldown)"; the user's 2-minute default.
+    assert cooldown_hint_suffix(120) == "(2 minute cooldown)"
+    assert cooldown_hint_suffix(60) == "(1 minute cooldown)"
+    # non-whole-minute -> seconds.
+    assert cooldown_hint_suffix(30) == "(30 second cooldown)"
+    assert cooldown_hint_suffix(90) == "(90 second cooldown)"
+    # off / invalid -> empty.
+    assert cooldown_hint_suffix(0) == ""
+    assert cooldown_hint_suffix(-5) == ""
+
+
+def test_append_cooldown_hint_is_idempotent():
+    base = "Talk to Ultron!"
+    once = append_cooldown_hint(base, 120)
+    assert once == "Talk to Ultron! (2 minute cooldown)"
+    # appending again does not duplicate the suffix.
+    assert append_cooldown_hint(once, 120) == once
+    # cooldown off -> unchanged.
+    assert append_cooldown_hint(base, 0) == base
+
+
+def test_reply_cooldown_config_default():
+    from kenning.config import TwitchChatConfig
+    assert TwitchChatConfig().reply_cooldown_seconds == 120
 
 
 def test_talk_hint_config_defaults():

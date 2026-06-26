@@ -57,6 +57,7 @@ def build_chat_mode_runtime(
     streamer_user_id: str = "",
     on_flagged: Optional[Callable[..., None]] = None,
     busy_estimator: Optional[Any] = None,
+    chat_post_fn: Optional[Callable[[str], Any]] = None,
 ) -> ChatModeRuntime:
     """Wire the full chat-reply stack into a runtime. ``twitch_cfg`` is the
     ``config.twitch`` section. The returned runtime starts OFF; the toggle calls
@@ -67,6 +68,7 @@ def build_chat_mode_runtime(
     safety_cfg = getattr(twitch_cfg, "safety", None)
     max_msgs = int(getattr(chat_cfg, "batch_max_messages", 40) or 40)
     max_chars = int(getattr(chat_cfg, "reply_max_chars", 240) or 240)
+    cooldown_s = float(getattr(chat_cfg, "reply_cooldown_seconds", 120) or 0)
     guard_required = bool(getattr(safety_cfg, "guard_required", True))
 
     def is_reply_target(ev: Any) -> bool:
@@ -84,7 +86,10 @@ def build_chat_mode_runtime(
         return generate_reply(selected, llm_fn)
 
     validator = build_chat_validator(guard_client=guard_client)
-    pipeline = ChatReplyPipeline(validator=validator, speak_fn=speak_fn, max_reply_chars=max_chars)
+    pipeline = ChatReplyPipeline(
+        validator=validator, speak_fn=speak_fn, max_reply_chars=max_chars,
+        cooldown_seconds=cooldown_s, chat_post_fn=chat_post_fn,
+    )
     return ChatModeRuntime(
         pipeline=pipeline, drain_fn=drain_fn,
         is_reply_target=is_reply_target, select_fn=select_fn, reply_fn=reply_fn,

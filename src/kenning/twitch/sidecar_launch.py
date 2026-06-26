@@ -64,6 +64,7 @@ def plan_sidecars(
     economy = getattr(tcfg, "economy", None)
     helper = getattr(tcfg, "helper", None)
     moderation = getattr(tcfg, "moderation", None)
+    raid = getattr(tcfg, "raid", None)
     client_id = str(getattr(auth, "client_id", "") or "")
     broadcaster_login = str(getattr(auth, "broadcaster_login", "") or "")
     bot_login = str(getattr(auth, "bot_login", "") or "")
@@ -85,6 +86,9 @@ def plan_sidecars(
             "KENNING_TWITCH_BROADCASTER_TOKEN_PATH": expanduser(
                 str(getattr(auth, "token_path", "~/.kenning/twitch.json"))),
             "KENNING_TWITCH_SUBSCRIBE_REDEEMS": "1" if getattr(economy, "enabled", False) else "0",
+            # channel.raid rides the SAME isolated broadcaster-token session as
+            # redeems; subscribe when raid handling is enabled (default ON).
+            "KENNING_TWITCH_SUBSCRIBE_RAIDS": "1" if getattr(raid, "enabled", False) else "0",
         },
     ))
 

@@ -48,15 +48,19 @@ __all__ = [
     "HELIX_BASE",
     "CHAT_SUBSCRIPTION_TYPE",
     "REDEEM_SUBSCRIPTION_TYPE",
+    "RAID_SUBSCRIPTION_TYPE",
 ]
 
 HELIX_BASE = "https://api.twitch.tv/helix"
 
 # EventSub subscription type names + versions (dev.twitch.tv/docs/eventsub,
 # verified live 2026-06-23): channel.chat.message v1 needs broadcaster_user_id +
-# user_id; the redemption-add v1 needs only broadcaster_user_id.
+# user_id; the redemption-add v1 needs only broadcaster_user_id; channel.raid v1
+# binds via to_broadcaster_user_id (the channel BEING raided -> the 'to' side
+# needs NO special scope, only that the subscribing user can read the channel).
 CHAT_SUBSCRIPTION_TYPE = "channel.chat.message"
 REDEEM_SUBSCRIPTION_TYPE = "channel.channel_points_custom_reward_redemption.add"
+RAID_SUBSCRIPTION_TYPE = "channel.raid"
 _SUBSCRIPTION_VERSION = "1"
 
 # A successful POST /eventsub/subscriptions returns 202 Accepted (it may also
@@ -303,3 +307,33 @@ class HelixEventSubClient:
             "transport": {"method": "websocket", "session_id": str(session_id)},
         }
         return self._create_subscription(body, token=token, what="redeem-subscription")
+
+    def create_raid_subscription(
+        self,
+        *,
+        broadcaster_id: str,
+        session_id: str,
+        token: str,
+    ) -> bool:
+        """Create the ``channel.raid`` v1 EventSub subscription for INCOMING raids.
+
+        The condition binds the channel BEING raided via ``to_broadcaster_user_id``
+        (the 'to' side needs NO special scope — only that the subscribing user can
+        read the channel). ``token`` is the BROADCASTER's user access token (it
+        rides the SAME isolated session as the redeem sub, which also uses the
+        broadcaster token, so there is no cross-user 400). Returns ``True`` on 2xx,
+        ``False`` otherwise.
+        """
+        if not broadcaster_id or not session_id:
+            logger.warning(
+                "helix raid-sub: missing id(s) broadcaster=%r session=%r",
+                bool(broadcaster_id), bool(session_id),
+            )
+            return False
+        body = {
+            "type": RAID_SUBSCRIPTION_TYPE,
+            "version": _SUBSCRIPTION_VERSION,
+            "condition": {"to_broadcaster_user_id": str(broadcaster_id)},
+            "transport": {"method": "websocket", "session_id": str(session_id)},
+        }
+        return self._create_subscription(body, token=token, what="raid-subscription")

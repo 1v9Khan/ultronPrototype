@@ -42,6 +42,10 @@ Protocol (JSON over loopback HTTP)
                                     ({"ok":..., "action":..., "target":..., ...}),
                                     or {"ok":false, "error":"expired"}.
   POST /cancel   {"token":...}   -> drop the pending proposal -> {"ok":true}.
+  POST /shoutout {"to_broadcaster_id":ID} -> Helix POST /chat/shoutouts (the raid
+                                    handler promotes a raider). Fail-open: always
+                                    200; {"ok":false,...} when unavailable/error so
+                                    the raid VOCAL announce is never blocked.
 
 A ``/prepare`` mints a fresh ``secrets.token_urlsafe(16)`` token, stores the
 proposal in a bounded TTL map (cap 64, ~120 s), and returns it; ``/confirm`` /
@@ -260,7 +264,8 @@ class RosterCache:
 # --------------------------------------------------------------------------- #
 def make_handler(service: Any, store: ProposalStore, *, ready_fn: Callable[[], bool],
                  broadcaster_id_fn: Callable[[], str],
-                 chat_send_fn: "Optional[Callable[[str], bool]]" = None):
+                 chat_send_fn: "Optional[Callable[[str], bool]]" = None,
+                 shoutout_fn: "Optional[Callable[[str], bool]]" = None):
     """Build a ``BaseHTTPRequestHandler`` subclass bound to this sidecar's state.
 
     A factory (not module globals) so a test can stand up an isolated server with
@@ -336,7 +341,33 @@ def make_handler(service: Any, store: ProposalStore, *, ready_fn: Callable[[], b
             if path == "/chat_settings":
                 self._handle_chat_settings()
                 return
+            if path == "/shoutout":
+                self._handle_shoutout()
+                return
             self._send(404, {"ok": False, "error": "not found"})
+
+        def _handle_shoutout(self) -> None:
+            """Issue a Helix /shoutout to a raider (POST /chat/shoutouts). The
+            orchestrator's raid handler POSTs ``{"to_broadcaster_id": "<raider id>"}``.
+            Fail-safe: a missing capability or a shoutout error never raises out --
+            the raid VOCAL announce is independent and is NOT gated on this."""
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            tid = payload.get("to_broadcaster_id")
+            if not isinstance(tid, str) or not tid.strip():
+                self._send(400, {"ok": False, "error": "to_broadcaster_id must be a non-empty string"})
+                return
+            if shoutout_fn is None:
+                self._send(200, {"ok": False, "error": "shoutout_unavailable"})
+                return
+            try:
+                done = bool(shoutout_fn(tid.strip()))
+            except Exception as exc:  # noqa: BLE001 — fail-safe; never block the announce
+                logger.warning("shoutout failed unexpectedly: %s", type(exc).__name__)
+                self._send(200, {"ok": False, "error": "shoutout_error"})
+                return
+            self._send(200, {"ok": done})
 
         def _handle_chat_settings(self) -> None:
             """Apply a chat-settings voice command (slow/follower/sub/emote/unique/
@@ -469,6 +500,10 @@ class _ServiceState:
         # Optional bot chat-SEND callable (text -> bool); wired when a bot token +
         # bot id resolve. Used by the periodic commands-panel poster via POST /say.
         self.chat_send: Optional[Callable[[str], bool]] = None
+        # Optional /shoutout callable (to_broadcaster_id -> bool); wired from the
+        # SAME HelixClient + broadcaster id the moderation service uses. Used by the
+        # raid handler via POST /shoutout. Needs moderator:manage:shoutouts scope.
+        self.shoutout: Optional[Callable[[str], bool]] = None
 
     @property
     def ready(self) -> bool:
@@ -657,6 +692,26 @@ def build_service_state() -> _ServiceState:
         "write sidecar service ready: broadcaster_id=%s protected=%d require_confirm=%s",
         broadcaster_id, len(protected_ids), require_confirm,
     )
+    # /shoutout (Helix POST /chat/shoutouts, moderator:manage:shoutouts) for the
+    # raid handler. Reuses the SAME HelixClient + broadcaster id the moderation
+    # service uses (the broadcaster moderates their own channel -> moderator_id ==
+    # broadcaster_id). Returns ok on a 2xx OR an idempotent already/cooldown. Wired
+    # only when the helix client built; never blocks the moderation service.
+    try:
+        _bid = broadcaster_id
+        _mid = moderator_id
+
+        def _do_shoutout(to_broadcaster_id: str) -> bool:
+            tid = str(to_broadcaster_id or "").strip()
+            if not tid:
+                return False
+            result = helix.send_shoutout(_bid, tid, _mid)
+            return bool(getattr(result, "ok", False))
+
+        state.shoutout = _do_shoutout
+        logger.info("write sidecar: shoutout ready (from_broadcaster_id=%s)", _bid)
+    except Exception as exc:  # noqa: BLE001 — shoutout is optional
+        logger.warning("write sidecar: shoutout wiring failed (%s)", type(exc).__name__)
     # Bot chat-SEND (Helix POST /chat/messages, user:write:chat) for the periodic
     # commands-panel poster. Wired only when a bot id resolved AND a bot token is on
     # disk; optional, never blocks the moderation service.
@@ -680,7 +735,8 @@ def build_service_state() -> _ServiceState:
 # --------------------------------------------------------------------------- #
 def build_server(service: Any, *, port: int = 0, ready: Optional[bool] = None,
                  broadcaster_id: str = "",
-                 chat_send: "Optional[Callable[[str], bool]]" = None):
+                 chat_send: "Optional[Callable[[str], bool]]" = None,
+                 shoutout: "Optional[Callable[[str], bool]]" = None):
     """Assemble a write-sidecar server bound to 127.0.0.1 ONLY.
 
     ``port=0`` binds an ephemeral port (read it back from ``server.server_address``
@@ -698,6 +754,7 @@ def build_server(service: Any, *, port: int = 0, ready: Optional[bool] = None,
         ready_fn=lambda: is_ready,
         broadcaster_id_fn=lambda: broadcaster_id,
         chat_send_fn=chat_send,
+        shoutout_fn=shoutout,
     )
     from kenning.subprocess.sidecar_server import SingletonThreadingHTTPServer
 
@@ -800,7 +857,7 @@ def main() -> None:
     state = build_service_state()
     server, _store = build_server(
         state.service, port=port, ready=state.ready, broadcaster_id=state.broadcaster_id,
-        chat_send=state.chat_send,
+        chat_send=state.chat_send, shoutout=state.shoutout,
     )
     sidecar_lock.write_role("twitch_write", os.getpid(), port)
     atexit.register(sidecar_lock.clear_role, "twitch_write")

@@ -147,6 +147,22 @@ def test_drain_tolerates_non_dict_wrappers_and_events() -> None:
 # --------------------------------------------------------------------------- #
 # RedeemRouter.tick — wheel
 # --------------------------------------------------------------------------- #
+def test_inject_processes_synthetic_redeem_on_next_tick() -> None:
+    # 2026-06-26 dev TEST PANEL seam: inject() queues a synthetic redeem the next
+    # tick processes through the SAME game path as a live drain.
+    spoken: list[str] = []
+    router = RedeemRouter(
+        drain_fn=lambda: [], rng=_seeded_rng(), announce_fn=spoken.append,
+    )
+    router.inject(_redeem("rt1", "Spin the Wheel", login="tester"))
+    outcomes = router.tick()
+    assert len(outcomes) == 1
+    assert outcomes[0]["game"] == "wheel" and outcomes[0]["viewer"] == "tester"
+    assert spoken and "tester" in spoken[0]
+    # Buffer consumed -> a second tick has nothing to do.
+    assert router.tick() == []
+
+
 def test_wheel_redeem_runs_game_announces_and_emits() -> None:
     spoken: list[str] = []
     overlay: list[dict] = []

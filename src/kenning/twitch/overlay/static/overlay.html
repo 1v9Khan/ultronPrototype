@@ -2,12 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:">
 <meta name="referrer" content="no-referrer">
 <title>Ultron Overlay</title>
 <style>
   /* Animation is CSS transform/opacity ONLY (style-src allows 'unsafe-inline'
-     style; script-src is NOT granted, so no inline/script-driven layout). */
+     style). The single inline renderer <script> is permitted via script-src
+     'self' 'unsafe-inline'; it uses textContent only (no markup-setting sink) and
+     no inline event-handler attributes, so the injection surface is unchanged. */
   :root { color-scheme: dark; }
   html, body {
     margin: 0; padding: 0; width: 100%; height: 100%;
@@ -562,9 +564,44 @@
   }
 
   // --- SSE wiring ----------------------------------------------------------
+  // Robust reconnect: EventSource auto-retries a TRANSIENT drop on its own, but if
+  // the stream is hard-CLOSED (server restart / connection fully torn down /
+  // proxy/CEF gives up) it stays dead. We watch for that and re-open with a small
+  // bounded backoff so a freshly-rebooted server (or an OBS source that lost the
+  // stream) reconnects without a manual refresh. The server replays its recent
+  // ring buffer to every new connection, so a card fired during the gap still shows.
+  var RECONNECT_MIN_MS = 1000;
+  var RECONNECT_MAX_MS = 15000;
+  var reconnectDelay = RECONNECT_MIN_MS;
+  var reconnectTimer = null;
+  var currentSrc = null;
+
+  function scheduleReconnect() {
+    if (reconnectTimer) { return; }            // a reconnect is already pending
+    reconnectTimer = window.setTimeout(function () {
+      reconnectTimer = null;
+      connect();
+    }, reconnectDelay);
+    // exponential backoff, capped — avoids hammering a server that stays down.
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
+  }
+
   function connect() {
     var token = new URLSearchParams(window.location.search).get("token") || "";
-    var src = new EventSource("/events?token=" + encodeURIComponent(token));
+    // Tear down any prior stream before opening a fresh one (idempotent reconnect).
+    if (currentSrc) {
+      try { currentSrc.close(); } catch (err) { /* already closed */ }
+      currentSrc = null;
+    }
+    var src;
+    try {
+      src = new EventSource("/events?token=" + encodeURIComponent(token));
+    } catch (err) {
+      // Construction itself failed (rare) -> back off and retry rather than die.
+      scheduleReconnect();
+      return;
+    }
+    currentSrc = src;
 
     function onMessage(e) {
       var parsed;
@@ -573,11 +610,22 @@
       dispatch(parsed);
     }
 
+    src.addEventListener("open", function () {
+      // A clean (re)connection resets the backoff so the NEXT drop retries fast.
+      reconnectDelay = RECONNECT_MIN_MS;
+    });
+
     // Named SSE event ("event: overlay") AND the default message event.
     src.addEventListener("overlay", onMessage);
     src.addEventListener("message", onMessage);
     src.addEventListener("error", function () {
-      // EventSource auto-reconnects on a transient drop; nothing to do.
+      // readyState CONNECTING (0) -> EventSource is auto-retrying; leave it alone.
+      // readyState CLOSED (2)     -> the stream is dead; re-open it ourselves.
+      if (src.readyState === EventSource.CLOSED) {
+        try { src.close(); } catch (err) { /* already closed */ }
+        if (currentSrc === src) { currentSrc = null; }
+        scheduleReconnect();
+      }
     });
   }
 

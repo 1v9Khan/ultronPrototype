@@ -205,26 +205,26 @@ def test_leaderboard_lists_top_balances():
     led.credit("u2", 500, "s", "s2")
     # The caller (default uid u1) chats as login "z", so the leaderboard renders
     # u1 by its known display login "z"; u2 (never seen this session) shows its raw
-    # uid. Top balance first. The board posts as SEPARATE chat messages (one line
-    # per Twitch message): a header then "1. ...", "2. ..." so it stacks in chat.
+    # uid. Top balance first. The board posts as ONE chat message (Twitch collapses
+    # a message to a single line), ranks inline separated by " · ".
     r, led, replies = _router([_ev("!leaderboard", login="z")], ledger=led)
     r.tick()
-    assert replies[0].startswith("Top ") and "cores" in replies[0]   # header line
-    assert replies[1] == "1. u2 (500)"      # top balance ranked first, own message
-    assert replies[2] == "2. z (100)"
-    assert len(replies) == 3                 # header + 2 ranks (no extra noise)
+    assert len(replies) == 1                              # one inline message
+    assert replies[0] == "Top cores: 1. u2 (500) · 2. z (100)"
 
 
-def test_leaderboard_caps_at_top_five_messages():
+def test_leaderboard_caps_at_top_five():
     led = Ledger(":memory:")
     for i in range(8):
         led.credit(f"u{i}", (i + 1) * 10, "s", f"s{i}")
     r, led, replies = _router([_ev("!leaderboard")], ledger=led)
     r.tick()
-    # 1 header + at most 5 ranked rows = 6 messages, never more.
-    assert len(replies) == 6
-    assert replies[0].startswith("Top ")
-    assert replies[1].startswith("1. ") and replies[5].startswith("5. ")
+    # ONE message, at most the top 5 ranks inline (Twitch single-line), never more.
+    assert len(replies) == 1
+    msg = replies[0]
+    assert msg.startswith("Top cores: 1. u7 (80)")   # highest balance ranked first
+    assert "5. u3 (40)" in msg                        # 5th rank present
+    assert "6. " not in msg                           # capped at five
 
 
 # --------------------------------------------------------------------------- #
@@ -790,7 +790,7 @@ def test_config_defaults_defer_and_auto_trivia():
     from kenning.config import TwitchEconomyConfig
     c = TwitchEconomyConfig()
     assert c.defer_points_gamble_to_streamelements is True
-    assert c.trivia_auto_interval_minutes == 5
+    assert c.trivia_auto_interval_minutes == 8
 
 
 # --------------------------------------------------------------------------- #

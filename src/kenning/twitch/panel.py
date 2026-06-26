@@ -17,6 +17,8 @@ __all__ = [
     "build_commands_panel_text",
     "MAX_CHAT_CHARS",
     "run_interval_poster",
+    "cooldown_hint_suffix",
+    "append_cooldown_hint",
 ]
 
 MAX_CHAT_CHARS = 500
@@ -40,6 +42,39 @@ def build_commands_panel_text(cfg: Any) -> str:
     if len(text) > MAX_CHAT_CHARS:
         text = text[:MAX_CHAT_CHARS]
     return text
+
+
+def cooldown_hint_suffix(cooldown_seconds: float) -> str:
+    """Human-readable cooldown phrase for the talk-to-Ultron hint, derived from the
+    configured ``twitch.chat.reply_cooldown_seconds``. Whole minutes read as
+    "(N minute cooldown)"; otherwise seconds (or a fractional minute). ``""`` for a
+    non-positive cooldown (the throttle is off -> nothing to advertise).
+
+    Examples: 120 -> "(2 minute cooldown)", 60 -> "(1 minute cooldown)",
+    30 -> "(30 second cooldown)", 90 -> "(90 second cooldown)"."""
+    try:
+        secs = int(round(float(cooldown_seconds)))
+    except (TypeError, ValueError):
+        return ""
+    if secs <= 0:
+        return ""
+    if secs % 60 == 0:
+        mins = secs // 60
+        return f"({mins} minute cooldown)"
+    return f"({secs} second cooldown)"
+
+
+def append_cooldown_hint(text: str, cooldown_seconds: float) -> str:
+    """Append :func:`cooldown_hint_suffix` to a talk-hint message (idempotent: a
+    suffix already present is not duplicated). Returns ``text`` unchanged when the
+    cooldown is off or the suffix is already there."""
+    base = (text or "").strip()
+    suffix = cooldown_hint_suffix(cooldown_seconds)
+    if not suffix:
+        return base
+    if suffix in base:
+        return base
+    return f"{base} {suffix}".strip()
 
 
 def run_interval_poster(

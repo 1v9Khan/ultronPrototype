@@ -663,3 +663,61 @@ class HelixClient:
             "update_chat_settings", ("update_chat_settings", "", ""), resp,
             success_statuses=(200,),
         )
+
+    def send_shoutout(
+        self,
+        from_broadcaster_id: str,
+        to_broadcaster_id: str,
+        moderator_id: str,
+    ) -> HelixResult:
+        """POST /chat/shoutouts — send an official Twitch /shoutout.
+
+        ``from_broadcaster_id`` is this channel; ``to_broadcaster_id`` is the
+        raider being promoted; ``moderator_id`` is a moderator of THIS channel (the
+        broadcaster moderates their own channel). Needs the
+        ``moderator:manage:shoutouts`` scope on the token.
+
+        Twitch returns 204 on success. Two non-failure cases are treated as
+        already-applied (idempotent) so a replayed raid never raises:
+          * the per-target / global shoutout COOLDOWN (Twitch returns 429 with a
+            body mentioning the cooldown — the streamer just shouted this raider, or
+            shouted someone else within the 2-minute global window), and
+          * a body that says the shoutout was "already" sent.
+        Keyed on ``to_broadcaster_id`` so the local idempotency cache short-circuits
+        a duplicate for the same raider within this process.
+        """
+        if not from_broadcaster_id or not to_broadcaster_id or not moderator_id:
+            raise ValueError(
+                "from_broadcaster_id, to_broadcaster_id and moderator_id are required"
+            )
+        key = ("shoutout", str(to_broadcaster_id), "")
+        cached = self._cached(key)
+        if cached is not None:
+            logger.info("helix shoutout short-circuit (local idempotency) key=%s", key)
+            return HelixResult(
+                action="shoutout", ok=True, status=0, idempotent=True,
+                data=cached.data, key=key,
+            )
+        resp = self._request(
+            "POST",
+            "/chat/shoutouts",
+            query={
+                "from_broadcaster_id": str(from_broadcaster_id),
+                "to_broadcaster_id": str(to_broadcaster_id),
+                "moderator_id": str(moderator_id),
+            },
+        )
+        # The shoutout cooldown surfaces as a 429 whose body names the cooldown.
+        # That is NOT a real failure (the streamer simply shouted recently); treat
+        # it as already-applied so a raid-handler retry never raises LOUD. A generic
+        # 429 (true rate-limit) is already retried+capped inside _request before we
+        # see it here, so a 429 reaching this point is the cooldown case.
+        if resp.status == 429:
+            logger.info("helix shoutout cooldown (429) -> idempotent key=%s", key)
+            result = HelixResult(
+                action="shoutout", ok=True, status=429, idempotent=True,
+                data=resp.json(), key=key,
+            )
+            self._cache(key, result)
+            return result
+        return self._finish_write("shoutout", key, resp, success_statuses=(204, 200))

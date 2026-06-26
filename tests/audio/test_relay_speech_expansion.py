@@ -1421,9 +1421,12 @@ def test_economy_is_deterministic(cmd_text, must_have, must_not):
 
 
 def test_identity_uses_varied_curated_pool():
+    # 2026-06-26 (streamer persona direction): "are you an AI" now OWNS the word --
+    # it draws from the dedicated `ai` pool (yes, an AI, and the next step), NOT the
+    # `bot` pool. A bare "bot" still draws from `bot` (a bot obeys; he is a mind).
     from kenning.audio._ultron_identity import IDENTITY_POOLS
 
-    bot_pool = IDENTITY_POOLS["bot"]
+    ai_pool = IDENTITY_POOLS["ai"]
     seen = set()
     recent: list[str] = []
     for _ in range(5):
@@ -1431,10 +1434,18 @@ def test_identity_uses_varied_curated_pool():
         line = build_relay_line(cmd, generate_fn=lambda p: ["FLAT"],
                                 recent_lines=recent)
         assert "FLAT" not in line               # curated pool, not the LLM
-        assert line in bot_pool                 # the AI/bot category pool
+        assert line in ai_pool                  # the OWN-IT AI category pool
         seen.add(line); recent.append(line)
     assert len(seen) >= 2          # varied, not a one-line soundboard
-    # brand present in the pool (per-pick is LRU-order dependent, so check static)
+    # the AI pool OWNS the word "AI" -- every line affirms it (own + transcend).
+    assert sum(("ai" in ln.lower() or "artificial" in ln.lower()) for ln in ai_pool) >= 15
+
+    # a bare "bot" still routes to the (reframe-it) bot pool, NOT the ai pool.
+    bot_pool = IDENTITY_POOLS["bot"]
+    cmd = match_relay_command("my teammate asked if you are a bot, respond")
+    line = build_relay_line(cmd, generate_fn=lambda p: ["FLAT"], recent_lines=[])
+    assert "FLAT" not in line
+    assert line in bot_pool
     assert sum("Ultron" in ln for ln in bot_pool) >= 5
 
 

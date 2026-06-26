@@ -28,6 +28,7 @@ import json
 import logging
 import secrets
 import threading
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -49,8 +50,19 @@ __all__ = [
 
 # The single source of truth for the CSP. The served overlay.html embeds a
 # byte-identical <meta http-equiv> copy; a test asserts they match.
+#
+# ``script-src 'self' 'unsafe-inline'`` is REQUIRED: the renderer is a single
+# self-contained inline <script>. Without an explicit ``script-src`` directive the
+# CSP falls back to ``default-src 'none'`` and OBS's CEF (Chromium Embedded) BLOCKS
+# the inline script outright — so ``init()`` never runs, ``connect()`` is never
+# called, and no ``GET /events`` SSE stream is ever opened (the page just re-fetches
+# ``/`` on each OBS refresh and renders nothing). This mirrors the already-granted
+# ``style-src 'self' 'unsafe-inline'`` for the inline <style>. The page still uses
+# NO inline event-handler attributes and NO markup-setting sinks (textContent only),
+# so this does not widen the real injection surface.
 CSP_POLICY = (
     "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
     "connect-src 'self'; "
     "img-src 'self' data:"
@@ -85,6 +97,13 @@ _CLIENT_QUEUE_MAXSIZE = 256
 # How often an idle SSE handler wakes to flush a keepalive comment + re-check that
 # the server (and its parent) is still alive, so a dropped OBS source is reaped.
 _SSE_POLL_SECONDS = 1.0
+# Replay ring buffer: the last N already-vetted SSE frames are retained and
+# REPLAYED to every newly-connected client, so a freshly-(re)connected OBS source
+# (e.g. after a refresh or a server reboot) isn't blank and a card fired moments
+# before the (re)connect still shows. Bounded + cheap (a fixed-size deque of small
+# strings); secret keys are already stripped by validate_event() BEFORE a frame is
+# ever buffered, so nothing sensitive is replayed.
+_REPLAY_BUFFER_MAXLEN = 16
 
 
 class OverlayError(ValueError):
@@ -328,10 +347,17 @@ class _OverlayHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         client_q: "Queue[str]" = Queue(maxsize=_CLIENT_QUEUE_MAXSIZE)
-        self._owner._register(client_q)
+        # Atomically register + capture the recent-event backlog so a freshly
+        # (re)connected OBS source replays the last few cards instead of showing
+        # blank. Each buffered frame is delivered exactly once (see _register_with_replay).
+        backlog = self._owner._register_with_replay(client_q)
         try:
             # Prime the stream so EventSource fires `open` promptly.
             self._write_raw(": connected\n\n")
+            # Replay the recent ring buffer to THIS new client before going live.
+            for frame in backlog:
+                if not self._write_raw(frame):
+                    return  # client already gone mid-replay — fail quiet
             while not self._owner.is_stopped:
                 try:
                     payload = client_q.get(timeout=_SSE_POLL_SECONDS)
@@ -413,6 +439,10 @@ class OverlayServer:
 
         self._clients_lock = threading.Lock()
         self._clients: set["Queue[str]"] = set()
+        # Bounded replay buffer of the last vetted frames (guarded by the SAME
+        # lock as the client set so register+snapshot is atomic vs. a concurrent
+        # emit -> a new client gets each frame exactly once, never doubled/missed).
+        self._replay: "deque[str]" = deque(maxlen=_REPLAY_BUFFER_MAXLEN)
 
         self._html_cache: Optional[bytes] = None
 
@@ -511,6 +541,21 @@ class OverlayServer:
         with self._clients_lock:
             self._clients.add(q)
 
+    def _register_with_replay(self, q: "Queue[str]") -> list[str]:
+        """Register a new SSE client AND atomically snapshot the replay buffer.
+
+        Done under the single clients lock so a frame emitted concurrently is
+        delivered EXACTLY once: either it is already in the returned backlog (the
+        client must NOT also receive it live) or it lands in the now-registered
+        queue (and is NOT yet in the backlog). The caller writes the backlog first,
+        then drains its live queue. Bounded: the backlog is at most
+        ``_REPLAY_BUFFER_MAXLEN`` small frames.
+        """
+        with self._clients_lock:
+            backlog = list(self._replay)
+            self._clients.add(q)
+        return backlog
+
     def _unregister(self, q: "Queue[str]") -> None:
         with self._clients_lock:
             self._clients.discard(q)
@@ -536,7 +581,14 @@ class OverlayServer:
         data_line = json.dumps(vetted, ensure_ascii=False, separators=(",", ":"))
         frame = f"event: overlay\ndata: {data_line}\n\n"
 
+        # Buffer for replay AND snapshot the current clients atomically. Appending
+        # to the bounded deque BEFORE releasing the lock keeps it consistent with
+        # _register_with_replay: a client registering after this point sees this
+        # frame in its backlog; clients captured here get it live below. (vetted
+        # already had secret/unknown keys stripped by validate_event, so only safe
+        # fields are ever retained.)
         with self._clients_lock:
+            self._replay.append(frame)
             clients = list(self._clients)
         for q in clients:
             self._offer(q, frame)

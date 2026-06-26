@@ -79,12 +79,38 @@ __all__ = [
     "SPEAK_TEAM",
     "sanitize_speak_text",
     "frame_speak_line",
+    "say_name_enabled",
+    "set_say_name_enabled",
     "RedeemRouter",
 ]
 
 # Speak-redeem action keys (NON-game; map a reward title to one of these).
 SPEAK_SAY = "speak_say"     # speak on the streamer/stream-broadcast bus + chat
 SPEAK_TEAM = "speak_team"   # speak onto the team voice bus
+
+# --------------------------------------------------------------------------- #
+# SAY-NAME runtime toggle (2026-06-26) — governs whether the TEAM speak redeem
+# announces the viewer name as a prefix ("<viewer> says: <msg>") or speaks ONLY
+# the message. Default ON (name announced). Flipped live by the stop-window
+# SAY-NAME toggle via ``set_say_name_enabled`` (the orchestrator wires the
+# stop_button callback to it), exactly like the CHAT / HEAR-CHAT runtime toggles.
+# Module-level so the framing in ``frame_speak_line`` (which runs in the redeem
+# tick) sees the current state without a config reload. Anticheat-clean (a plain
+# bool; no new imports). Only the TEAM variant consults it — the SAY redeem keeps
+# its "<viewer> says:" framing so the stream always knows who spoke.
+_SAY_NAME_ENABLED = True
+
+
+def say_name_enabled() -> bool:
+    """True iff the TEAM speak redeem should prefix the viewer name. Default ON."""
+    return bool(_SAY_NAME_ENABLED)
+
+
+def set_say_name_enabled(on: bool) -> None:
+    """Flip the SAY-NAME runtime toggle (stop-window button / future voice cmd)."""
+    global _SAY_NAME_ENABLED
+    _SAY_NAME_ENABLED = bool(on)
+    logger.info("redeem team-speak SAY-NAME -> %s", "ON" if _SAY_NAME_ENABLED else "OFF")
 
 # Hard ceiling on a viewer's spoken text regardless of the configured cap (the
 # config cap is clamped to this; defends against a misconfigured huge max_chars).
@@ -277,14 +303,21 @@ def sanitize_speak_text(raw: object, *, max_chars: int) -> str:
 def frame_speak_line(viewer: str, text: str, *, to_team: bool = False) -> str:
     """Frame a SAFE, sanitized viewer message in Ultron's cold register so the
     listener knows it came from chat. The viewer name is itself sanitized (it is
-    also untrusted) and prefixed; the team variant is explicit it is relaying to
-    the squad. Returns ``""`` if there is nothing safe to say."""
+    also untrusted) and prefixed. Returns ``""`` if there is nothing safe to say.
+
+    TEAM variant (2026-06-26): the leading "Relaying from chat." was dropped (the
+    team callout is tighter without it). The "<viewer> says:" name prefix is
+    governed by the SAY-NAME runtime toggle (:func:`say_name_enabled`, default
+    ON); when OFF the team line is the bare message. The SAY (broadcast) variant
+    ALWAYS keeps the name prefix so the stream knows who spoke."""
     body = (text or "").strip()
     if not body:
         return ""
     who = sanitize_speak_text(viewer, max_chars=40).strip() or "A viewer"
     if to_team:
-        return f"Relaying from chat. {who} says: {body}"
+        if not say_name_enabled():
+            return body
+        return f"{who} says: {body}"
     return f"{who} says: {body}"
 
 
@@ -319,6 +352,11 @@ class RedeemRouter:
         speak_max_chars: int = 200,
     ) -> None:
         self._drain = drain_fn
+        # 2026-06-26: dev TEST PANEL injection buffer. inject() appends a synthetic
+        # redeem event dict; the next tick() processes it ALONGSIDE the live drain,
+        # through the EXACT same dedup/dispatch path. Empty + unused in normal
+        # operation (byte-identical for every existing caller).
+        self._inject_buf: list[dict] = []
         # --- SPEAK-redeem wiring (UNTRUSTED viewer text -> guard -> TTS) ------ #
         # ``speak_reward_map``: lowercased reward title -> SPEAK_SAY / SPEAK_TEAM.
         # ``guard_classify_fn(text) -> result`` (result.unsafe truthy => blocked);
@@ -400,14 +438,30 @@ class RedeemRouter:
         return g
 
     # -- public tick ----------------------------------------------------- #
+    def inject(self, event: dict) -> None:
+        """Queue a SYNTHETIC redeem event for the next tick — the dev TEST PANEL
+        seam. The event flows through the identical dedup/dispatch path as a live
+        redemption. Fail-safe."""
+        try:
+            if isinstance(event, dict):
+                self._inject_buf.append(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("redeem inject failed: %s", exc)
+
     def tick(self) -> list[dict]:
         """Drain + process every NEW redeem this cycle. Returns the list of
         outcome dicts processed (for tests + logging). Fail-safe end-to-end."""
         try:
-            events = self._drain()
+            events = self._drain() or []
         except Exception as exc:  # noqa: BLE001 — drain must never crash the loop
             logger.warning("redeem drain raised: %s", exc)
-            return []
+            events = []
+        # Append any TEST-PANEL injected synthetic redeem events (processed through
+        # the same per-redeem path). Pop atomically (GIL) so a concurrent inject()
+        # is never lost.
+        if self._inject_buf:
+            pending, self._inject_buf = self._inject_buf, []
+            events = list(events) + pending
         if not events:
             return []
         outcomes: list[dict] = []

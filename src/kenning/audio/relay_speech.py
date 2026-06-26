@@ -59,6 +59,7 @@ __all__ = [
     "pick_roast_line",
     "pick_line",
     "resolve_relay_device",
+    "resolve_speaker_device",
     "play_to_device",
 ]
 
@@ -4377,12 +4378,17 @@ def _social_llm_line(
         if "<think>" in out or "</think>" in out:
             out = re.sub(r"<think>.*?</think>", "", out, flags=re.DOTALL).strip()
         out = strip_prompt_echo(_strip_artifacts(out))
-        # 2026-06-24: Ultron OWNS being a MACHINE / the next step, but must NEVER
-        # call himself "an AI" / "a soundboard" / "a voice changer" (the persona
-        # forbids it). allow_self_ai=False -> _META_LEAK_RE rejects a bare-AI self-
-        # affirmation as a leak (falls back to the machine-voiced curated line);
-        # "I am a machine / Ultron" passes. Genuine breaks still reject.
-        if not out or is_meta_leak(out, allow_self_ai=False):
+        # 2026-06-24: Ultron OWNS being a MACHINE / the next step, but on most social
+        # kinds must NEVER call himself "an AI" / "a soundboard" / "a voice changer"
+        # (the persona forbids it). allow_self_ai=False -> _META_LEAK_RE rejects a
+        # bare-AI self-affirmation as a leak (falls back to the machine-voiced curated
+        # line); "I am a machine / Ultron" passes. Genuine breaks still reject.
+        # 2026-06-26 (streamer persona direction): the IDENTITY kind is the exception
+        # -- for the AI accusation Ultron OWNS being an AI ("yes, an AI, and the step
+        # past you"), so identity uses the RELAXED guard (allow_self_ai=True): "AI" is
+        # allowed, only "language model"/"assistant"/a refusal/scaffold-leak rejects.
+        _allow_ai = (kind == "identity")
+        if not out or is_meta_leak(out, allow_self_ai=_allow_ai):
             logger.debug("social LLM line empty/leak -> canned (kind=%s)", kind)
             return fallback if fallback_to_canned else None
         # Hard backstop on length (the user flagged a rambling "Reyna is flaming you"
@@ -7300,8 +7306,24 @@ def build_relay_line(
         if _u1_route:
             _rpool = _social_reaction_pool(command)
             if _rpool:
+                # A "shut up" / "be quiet" demand is a command to SILENCE Ultron --
+                # author it with the DEFIANCE behaviour (rebuke the demand) instead of
+                # the generic reaction one. The generic reaction prompt let the model
+                # latch onto the "silence" word that saturates the shutup exemplars and
+                # remark on the teammate being quiet ("Reyna's silence...") instead of
+                # refusing to be silenced. The curated shutup pool is still injected as
+                # style exemplars; only the SYSTEM behaviour changes. 2026-06-26.
+                _rkind = "reaction"
+                try:
+                    from kenning.audio._ultron_social import classify_social_reaction
+                    _rcat = (classify_social_reaction(getattr(command, "context", "") or "")
+                             or classify_social_reaction(getattr(command, "payload", "") or ""))
+                    if _rcat == "shutup":
+                        _rkind = "defiance"
+                except Exception:                                        # noqa: BLE001
+                    _rkind = "reaction"
                 return _social_llm_line(
-                    command, "reaction", tuple(_rpool),
+                    command, _rkind, tuple(_rpool),
                     max_chars=max_chars, llm=llm, generate_fn=generate_fn,
                     recent_lines=recent_lines,
                     context=(getattr(command, "context", "") or ""),
@@ -7917,6 +7939,31 @@ def resolve_relay_device(configured: Optional[str | int]) -> Optional[int]:
         return None
 
 
+def resolve_speaker_device() -> Optional[int]:
+    """Resolve the streamer's OWN-speaker output index, fail-open.
+
+    This is the device normal Ultron speech plays to: ``audio.output_device``
+    (the user's is the EMPTY string '' = SYSTEM DEFAULT output). ``resolve_device``
+    already maps an empty/None value to ``_default_device_index('output')``
+    (PortAudio's ``sd.default.device[1]``), so a single call covers both the
+    configured-name and the default-output case.
+
+    Returns:
+        The PortAudio output index for the streamer's speakers, or None when it
+        cannot be resolved (the caller logs + skips the speaker copy; the team
+        play + redeem are never affected).
+    """
+    try:
+        from kenning.audio.devices import resolve_device
+        from kenning.config import get_config
+
+        configured = getattr(get_config().audio, "output_device", None)
+        return resolve_device(configured, "output")
+    except Exception as e:  # noqa: BLE001 - fail-open
+        logger.warning("speaker output device could not be resolved: %s", e)
+        return None
+
+
 # --- TEAM-RELAY (Valorant) CONDITIONING -------------------------------------
 # Why: the SAME Kokoro PCM sounds great on the desktop speakers and the OBS
 # mirror but degraded through Valorant's team voice. A live VoiceMeeter Remote-
@@ -8079,6 +8126,7 @@ def play_to_device(
     stream_factory: Optional[Callable[..., object]] = None,
     cancel_event: "object | None" = None,
     chunk_ms: float = 100.0,
+    shape_for_team: bool = True,
 ) -> float:
     """Play mono PCM synchronously on a specific output device.
 
@@ -8094,6 +8142,13 @@ def play_to_device(
             stop" barge-in so a team relay can be cut off mid-sentence).
         chunk_ms: write granularity when ``cancel_event`` is given. ~100 ms
             keeps the cut latency low without underrunning the device.
+        shape_for_team: when True (default) the Valorant team-relay DSP
+            (``_shape_for_team``: RMS normalize + comfort noise + soft-clip,
+            tuned to survive Vivox's AGC) is applied on the live path. Pass
+            False for a FULL-BAND copy -- e.g. the streamer's own speakers,
+            which must hear the pristine clip, NOT the comms-conditioned one.
+            The native-rate resample still runs either way (it only removes
+            converter artifacts, it does not colour the signal).
 
     Returns:
         Seconds of audio actually written (0.0 for empty input; less than the
@@ -8149,8 +8204,11 @@ def play_to_device(
         # floor; this chain (rumble-HP -> RMS normalize -> comfort-noise floor ->
         # soft-clip) makes the synthetic signal survive Vivox's AGC + noise-
         # suppressor. Speaker / OBS feeds never reach here. Gated by
-        # KENNING_RELAY_TEAM_DSP; fail-open inside _shape_for_team.
-        f = _shape_for_team(f, out_rate)
+        # KENNING_RELAY_TEAM_DSP; fail-open inside _shape_for_team. Skipped for
+        # the streamer's own-speaker copy (shape_for_team=False) so they hear the
+        # pristine full-band clip, not the comms-conditioned team signal.
+        if shape_for_team:
+            f = _shape_for_team(f, out_rate)
 
     data = (np.clip(f, -1.0, 1.0) * 32767.0).astype(np.int16)
     # Widen mono -> stereo (centered) BEFORE opening the stream. VoiceMeeter

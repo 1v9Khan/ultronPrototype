@@ -48,6 +48,18 @@ def test_read_env_carries_auth_and_token_paths() -> None:
     assert read.env["KENNING_TWITCH_SUBSCRIBE_REDEEMS"] == "1"
 
 
+def test_read_env_subscribes_raids_when_raid_enabled() -> None:
+    # raid.enabled defaults ON => the read sidecar subscribes to channel.raid.
+    on = plan_sidecars(TwitchConfig(enabled=True), path_exists=lambda _p: False)[0]
+    assert on.env["KENNING_TWITCH_SUBSCRIBE_RAIDS"] == "1"
+    # raid.enabled OFF => no raid subscription (main runtime unchanged).
+    off = plan_sidecars(
+        TwitchConfig(enabled=True, raid={"enabled": False}),
+        path_exists=lambda _p: False,
+    )[0]
+    assert off.env["KENNING_TWITCH_SUBSCRIBE_RAIDS"] == "0"
+
+
 def test_guard_planned_only_when_path_present() -> None:
     cfg = TwitchConfig(
         enabled=True,

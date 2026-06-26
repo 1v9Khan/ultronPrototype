@@ -53,6 +53,20 @@
 > router now REGISTERS each redeemer's `uid→login` into the SE ledger so a StreamElements credit can resolve the
 > username.
 >
+> **`src/kenning/twitch/raid.py`** (2026-06-26) — **incoming-RAID handling**. When another channel RAIDS this one,
+> Ultron (1) VOCALLY announces it on the STREAM bus (`build_raid_line`: announce + raider name + viewer count, thank,
+> welcome, hope they stick around, "I am Ultron", how to chat — deterministic, no model in the path) via
+> `_twitch_speak_and_post` (chat-reply stream-bus speak + chat post, NEVER the team mic) and (2) auto-issues a Helix
+> `/shoutout`. `make_raid_drain_fn` is a THIRD own-cursor read-sidecar drain (never acks; returns `{"type":"raid"}`
+> events); `RaidHandler.tick` dedups per raid (idempotent — a replay never double-fires) and is FAIL-OPEN (an announce
+> error never blocks the shoutout; a shoutout error never raises/blocks the announce). Detection: the read sidecar's
+> NEW `channel.raid` subscription (`helix_eventsub.create_raid_subscription`, condition `to_broadcaster_user_id`) rides
+> the SAME isolated BROADCASTER-token session as redeems (`KENNING_TWITCH_SUBSCRIBE_RAIDS`, gated on `twitch.raid.enabled`);
+> the read sidecar maps it to `{"type":"raid","from_login","from_name","from_broadcaster_user_id","viewers":N}`. The
+> shoutout = write-sidecar `POST /shoutout` → `HelixClient.send_shoutout` (`POST /chat/shoutouts`,
+> `moderator:manage:shoutouts` scope, idempotent on the cooldown 429 / "already" body / local cache). Config:
+> `twitch.raid.{enabled,shoutout_enabled}` (both default True; flag-gated, default-unchanged when off).
+>
 > **`src/kenning/twitch/economy/chat_games.py`** — wired to the SE ledger (`register` uid→login on every command);
 > `overlay_emit` pushes a UNIFIED `chat_game` overlay card for slots / wheel / heist / duel / trivia / raffle;
 > NEW `!ultron` command (`_cmd_ultron`, `CommandKind.ULTRON`) so viewers can prompt Ultron from chat; `!points` /
@@ -100,6 +114,62 @@
 > `economy.defer_points_gamble_to_streamelements` / `economy.trivia_auto_interval_minutes` /
 > `economy.currency_name = "Credits"`; `twitch.redeem_speak.*`; `twitch.chat.commands_panel_*` /
 > `twitch.chat.talk_hint_*`.
+>
+> **TWITCH PANELS + CHAT-REPLY COOLDOWN + TEAM-SPEAK POLISH — orchestrator wiring pass (2026-06-26)**
+>
+> Four decoupled Twitch features wired into the orchestrator + siblings (all additive, config-flag-gated default-ON
+> for the streamer-facing ones; anticheat-clean — the GUIs are in-process tkinter, a click is an ordinary window
+> message, NOT input monitoring).
+>
+> **A — Moderation control panel + confirm popup.** `src/kenning/twitch/moderation_gui.py` (`ModerationControlPanel`
+> + `ModerationConfirmGUI`, built by other agents) is now WIRED. NEW `match_moderation_panel_command` (voice summon
+> "open/close the moderation panel"). Orchestrator: `_start_twitch_panels` constructs the panel
+> (`make_control_panel`, gated `twitch.moderation.control_panel_enabled`, default ON) with `on_command` →
+> `_twitch_panel_mod_command`, which maps a clicked action to the SAME write-sidecar path the voice path uses —
+> user actions (ban/timeout/unban/untimeout/delete_message) build a TEXT command (`_twitch_panel_mod_text`) and run
+> `ModerationRemote.prepare` → AUTO-`confirm` (a click IS the confirmation); channel modes (clear_chat / slow_mode /
+> followers_only [seconds carry MINUTES] / subscribers_only / emote_only / unique_chat) go through
+> `ModerationRemote.chat_settings`. The fuzzy-username CONFIRM popup is wired into BOTH the panel ambiguous path
+> (`_twitch_panel_surface_confirm`) AND the EXISTING voice-mod two-phase path (`_surface_voice_mod_confirm`, called
+> from `_maybe_handle_twitch_moderation` on an `ambiguous` prepare result); YES re-prepares against the chosen exact
+> login then confirms. `_maybe_handle_moderation_panel` is the voice show/hide handler. Config:
+> `twitch.moderation.control_panel_enabled` / `confirm_popup_enabled` (both default True).
+>
+> **B — Dev test panel.** `src/kenning/twitch/test_panel.py` (`TestPanel`, built by other agents) is now WIRED. NEW
+> `match_test_panel_command` (voice summon "show me the test panel"). Orchestrator: `_start_twitch_panels` constructs
+> it (`make_test_panel`, gated `twitch.test_panel_enabled`, default ON) with `on_test` → `_twitch_test_inject` →
+> `_twitch_test_dispatch`, which fires each live pipeline DIRECTLY with a SYNTHETIC event: speak_say →
+> `_twitch_speak_and_post`; speak_team → `frame_speak_line` + `_twitch_team_speak`; raid → `RaidHandler.inject`;
+> chat_* → a synthetic FLAT chat event ("!<cmd> ...") → `ChatGameRouter.inject`; redeem_* → a synthetic redeem dict →
+> `RedeemRouter.inject`; chat_reply → the chat-reply pipeline with "Ultron, <msg>"; commands_panel/talk_hint → the
+> existing posters. NEW **`inject(event)`** public seam on `ChatGameRouter` / `RedeemRouter` / `RaidHandler` — a
+> thread-safe per-router buffer drained ALONGSIDE the live drain on the next `tick()`, so a synthetic event flows
+> through the EXACT same parse/dedup/dispatch path as a real one (empty + byte-identical when unused).
+> `_maybe_handle_test_panel` is the voice show/hide handler.
+>
+> **C — Chat-reply per-user cooldown (2 min) + @-tags.** `src/kenning/twitch/pipeline.py` (`ChatReplyPipeline`) gains
+> `cooldown_seconds` + `chat_post_fn` + an injectable `clock`: the PRIMARY answered viewer is throttled
+> (default 120s); on cooldown Ultron does NOT speak — he POSTS "@<user> easy — I just answered you. Try again in
+> Ns." (no TTS) and ends the batch; off the throttle the spoken reply is @-tagged with a leading "@<user> " (the
+> specific viewer it answers, re-capped to the char limit, idempotent). Threaded through `integration.build_chat_mode_runtime`
+> (reads `twitch.chat.reply_cooldown_seconds`) → `service.ChatModeService` → the orchestrator's `ChatModeService(...)`
+> call (`chat_post_fn=_twitch_chat_post`). `src/kenning/twitch/panel.py` adds `cooldown_hint_suffix` /
+> `append_cooldown_hint` — the orchestrator appends "(2 minute cooldown)" (derived from the config) to the
+> talk-to-Ultron hint. Config: `twitch.chat.reply_cooldown_seconds = 120`.
+>
+> **D — Team-speak refinements.** `src/kenning/twitch/redeem_router.py` `frame_speak_line` (team variant) DROPPED the
+> "Relaying from chat." prefix; the "<viewer> says:" name prefix is now governed by a SAY-NAME runtime toggle
+> (`say_name_enabled` / `set_say_name_enabled`, default ON). `src/kenning/audio/stop_button.py` gains a violet
+> **SAY NAME** toggle row (mirrors HEAR CHAT) → orchestrator `_set_twitch_say_name_enabled` flips the redeem_router
+> flag; only wired when twitch is enabled (`StopButtonConfig.say_name_height/_label`). FIXED the GUI waveform not
+> animating during team-speak: `_twitch_team_speak` now drives `audio.waveform.submit(pcm, sr)` around playback (the
+> normal speak path's "speaking" signal it previously bypassed).
+>
+> Tests: `tests/twitch/test_panel_wiring.py` (NEW — matchers, on_command mapping, ambiguous-confirm, on_test
+> injection, summon handlers); `+` cases in `test_pipeline.py` / `test_runtime.py` (@-tag + cooldown),
+> `test_chat_send.py` (cooldown-hint helpers), `test_redeem_router_speak.py` (team framing), `test_redeem_router.py`
+> / `test_raid.py` (`inject`), `test_team_speak_audio_routing.py` (waveform), `test_stop_button.py` (SAY-NAME toggle).
+> A reboot is required to go live.
 >
 > **Validating HEAD: PERSONA LOCK (BR-P2) + TWITCH TOKEN AUTO-REFRESH (2026-06-23 `338040b`)**
 > Targeted: 12 new tests green (test_token_auto_refresh.py × 9, test_persona_lock.py × 3).

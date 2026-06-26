@@ -65,6 +65,8 @@ Live EventSub subscription (the real source only subscribes when creds are set):
       KENNING_TWITCH_BOT_TOKEN_PATH (default ~/.kenning/twitch_bot.json),
       KENNING_TWITCH_BROADCASTER_TOKEN_PATH (default ~/.kenning/twitch.json),
       KENNING_TWITCH_SUBSCRIBE_REDEEMS ("1"/"0", default "0"),
+      KENNING_TWITCH_SUBSCRIBE_RAIDS ("1"/"0", default "0"; channel.raid rides the
+        SAME isolated broadcaster-token session as redeems),
       KENNING_TWITCH_HELIX_BASE (default https://api.twitch.tv/helix).
 """
 from __future__ import annotations
@@ -184,6 +186,7 @@ class EventSubChatSource:
         bot_token_path: Optional[str] = None,
         broadcaster_token_path: Optional[str] = None,
         subscribe_redeems: Optional[bool] = None,
+        subscribe_raids: Optional[bool] = None,
         helix_base: Optional[str] = None,
         recv_timeout: float = 0.25,
     ) -> None:
@@ -220,6 +223,9 @@ class EventSubChatSource:
         if subscribe_redeems is None:
             subscribe_redeems = os.environ.get("KENNING_TWITCH_SUBSCRIBE_REDEEMS", "0") == "1"
         self._subscribe_redeems = bool(subscribe_redeems)
+        if subscribe_raids is None:
+            subscribe_raids = os.environ.get("KENNING_TWITCH_SUBSCRIBE_RAIDS", "0") == "1"
+        self._subscribe_raids = bool(subscribe_raids)
         self._helix_base = (
             helix_base
             if helix_base is not None
@@ -235,15 +241,21 @@ class EventSubChatSource:
         self._subscribed = False
         self._lock = threading.Lock()
 
-        # Redeems run on a SEPARATE EventSub session. Twitch REJECTS a websocket
-        # session whose subscriptions are created by DIFFERENT users (400
+        # Redeems + raids run on a SEPARATE EventSub session. Twitch REJECTS a
+        # websocket session whose subscriptions are created by DIFFERENT users (400
         # "subscriptions created by different users"): the chat sub uses the BOT
-        # token, but the redeem sub needs the BROADCASTER token. So a second,
-        # isolated connection carries ONLY the redeem subscription. Fully additive +
-        # fail-quiet -- a redeem-connection fault never touches the chat path.
+        # token, but the redeem AND raid subs both need the BROADCASTER token. So a
+        # second, isolated connection carries BOTH the redeem and raid
+        # subscriptions (same token -> one session is fine). Fully additive +
+        # fail-quiet -- a fault on this connection never touches the chat path.
         self._redeem_client: Any = None
         self._redeem_session: Any = None
         self._redeem_subscribed = False
+        # Raids ride the SAME isolated broadcaster-token session as redeems
+        # (channel.raid also subscribes with the broadcaster token, so co-locating
+        # avoids a third websocket AND avoids the cross-user 400). Tracked with its
+        # own flag so each can subscribe independently per session.
+        self._raid_subscribed = False
         self._redeem_url = self._url
 
     # ---- credentials ---------------------------------------------------- #
@@ -408,6 +420,7 @@ class EventSubChatSource:
                 self._redeem_client = client
             self._redeem_session = EventSubSession()
             self._redeem_subscribed = False
+            self._raid_subscribed = False
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("eventsub redeem connect failed: %s", exc)
@@ -423,6 +436,7 @@ class EventSubChatSource:
         self._redeem_client = None
         self._redeem_session = None
         self._redeem_subscribed = False
+        self._raid_subscribed = False
 
     def _subscribe_redeem_only(self, session_id: str) -> None:
         """Create ONLY the channel-points redeem subscription for ``session_id``,
@@ -451,10 +465,53 @@ class EventSubChatSource:
         else:
             logger.warning("eventsub redeem subscription create failed; will retry next poll")
 
+    def _subscribe_raid_only(self, session_id: str) -> None:
+        """Create ONLY the ``channel.raid`` subscription for ``session_id``, with
+        the BROADCASTER token (rides the SAME isolated session as the redeem sub --
+        both use the broadcaster token so there is no cross-user 400). The condition
+        binds the 'to' side (the channel being raided), which needs no special scope."""
+        if self._raid_subscribed or not session_id or not self._subscribe_enabled():
+            return
+        helix = self._ensure_helix()
+        if helix is None:
+            return
+        # Some injected/fakes implement only the chat/redeem subs; degrade gracefully.
+        create = getattr(helix, "create_raid_subscription", None)
+        if not callable(create):
+            logger.debug("eventsub raid subscribe skipped: helix has no create_raid_subscription")
+            return
+        broadcaster_token = self._load_token(self._broadcaster_token_path)
+        if not broadcaster_token:
+            logger.warning("eventsub raid subscribe skipped: no broadcaster access token")
+            return
+        broadcaster_id = helix.get_user_id(self._broadcaster_login, token=broadcaster_token)
+        if not broadcaster_id:
+            logger.warning("eventsub raid subscribe skipped: unresolved broadcaster id")
+            return
+        ok = create(
+            broadcaster_id=broadcaster_id,
+            session_id=session_id,
+            token=broadcaster_token,
+        )
+        if ok:
+            self._raid_subscribed = True
+            logger.info("eventsub raid subscription established for session=%s", session_id)
+        else:
+            logger.warning("eventsub raid subscription create failed; will retry next poll")
+
+    def _subscribe_broadcaster_session(self, session_id: str) -> None:
+        """Create whichever broadcaster-token subscriptions are enabled (redeems
+        and/or raids) for ``session_id``. Both ride one isolated session."""
+        if self._subscribe_redeems:
+            self._subscribe_redeem_only(session_id)
+        if self._subscribe_raids:
+            self._subscribe_raid_only(session_id)
+
     def _poll_redeems(self, out: list[dict]) -> None:
-        """Drain the redeem connection: connect, subscribe on welcome, and map any
-        redemption notifications into ``out``. Fully fail-quiet + isolated."""
-        if not self._subscribe_redeems or not self._subscribe_enabled():
+        """Drain the BROADCASTER-token connection: connect, subscribe on welcome,
+        and map any redemption / raid notifications into ``out``. Fully fail-quiet +
+        isolated. Named ``_poll_redeems`` for history; it now also carries raids."""
+        if not (self._subscribe_redeems or self._subscribe_raids) or not self._subscribe_enabled():
             return
         if not self._ensure_redeem_client():
             return
@@ -477,7 +534,7 @@ class EventSubChatSource:
                 if cls == "welcome":
                     sid = self._redeem_session.parse_welcome(msg)
                     if sid:
-                        self._subscribe_redeem_only(sid)
+                        self._subscribe_broadcaster_session(sid)
                 elif cls == "reconnect":
                     new_url = self._redeem_session.handle_reconnect(msg)
                     self._reset_redeem_client()
@@ -489,7 +546,7 @@ class EventSubChatSource:
                     self._reset_redeem_client()
                     break
                 elif cls == "notification":
-                    self._map_redeem(msg, out)
+                    self._map_broadcaster_notification(msg, out)
         except WebSocketClosed as exc:
             logger.info("eventsub redeem socket closed (%s); will reconnect", exc)
             self._reset_redeem_client()
@@ -604,9 +661,29 @@ class EventSubChatSource:
             self._map_redeem(msg, out)
             return
 
+        if sub_type == "channel.raid":
+            self._map_raid(msg, out)
+            return
+
         # Unknown/unhandled subscription type -> ignore (fail-safe).
         if sub_type:
             logger.debug("eventsub notification ignored sub_type=%s", sub_type)
+
+    def _map_broadcaster_notification(self, msg: dict, out: list[dict]) -> None:
+        """Dispatch a notification on the BROADCASTER-token session (redeems +
+        raids ride one session) by its subscription type. Fail-safe."""
+        sub_type = ""
+        meta = msg.get("metadata")
+        if isinstance(meta, dict):
+            st = meta.get("subscription_type")
+            if isinstance(st, str):
+                sub_type = st
+        if sub_type == "channel.raid":
+            self._map_raid(msg, out)
+            return
+        # Default (incl. the redemption-add type and an empty/legacy sub_type) ->
+        # redeem mapping, preserving the prior behaviour for the redeem session.
+        self._map_redeem(msg, out)
 
     def _map_redeem(self, msg: dict, out: list[dict]) -> None:
         """Map a redemption-add notification to a ``{"type":"redeem",...}`` dict.
@@ -636,6 +713,53 @@ class EventSubChatSource:
                 "status": self._coerce_str(event.get("status")),
             }
         )
+
+    def _map_raid(self, msg: dict, out: list[dict]) -> None:
+        """Map a ``channel.raid`` notification to a ``{"type":"raid",...}`` dict.
+
+        Parses defensively from ``payload.event`` (the channel.raid shape:
+        ``from_broadcaster_user_{id,login,name}`` + ``viewers``). Dedup is keyed on
+        a synthetic id (the raider id + viewer count) so an EventSub replay of the
+        same raid never re-fires; raids carry no native id. Independent LRU."""
+        event = self._locate_event(msg)
+        if not isinstance(event, dict):
+            return
+        from_id = self._coerce_str(event.get("from_broadcaster_user_id"))
+        from_login = self._coerce_str(event.get("from_broadcaster_user_login"))
+        from_name = self._coerce_str(event.get("from_broadcaster_user_name"))
+        try:
+            viewers = int(event.get("viewers") or 0)
+        except (TypeError, ValueError):
+            viewers = 0
+        # channel.raid has no native id -> synthesize a stable dedup key from the
+        # raider + viewer count (a single raid notifies once; a transport replay
+        # repeats the same triple).
+        dedup_key = f"{from_id}:{from_login}:{viewers}"
+        if self._raid_seen(dedup_key):
+            return
+        out.append(
+            {
+                "type": "raid",
+                "from_login": from_login,
+                "from_name": from_name,
+                "from_broadcaster_user_id": from_id,
+                "viewers": viewers,
+            }
+        )
+
+    # ---- raid dedup (lazily created; independent of the chat/redeem dedup) -- #
+    def _raid_seen(self, dedup_key: str) -> bool:
+        dedup = getattr(self, "_raid_dedup", None)
+        if dedup is None:
+            try:
+                from kenning.twitch.clients.eventsub import DedupLRU
+
+                dedup = DedupLRU()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("raid dedup unavailable: %s", exc)
+                return False
+            self._raid_dedup = dedup
+        return bool(dedup.seen(dedup_key))
 
     # ---- redeem dedup (lazily created; independent of the chat dedup) --- #
     def _redeem_seen(self, redemption_id: str) -> bool:

@@ -141,11 +141,28 @@ def test_frame_say_names_the_viewer() -> None:
     assert "says" in line.lower()
 
 
-def test_frame_team_marks_relay_from_chat() -> None:
+def test_frame_team_names_viewer_no_relay_prefix() -> None:
+    # 2026-06-26: the team variant DROPPED the leading "Relaying from chat."
+    # prefix; by default (SAY-NAME ON) it still names the viewer.
+    from kenning.twitch.redeem_router import set_say_name_enabled
+    set_say_name_enabled(True)
     line = frame_speak_line("bob", "you got this", to_team=True)
-    assert "chat" in line.lower()
+    assert "relaying from chat" not in line.lower()
     assert "bob" in line.lower()
+    assert "says" in line.lower()
     assert "you got this" in line
+
+
+def test_frame_team_say_name_off_speaks_bare_message() -> None:
+    # SAY-NAME OFF -> the team line is the bare message (no viewer prefix).
+    from kenning.twitch.redeem_router import set_say_name_enabled
+    try:
+        set_say_name_enabled(False)
+        line = frame_speak_line("bob", "you got this", to_team=True)
+        assert line == "you got this"
+        assert "bob" not in line.lower()
+    finally:
+        set_say_name_enabled(True)
 
 
 def test_frame_empty_body_returns_empty() -> None:

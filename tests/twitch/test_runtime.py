@@ -68,8 +68,9 @@ def test_tick_processes_and_speaks() -> None:
     rt, spoken = _runtime(drain=lambda: [Ev("nice clutch jett")])
     rt.enable()
     r = rt.tick()
-    assert r is not None and r.spoke == "Acknowledged."
-    assert spoken == ["Acknowledged."]
+    # @-tagged to the viewer it answers (2026-06-26).
+    assert r is not None and r.spoke == "@Bob Acknowledged."
+    assert spoken == ["@Bob Acknowledged."]
 
 
 def test_tick_empty_buffer_returns_none_stays_ready() -> None:
