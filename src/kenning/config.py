@@ -4257,7 +4257,7 @@ class TwitchEconomyConfig(_Strict):
     # N minutes with NO mod command (using the same tick()/epoch clock that accrues
     # watch-time earnings), so the stream always has a game running. 0 disables it;
     # a round is never auto-started while one is already active.
-    trivia_auto_interval_minutes: int = 5
+    trivia_auto_interval_minutes: int = 8
     # Multi-viewer state-machine games (gap-c next pass, 2026-06-24): each opens a
     # timed window over the chat drain, resolves provably-fairly, and applies
     # keyed-leg ledger idempotency so an EventSub replay never double-pays.

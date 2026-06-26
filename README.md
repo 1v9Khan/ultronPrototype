@@ -72,8 +72,8 @@ the anticheat-pinned main process never imports a network or automation library 
   (Llama-Guard-screened, length-capped, framed) — to the stream, or (pricier) onto the team voice bus.
 - 🖼️ **Unified OBS overlay** — chat games, redeem games, and speak-redeems all render through one polished
   bottom-left card renderer (spinning reels, wheel reveal, result cards), with a `?demo=1` preview mode.
-- 📋 **Chat helpers** — `!ultron` posts the command list on demand; an auto commands-panel every 15 min and a
-  "talk to Ultron" hint every 10 min, each linking a one-page viewer guide.
+- 📋 **Chat helpers** — `!ultron` posts the command list on demand; an auto commands-panel (15 min) and a
+  "talk to Ultron" hint (10 min) both link a one-page viewer guide, plus an auto-trivia round every 8 min.
 
 Built, unit-tested offline (full `tests/twitch` green), and live on-stream. Go-live runbook:
 [`docs/twitch_integration/FIRST_STREAM_CHECKLIST.md`](docs/twitch_integration/FIRST_STREAM_CHECKLIST.md).

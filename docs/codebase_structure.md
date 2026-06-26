@@ -57,8 +57,8 @@
 > `overlay_emit` pushes a UNIFIED `chat_game` overlay card for slots / wheel / heist / duel / trivia / raffle;
 > NEW `!ultron` command (`_cmd_ultron`, `CommandKind.ULTRON`) so viewers can prompt Ultron from chat; `!points` /
 > `!gamble` are DEFERRED to StreamElements when `defer_points_gamble_to_streamelements` is set (StreamElements owns
-> the balance/loyalty UX); **auto-trivia** fires every `trivia_auto_interval_minutes`; the leaderboard is now
-> multi-line; the spoken/printed currency is **"Credits"** (`currency_name`).
+> the balance/loyalty UX); **auto-trivia** fires every `trivia_auto_interval_minutes` (default 8); the leaderboard
+> posts as a SINGLE inline message (Twitch collapses a chat message to one line); currency is **"Credits"** (`currency_name`).
 >
 > **`src/kenning/twitch/overlay/server.py` + `overlay/static/overlay.html`** — the overlay was unified into ONE
 > polished bottom-left card. A single event schema with two `type`s — `chat_game` (game-result cards) and

@@ -399,13 +399,13 @@ class ChatGameRouter:
         if not top:
             self._reply(f"No one has any {self._currency()} yet. Start chatting!")
             return True
-        # Twitch chat is ONE line per message, so to get the stacked layout the
-        # streamer wants we post a short header then EACH rank as its own message
-        # ("1. name (count)", "2. ...", up to top 5). Each _reply is fail-safe, so a
-        # dead announce channel mid-list never breaks the tick.
-        self._reply("Top " + self._currency() + ":")
-        for i, (uid, bal) in enumerate(top):
-            self._reply(f"{i + 1}. {self._uid_to_login.get(uid, uid)} ({bal})")
+        # ONE message — Twitch collapses a chat message to a single line, so true
+        # line breaks aren't possible; ranks go inline, separated for readability.
+        parts = [
+            f"{i + 1}. {self._uid_to_login.get(uid, uid)} ({bal})"
+            for i, (uid, bal) in enumerate(top)
+        ]
+        self._reply("Top " + self._currency() + ": " + " · ".join(parts))
         return True
 
     def _cmd_help(self, cmd: Command) -> bool:
