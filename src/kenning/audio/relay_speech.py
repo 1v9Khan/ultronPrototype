@@ -1321,40 +1321,41 @@ def u1_llm_route_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# SNAP CARVE-OUT (2026-06-24): an ADDITIVE hybrid layer ON TOP of route-all. When
-# route-all is ON, a SHORT SINGLE TACTICAL snap callout (a plain literal relay --
-# "tell my team to rush B", "I'm lurking", "sova hit 85", "one back site", "I'm
-# rotating") + a bare "hello" is routed back to the DETERMINISTIC snap pool instead
-# of the LLM; everything else (strings/compounds, questions, ask-forms like "ask
-# Sage to heal me", social/identity/reported like "Jett is flaming you" / "Sage
-# called you a soundboard", conversational) still goes to the LLM. It is purely
-# additive: it just flips _u1_route OFF for the qualifying command so it reuses the
-# EXISTING deterministic path verbatim -- the full snap pool is untouched and fully
-# revertible (turn this OFF -> the current full-LLM behaviour; turn route-all OFF ->
-# the original full-deterministic behaviour). Toggled at runtime by the (planned)
-# stop-button "SNAPS" button + KENNING_U1_SNAP_CARVEOUT.
+# SNAP CARVE-OUT (2026-06-24; SCOPED TO HELLO + made LIVE 2026-06-27): an ADDITIVE
+# hybrid layer ON TOP of route-all. When route-all is ON, a bare "hello" directive is
+# routed back to the DETERMINISTIC snap pool instead of the LLM, so "say hello"
+# renders the deterministic "Hello." (bare team) / "Hello, <Agent>." (named) -- NOT
+# the LLM improvising ("team online"). EVERYTHING ELSE -- tactical callouts, payloads,
+# ask-forms ("ask Sage to heal me"), strung callouts, morale ("lock in"/"nice try"),
+# social/identity/reported ("Jett is flaming you") and conversational lines -- still
+# goes to the LLM. It is purely additive: it just flips _u1_route OFF for the hello
+# command so it reuses the EXISTING deterministic registry render -- the full snap pool
+# is untouched and fully revertible (turn this OFF -> the full-LLM behaviour incl.
+# LLM-authored greetings; turn route-all OFF -> the original full-deterministic
+# behaviour). Toggled at runtime by the (planned) stop-button "SNAPS" button +
+# KENNING_U1_SNAP_CARVEOUT.
 #
-# *** WIP / PAUSED 2026-06-24 -- DEFAULT OFF until the discriminator is fixed. ***
-# _is_carveout_snap below is TOO BROAD: no existing classifier cleanly separates the
-# user's "tactical -> deterministic" set from the "morale/social/ask-form -> LLM"
-# set. Empirically (relay_route_info): "rush B"->relay_llm, "lurking"->curated_command,
-# "flanking/sova hit 85/one back site/rotating"->snap, but ALSO "ask sage to heal
-# me"->snap, "lock in"->snap, "good job"->curated_command, and _is_morale_payload()
-# is False for all of them. So the carve-out currently (a) would leak ask-forms +
-# "lock in"/morale into the deterministic pool and (b) needs a purpose-built
-# tactical-callout recognizer. Until then the default is "0" so route-all behaviour
-# is UNCHANGED (full LLM) and the suite stays green. The infrastructure (flag, flip,
-# rephrase=False, hello="Hello.") is preserved + ready to resume.
-# Resume plan + empirical route table: docs/ultron_1_0/00_process_log/snap_carveout_WIP.md
+# *** INTENTIONAL + LIVE 2026-06-27 -- DEFAULT ON, SCOPED TO HELLO ONLY. ***
+# This is "our one deterministic call" (user direction 2026-06-27): the user said
+# "say hello" should literally say "Hello.", not the LLM's improvised "team online".
+# It is NO LONGER blocked on the general tactical-vs-social discriminator -- that
+# blocker is sidestepped entirely by scoping the carve-out to directive == "hello"
+# (a parse signal the registry already drives, not the leaky relay route). The earlier
+# broad tactical/payload/compound recognizer LEAKED ask-forms + morale into the
+# deterministic pool (no existing classifier cleanly separates tactical from
+# morale/social/ask-form) -- it has been removed; the carve-out now does ONE thing.
+# Default flipped to "1" so hello is deterministic by default + survives reboots.
+# History + the empirical route table: docs/ultron_1_0/00_process_log/snap_carveout_WIP.md
 _u1_snap_carveout_enabled: bool = _os_flavor.getenv(
-    "KENNING_U1_SNAP_CARVEOUT", "0").strip().lower() not in (
+    "KENNING_U1_SNAP_CARVEOUT", "1").strip().lower() not in (
     "0", "false", "no", "off", "")
 
 
 def set_snap_carveout_enabled(enabled: bool) -> None:
-    """Enable/disable the short-single-snap carve-out at runtime (WIP, default OFF
-    -- see the flag comment above). OFF = absolutely everything goes to the LLM (the
-    full route-all behaviour); ON = the (still-too-broad) hybrid snap carve-out."""
+    """Enable/disable the HELLO-ONLY carve-out at runtime (default ON, 2026-06-27).
+    OFF = absolutely everything (incl. a greeting) goes to the LLM (the full
+    route-all behaviour); ON = a bare "hello" renders the deterministic "Hello."
+    while everything else still routes through the LLM."""
     global _u1_snap_carveout_enabled
     _u1_snap_carveout_enabled = bool(enabled)
 
@@ -1364,40 +1365,17 @@ def snap_carveout_enabled() -> bool:
 
 
 def _is_carveout_snap(command: "RelayCommand") -> bool:
-    """True iff ``command`` is a SHORT SINGLE TACTICAL snap callout (or a bare
-    hello) that the carve-out should route to the deterministic pool instead of the
-    LLM. A plain literal relay: NOT authored/compose, NOT a reported/context form,
-    NOT verbatim/roast/fun_fact, directive only None or "hello" (social directives
-    like ask_day/calm/respond -> LLM), NOT a question, NOT a compound/string. Errs
-    CLOSED -- any uncertainty returns False (-> LLM), so a mis-parse never leaks a
-    conversational/social line into the deterministic pool."""
+    """True IFF ``command`` is a bare HELLO greeting (``directive == "hello"``) -- the
+    ONE deterministic call under route-all (user direction 2026-06-27). Hello routes
+    back to the deterministic registry render ("Hello." / "Hello, <Agent>.") instead
+    of the LLM. EVERYTHING else -- tactical callouts, payloads, ask-forms, strung
+    callouts, morale, social/identity/reported, conversational -- returns False and
+    stays on the LLM. (The earlier broad tactical/compound recognizer was removed
+    because no existing classifier cleanly separates tactical from morale/ask-form;
+    scoping to the hello directive sidesteps that blocker.) Errs CLOSED -- any
+    uncertainty returns False (-> LLM)."""
     try:
-        if getattr(command, "compose", False):
-            return False                          # Ultron-authored (encourage/social)
-        if getattr(command, "context", None):
-            return False                          # reported/"respond to X" form
-        if getattr(command, "verbatim", False):
-            return False                          # already deterministic, leave it
-        if getattr(command, "roast", False) or getattr(command, "fun_fact", False):
-            return False
-        directive = getattr(command, "directive", None)
-        if directive not in (None, "hello"):
-            return False                          # ask_day / calm / respond / ... -> LLM
-        payload = getattr(command, "payload", "") or ""
-        if directive == "hello":
-            return True                           # bare greeting -> "Hello."
-        if not payload.strip():
-            return False
-        if _is_question_payload(payload):
-            return False                          # "ask Sage if she has a heal" -> LLM
-        if len(_split_compound(payload)) >= 2:
-            return False                          # strung callouts (split markers) -> LLM
-        p_low = payload.lower()
-        if any(j in p_low for j in (" and ", " then ", " plus ", ",", ";")):
-            return False                          # conjunction/comma-joined string -> LLM
-        if len(payload.split()) > 6:
-            return False                          # too long -> conversational -> LLM
-        return True
+        return getattr(command, "directive", None) == "hello"
     except Exception:                                                # noqa: BLE001
         return False                              # fail CLOSED -> LLM
 
@@ -7182,16 +7160,17 @@ def build_relay_line(
     # LLM relay path instead of resolving deterministically.
     _u1_route = (u1_llm_route_enabled()
                  and not getattr(command, "verbatim", False))
-    # SNAP CARVE-OUT (2026-06-24, additive): a SHORT SINGLE tactical snap (+ a bare
-    # hello) under route-all is sent back to the DETERMINISTIC pool by flipping
-    # _u1_route OFF for JUST this command -- it then flows through the existing snap
-    # path below unchanged. Strings, questions, ask-forms, social/identity/reported
-    # and conversational lines fail _is_carveout_snap and stay on the LLM. Fully
-    # revertible: set_snap_carveout_enabled(False) -> the full-LLM behaviour.
-    # ALSO force rephrase=False: route-all passes rephrase=True, so a carve-out
-    # callout with no curated snap rule would otherwise fall to the GENERIC LLM
-    # rephrase -- the carve-out means the deterministic POOL (curated snap or literal
-    # relay), no LLM in the loop, which is the whole point ("fast snap callouts").
+    # SNAP CARVE-OUT (2026-06-24; HELLO-ONLY + LIVE 2026-06-27, additive): a bare
+    # "hello" under route-all is sent back to the DETERMINISTIC pool by flipping
+    # _u1_route OFF for JUST the hello command -- it then flows through the existing
+    # hello registry render below ("Hello." / "Hello, <Agent>."). This is "our one
+    # deterministic call": everything else -- tactical callouts, payloads, ask-forms,
+    # strings, morale, social/identity/reported, conversational -- fails
+    # _is_carveout_snap and stays on the LLM. Fully revertible:
+    # set_snap_carveout_enabled(False) -> the full-LLM behaviour (LLM-authored greeting).
+    # ALSO force rephrase=False: route-all passes rephrase=True, so the hello command
+    # would otherwise fall to the GENERIC LLM rephrase -- the carve-out means the
+    # deterministic render, no LLM in the loop, which is the whole point.
     if _u1_route and snap_carveout_enabled() and _is_carveout_snap(command):
         _u1_route = False
         rephrase = False

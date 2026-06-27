@@ -10381,7 +10381,7 @@
 },
 "_u1_snap_carveout_enabled": {
 "kind": "bool",
-"value": false
+"value": true
 }
 },
 "kenning.audio.voice_lines": {

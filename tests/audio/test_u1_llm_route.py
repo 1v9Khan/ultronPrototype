@@ -18,12 +18,19 @@ def _reset_flags():
     route0 = rs.u1_llm_route_enabled()
     co0, cv0 = rs.callout_verbosity(), rs.conversation_verbosity()
     ft0 = rs.flavor_tails_enabled()
+    carve0 = rs.snap_carveout_enabled()
     rs.set_flavor_tails_enabled(True)
+    # The HELLO-ONLY carve-out (default ON, 2026-06-27) intercepts "say hello" under
+    # route-all. These wiring tests assert the LLM-relay PROMPT/route, not the hello
+    # render, so pin the carve-out OFF here -- the hello-specific cases that exercise
+    # the carve-out set it explicitly. (Restored after each test.)
+    rs.set_snap_carveout_enabled(False)
     yield
     rs.set_u1_llm_route_enabled(route0)
     rs.set_callout_verbosity(co0)
     rs.set_conversation_verbosity(cv0)
     rs.set_flavor_tails_enabled(ft0)
+    rs.set_snap_carveout_enabled(carve0)
 
 
 def test_flag_defaults_and_setters():
@@ -418,24 +425,42 @@ def test_route_off_keeps_identity_social_deterministic(text):
     assert line and line.strip()
 
 
-# --- route-ALL extends to the hello / ask_day greeting directives (2026-06-23):
-# these predated route-all (21f3c7e) and the route-all retrofit (fc1f23a/c165ca3)
-# gated greet/farewell/reaction but MISSED hello + ask_day -- so "say hello"
-# snapped a hardcoded "Hello team." even under route-all. Now LLM-authored. ---
+# --- route-ALL extends to the ask_day greeting directive (2026-06-23): it predated
+# route-all (21f3c7e) and the route-all retrofit (fc1f23a/c165ca3) gated
+# greet/farewell/reaction but MISSED ask_day -- now LLM-authored. HELLO is the
+# exception: the HELLO-ONLY carve-out (2026-06-27) routes it deterministically when
+# the carve-out is ON (the app default); when the carve-out is OFF it too is
+# LLM-authored. The autouse fixture pins the carve-out OFF, so these ask_day cases see
+# the full-LLM route; the hello cases below set the carve-out explicitly. ---
 
 
 @pytest.mark.parametrize("text", [
-    "say hello",
-    "say hello to my team",
-    "say hi to Jett",
     "ask my team how their day is going",
     "ask everyone how their day is going",
 ])
-def test_route_all_sends_hello_askday_to_llm(text):
+def test_route_all_sends_askday_to_llm(text):
     tag, line = _capture_route(text, route=True)
     assert tag == "LLM", text
-    # the LLM authored it -> NOT the hardcoded deterministic greeting
-    assert line.strip() != "Hello team."
+
+
+def test_route_all_hello_carveout_on_is_deterministic():
+    # HELLO-ONLY carve-out ON (the app default, 2026-06-27): "say hello" is "our one
+    # deterministic call" -> deterministic "Hello.", NO LLM.
+    rs.set_snap_carveout_enabled(True)
+    for text in ("say hello", "say hello to my team"):
+        tag, line = _capture_route(text, route=True)
+        assert tag == "DET", text
+        assert line.strip().lower() == "hello.", f"{text!r} -> {line!r}"
+
+
+def test_route_all_hello_carveout_off_goes_to_llm():
+    # Carve-out OFF (stop-button full-LLM mode): hello too is LLM-authored under
+    # route-all -- NOT the hardcoded deterministic greeting.
+    rs.set_snap_carveout_enabled(False)
+    for text in ("say hello", "say hello to my team", "say hi to Jett"):
+        tag, line = _capture_route(text, route=True)
+        assert tag == "LLM", text
+        assert line.strip() != "Hello team."
 
 
 @pytest.mark.parametrize("text", [
