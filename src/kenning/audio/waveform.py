@@ -105,6 +105,53 @@ def analyze_clip(pcm: np.ndarray, sr: int, *, fps: int, n_bands: int) -> List[Fr
         return []
 
 
+# ---------------------------------------------------------------------------
+# Valorant-red "Ultron machine" palette -- the cold angular #ff4655 tech look
+# the rest of the on-stream overlay uses. The waveform + HAL eye are tuned to
+# THESE so the visualizer reads as one cohesive red machine.
+# ---------------------------------------------------------------------------
+VALORANT_RED = (255, 70, 85)        # #ff4655 -- the signature accent
+EYE_IRIS_IDLE = (46, 6, 10)         # dim, dark blood-red -- the eye at rest
+EYE_IRIS_HOT = (255, 60, 70)        # lit iris when speaking
+EYE_CORE_IDLE = (90, 14, 18)        # dull ember at the pupil when idle
+EYE_CORE_HOT = (255, 248, 244)      # white-yellow-hot pinpoint when speaking
+EYE_BEZEL = (118, 124, 132)         # brushed-chrome housing ring
+EYE_BEZEL_HI = (196, 202, 210)      # chrome highlight glint
+EYE_LENS = (8, 4, 6)                # near-black lens recess
+
+
+def _eye_appearance(level: float) -> dict:
+    """Pure, display-free model of the HAL-9000 eye at a given speech ``level``
+    (0 = idle/quiet .. 1 = full speech). Returns the colours + glow scalars the
+    renderer paints, so the idle-vs-speaking look can be unit-tested with no Tk.
+
+    Idle  -> a low, dark-red ember (dim lens glow, dull pupil).
+    Speak -> the iris lights up red and the pupil flashes white-hot, with the
+             halo bloom intensity rising with ``level`` (amplitude-driven).
+    """
+    level = 0.0 if level < 0 else 1.0 if level > 1 else float(level)
+    # Iris brightens from dim blood-red toward a lit red as he speaks; a touch
+    # of ease so quiet speech already clearly lifts it off the idle floor.
+    iris_t = level ** 0.8
+    iris = _lerp_rgb(EYE_IRIS_IDLE, EYE_IRIS_HOT, iris_t)
+    # Pupil: dull ember at rest, ramps to a white-hot pinpoint once he's loud.
+    core_t = level ** 1.5
+    core = _lerp_rgb(EYE_CORE_IDLE, EYE_CORE_HOT, core_t)
+    # Halo bloom: barely-there at idle, swells with amplitude. Drives both the
+    # number of visible glow rings' alpha-feel (via colour) and their radius.
+    glow = 0.10 + 0.90 * level
+    # Pupil radius (fraction of the eye radius): a small hot dot that grows as
+    # the centre flares.
+    pupil_frac = 0.12 + 0.16 * level
+    return {
+        "iris": iris,
+        "core": core,
+        "glow": glow,
+        "pupil_frac": pupil_frac,
+        "level": level,
+    }
+
+
 def _lerp_color(c0: Tuple[int, int, int], c1: Tuple[int, int, int], t: float) -> str:
     t = 0.0 if t < 0 else 1.0 if t > 1 else t
     r = int(c0[0] + (c1[0] - c0[0]) * t)
@@ -585,13 +632,23 @@ class _RenderState:
         self.size = size
         self.plate_h = plate_h
         self.bars = bars
-        self.accent_rgb = _hex_to_rgb(accent)
-        self.tip_rgb = (255, 240, 240)
+        # The visualizer reads as the Valorant-red "Ultron machine": the bars +
+        # rings ride from the dark accent toward a hot red-white. We honour a
+        # custom accent from config but, if it's still the legacy Kenning
+        # crimson, snap it to the #ff4655 signature so the default look matches
+        # the rest of the on-stream overlay.
+        acc = _hex_to_rgb(accent)
+        if acc == (0xE5, 0x48, 0x4D):     # legacy default -> the new red
+            acc = VALORANT_RED
+        self.accent_rgb = acc
+        # Bar tips flash a hot red-white (not pure white) so peaks stay inside
+        # the red machine aesthetic instead of going icy/neon-blue-white.
+        self.tip_rgb = (255, 196, 200)
         self.bg = bg
         # The radial art fades toward this DARK base (not the canvas bg) so a
         # chroma-key background (e.g. neon green) never bleeds into the glow as
         # an un-keyable olive mid-tone. Only the empty canvas bg is the key.
-        self.art_base = (18, 8, 12)
+        self.art_base = (16, 6, 10)
         self.cx = size / 2.0
         self.cy = size / 2.0
         self.r0 = size * 0.20          # inner ring radius
@@ -617,7 +674,22 @@ class _RenderState:
         self.glow_items: list = []
         self.bar_outline_items: list = []   # black underlay -> crisp bar edges
         self.bar_items: list = []
-        self.core = None
+        # ---- HAL-9000 eye (the centre "core") ----
+        # A glowing red lens set in a brushed-chrome ring: outer halos that
+        # bloom with amplitude, a chrome bezel, a black lens recess, the red
+        # iris, fine radial "mechanical" lines from the centre, and a white-hot
+        # pupil pinpoint. DIM dark-red at idle; lights up + flares hot when he
+        # speaks (glow scales with the live audio level). All on the SAME
+        # tkinter Canvas -- no new deps.
+        self.eye_halo_items: list = []      # soft red bloom rings (behind)
+        self.eye_bezel = None               # brushed-chrome housing ring
+        self.eye_bezel_hi = None            # chrome highlight arc
+        self.eye_lens = None                # black lens recess
+        self.eye_iris = None                # the red iris disc
+        self.eye_ray_items: list = []       # fine radial lines from centre
+        self.eye_pupil = None               # white-hot centre pinpoint
+        self.eye_rays = 28                  # radial-line count
+        self.core = None                    # legacy alias (kept = eye_iris)
         # Nameplate (ULTRON): a dark plate (contrast over gameplay) with a REAL
         # Gaussian-blurred neon glow -- a bright tube core + soft, rounded halo
         # in the SAME red the glyphs light up to -- pre-rendered with PIL at N
@@ -661,9 +733,33 @@ class _RenderState:
             self.bar_items.append(
                 c.create_line(0, 0, 0, 0, fill=self.bg, width=3,
                               capstyle="round"))
-        # Pulsing core (thin black rim so it pops off the game behind it).
-        self.core = c.create_oval(0, 0, 0, 0, fill=self.bg,
-                                  outline="#000000", width=2)
+        # ---- HAL-9000 eye, built outward-in so the bright centre lands on top.
+        # Soft red bloom halos (behind the bezel) -- expand + brighten with
+        # speech amplitude.
+        for _ in range(4):
+            self.eye_halo_items.append(
+                c.create_oval(0, 0, 0, 0, outline="", fill=self.bg))
+        # Brushed-chrome housing ring + a highlight arc for the metal glint.
+        self.eye_bezel = c.create_oval(
+            0, 0, 0, 0, outline=_rgb_to_hex(EYE_BEZEL), width=2, fill="#000000")
+        self.eye_bezel_hi = c.create_arc(
+            0, 0, 0, 0, start=58, extent=86, style="arc",
+            outline=_rgb_to_hex(EYE_BEZEL_HI), width=2)
+        # Black lens recess the red iris sits inside.
+        self.eye_lens = c.create_oval(
+            0, 0, 0, 0, outline="#000000", width=1, fill=_rgb_to_hex(EYE_LENS))
+        # The red iris disc (dim idle -> lit when speaking).
+        self.eye_iris = c.create_oval(
+            0, 0, 0, 0, outline="", fill=_rgb_to_hex(EYE_IRIS_IDLE))
+        self.core = self.eye_iris           # legacy alias
+        # Fine radial "mechanical eye" lines fanning out from the centre.
+        for _ in range(self.eye_rays):
+            self.eye_ray_items.append(
+                c.create_line(0, 0, 0, 0, fill=_rgb_to_hex(EYE_IRIS_IDLE),
+                              width=1))
+        # White-hot pupil pinpoint (the bright HAL centre).
+        self.eye_pupil = c.create_oval(
+            0, 0, 0, 0, outline="", fill=_rgb_to_hex(EYE_CORE_IDLE))
         # ---- Nameplate ----
         if self.plate_h > 0 and self.text:
             try:
@@ -758,14 +854,58 @@ class _RenderState:
             c.itemconfigure(self.bar_outline_items[i], width=ow)
             c.coords(self.bar_items[i], x0, y0, x1, y1)
             c.itemconfigure(self.bar_items[i], fill=col, width=bw)
-        # Pulsing core: snappier swell + a hotter centre that flashes toward
-        # white as he speaks (the "arc reactor" pulse).
-        cr = r0 * (0.60 + 0.58 * level)
-        core_rgb = _lerp_rgb((40, 12, 16), accent, 0.30 + 0.70 * level)
-        if level > 0.55:
-            core_rgb = _lerp_rgb(core_rgb, (255, 236, 238), (level - 0.55) * 0.8)
-        c.coords(self.core, cx - cr, cy - cr, cx + cr, cy + cr)
-        c.itemconfigure(self.core, fill=_rgb_to_hex(core_rgb))
+        # ---- HAL-9000 eye: dim red lens at idle, lit + white-hot when speaking.
+        # The eye sits inside the bar ring (radius r0) and is the focal point.
+        eye = _eye_appearance(level)
+        glow = eye["glow"]
+        # The whole eye breathes a little so it's alive at rest, and dilates
+        # slightly as he speaks (a touch of life, not a big pulse).
+        er = r0 * (0.92 + 0.10 * level)
+        # Soft red bloom halos behind the bezel -- expand + brighten with level
+        # so the eye visibly GLOWS outward only while he talks.
+        nhalo = len(self.eye_halo_items)
+        for k, item in enumerate(self.eye_halo_items):
+            spread = 1.0 + (0.20 + 0.85 * glow) * (k + 1) / nhalo
+            hr = er * spread
+            # Outer halos are fainter; all fade toward the dark art_base at idle
+            # (no olive bleed on a green key) and toward lit red as he speaks.
+            halo_t = glow * (1.0 - 0.62 * k / max(1, nhalo - 1))
+            hcol = _lerp_rgb(self.art_base, EYE_IRIS_HOT, max(0.0, halo_t))
+            c.coords(item, cx - hr, cy - hr, cx + hr, cy + hr)
+            c.itemconfigure(item, fill=_rgb_to_hex(hcol))
+        # Brushed-chrome bezel ring + highlight glint (the housing).
+        c.coords(self.eye_bezel, cx - er, cy - er, cx + er, cy + er)
+        bez = _lerp_rgb(EYE_BEZEL, EYE_BEZEL_HI, 0.25 + 0.4 * level)
+        c.itemconfigure(self.eye_bezel, outline=_rgb_to_hex(bez),
+                        width=max(2, int(self.size * (0.010 + 0.004 * level))))
+        hi = er * 0.995
+        c.coords(self.eye_bezel_hi, cx - hi, cy - hi, cx + hi, cy + hi)
+        # Black lens recess.
+        lr = er * 0.86
+        c.coords(self.eye_lens, cx - lr, cy - lr, cx + lr, cy + lr)
+        # Red iris -- the glowing lens. Dim dark-red idle -> lit red speaking.
+        ir = er * 0.80
+        c.coords(self.eye_iris, cx - ir, cy - ir, cx + ir, cy + ir)
+        c.itemconfigure(self.eye_iris, fill=_rgb_to_hex(eye["iris"]))
+        # Fine radial "mechanical eye" lines from a white-hot centre outward.
+        # They light up from the dim iris toward bright red as he speaks and
+        # creep with the ring spin so the eye feels mechanical/alive.
+        ray_rgb = _lerp_rgb(eye["iris"], EYE_IRIS_HOT, 0.4 + 0.6 * level)
+        ray_col = _rgb_to_hex(ray_rgb)
+        ray_in = ir * (0.30 + 0.10 * level)
+        ray_out = ir * 0.97
+        nr = len(self.eye_ray_items)
+        for k, item in enumerate(self.eye_ray_items):
+            ra = self.spin * 0.5 + (2.0 * math.pi * k / max(1, nr))
+            rca, rsa = math.cos(ra), math.sin(ra)
+            c.coords(item,
+                     cx + rca * ray_in, cy + rsa * ray_in,
+                     cx + rca * ray_out, cy + rsa * ray_out)
+            c.itemconfigure(item, fill=ray_col)
+        # White-hot pupil pinpoint: dull ember idle -> bright white-hot flare.
+        pr = ir * eye["pupil_frac"]
+        c.coords(self.eye_pupil, cx - pr, cy - pr, cx + pr, cy + pr)
+        c.itemconfigure(self.eye_pupil, fill=_rgb_to_hex(eye["core"]))
         # Glow rings expand with level. Fade from the DARK art_base (not the
         # chroma bg) -> accent, so on a green key background the rings never go
         # olive (un-keyable); only the empty canvas stays pure green.

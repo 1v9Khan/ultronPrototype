@@ -97,9 +97,14 @@
   /* Anchored to the LOWER-LEFT quarter. Cards stack UPWARD (column-reverse) so
      the newest sits at the bottom and older ones rise + fade. pointer-events
      none so it never eats OBS interactions. */
+  /* The container width SETS the generic result-card (heist/duel/raffle/trivia +
+     speech) footprint. It is the heist baseline scaled +15% (360 -> 414), so the
+     whole generic result family reads ~15% bigger as a matched set. The compact
+     wheel card overrides its own (much smaller) width; slots gets an explicit
+     matching 414px so slots == heist footprint. */
   #chat-games {
     position: fixed; left: 24px; bottom: 24px;
-    width: 360px; max-width: 32vw;
+    width: 180px; max-width: 22vw;
     display: flex; flex-direction: column-reverse; gap: 10px;
     pointer-events: none; z-index: 50;
     font-family: "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
@@ -113,9 +118,9 @@
     border: 1px solid var(--hairline);
     border-radius: 10px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55), 0 1px 0 rgba(255,255,255,0.04) inset;
-    padding: 12px 14px 12px 16px;
+    padding: 8px 10px 8px 12px;
     /* sharp angular Valorant cut on the top-right corner */
-    clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+    clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%);
     color: var(--ink);
     transform: translateX(-118%);
     opacity: 0;
@@ -135,55 +140,64 @@
   .cg-card.cg-win::before  { background: var(--win);  box-shadow: 0 0 14px var(--win); }
   .cg-card.cg-loss::before { background: var(--loss); box-shadow: 0 0 14px var(--loss); }
 
+  /* Generic result-card content, scaled +15% as a matched set (heist baseline). */
+  /* All cards share the COMPACT wheel footprint: a small 9px header, a horizontal
+     body (graphic LEFT / text RIGHT), and a tiny amount column — so heist/duel/
+     raffle/trivia/slots/speech all read as one uniform set with .cg-card-wheel. */
   .cg-head {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase;
+    display: flex; align-items: center; gap: 5px;
+    font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
     color: var(--ink-dim); font-weight: 700;
   }
   .cg-badge {
     display: inline-flex; align-items: center; justify-content: center;
-    min-width: 20px; height: 20px; padding: 0 5px;
+    min-width: 14px; height: 14px; padding: 0 3px;
     border-radius: 4px; background: rgba(255, 70, 85, 0.16);
     border: 1px solid rgba(255, 70, 85, 0.45);
-    color: var(--val-red); font-size: 13px; line-height: 1;
+    color: var(--val-red); font-size: 10px; line-height: 1;
   }
-  .cg-game { color: var(--ink); letter-spacing: 2px; }
+  .cg-game { color: var(--ink); letter-spacing: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .cg-tag {
-    margin-left: auto; font-size: 10px; letter-spacing: 1px;
-    color: var(--ink-dim); opacity: 0.7;
+    margin-left: auto; font-size: 8px; letter-spacing: 0.5px;
+    color: var(--ink-dim); opacity: 0.7; flex: none;
   }
 
-  .cg-body { margin-top: 9px; display: flex; align-items: center; gap: 12px; }
+  .cg-body { margin-top: 6px; display: flex; flex-direction: row;
+    align-items: center; gap: 10px; }
   .cg-main { min-width: 0; flex: 1; }
   .cg-viewer {
-    font-size: 16px; font-weight: 800; color: var(--ink);
+    font-size: 12px; font-weight: 800; color: var(--ink);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     letter-spacing: 0.2px;
   }
   .cg-outcome {
-    margin-top: 2px; font-size: 13px; color: var(--ink-dim);
+    margin-top: 1px; font-size: 10px; color: var(--ink-dim);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .cg-amount {
-    flex: none; text-align: right; font-weight: 800; font-size: 19px;
+    flex: none; text-align: right; font-weight: 800; font-size: 15px;
     line-height: 1; letter-spacing: 0.3px;
     font-variant-numeric: tabular-nums; color: var(--win);
   }
   .cg-card.cg-loss .cg-amount { color: var(--loss); }
-  .cg-amount .cg-amt-unit { display: block; font-size: 9px; font-weight: 600;
-    letter-spacing: 1px; color: var(--ink-dim); margin-top: 3px; text-transform: uppercase; }
+  .cg-amount .cg-amt-unit { display: block; font-size: 7px; font-weight: 600;
+    letter-spacing: 0.5px; color: var(--ink-dim); margin-top: 2px; text-transform: uppercase; }
 
-  /* --- slots reels: BIG reels that spin ~3s then LAND on the real symbols --- */
-  /* A wide slots card so the three reels read clearly on stream. The slots card
-     is given the .cg-card-slots modifier which widens it + stacks the reels above
-     the viewer/amount line. */
-  .cg-card.cg-card-slots { width: 420px; max-width: 40vw; }
-  .cg-card-slots .cg-body { flex-direction: column; align-items: stretch; gap: 12px; }
-  .cg-reels { display: flex; gap: 12px; justify-content: center; }
+  /* --- slots reels: compact reels that spin ~3s then LAND on the real symbols --- */
+  /* The slots card matches the HEIST/result-card footprint (same 414px width =
+     heist baseline +15%), with small reels stacked above the viewer/amount line so
+     slots + heist read as a matched set. NOTE: .cg-reel / .cg-reel-cell height MUST
+     equal REEL_CELL_PX in the script (the strip slides by N*cell-height to land). */
+  /* Slots now matches the COMPACT wheel footprint: small reels sit on the LEFT,
+     the viewer/outcome + amount text on the RIGHT (horizontal, like the wheel). */
+  .cg-card.cg-card-slots { width: 180px; max-width: 22vw; }
+  .cg-card-slots .cg-body { flex-direction: row; align-items: center; gap: 10px; }
+  .cg-reels { display: flex; gap: 3px; justify-content: center; flex: none; }
   .cg-reel {
-    width: 96px; height: 116px; border-radius: 12px;
+    width: 18px; height: 24px; border-radius: 4px;
     background: radial-gradient(120% 120% at 50% 0%, rgba(40,46,82,0.6) 0%, rgba(0,0,0,0.5) 100%);
-    border: 2px solid var(--hairline);
+    border: 1px solid var(--hairline);
     overflow: hidden; position: relative;
     box-shadow: 0 4px 14px rgba(0,0,0,0.5) inset, 0 1px 0 rgba(255,255,255,0.05);
   }
@@ -202,84 +216,74 @@
     transition: transform var(--reel-ms, 3000ms) cubic-bezier(0.12, 0.62, 0.12, 1);
   }
   .cg-reel-cell {
-    width: 96px; height: 116px; display: flex; align-items: center;
-    justify-content: center; font-size: 64px; line-height: 1;
+    width: 18px; height: 24px; display: flex; align-items: center;
+    justify-content: center; font-size: 13px; line-height: 1;
   }
   .cg-card.cg-win .cg-reel { border-color: rgba(67, 224, 160, 0.65);
     box-shadow: 0 0 18px rgba(67,224,160,0.35), 0 4px 14px rgba(0,0,0,0.5) inset; }
 
   /* ====================================================================== */
-  /* BIG SPINNING WHEEL CARD — dominant, readable wheel that spins ~3s then  */
-  /* decelerates + LANDS on the outcome wedge; the earned amount is revealed */
-  /* ON the landed wedge under the pointer.                                  */
+  /* COMPACT SPINNING WHEEL CARD — tiny (~180x90) HORIZONTAL card: a small    */
+  /* spinning disc on the LEFT (still spins ~3s, decelerates + LANDS on the   */
+  /* real outcome wedge), and a TEXT column on the RIGHT that reveals the     */
+  /* 'WHEEL' title, the earned amount (+N Credits), and viewer · outcome      */
+  /* after the disc lands. At this size per-wedge labels won't fit, so the    */
+  /* disc is a plain colored conic wheel + top pointer only.                  */
   /* ====================================================================== */
-  .cg-card.cg-card-wheel { width: 440px; max-width: 46vw; }
-  .cg-card-wheel .cg-body { flex-direction: column; align-items: center; gap: 10px; }
+  .cg-card.cg-card-wheel { width: 180px; max-width: 22vw; padding: 8px 10px 8px 12px; }
+  .cg-card-wheel .cg-head { font-size: 9px; letter-spacing: 1px; }
+  .cg-card-wheel .cg-head .cg-badge { min-width: 14px; height: 14px; font-size: 10px; padding: 0 3px; }
+  /* HORIZONTAL relayout: small disc LEFT, text column RIGHT. */
+  .cg-card-wheel .cg-body { flex-direction: row; align-items: center; gap: 10px; margin-top: 6px; }
 
-  /* The wheel stage: a big square holding the rotating disc + a fixed pointer + a
-     fixed center hub. The disc rotates; the pointer/hub/amount stay put. */
+  /* The wheel stage: a SMALL square holding the rotating disc + a fixed top
+     pointer. The disc rotates; the pointer stays put. No hub/labels at this size. */
   .cg-bigwheel {
-    position: relative; width: 300px; height: 300px; margin: 4px auto 2px;
+    position: relative; flex: none; width: 56px; height: 56px;
   }
   .cg-bigwheel-disc {
     position: absolute; inset: 0; border-radius: 50%;
-    border: 5px solid rgba(120,140,255,0.45);
-    box-shadow: 0 0 36px rgba(80,100,255,0.4), 0 0 0 3px rgba(0,0,0,0.5) inset;
+    border: 3px solid rgba(120,140,255,0.45);
+    box-shadow: 0 0 14px rgba(80,100,255,0.4), 0 0 0 2px rgba(0,0,0,0.5) inset;
     /* conic-gradient wedges are painted in JS via setProperty('background', ...)
        so the slice count matches the live segment list; transform spins it. */
     transform: rotate(0deg);
-    /* ~3s decelerating spin; duration set per-spin via --bigwheel-ms. */
-    transition: transform var(--bigwheel-ms, 3000ms) cubic-bezier(0.10, 0.55, 0.10, 1);
-  }
-  /* per-wedge labels are absolutely positioned children of the disc (so they spin
-     WITH it); each is rotated to its wedge center + pushed to the rim. */
-  .cg-bigwheel-seg {
-    position: absolute; top: 50%; left: 50%; width: 50%; height: 22px;
-    margin-top: -11px; transform-origin: 0 50%;
-    display: flex; align-items: center; justify-content: flex-end;
-    padding-right: 16px; box-sizing: border-box;
-    font-size: 14px; font-weight: 800; letter-spacing: 0.3px; color: #fff;
-    text-shadow: 0 1px 4px rgba(0,0,0,0.85); white-space: nowrap;
-    pointer-events: none;
+    /* ~3s decelerating spin; duration set per-spin via --bigwheel-ms. Easing keeps
+       the wheel VISIBLY spinning the whole ~3s, decelerating to the land. */
+    transition: transform var(--bigwheel-ms, 3000ms) cubic-bezier(0.16, 0.42, 0.34, 1);
   }
   /* fixed pointer at the TOP (12 o'clock) — the wedge under it is the winner. */
   .cg-bigwheel-pointer {
-    position: absolute; top: -10px; left: 50%; margin-left: -15px; z-index: 3;
+    position: absolute; top: -5px; left: 50%; margin-left: -6px; z-index: 3;
     width: 0; height: 0;
-    border-left: 15px solid transparent; border-right: 15px solid transparent;
-    border-top: 26px solid #ffd166;
-    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.7));
+    border-left: 6px solid transparent; border-right: 6px solid transparent;
+    border-top: 11px solid #ffd166;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.7));
   }
-  /* fixed center hub that the landed amount is revealed inside. */
-  .cg-bigwheel-hub {
-    position: absolute; top: 50%; left: 50%; z-index: 4;
-    width: 110px; height: 110px; margin: -55px 0 0 -55px; border-radius: 50%;
-    background: radial-gradient(circle at 50% 38%, rgba(28,32,58,0.96), rgba(10,12,24,0.96));
-    border: 3px solid rgba(120,140,255,0.5);
-    box-shadow: 0 6px 20px rgba(0,0,0,0.6);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  /* RIGHT text column: title (small), amount (revealed on land), viewer · outcome. */
+  .cg-bigwheel-text {
+    min-width: 0; flex: 1;
+    display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  }
+  .cg-bigwheel-amount {
+    font-size: 20px; font-weight: 900; line-height: 1.05; letter-spacing: 0.3px;
+    font-variant-numeric: tabular-nums; color: var(--win);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     opacity: 0; transition: opacity 320ms ease;
   }
-  .cg-bigwheel-hub.cg-landed { opacity: 1; }
-  .cg-card.cg-win  .cg-bigwheel-hub { border-color: rgba(67,224,160,0.6);
-    box-shadow: 0 0 24px rgba(67,224,160,0.4), 0 6px 20px rgba(0,0,0,0.6); }
-  .cg-card.cg-loss .cg-bigwheel-hub { border-color: rgba(255,70,85,0.6); }
-  .cg-bigwheel-amount {
-    font-size: 38px; font-weight: 900; line-height: 1; letter-spacing: 0.3px;
-    font-variant-numeric: tabular-nums; color: var(--win);
-  }
+  .cg-bigwheel-amount.cg-landed { opacity: 1; }
   .cg-card.cg-loss .cg-bigwheel-amount { color: var(--loss); }
   .cg-bigwheel-amount-unit {
-    margin-top: 5px; font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+    font-size: 9px; font-weight: 700; letter-spacing: 1px;
     color: var(--ink-dim); text-transform: uppercase;
   }
-  /* the landed segment label shown under the wheel (mirrors the wedge it stopped on) */
+  /* the viewer · landed segment line shown in the right column after the land. */
   .cg-bigwheel-foot {
-    text-align: center; font-size: 15px; font-weight: 800; color: var(--ink);
-    letter-spacing: 0.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 11px; font-weight: 700; color: var(--ink-dim);
+    letter-spacing: 0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     max-width: 100%;
   }
-  .cg-bigwheel-foot .cg-bigwheel-foot-seg { color: #ffd166; }
+  .cg-bigwheel-foot .cg-bigwheel-foot-seg { color: #ffd166; font-weight: 800; }
 
   /* legacy compact wheel reveal (kept for back-compat; no longer the primary). */
   .cg-wheel {
@@ -290,10 +294,10 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 
-  /* --- result icon chip (heist/duel/trivia/raffle) ------------------------ */
+  /* --- result icon chip (heist/duel/trivia/raffle) — +15% matched set ------ */
   .cg-icon {
-    flex: none; width: 38px; height: 38px; border-radius: 8px;
-    display: flex; align-items: center; justify-content: center; font-size: 20px;
+    flex: none; width: 34px; height: 34px; border-radius: 7px;
+    display: flex; align-items: center; justify-content: center; font-size: 17px;
     background: rgba(255, 70, 85, 0.12);
     border: 1px solid rgba(255, 70, 85, 0.4);
   }
@@ -301,7 +305,7 @@
   .cg-card.cg-loss .cg-icon { background: rgba(255,70,85,0.14); border-color: rgba(255,70,85,0.5); }
 
   .cg-sub {
-    margin-top: 7px; font-size: 11px; color: var(--ink-dim);
+    margin-top: 5px; font-size: 9px; color: var(--ink-dim);
     letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 
@@ -319,7 +323,7 @@
   }
   /* the rolling "playing out" line: a faint scan shimmer while undecided. */
   .cg-roll {
-    margin-top: 2px; font-size: 13px; color: var(--ink-dim);
+    margin-top: 1px; font-size: 10px; color: var(--ink-dim);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     position: relative;
   }
@@ -333,9 +337,12 @@
   .cg-card .cg-reveal { opacity: 0; transition: opacity 320ms ease; }
   .cg-card.cg-settled .cg-reveal { opacity: 1; }
   /* a duel shows the two combatants tug back and forth, then the loser dims. */
-  .cg-duel { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-  .cg-duel-side { font-weight: 800; color: var(--ink); transition: opacity 300ms ease, color 300ms ease; }
-  .cg-duel-vs { color: var(--ink-dim); font-size: 10px; letter-spacing: 1px; }
+  .cg-duel { display: flex; align-items: center; gap: 4px; font-size: 10px;
+    min-width: 0; }
+  .cg-duel-side { font-weight: 800; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+    transition: opacity 300ms ease, color 300ms ease; }
+  .cg-duel-vs { color: var(--ink-dim); font-size: 8px; letter-spacing: 1px; flex: none; }
   .cg-card.cg-suspense .cg-duel-side { animation: cg-duel-flicker 800ms ease-in-out infinite alternate; }
   @keyframes cg-duel-flicker { from { opacity: 0.5; } to { opacity: 1; } }
   .cg-duel-side.cg-duel-lost  { opacity: 0.35; color: var(--ink-dim); text-decoration: line-through; }
@@ -343,12 +350,12 @@
 
   /* --- speech card (a SPEAK redeem: viewer + quote, team variant tinted) --- */
   .cg-quote {
-    margin-top: 8px; font-size: 14px; line-height: 1.32; color: var(--ink);
-    /* clamp to 3 lines so a long message never grows the card unbounded */
-    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    margin-top: 2px; font-size: 10px; line-height: 1.28; color: var(--ink);
+    /* clamp to 2 lines so a long message stays within the compact ~90px card */
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .cg-card.cg-speech .cg-icon { font-size: 18px; }
+  .cg-card.cg-speech .cg-icon { font-size: 15px; }
   .cg-card.cg-team::before { background: #6c8cff; box-shadow: 0 0 14px #6c8cff; }
   .cg-card.cg-team .cg-icon {
     background: rgba(108, 140, 255, 0.14); border-color: rgba(108, 140, 255, 0.5);
@@ -409,12 +416,15 @@
   var alertTimer  = null;
   var wheelTurns  = 0; // accumulate full turns so each spin rotates forward
 
-  // Chat-game card queue config: cap the visible stack so the corner never
-  // floods; the OLDEST is dismissed first when over the cap.
-  var CG_MAX_VISIBLE = 3;
+  // Chat-game card QUEUE config: show AT MOST CG_MAX_VISIBLE cards at once; any
+  // overflow waits in a FIFO pending queue and is drained (animated in) when a
+  // visible card auto-dismisses. The visible stack therefore NEVER grows unbounded.
+  var CG_MAX_VISIBLE = 2;
   var CG_HOLD_MS = 7000;      // default per-card on-screen hold before auto-dismiss
   var CG_OUT_MS  = 520;       // must exceed the .cg-out CSS transition
-  var cgCards = [];            // live card records { el, hideTimer, removeTimer }
+  var cgCards = [];            // live (visible) card records { el, hideTimer, removeTimer }
+  var cgPending = [];          // FIFO of queued-but-not-yet-shown { card, holdMs }
+  var CG_PENDING_MAX = 30;     // hard cap on the backlog so a flood can't grow RAM unbounded
 
   // setText: the ONLY way dynamic strings reach the DOM. textContent escapes
   // everything; markup-setting sinks are deliberately never used.
@@ -496,7 +506,7 @@
   // waits ~3s, THEN announces. The reels/wheel must finish at ~SPIN_MS so the
   // land lines up with the spoken result.
   var SPIN_MS = 3000;          // total spin window (slot last reel / wheel disc)
-  var REEL_CELL_PX = 116;      // must equal .cg-reel-cell height in the CSS
+  var REEL_CELL_PX = 24;       // must equal .cg-reel-cell height in the CSS
   var REEL_PRESTACK = 24;      // tall filler stack so the spin reads as a real blur
 
   // Build the slots card body: three BIG reels that spin for ~3s then land,
@@ -510,6 +520,7 @@
     var n = Math.min(symbols.length, 3);
     if (n < 1) { n = 1; }
     var lastReelMs = SPIN_MS;
+    var strips = [];   // { strip, offset } to kick once the card is actually shown
     for (var i = 0; i < n; i++) {
       var reel = makeEl("div", "cg-reel");
       var strip = makeEl("div", "cg-reel-strip");
@@ -527,12 +538,7 @@
       strip.style.setProperty("--reel-ms", ms + "ms");
       reel.appendChild(strip);
       reels.appendChild(reel);
-      // kick the slide on the next frame so the transition runs.
-      (function (s, offset) {
-        window.requestAnimationFrame(function () {
-          window.requestAnimationFrame(function () { s.style.transform = "translateY(-" + offset + "px)"; });
-        });
-      })(strip, pre * REEL_CELL_PX);
+      strips.push({ strip: strip, offset: pre * REEL_CELL_PX });
     }
     body.appendChild(reels);
     var main = makeEl("div", "cg-main");
@@ -544,12 +550,23 @@
     amount.style.opacity = "0";
     amount.style.transition = "opacity 300ms ease";
     body.appendChild(amount);
-    // After the last reel lands, reveal the outcome text + amount together.
-    window.setTimeout(function () {
-      setText(outcome, ev.won ? "Triple " + slotGlyph(detail.win_symbol) + " — jackpot" : "No match");
-      amount.style.opacity = "1";
-      if (typeof onLanded === "function") { onLanded(); }
-    }, Math.max(0, lastReelMs));
+    // DEFERRED start: kick the reel slides + arm the land reveal only when the card
+    // is actually on screen (a queued card waits, then spins fresh when shown).
+    body._cgStart = function () {
+      for (var k = 0; k < strips.length; k++) {
+        (function (s, offset) {
+          window.requestAnimationFrame(function () {
+            window.requestAnimationFrame(function () { s.style.transform = "translateY(-" + offset + "px)"; });
+          });
+        })(strips[k].strip, strips[k].offset);
+      }
+      // After the last reel lands, reveal the outcome text + amount together.
+      window.setTimeout(function () {
+        setText(outcome, ev.won ? "Triple " + slotGlyph(detail.win_symbol) + " — jackpot" : "No match");
+        amount.style.opacity = "1";
+        if (typeof onLanded === "function") { onLanded(); }
+      }, Math.max(0, lastReelMs));
+    };
     return body;
   }
 
@@ -595,48 +612,41 @@
       stops.push(face[j].color + " " + (j * per).toFixed(3) + "deg " + ((j + 1) * per).toFixed(3) + "deg");
     }
     disc.style.setProperty("background", "conic-gradient(from 0deg, " + stops.join(", ") + ")");
-    // place each label rotated to its wedge CENTER, anchored at the disc center,
-    // pushed to the rim (the .cg-bigwheel-seg is a half-width bar from center out).
-    // The conic-gradient measures angles clockwise from 12 o'clock (North); a CSS
-    // rotate(0) points East (3 o'clock), so subtract 90deg to align the label with
-    // the same wedge the gradient painted.
-    for (var k = 0; k < n; k++) {
-      var seg = makeEl("div", "cg-bigwheel-seg", face[k].label);
-      var center = (k + 0.5) * per;        // degrees, clockwise from 12 o'clock(0)
-      seg.style.transform = "rotate(" + (center - 90) + "deg)";
-      disc.appendChild(seg);
-    }
+    // At the compact size the per-wedge text labels don't fit, so the disc is a
+    // plain colored spinning wheel + top pointer only; the landed result is shown
+    // in the RIGHT text column. We still compute + return the matched wedge index so
+    // the pointer LANDS on the real outcome wedge.
     return { idx: idx, per: per, label: face[idx].label };
   }
 
-  // Big spinning wheel: paints the face, then on the next frames spins forward
+  // Compact spinning wheel: paints the face, then on the next frames spins forward
   // several whole turns + decelerates over ~SPIN_MS, LANDING the matched wedge
-  // under the top pointer. After it lands, the earned amount is revealed on the
-  // center hub (over the landed wedge) and the win/loss color is applied.
+  // under the top pointer. HORIZONTAL layout: the small disc sits on the LEFT; the
+  // RIGHT text column reveals the earned amount + 'viewer · outcome' AFTER the disc
+  // lands (and the win/loss color is applied).
   function buildWheelBody(ev, detail, onLanded) {
     var landed = detail.segment || ev.outcome;
     var body = makeEl("div", "cg-body");
 
+    // LEFT: the small spinning disc + fixed top pointer.
     var stage = makeEl("div", "cg-bigwheel");
     stage.appendChild(makeEl("div", "cg-bigwheel-pointer"));
     var disc = makeEl("div", "cg-bigwheel-disc");
     var placed = paintWheelFace(disc, landed);
     stage.appendChild(disc);
-
-    // center hub holds the earned amount, revealed only AFTER the wheel lands.
-    var hub = makeEl("div", "cg-bigwheel-hub");
-    var hubAmt = makeEl("div", "cg-bigwheel-amount", fmtAmount(ev.amount));
-    hub.appendChild(hubAmt);
-    hub.appendChild(makeEl("div", "cg-bigwheel-amount-unit", "taps"));
-    stage.appendChild(hub);
     body.appendChild(stage);
 
-    // viewer line + (after-land) landed segment under the wheel.
+    // RIGHT: the text column — earned amount (hidden until land) + viewer · outcome.
+    var text = makeEl("div", "cg-bigwheel-text");
+    var amount = makeEl("div", "cg-bigwheel-amount", fmtAmount(ev.amount));
+    amount.appendChild(makeEl("span", "cg-bigwheel-amount-unit", " Credits"));
+    text.appendChild(amount);
     var foot = makeEl("div", "cg-bigwheel-foot");
     foot.appendChild(makeEl("span", null, (ev.viewer ? ev.viewer + " · " : "")));
     var footSeg = makeEl("span", "cg-bigwheel-foot-seg", "spinning…");
     foot.appendChild(footSeg);
-    body.appendChild(foot);
+    text.appendChild(foot);
+    body.appendChild(text);
 
     // To land wedge `idx` under the TOP pointer (12 o'clock = 0deg), the wedge
     // center must rotate to 0deg, i.e. disc rotates by -(center). Add whole turns
@@ -644,22 +654,28 @@
     // doesn't look mechanically perfect.
     var center = (placed.idx + 0.5) * placed.per;
     var jitter = (Math.random() - 0.5) * (placed.per * 0.5);
-    var turns = 6;
+    var turns = 9;
     var target = turns * 360 - center + jitter;
     disc.style.setProperty("--bigwheel-ms", SPIN_MS + "ms");
-    window.requestAnimationFrame(function () {
-      window.requestAnimationFrame(function () {
-        void disc.offsetWidth;                  // force a reflow so the transition runs
-        disc.style.transform = "rotate(" + target + "deg)";
-      });
-    });
 
-    // After the spin lands: reveal the hub amount + the landed segment text.
-    window.setTimeout(function () {
-      hub.classList.add("cg-landed");
-      setText(footSeg, placed.label);
-      if (typeof onLanded === "function") { onLanded(); }
-    }, SPIN_MS);
+    // DEFERRED start: spin the disc + arm the land reveal only when the card is
+    // actually on screen (a queued card waits, then spins fresh when shown). KEEP
+    // SPIN_MS=3000, the cubic-bezier easing, the 9 turns, and the land-on-segment.
+    body._cgStart = function () {
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(function () {
+          void disc.offsetWidth;                  // force a reflow so the transition runs
+          disc.style.transform = "rotate(" + target + "deg)";
+        });
+      });
+      // After the spin lands: reveal the amount in the right column + the landed
+      // segment text (viewer · OUTCOME).
+      window.setTimeout(function () {
+        amount.classList.add("cg-landed");
+        setText(footSeg, placed.label);
+        if (typeof onLanded === "function") { onLanded(); }
+      }, SPIN_MS);
+    };
 
     return body;
   }
@@ -746,7 +762,9 @@
     }
 
     if (animates) {
-      window.setTimeout(settle, SPIN_MS);
+      // DEFERRED start: arm the ~3s suspense -> settle only when the card is shown
+      // (a queued card waits, then plays out fresh when it animates in).
+      body._cgStart = function () { window.setTimeout(settle, SPIN_MS); };
     } else {
       // nothing to resolve (open phase) — it's already on its true state; still
       // notify so the caller can apply the (already-known) outcome accent.
@@ -759,7 +777,7 @@
 
   function buildAmount(ev) {
     var amt = makeEl("div", "cg-amount", fmtAmount(ev.amount));
-    amt.appendChild(makeEl("span", "cg-amt-unit", "taps"));
+    amt.appendChild(makeEl("span", "cg-amt-unit", "Credits"));
     return amt;
   }
 
@@ -810,6 +828,10 @@
       card.classList.add("cg-suspense");
     }
     card.appendChild(body);
+    // Carry the body's DEFERRED animation-starter up to the card so showCard fires
+    // it only when the card is actually mounted/visible (a queued card spins fresh
+    // when it animates in, never silently "lands" while waiting off-screen).
+    if (typeof body._cgStart === "function") { card._cgStart = body._cgStart; }
 
     // trivia footer: the winning answer (result phase) or the question (a redeem
     // that just surfaced the prompt — open phase). Never label a question "Answer".
@@ -852,9 +874,32 @@
     pushCard(card, num(ev.duration_ms, CG_HOLD_MS));
   }
 
-  // Queue: append at the END of column-reverse so the newest renders at the
-  // bottom; cap visible cards (oldest dismissed first); auto-dismiss each.
+  // pushCard: enqueue a built card. If fewer than CG_MAX_VISIBLE cards are on
+  // screen it shows immediately; otherwise it waits in the FIFO pending queue and
+  // is drained when a visible card dismisses. The visible stack is hard-capped so
+  // the corner can never flood, and the pending backlog is bounded too.
   function pushCard(card, holdMs) {
+    if (cgCards.length < CG_MAX_VISIBLE) {
+      showCard(card, holdMs);
+      return;
+    }
+    cgPending.push({ card: card, holdMs: holdMs });
+    // Bound the backlog: drop the OLDEST queued (never-shown) card if it overflows,
+    // so a sustained flood can't grow memory without limit.
+    while (cgPending.length > CG_PENDING_MAX) {
+      var dropped = cgPending.shift();
+      if (dropped && dropped.card && dropped.card.parentNode) {
+        dropped.card.parentNode.removeChild(dropped.card);
+      }
+    }
+  }
+
+  // showCard: actually mount + animate-in a card and arm its auto-dismiss timer.
+  // Only ever called for cards that fit under the visible cap (immediately, or via
+  // drainPending when a slot frees up).
+  function showCard(card, holdMs) {
+    // append at the END of the column-reverse flow so the newest renders at the
+    // bottom and older cards rise + fade above it.
     chatGamesEl.appendChild(card);
     var rec = { el: card, hideTimer: null, removeTimer: null };
     cgCards.push(rec);
@@ -862,9 +907,13 @@
     window.requestAnimationFrame(function () {
       window.requestAnimationFrame(function () { card.classList.add("cg-in"); });
     });
-    // over the cap -> dismiss the oldest immediately.
-    while (cgCards.length > CG_MAX_VISIBLE) {
-      dismissCard(cgCards[0]);
+    // Now that the card is mounted + visible, fire any deferred spin/suspense start
+    // (slots reels / wheel disc / result suspense). A queued card only spins here,
+    // when it actually appears — never while it waited off-screen.
+    if (typeof card._cgStart === "function") {
+      var start = card._cgStart;
+      card._cgStart = null;
+      start();
     }
     rec.hideTimer = window.setTimeout(function () { dismissCard(rec); }, Math.max(0, holdMs));
   }
@@ -880,6 +929,17 @@
     rec.removeTimer = window.setTimeout(function () {
       if (rec.el && rec.el.parentNode) { rec.el.parentNode.removeChild(rec.el); }
     }, CG_OUT_MS);
+    // a slot just freed up -> dequeue the next pending card so it animates in.
+    drainPending();
+  }
+
+  // drainPending: fill freed visible slots from the FIFO queue (in order) until the
+  // cap is reached or the queue is empty.
+  function drainPending() {
+    while (cgCards.length < CG_MAX_VISIBLE && cgPending.length > 0) {
+      var next = cgPending.shift();
+      showCard(next.card, next.holdMs);
+    }
   }
 
   function dispatch(ev) {

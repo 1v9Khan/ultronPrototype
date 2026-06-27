@@ -10500,17 +10500,72 @@ class Orchestrator:
             if getattr(rs, "team_enabled", False):
                 team_fn = lambda framed: self._twitch_team_speak(framed, rs)  # noqa: E731
             blocked_fn = chat_post if getattr(rs, "announce_blocked_in_chat", True) else None
+            # SECOND safety screen (TEAM only): on TOP of Llama-Guard, run the FINAL
+            # text through the main Qwen-4B with a dedicated PASS/BLOCKED classifier
+            # prompt. Wired only when team_enabled AND team_safety_prepass are ON;
+            # fail-CLOSED inside the router (any error blocks the speak).
+            team_safety_fn = None
+            if getattr(rs, "team_enabled", False) and getattr(rs, "team_safety_prepass", True):
+                team_safety_fn = self._twitch_team_safety_screen
+            # Per-bus caps (server-side; Twitch has no per-reward input-length
+            # field). Fall back to the legacy shared cap when a per-bus key is unset.
+            shared_cap = int(getattr(rs, "max_chars", 200))
+            say_cap = int(getattr(rs, "say_max_chars", 120) or shared_cap)
+            team_cap = int(getattr(rs, "team_max_chars", 80) or shared_cap)
             return {
                 "speak_reward_map": speak_map,
                 "guard_classify_fn": guard_fn,
+                "team_safety_fn": team_safety_fn,
                 "say_speak_fn": say_and_post,
                 "team_speak_fn": team_fn,
                 "blocked_chat_fn": blocked_fn,
-                "speak_max_chars": int(getattr(rs, "max_chars", 200)),
+                "speak_max_chars": shared_cap,
+                "say_max_chars": say_cap,
+                "team_max_chars": team_cap,
             }
         except Exception as e:                                       # noqa: BLE001
             logger.warning("redeem-speak wiring skipped (feature OFF): %s", e)
             return {}
+
+    def _twitch_team_safety_screen(self, text: str) -> tuple[bool, str]:
+        """SECOND TEAM-speak safety screen (2026-06-26): run the FINAL viewer text
+        through the MAIN Qwen-4B model with a dedicated NON-persona PASS/BLOCKED
+        classifier prompt, ON TOP of the Llama-Guard the redeem router already ran.
+        Returns ``(safe, reason)``; the router speaks the team redeem only if this
+        AND the guard pass.
+
+        FAIL-CLOSED: an empty model output (the ``generate_isolated`` fail-open
+        contract) OR any exception parses as BLOCKED, so a model hiccup never lets
+        unsafe text onto the team mic. Constrained to a TINY ``max_tokens`` so the
+        PASS/BLOCKED verdict generates fast (a few tokens)."""
+        try:
+            from kenning.twitch.safety_prompt import (
+                TEAM_SPEAK_SAFETY_MAX_TOKENS,
+                TEAM_SPEAK_SAFETY_SYSTEM,
+                build_safety_user_prompt,
+                parse_safety_verdict,
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("team safety screen import failed -> BLOCKED: %s", e)
+            return False, "safety import failed (fail-closed)"
+        llm = getattr(self, "llm", None)
+        gen = getattr(llm, "generate_isolated", None)
+        if gen is None:
+            logger.warning("team safety screen: no LLM seam -> BLOCKED")
+            return False, "no llm (fail-closed)"
+        try:
+            raw = gen(
+                system_prompt=TEAM_SPEAK_SAFETY_SYSTEM,
+                user_prompt=build_safety_user_prompt(text),
+                max_tokens=int(TEAM_SPEAK_SAFETY_MAX_TOKENS),
+                temperature=0.0,
+            )
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("team safety screen LLM error -> BLOCKED: %s", e)
+            return False, f"safety llm error (fail-closed): {e}"
+        safe, reason = parse_safety_verdict(raw)
+        logger.info("team safety screen verdict safe=%s reason=%s", safe, reason)
+        return safe, reason
 
     def _twitch_team_speak(self, framed_line: str, rs_cfg) -> None:
         """Speak an ALREADY guard-screened + framed line onto the TEAM voice bus

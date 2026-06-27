@@ -4387,7 +4387,18 @@ class TwitchRedeemSpeakConfig(_Strict):
     team_reward_title: str = "ultron tells my team"  # Custom Reward title for the team-bus speak (pricier)
     team_enabled: bool = False                       # the team-bus redeem ALSO requires this (chat->team boundary)
     disabled_during_ranked: bool = True              # never speak the team redeem onto the mic during ranked
-    max_chars: int = Field(default=200, ge=1, le=500)  # viewer text is capped to this many chars before TTS
+    max_chars: int = Field(default=200, ge=1, le=500)  # legacy shared cap; fallback when the per-bus caps are unset
+    # Per-bus input length caps (2026-06-26). Twitch channel-point rewards have NO
+    # per-reward input-length field (the box is fixed at the global ~500), so the
+    # cap is enforced SERVER-SIDE before TTS. TEAM (the higher-stakes mic) is the
+    # tighter cap; SAY (broadcast) is looser.
+    say_max_chars: int = Field(default=120, ge=1, le=500)   # broadcast-bus "say" cap (chars)
+    team_max_chars: int = Field(default=80, ge=1, le=500)   # team-bus "team" cap (chars; tighter)
+    # SECOND safety screen on the TEAM redeem (2026-06-26): on TOP of Llama-Guard,
+    # the FINAL (sanitized/trimmed/capped) text is run through the main Qwen-4B
+    # model with a dedicated non-persona PASS/BLOCKED classifier prompt. The team
+    # speaks only if BOTH pass; fail-CLOSED. Default ON (defense in depth).
+    team_safety_prepass: bool = True
     announce_blocked_in_chat: bool = True            # post a brief chat note when a message is blocked as unsafe
 
 

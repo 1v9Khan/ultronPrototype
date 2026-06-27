@@ -78,6 +78,7 @@ __all__ = [
     "SPEAK_SAY",
     "SPEAK_TEAM",
     "sanitize_speak_text",
+    "trim_repetition_spam",
     "frame_speak_line",
     "say_name_enabled",
     "set_say_name_enabled",
@@ -115,6 +116,88 @@ def set_say_name_enabled(on: bool) -> None:
 # Hard ceiling on a viewer's spoken text regardless of the configured cap (the
 # config cap is clamped to this; defends against a misconfigured huge max_chars).
 _SPEAK_HARD_MAX = 500
+
+# --------------------------------------------------------------------------- #
+# Repetition / low-diversity-spam TRUNCATION tunables (2026-06-26)
+# --------------------------------------------------------------------------- #
+# We TRIM spammy viewer text (never block it) so a wall of "meow meow meow ..."
+# or a tiny shuffled vocabulary ("bark meow bark meow woof ...") does not make
+# Ultron drone for 20 tokens. Two independent, conservative, deterministic
+# heuristics; both keep ~the FIRST N words then stop. The variation check is
+# gated hard so a NORMAL sentence (which naturally repeats "the"/"and"/"to") is
+# NEVER trimmed:
+#   * exact consecutive repetition: a run of the SAME (case-folded) token longer
+#     than _REPEAT_RUN_MAX -> keep the words up to the start of that run + the
+#     first _REPEAT_KEEP copies, then stop.
+#   * low-diversity variation: ONLY for messages with > _DIVERSITY_MIN_WORDS
+#     words AND a unique-word ratio < _DIVERSITY_RATIO AND <= _DIVERSITY_MAX_UNIQ
+#     distinct words -> keep the first _DIVERSITY_KEEP words. The triple gate
+#     (length floor + low ratio + few distinct words) is what protects an
+#     ordinary sentence from a false positive.
+_REPEAT_RUN_MAX = 3          # >3 consecutive identical tokens => a repeat run
+_REPEAT_KEEP = 8             # keep ~the first 8 words when an exact run trips
+_DIVERSITY_MIN_WORDS = 10    # variation check only considers > 10-word messages
+_DIVERSITY_RATIO = 0.30      # unique/total below this (with few distinct) is spam
+_DIVERSITY_MAX_UNIQ = 5      # ...AND no more than this many distinct words
+_DIVERSITY_KEEP = 8          # keep ~the first 8 words when variation spam trips
+
+
+def trim_repetition_spam(text: str) -> str:
+    """Trim (NEVER block) repetition / low-diversity-variation spam in an already
+    whitespace-collapsed viewer message so Ultron does not drone a wall of one
+    word or a tiny shuffled vocabulary. Returns ``text`` unchanged when nothing
+    trips. Pure + stdlib-only (no ``re``), deterministic, idempotent.
+
+    Two conservative heuristics (see the tunables above):
+
+      (a) EXACT consecutive repetition — a run of more than ``_REPEAT_RUN_MAX``
+          identical (case-folded) tokens. Keeps the words up to that run plus the
+          first ``_REPEAT_KEEP`` words total, then stops (e.g. "meow"×20 ->
+          ~8 "meow"s).
+      (b) LOW-DIVERSITY variation — ONLY for messages with more than
+          ``_DIVERSITY_MIN_WORDS`` words whose unique/total word ratio is below
+          ``_DIVERSITY_RATIO`` AND whose distinct-word count is at most
+          ``_DIVERSITY_MAX_UNIQ``. Keeps the first ``_DIVERSITY_KEEP`` words.
+
+    The triple gate on (b) (length floor + low ratio + few distinct words) means a
+    NORMAL sentence — which repeats common function words like "the"/"and"/"to" —
+    is never trimmed: a real sentence has many distinct words, so its distinct
+    count exceeds ``_DIVERSITY_MAX_UNIQ`` long before its ratio drops.
+    """
+    if not text:
+        return text
+    words = text.split()
+    n = len(words)
+    if n <= _REPEAT_KEEP:
+        return text  # too short to be worth trimming either way
+
+    folded = [w.lower() for w in words]
+
+    # (a) Exact consecutive repetition: find the FIRST run longer than the max.
+    run_start = 0
+    i = 1
+    while i <= n:
+        if i < n and folded[i] == folded[run_start]:
+            i += 1
+            continue
+        run_len = i - run_start
+        if run_len > _REPEAT_RUN_MAX:
+            # Keep the words before the run plus enough copies of the repeated
+            # token to reach _REPEAT_KEEP words total (so "meow"×20 -> ~8 "meow"s,
+            # and "rush B now go go go ..." keeps the lead-in then ~the cap).
+            keep = max(run_start + 1, min(_REPEAT_KEEP, n))
+            return " ".join(words[:keep])
+        run_start = i
+        i += 1
+
+    # (b) Low-diversity variation spam: triple-gated to avoid false positives.
+    if n > _DIVERSITY_MIN_WORDS:
+        distinct = len(set(folded))
+        ratio = distinct / n
+        if distinct <= _DIVERSITY_MAX_UNIQ and ratio < _DIVERSITY_RATIO:
+            return " ".join(words[:_DIVERSITY_KEEP])
+
+    return text
 
 # House-funded payout amounts for the SINGLE-redeem games. A channel-point redeem
 # already cost the viewer Twitch's native points, so the economy game pays out
@@ -265,9 +348,13 @@ class _LRUSet:
 # --------------------------------------------------------------------------- #
 def sanitize_speak_text(raw: object, *, max_chars: int) -> str:
     """Sanitize an UNTRUSTED viewer message for TTS: drop control characters,
-    collapse all whitespace runs to single spaces, strip the ends, and cap the
-    length to ``min(max_chars, _SPEAK_HARD_MAX)`` (trimmed back to a word
-    boundary when possible so a cut never splits a word mid-token).
+    collapse all whitespace runs to single spaces, strip the ends, TRIM repetition
+    / low-diversity spam (:func:`trim_repetition_spam`), then cap the length to
+    ``min(max_chars, _SPEAK_HARD_MAX)`` (trimmed back to a word boundary when
+    possible so a cut never splits a word mid-token).
+
+    ORDER (2026-06-26): the spam trim runs BEFORE the length cap so the SAME final
+    text that is length-capped is what the downstream safety checks judge.
 
     Pure + stdlib-free (no ``re``): keeps the module's import surface within the
     anticheat-pinned allowlist. Returns ``""`` for empty/whitespace-only input.
@@ -286,6 +373,10 @@ def sanitize_speak_text(raw: object, *, max_chars: int) -> str:
             out_chars.append(ch)
     # Collapse whitespace runs -> single spaces, strip ends.
     collapsed = " ".join("".join(out_chars).split())
+    if not collapsed:
+        return ""
+    # Trim repetition / low-diversity spam BEFORE the length cap (never blocks).
+    collapsed = trim_repetition_spam(collapsed)
     if not collapsed:
         return ""
     cap = max(1, min(int(max_chars), _SPEAK_HARD_MAX))
@@ -346,10 +437,13 @@ class RedeemRouter:
         dedup_max: int = 2048,
         speak_reward_map: dict[str, str] | None = None,
         guard_classify_fn: Callable[[str], Any] | None = None,
+        team_safety_fn: Callable[[str], Any] | None = None,
         say_speak_fn: Callable[[str], Any] | None = None,
         team_speak_fn: Callable[[str], Any] | None = None,
         blocked_chat_fn: Callable[[str], Any] | None = None,
         speak_max_chars: int = 200,
+        say_max_chars: int | None = None,
+        team_max_chars: int | None = None,
         overlay_lead_seconds: float = 0.0,
         defer_fn: Callable[[float, Callable[[], None]], Any] | None = None,
     ) -> None:
@@ -370,10 +464,26 @@ class RedeemRouter:
         smap = speak_reward_map or {}
         self._speak_map = {str(k).strip().lower(): str(v) for k, v in smap.items()}
         self._guard_classify = guard_classify_fn
+        # TEAM-only SECOND safety screen (2026-06-26): an injected callable
+        # ``team_safety_fn(final_text) -> (safe: bool, reason: str)`` (the
+        # orchestrator wires it to a Qwen-4B non-persona classifier call). Runs ON
+        # TOP of the Llama-Guard, AFTER it passes; the team redeem speaks only if
+        # BOTH pass. FAIL-CLOSED: any exception OR a falsy verdict blocks. None ->
+        # the second screen is skipped (the guard alone gates; default-OFF wiring).
+        self._team_safety = team_safety_fn
         self._say_speak = say_speak_fn
         self._team_speak = team_speak_fn
         self._blocked_chat = blocked_chat_fn
+        # Per-bus input length caps (2026-06-26). Twitch channel-point rewards have
+        # NO per-reward input-length field (the text box is fixed at the global
+        # ~500), so the cap is enforced SERVER-SIDE here, before TTS. TEAM is the
+        # tighter cap (80) and SAY the looser one (120); both fall back to the
+        # shared ``speak_max_chars`` when not given (legacy callers unchanged).
         self._speak_max_chars = max(1, int(speak_max_chars))
+        self._say_max_chars = max(1, int(say_max_chars)) if say_max_chars is not None \
+            else self._speak_max_chars
+        self._team_max_chars = max(1, int(team_max_chars)) if team_max_chars is not None \
+            else self._speak_max_chars
         # Optional ledger: when present, a redeem game's outcome credits the
         # redeemer's balance (house-funded, keyed on the redemption id). None ->
         # the games still run + announce + overlay, just without a currency move
@@ -579,6 +689,30 @@ class RedeemRouter:
             return True, f"guard flagged unsafe{(': ' + cat) if cat else ''}"
         return False, "safe"
 
+    def _team_safety_blocks(self, text: str) -> tuple[bool, str]:
+        """Run the TEAM-only SECOND safety screen (Qwen-4B) over the FINAL text.
+        Returns ``(blocked, reason)``. Skipped (returns ``(False, ...)``) when no
+        ``team_safety_fn`` is wired -> the Llama-Guard alone gates. When wired it
+        is FAIL-CLOSED: any exception -> blocked; the injected fn returns
+        ``(safe, reason)`` and a falsy ``safe`` -> blocked.
+        """
+        if self._team_safety is None:
+            return False, "no second screen (guard-only)"
+        try:
+            verdict = self._team_safety(text)
+        except Exception as exc:  # noqa: BLE001 — model error -> fail CLOSED
+            logger.warning("speak redeem team safety error -> BLOCKED: %s", exc)
+            return True, f"safety screen error (fail-closed): {exc}"
+        # Accept a (safe, reason) tuple OR a bare truthy/falsy verdict.
+        try:
+            safe = bool(verdict[0])
+            reason = str(verdict[1]) if len(verdict) > 1 else ""
+        except (TypeError, IndexError, KeyError):
+            safe, reason = bool(verdict), ""
+        if not safe:
+            return True, f"safety screen blocked{(': ' + reason) if reason else ''}"
+        return False, "safe"
+
     def _process_speak(
         self, speak_action: str, title: str, viewer: str, user_input: str,
     ) -> dict | None:
@@ -590,7 +724,10 @@ class RedeemRouter:
         speak_fn = self._team_speak if to_team else self._say_speak
         bus = "team" if to_team else "say"
         viewer = viewer or "someone"
-        text = sanitize_speak_text(user_input, max_chars=self._speak_max_chars)
+        # Per-bus input cap (TEAM tighter than SAY); sanitize TRIMS spam BEFORE the
+        # cap, so the final text the safety screens judge is what gets spoken.
+        cap = self._team_max_chars if to_team else self._say_max_chars
+        text = sanitize_speak_text(user_input, max_chars=cap)
         if not text:
             logger.info("speak redeem (%s) empty after sanitize viewer=%r", bus, viewer)
             return {"type": "redeem_speak", "bus": bus, "viewer": viewer,
@@ -601,12 +738,24 @@ class RedeemRouter:
             logger.info("speak redeem (%s) no speak callback wired viewer=%r", bus, viewer)
             return {"type": "redeem_speak", "bus": bus, "viewer": viewer,
                     "spoken": False, "reason": "speak path not enabled"}
+        # FIRST safety screen: Llama-Guard (both buses; fail-CLOSED).
         blocked, reason = self._guard_blocks(text)
         if blocked:
             logger.info("speak redeem (%s) BLOCKED viewer=%r reason=%s", bus, viewer, reason)
             self._note_blocked(viewer)
             return {"type": "redeem_speak", "bus": bus, "viewer": viewer,
                     "spoken": False, "reason": reason}
+        # SECOND safety screen (TEAM only): the Qwen-4B non-persona pre-pass on TOP
+        # of the guard. The team mic is the higher-stakes bus, so it must clear
+        # BOTH. Runs on the FINAL text (post sanitize/trim/cap). Fail-CLOSED.
+        if to_team:
+            s_blocked, s_reason = self._team_safety_blocks(text)
+            if s_blocked:
+                logger.info("speak redeem (team) BLOCKED by safety screen viewer=%r "
+                            "reason=%s", viewer, s_reason)
+                self._note_blocked(viewer)
+                return {"type": "redeem_speak", "bus": bus, "viewer": viewer,
+                        "spoken": False, "reason": s_reason}
         framed = frame_speak_line(viewer, text, to_team=to_team)
         if not framed:
             return {"type": "redeem_speak", "bus": bus, "viewer": viewer,
