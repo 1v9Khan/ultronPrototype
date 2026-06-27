@@ -170,6 +170,7 @@ class _FakeCanvas:
     def __init__(self):
         self._n = 0
         self.fills = {}
+        self.coords_log = {}
 
     def _new(self):
         self._n += 1
@@ -181,6 +182,12 @@ class _FakeCanvas:
     def create_line(self, *a, **k):
         i = self._new(); self.fills[i] = k.get("fill"); return i
 
+    def create_polygon(self, *a, **k):
+        i = self._new()
+        self.fills[i] = k.get("outline")
+        self.coords_log[i] = list(a)
+        return i
+
     def create_arc(self, *a, **k):
         return self._new()
 
@@ -190,7 +197,8 @@ class _FakeCanvas:
     def create_text(self, *a, **k):
         return self._new()
 
-    def coords(self, *a, **k):
+    def coords(self, item, *a, **k):
+        self.coords_log[item] = list(a)
         return None
 
     def itemconfigure(self, item, **k):
@@ -244,6 +252,100 @@ def test_render_snaps_legacy_accent_to_valorant_red():
     s2 = wf._RenderState(c2, size=200, plate_h=0, bars=16,
                          accent="#00ffcc", bg="#0b0b10", nameplate_text="")
     assert s2.accent_rgb == (0x00, 0xff, 0xcc)     # custom honoured
+
+
+# ---------------------------------------------------------------------------
+# Circular speech-waveform rings: the "expanding part" is no longer a plain
+# uniform circle -- its radius ripples from the live per-band audio. These run
+# headless (pure geometry / fake canvas, no Tk).
+# ---------------------------------------------------------------------------
+
+
+def _ring_radii(pts, cx, cy):
+    """Distances of each (x, y) in a flat point list from the centre."""
+    xs = pts[0::2]
+    ys = pts[1::2]
+    return [((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in zip(xs, ys)]
+
+
+def test_radial_wave_points_idle_is_round_circle():
+    """At idle (no audio, no ripple) every sampled point sits at base_r -> a
+    calm, near-flat circle (uniform radius)."""
+    cx, cy, base = 150.0, 150.0, 60.0
+    zero = np.zeros(48, dtype=np.float32)
+    pts = wf._radial_wave_points(cx, cy, base, zero, n_pts=96,
+                                 amp=0.0, ripple=0.0, phase=0.0)
+    assert len(pts) == 96 * 2
+    radii = _ring_radii(pts, cx, cy)
+    # All radii equal base_r within float noise -> a true circle when calm.
+    assert max(radii) - min(radii) < 1e-3
+    assert abs(sum(radii) / len(radii) - base) < 1e-3
+
+
+def test_radial_wave_points_audio_ripples_the_edge():
+    """With live bands + ripple the ring edge is no longer uniform: its radius
+    VARIES around the circle (it represents the words), and the band-shaped
+    bulges push the average radius outward vs the calm circle."""
+    cx, cy, base = 150.0, 150.0, 60.0
+    bands = np.abs(np.sin(np.linspace(0, 3 * np.pi, 48))).astype(np.float32)
+    calm = wf._radial_wave_points(cx, cy, base, np.zeros(48, dtype=np.float32),
+                                  n_pts=96, amp=0.0, ripple=0.0, phase=0.0)
+    live = wf._radial_wave_points(cx, cy, base, bands, n_pts=96,
+                                  amp=0.35, ripple=0.12, phase=0.7)
+    calm_r = _ring_radii(calm, cx, cy)
+    live_r = _ring_radii(live, cx, cy)
+    # Idle = flat; speaking = a rippled, non-uniform edge.
+    assert (max(calm_r) - min(calm_r)) < 1e-3
+    assert (max(live_r) - min(live_r)) > 2.0          # the edge clearly ripples
+    # The audio pushes the ring outward on average (it expands with the words).
+    assert sum(live_r) / len(live_r) > sum(calm_r) / len(calm_r)
+
+
+def test_radial_wave_points_travels_outward_with_phase():
+    """The travelling ripple moves: advancing only the phase changes the edge
+    geometry (the wave emanates outward), even with the same bands."""
+    cx, cy, base = 120.0, 120.0, 50.0
+    bands = np.ones(32, dtype=np.float32)
+    a = wf._radial_wave_points(cx, cy, base, bands, n_pts=64,
+                               amp=0.2, ripple=0.15, phase=0.0)
+    b = wf._radial_wave_points(cx, cy, base, bands, n_pts=64,
+                               amp=0.2, ripple=0.15, phase=1.6)
+    assert a != b                                     # the ripple has travelled
+
+
+def test_render_rings_vary_with_audio_vs_idle_headless():
+    """End-to-end through the real render() path (fake canvas, no display): the
+    speech-ring geometry is a flat circle when idle but a rippled, non-uniform
+    edge when speaking -- proving the live audio drives the expanding rings."""
+    canvas = _FakeCanvas()
+    state = wf._RenderState(canvas, size=300, plate_h=0, bars=48,
+                            accent="#e5484d", bg="#0b0b10",
+                            nameplate_text="", fps=30)
+    state.build()
+    ring0 = state.glow_items[0]
+    zero = np.zeros(48, dtype=np.float32)
+    bands = np.abs(np.sin(np.linspace(0, 4 * np.pi, 48))).astype(np.float32)
+
+    # Settle to idle, then capture the ring's outline.
+    for _ in range(60):
+        state.render(0.0, zero)
+    idle_pts = list(canvas.coords_log[ring0])
+    idle_r = _ring_radii(idle_pts, state.cx, state.cy)
+    idle_spread = max(idle_r) - min(idle_r)
+
+    # Drive loud speech frames, then capture again.
+    for _ in range(40):
+        state.render(1.0, bands)
+    talk_pts = list(canvas.coords_log[ring0])
+    talk_r = _ring_radii(talk_pts, state.cx, state.cy)
+    talk_spread = max(talk_r) - min(talk_r)
+
+    # Idle ring is ~round (only a whisper of ripple on a ~60px radius);
+    # speaking ring's edge clearly ripples (varies far more).
+    assert idle_spread < 2.0, "idle ring should be a near-flat circle"
+    assert talk_spread > idle_spread + 3.0, "speaking ring edge must ripple"
+    # And the speaking ring expands outward on average.
+    assert sum(talk_r) / len(talk_r) > sum(idle_r) / len(idle_r)
 
 
 def test_submit_then_pace_does_not_raise_headless():

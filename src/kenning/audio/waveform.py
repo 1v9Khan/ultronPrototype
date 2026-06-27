@@ -262,6 +262,62 @@ def _nameplate_frames(W, H, text, font_family, *, plate_fill, accent_rgb,
     return frames
 
 
+def _radial_wave_points(cx, cy, base_r, bands, *, n_pts=96, amp=0.0,
+                        ripple=0.0, phase=0.0):
+    """Sample a CIRCULAR WAVEFORM: a closed ring of ``n_pts`` (x, y) points
+    whose radius is ``base_r`` modulated by the live audio ``bands`` so the edge
+    ripples and represents the spoken words.
+
+    The per-band FFT magnitudes are wrapped symmetrically around the full circle
+    (mirrored so the ring joins seamlessly at 0/2pi) and sampled with linear
+    interpolation, then displaced radially. ``amp`` scales how far the bands push
+    the edge out (the speech "ripple depth"); ``ripple`` adds a travelling sine
+    so the wave visibly emanates outward; ``phase`` advances that travel each
+    frame. At idle (amp~0, ripple~0) every point sits at ``base_r`` -> a calm,
+    near-flat circle; speaking makes the band-shaped ripples bulge + breathe.
+
+    Returns a flat ``[x0, y0, x1, y1, ...]`` list ready for
+    ``create_polygon(smooth=True)``. Pure + display-free so it unit-tests
+    headless. Fail-open: any anomaly falls back to a plain circle.
+    """
+    try:
+        b = np.asarray(bands, dtype=np.float32).ravel()
+        nb = b.shape[0]
+        if nb == 0:
+            b = np.zeros(1, dtype=np.float32)
+            nb = 1
+        # Mirror the band envelope so the profile is seamless across the wrap
+        # point (the last sample meets the first): bands 0..nb-1..0.
+        prof = np.concatenate([b, b[::-1]]) if nb > 1 else b
+        m = prof.shape[0]
+        pts: List[float] = []
+        two_pi = 2.0 * math.pi
+        for i in range(n_pts):
+            frac = i / n_pts                       # 0..1 around the circle
+            # Interpolate the (mirrored) band envelope at this angle.
+            fpos = frac * m
+            i0 = int(fpos) % m
+            i1 = (i0 + 1) % m
+            w = fpos - math.floor(fpos)
+            band_val = float(prof[i0] * (1.0 - w) + prof[i1] * w)
+            ang = two_pi * frac
+            # Travelling ripple: a few cycles of sine riding outward (phase) so
+            # the ring reads as a sound-wave emanating, scaled by loudness.
+            trav = math.sin(ang * 5.0 - phase) * ripple
+            r = base_r * (1.0 + amp * band_val + trav)
+            pts.append(cx + math.cos(ang) * r)
+            pts.append(cy + math.sin(ang) * r)
+        return pts
+    except Exception:  # noqa: BLE001 - never break the render loop
+        # Plain circle fallback.
+        pts = []
+        for i in range(n_pts):
+            ang = 2.0 * math.pi * i / n_pts
+            pts.append(cx + math.cos(ang) * base_r)
+            pts.append(cy + math.sin(ang) * base_r)
+        return pts
+
+
 def _round_rect_points(x0, y0, x1, y1, r):
     """Point list for a rounded rectangle, used with create_polygon(smooth=True)."""
     return [
@@ -671,7 +727,14 @@ class _RenderState:
         self._mscale = 30.0 / float(max(1, fps))
         self.drag_x = 0
         self.drag_y = 0
+        # Concentric circular speech-waveforms ("the expanding part"): each is a
+        # smooth closed polygon whose edge ripples from the live per-band audio
+        # and which expands outward as he speaks. n_pts samples around the circle
+        # -> the ring's outline; n_rings rings emanate at increasing radius.
         self.glow_items: list = []
+        self.n_rings = 3
+        self.n_pts = 96
+        self.wave_phase = 0.0               # outward-travel clock for the ripple
         self.bar_outline_items: list = []   # black underlay -> crisp bar edges
         self.bar_items: list = []
         # ---- HAL-9000 eye (the centre "core") ----
@@ -718,10 +781,16 @@ class _RenderState:
 
     def build(self) -> None:
         c = self.canvas
-        # Outer glow rings (drawn first, behind everything).
-        for _ in range(3):
+        # Outer "speech rings" (drawn first, behind everything): concentric
+        # CIRCULAR WAVEFORMS, not plain circles. Each is a closed smooth polygon
+        # whose radius ripples around the circle from the live per-band audio --
+        # a calm near-flat ring at idle, rippling + expanding outward while he
+        # speaks (see _radial_wave_points + the render loop). create_polygon with
+        # smooth=True turns the sampled points into a soft, rounded waveform.
+        for _ in range(self.n_rings):
             self.glow_items.append(
-                c.create_oval(0, 0, 0, 0, outline=self.bg, width=2))
+                c.create_polygon(0, 0, 0, 0, 0, 0, outline=self.bg, width=2,
+                                 fill="", smooth=True, splinesteps=12))
         # Radial bars: a black underlay line (slightly wider, drawn FIRST so it
         # sits behind) gives every neon bar a thin black outline -> the energy
         # reads crisply over busy gameplay for stream viewers.
@@ -906,18 +975,37 @@ class _RenderState:
         pr = ir * eye["pupil_frac"]
         c.coords(self.eye_pupil, cx - pr, cy - pr, cx + pr, cy + pr)
         c.itemconfigure(self.eye_pupil, fill=_rgb_to_hex(eye["core"]))
-        # Glow rings expand with level. Fade from the DARK art_base (not the
-        # chroma bg) -> accent, so on a green key background the rings never go
-        # olive (un-keyable); only the empty canvas stays pure green.
+        # Circular speech-waveforms: concentric rings that EXPAND outward and
+        # whose edges RIPPLE from the live per-band audio so they represent the
+        # spoken words (not a plain uniform circle). Each ring's radius is the
+        # bar baseline pushed out by level, and its outline is displaced by the
+        # band envelope (_radial_wave_points) plus a travelling ripple that
+        # emanates outward (wave_phase). Idle -> a calm near-flat circle;
+        # speaking -> band-shaped ripples that bulge + breathe + grow.
+        #
+        # Rings render in the SAME accent red as the bars (visible at idle) and
+        # brighten toward white-hot as he speaks. Red is keyable on the green
+        # chroma (only the pure-green empty canvas is keyed), so no olive bleed.
+        self.wave_phase += (0.12 + 0.55 * self.cur_level) * self._mscale
+        # Speech drives BOTH how far the rings sit out and how deep the edge
+        # ripples; at idle these collapse toward ~0 -> a calm, near-flat round
+        # ring (a whisper of motion so it isn't dead, then it blooms as he
+        # speaks). cur_level (not the breath-lifted `level`) gates them so idle
+        # truly settles flat.
+        ripple_depth = 0.006 + 0.21 * self.cur_level
+        amp_depth = 0.012 + 0.36 * self.cur_level
         for k, item in enumerate(self.glow_items):
+            # Each ring sits at a growing baseline radius and expands with level.
             gr = r0 + (r_max - r0) * (0.5 + 0.5 * level) * (0.6 + 0.25 * k)
-            # Rings render in the SAME accent red as the bars (visible at idle,
-            # not the near-black art_base they used to fade to) and brighten
-            # toward white-hot as he speaks. Red is keyable on the green chroma
-            # (only pure-green empty canvas is keyed), so no olive bleed.
+            # Outer rings travel further out and lag in phase so the waves look
+            # like they radiate from the eye one after another.
+            pts = _radial_wave_points(
+                cx, cy, gr, self.cur_bands, n_pts=self.n_pts,
+                amp=amp_depth, ripple=ripple_depth * (0.7 + 0.5 * k),
+                phase=self.wave_phase - k * 1.1)
             shade = _lerp_color(self.accent_rgb, (255, 255, 255),
                                 max(0.0, level - 0.15 * k) * 0.6)
-            c.coords(item, cx - gr, cy - gr, cx + gr, cy + gr)
+            c.coords(item, *pts)
             c.itemconfigure(item, outline=shade)
 
         # ---- Nameplate: swap to the pre-rendered glow image for the current
