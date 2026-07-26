@@ -1,6 +1,19 @@
-# Snap carve-out — WIP / PAUSED (2026-06-24)
+# Snap carve-out — RESOLVED hello-only (2026-06-27)
 
-**Status: PAUSED at user request. Infrastructure landed + green (flag default OFF, inert).
+**✅ RESOLVED 2026-06-27.** The user scoped this all the way down to ONE deterministic call:
+"say hello" → **"Hello."** (it had been LLM-improvising "team online"). `_is_carveout_snap` was
+NARROWED to `return getattr(command, "directive", None) == "hello"` — the broad tactical/payload/
+compound recognizer (the unsolvable blocker described below) was DELETED, never built, ABANDONED —
+and `KENNING_U1_SNAP_CARVEOUT` default flipped `"0"`→`"1"` (ON). Now "say hello"→"Hello." /
+"say hello to <agent>"→"Hello, <Agent>." with NO LLM (0 generate_fn calls); EVERYTHING else
+(tactical / ask-form / morale / strings / conversation) stays on the LLM. Live reboot 16; committed
+`af6b7a0`, origin/main `e387a36`; golden re-blessed (435 syms); `test_snap_carveout.py` +
+`test_u1_llm_route.py` re-spec'd to hello-only (343 tests green). **Everything below is the ORIGINAL
+paused plan, kept for history — the general tactical discriminator was never solved and is not needed.**
+
+---
+
+**Status (original, superseded): PAUSED at user request. Infrastructure landed + green (flag default OFF, inert).
 Blocked on the discriminator. Resume from "The blocker" + "Resume plan" below.**
 
 ## Goal (user spec, verbatim intent)

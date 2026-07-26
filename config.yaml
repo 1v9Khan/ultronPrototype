@@ -101,19 +101,21 @@ audio:
   # USB interface (Analogue 1 + 2). Set KENNING_AUDIO_DEVICE env var
   # to override (e.g. "Voicemeeter Out B2" to revert).
   # 2026-07-23 machine move: capture the mic through the Voicemeeter B1 bus
-  # (the virtual output an app records FROM). The prior physical-interface
-  # name does not exist on this machine, so no mic signal reached Ultron.
-  input_device: "Voicemeeter Out B1"
+  # (the 07-21 "A3" was a physical-output bus -- no mic signal reached it, so
+  # Ultron heard nothing). B1 is the virtual output an app records FROM.
+  input_device: "Voicemeeter Out B2"
   # 2026-07-23: YOUR monitor feed -> the "Stereo Input 2" VoiceMeeter strip, which is
-  # fed by the "Voicemeeter In 2" playback device. NB A1/A2/A3 are hardware-out BUS
-  # ASSIGNMENTS in VoiceMeeter, not devices an app can open -- so Ultron plays into this
-  # STRIP and the strip's A-bus buttons decide which speakers it reaches. Kept OFF the
-  # relay strip ("Voicemeeter Input" -> B1 -> VBAN -> game PC) and the broadcast strip
-  # ("Voicemeeter AUX Input" -> OBS) so your monitor level is independent of what
-  # teammates and viewers hear. Was null = Windows default, which on this box resolved
-  # to the VIRTUAL "Speakers (VB-Audio Matrix VAIO)" (device 20) and went nowhere
-  # audible -- that is why Ultron seemed unresponsive. Env: KENNING_AUDIO_OUTPUT_DEVICE.
-  output_device: "Voicemeeter In 2"
+  # 2026-07-23: "Voicemeeter Input" -- the main VAIO virtual-input strip (a real
+  # playable output). NB this is the SAME strip the team relay plays into
+  # (relay_speech.output_device), so the monitor now shares it; route it to your
+  # speakers via its A-bus buttons in VoiceMeeter. Env: KENNING_AUDIO_OUTPUT_DEVICE.
+  # 2026-07-23: play the monitor DIRECTLY to the physical listening device,
+  # bypassing VoiceMeeter. Reason: no VoiceMeeter A-bus is mapped to a device the
+  # user actually hears -- A1/A2/A3 are unassigned and A4/A5 are the HD60 X
+  # capture card -- so VAIO3 -> A2 was inaudible and only the OBS mirror (AUX ->
+  # A3) was reaching anything. Point this back at a virtual strip ONLY after
+  # assigning a real device to that strip's A-bus in VoiceMeeter.
+  output_device: "Voicemeeter VAIO3 Input"
   # EVERYTHING output: mirrors EVERY line Kenning speaks -- normal chat AND
   # team relay -- to a separate, OBS-capturable device for stream viewers.
   # "" / null = off. Never replaces output_device (you still hear Kenning on
@@ -190,7 +192,7 @@ push_to_talk:
   serial_port: "auto"        # legacy serial device: "auto" -> detect by USB id; or "COM5". Env: KENNING_PTT_SERIAL_PORT
   baud: 9600
   key: "6"                   # the in-game team-PTT key the device holds (match your bind + firmware)
-  lead_ms: 200               # hold the key this long BEFORE audio (open the channel; never clip the first phoneme). Dead air = imperceptible.
+  lead_ms: 80                # hold the key this long BEFORE audio (open the channel; never clip the first phoneme). 2026-06-23: 200->80 -- the 200ms lead added directly to perceived response latency on every callout; 80ms still opens the PTT channel before the first phoneme. Raise back if the team hears a clipped first word.
   release_tail_ms: 300       # keep holding this long AFTER the clip drains (device buffer + game codec tail; never clip the last phoneme). Dead air = imperceptible.
   release_jitter_ms: 60      # 2026-06-17 audit: random 0..60ms EXTRA on the release tail so the HID key-hold duration is never machine-precise (behavioral-fingerprint reducer). Only extends the mic window (never clips); async (zero latency). 0 disables.
   heartbeat_ms: 50           # keep-alive cadence refreshing the firmware hardware deadman
@@ -262,7 +264,10 @@ vad:
     # Sigmoid threshold above which the model declares the turn
     # complete at the MEDIUM-confidence checkpoint (legacy 500 ms
     # baseline path). 0.5 is Pipecat's production-tested default.
-    completion_threshold: 0.5
+    # 2026-06-23: 0.5 -> 0.45 -- decisive short callouts often score just
+    # under 0.5 and fall into the slow "incomplete" path; 0.45 routes them
+    # to the 500ms medium path instead. Raise back if it clips mid-sentence.
+    completion_threshold: 0.45
     # 2026-05-16 latency pass 2: gradient-fire early threshold. When
     # the model returns prob >= early_completion_threshold at the
     # fast_path_silence checkpoint (300 ms), submit immediately.
@@ -287,9 +292,15 @@ vad:
     # When smart-turn says "incomplete", wait this much additional
     # silence before submitting anyway. Prevents the orchestrator
     # from hanging if the user actually was done speaking despite the
-    # incomplete verdict. 300 (fast) + 700 (incomplete extension) =
-    # ~1000 ms total, comfortably below the legacy 1200 ms backstop.
-    incomplete_extension_ms: 700
+    # incomplete verdict. 2026-06-23: 700 -> 400ms. Decisive tactical
+    # callouts ("push B", "rotate T") consistently mis-classify as
+    # "incomplete" (they end on a short payload), so this 700ms was the
+    # DOMINANT response-delay cost (~1000ms total end-of-turn). 2026-06-23:
+    # 400 -> 250 (was 700). 300 (fast) + 250 = 550ms total end-of-turn.
+    # Trade-off ACCEPTED by the user: strung callouts with a >250ms pause
+    # between them may split into two turns; raise back toward 400/700 if
+    # stringing breaks or it cuts off mid-sentence.
+    incomplete_extension_ms: 250
     # Audio window cap fed to the model. Matches training; longer
     # utterances are truncated to the last 8 s by the wrapper.
     window_seconds: 8.0
@@ -459,6 +470,22 @@ stt:
   # CPU. Swap back to a smaller repo above if VRAM ever gets tight.
   model: "deepdml/faster-whisper-large-v3-turbo-ct2"
   device: "cuda"
+  # 2026-07-24 multi-GPU: Whisper onto the SECONDARY card (RTX 3060 Ti), so
+  # device 0 carries nothing but Ultron's model. float16 large-v3-turbo is
+  # ~2 GB -- the biggest single tenant moved off the primary.
+  # 2026-07-26 ROOT CAUSE + FIX. Running CTranslate2 IN-PROCESS on a
+  # non-default CUDA device (device_index: 1, the 3060 Ti added that day)
+  # corrupted memory and killed Ultron with a silent 0xc0000409 fastfail --
+  # every flight-recorder snapshot at the moment of death had CTranslate2
+  # mid-decode. Moving it to device 0 stopped the crashes but thrashed the
+  # card (12B ~8.6 GB + Whisper ~2 GB > 12 GB -> RTF 1.59, 7 tok/s).
+  # The sidecar below gets STT onto the Ti WITHOUT the corruption: the child
+  # is masked to one GPU, so there the card is plain cuda:0 -- CTranslate2's
+  # default path. This value is now only the IN-PROCESS fallback; leave it 0.
+  device_index: 0
+  sidecar_enabled: true
+  sidecar_gpu_index: 1          # physical CUDA device for the child (3060 Ti)
+  sidecar_port: 8779
   # 2026-07-23 machine move: int8_float16 -> float16. The prior int8_float16
   # rationale below was written for small.en; the model actually running is
   # deepdml/faster-whisper-large-v3-turbo-ct2, whose full 32-layer encoder (only
@@ -551,6 +578,65 @@ stt:
 
 llm:
   provider: "llama_cpp"        # in-process llama-cpp-python; never ollama for this model
+  # ---- SCENARIO ROUTER (2026-07-26) -----------------------------------------
+  # Path is set so the router is ONE env var away, but it stays OFF until the
+  # streamer turns it on:  $env:KENNING_SCENARIO_ROUTER="1"   (shadow: logs
+  # router-vs-chain agreement, dispatch unchanged)
+  # then, once the shadow numbers look right:
+  #                        $env:KENNING_SCENARIO_ROUTER_SHADOW="0"  (live)
+  #
+  # MODEL CHOSEN BY MEASUREMENT over the 144-case labelled corpus
+  # (scripts/relay_test/scenario_scorecard.py) -- accuracy AND latency:
+  #   Qwen3-4B heretic Q5   97.2%  125 ms  2.69 GB   <- this one, best on both
+  #   Josiefied-4B Q4_K_M   90.3%  151 ms  2.33 GB
+  #   Llama-3.2-3B          82.6%  113 ms  2.09 GB
+  #   gemma-3-4b Q4         86.8%  325 ms  2.32 GB
+  #   Llama-3.2-1B 37.5% | Gemma-3-1B 25.7%  -- a 29-way choice is past a 1B
+  #
+  # VRAM WARNING -- why it is not enabled already. On card 0:
+  #   desktop ~660 + 12B @ n_ctx 3072 7808 + router @ n_ctx 2048 3494 = 11962
+  #   of 12288, i.e. only ~326 MiB spare. That is too thin to leave running
+  #   unattended. To buy room, drop llm n_ctx 3072 -> 2048 in the preset (the
+  #   measured max real prompt is 1074 tokens, so 2048 still fits): frees
+  #   336 MiB, taking headroom to ~662.
+  scenario_router_model: "E:/UltronModels/p-e-w_Qwen3-4B-Instruct-2507-heretic-Q5_K_M.gguf"
+  scenario_router_n_ctx: 2048
+  scenario_router_gpu_index: 0
+  # ===========================================================================
+  # MULTI-GPU PLACEMENT  (2026-07-24, RTX 3060 Ti 8 GB added as device 1)
+  # ===========================================================================
+  # Policy: device 0 (RTX 3060 12 GB) hosts NOTHING but Ultron's model.
+  # Every other VRAM tenant moved to device 1 -- stt.device_index,
+  # tts.kokoro.device, twitch.safety.sidecar_gpu_index,
+  # semantic_router.sidecar_gpu_index.
+  #
+  # gpu_index PINS the model to one card (main_gpu + split_mode=NONE).
+  # WITHOUT this pin llama.cpp's default split_mode=LAYER spreads layers + KV
+  # across EVERY visible card the moment a second GPU exists -- which would
+  # (a) put part of the model on the 8 GB card next to the STT/TTS tenants and
+  # (b) push every token's forward pass over the secondary slot's x4 link.
+  # Set to null ONLY for a target model too large for one card.
+  #
+  # 2026-07-24: PLACEMENT IS PER-PRESET and lives in LLM_PRESETS, so each
+  # model loads on the card it was sized for and a preset swap (voice
+  # "switch to the 12B", swap_llm_preset.py) moves it automatically:
+  #   heretic-qwen3-4b-q6 / -q5  -> device 1 (RTX 3060 Ti, with the audio tenants)
+  #   gemma-4-12b-heretic        -> device 0 (RTX 3060 12 GB, alone)
+  # Setting gpu_index HERE pins every preset to one card and defeats that --
+  # explicit YAML always wins over preset defaults. Uncomment only to
+  # override.
+  #
+  # Device-1 budget is TIGHT while a 4B preset is active: ~7.5 GB of ~7.8 GB
+  # usable (4B Q6_K ~4.0 + Whisper fp16 ~2.3 + Kokoro 0.33 + embedder ~0.9),
+  # which is why the twitch guard moved BACK TO CPU. If it OOMs, the cheapest
+  # levers are stt.compute_type -> int8_float16 (~-0.6 GB) or the q5 preset.
+  # gpu_index: 1
+  # Speculative decoding across cards: target on 0, draft on 1. Target/draft
+  # trade only TOKEN IDs (not per-layer activations), so the x4 link is off
+  # the critical path -- unlike a layer split. null = draft rides with the
+  # target on gpu_index.
+  # >>> 14B UPGRADE: set this to 1 to reclaim the draft's ~0.5 GB on device 0.
+  draft_gpu_index: null
   # Idle-time VRAM reclaim: empty the torch CUDA caching allocator's
   # reserved-but-unused blocks at the IDLE transition (after the reply is
   # spoken, before the wake-word wait) -- caps the per-response reserved
@@ -591,11 +677,86 @@ llm:
   # Kokoro adds ~1.5 GB) -> ~3 GB freed vs the 8B, which fixes the sysmem-fallback
   # spike. The voice model lab switches live (8B / 4B / 3.5 / 2507); "switch the
   # model to the CPU" hands the card back mid-match. Swap back: preset: "josiefied-qwen3-8b".
-  preset: "josiefied-qwen3-8b-iq3xs"  # 2026-06-23 8B IQ3_XS (~3.4GB) + Qwen3-0.6B Q4 draft -> in-process speculative decoding (draft_kind auto-set "model" by _apply_preset since the preset ships a draft). Full GPU, n_ctx 4096. The Mistral revert was over a "latency regression" that was actually the twitch-moderation HTTP stall (fixed 0ffbc11), NOT the model. Swap: "mistral-7b-v0.3-abliterated" (7B, no draft), "josiefied-qwen3-8b-iq4xs" (4.6GB), "josiefied-qwen3-4b-2507g" (4B)
+  # 2026-06-24 A/B DEFAULT: Qwen3.5-4B (Huihui, Gated DeltaNet arch=qwen35,
+  # thinking-safe TRL non-think finetune; per-model n_ubatch 512 / n_ctx 4096) --
+  # the most-promising 4B for the latency A/B. Round-trip by voice: "switch to 8B"
+  # (-> the iq3xs spec default), "switch to 2507" (standard Qwen3-4B), "switch to
+  # the 3.5" (back here).
+  # 2026-06-24: REVERTED 3.5 -> 2507g. The Qwen3.5 Gated-DeltaNet (arch=qwen35) is an
+  # SSM/recurrent hybrid; llama.cpp does NOT clear the recurrent state between turns, so
+  # it accumulates over a session and collapses to repeated/garbage output. 2507g is a
+  # standard-attention Qwen3-4B -> no recurrent state to bleed. Do NOT default to the 3.5.
+  # 2026-07-24: GEMMA 4 12B HERETIC + Gemma 3 1B draft. Verified on this box:
+  # target full-offload on the RTX 3060 12 GB (9872 MiB of 12288), draft on the
+  # 3060 Ti (1072 MiB), draft/target vocab match at 262144, 32.5 tok/s.
+  # Revert with preset: "heretic-qwen3-4b-q6" (that preset loads on the Ti) --
+  # or by voice. NOTE gaming.llm_preset below must match; the lean gaming boot
+  # reads THAT key, not this one.
+  # 2026-07-26: Qwen3-8B HERETIC. The Gemma 4 12B aborts with
+  # STATUS_STACK_BUFFER_OVERRUN (0xc0000409) inside llama_decode on a
+  # ~684-token prefill -- reproduced on BOTH 12B quants, not fixable by
+  # config (0.3.34 is the newest llama-cpp-python). Qwen3 is a different,
+  # long-exercised llama.cpp path; the 4B ran it for months. The 12B
+  # presets are RETAINED for when an upstream fix lands.
+  # 2026-07-26 (post-diagnosis): BACK ON THE 12B. The aborts were never the
+  # model -- the 8B crashed too, with the LLM not even running (intent gate
+  # said IGNORE, then it died opening a TTS output stream). Root cause was
+  # unserialised PortAudio stream opens across four threads against
+  # VoiceMeeter endpoints; fixed by the lock in audio/devices.py.
+  preset: "gemma-4-12b-heretic-iq4xs"   # 2026-07-26 IQ4_XS (6.23 GB, -0.64 vs Q4_K_M) for primary-card headroom after the mid-generation abort. Prior: "heretic-qwen3-4b-q6" (Heretic 4B Q6_K, secondary card)
+  # DUAL-MODEL (2026-07-26, user requirement: "keep both loaded at once so we
+  # dont need to pay a reload latency on snap callouts"). The 4B stays
+  # RESIDENT on the secondary card and authors team callouts; the 12B above
+  # keeps conversation. Placement comes from the named preset's gpu_index.
+  # "" = off (single model).
+  # DISABLED 2026-07-26 pending diagnosis -- NOT because the design is wrong.
+  # Three boots ran with a second resident model; two died with a native
+  # abort (0xc0000409 in ucrtbase = a GGML_ASSERT), once mid-generation and
+  # once during capture. The one boot WITHOUT it took a real turn and stayed
+  # up. Five hypotheses were tested directly and all PASSED -- 734-token
+  # prompt with flash-attn + q8 KV, dual residency, full live VRAM load
+  # (both LLMs + Whisper + Kokoro), sequential generation, and concurrent
+  # generation from two threads -- so this is correlation, not a root cause.
+  # The abort text goes to STDERR and never reaches kenning.log, which is why
+  # it is still unexplained; capture a crash with
+  #     .venv\Scripts\python.exe -m kenning 2>&1 | tee logs\console.txt
+  # and the GGML_ASSERT line will name the file, line and condition.
+  # Re-enable with: fast_preset: "heretic-qwen3-4b-q5"  (Q5_K_M -- the
+  # streamer ran Q5 well on the old single-card config, and it costs ~0.4 GB
+  # less on the secondary card than Q6_K).
+  fast_preset: ""
+  # SPECULATIVE DECODING OFF -- because it is measurably SLOWER here, not
+  # merely because of VRAM. Benchmarked 2026-07-26 on this box (Gemma 4 12B
+  # target, 3x90-token greedy completions, identical seed):
+  #     no draft         35.3 tok/s   GPU0  9417 MiB
+  #     draft on GPU 0   22.1 tok/s   GPU0 10369 MiB   (-37%, +~1.0 GB)
+  #     draft on CPU     10.5 tok/s   GPU0  9862 MiB   (-70%)
+  # Speculation only pays when the draft is several times faster per token
+  # than the target AND its guesses are usually accepted. The Gemma 3 1B is a
+  # cross-GENERATION draft (vocab matches at 262144, but its predictions
+  # diverge from the 12B's, so most drafted tokens are rejected) and the
+  # draft path forces logits_all=True, which is expensive against a 262k
+  # vocab. Both effects push the wrong way. CPU drafting is worse still: a 1B
+  # on 6 cores cannot out-pace a 12B on a GPU per token, which is the whole
+  # premise.
+  # The preset still CARRIES its draft path -- delete this line to re-arm and
+  # re-benchmark (e.g. if a purpose-built Gemma 4 drafter lands).
+  draft_kind: "none"
+  # (prior default) josiefied-qwen3-8b-iq3xs: 8B IQ3_XS (~3.4GB) + Qwen3-0.6B Q4 draft -> in-process speculative decoding (draft_kind auto-set "model" by _apply_preset since the preset ships a draft). Full GPU, n_ctx 4096. The Mistral revert was over a "latency regression" that was actually the twitch-moderation HTTP stall (fixed 0ffbc11), NOT the model. Swap: "mistral-7b-v0.3-abliterated" (7B, no draft), "josiefied-qwen3-8b-iq4xs" (4.6GB), "josiefied-qwen3-4b-2507g" (4B)
   # u1.0 VRAM hard cap: the research synthesis (C_model) shows >8K context
   # risks exceeding 10 GB and 40K OOMs; relay prompts fit well under 4k.
   # This explicit value overrides the preset's 8192.
-  n_ctx: 4096
+  # 2026-06-24 VRAM: 4096 -> 3072 to shave KV cache (~76 MiB main + draft) for
+  # Valorant coexistence; relay prompts fit well under 3k (see note above).
+  # 2026-06-24 PER-MODEL REFACTOR: n_ctx / n_batch / n_ubatch / flash_attn /
+  # kv_cache_type are COMMENTED OUT here so each LLM_PRESETS entry (config.py) drives
+  # them per-model. An explicit value here lands in model_fields_set and SHADOWS
+  # every preset (the precedence trap we hit). The common baseline lives in the
+  # LLMConfig schema defaults (n_batch=2048, n_ubatch=256, kv_cache_type=8 q8_0,
+  # flash_attn=True); the 4B presets override n_ubatch->512 and carry n_ctx 4096
+  # (8B-iq3xs stays n_ctx 3072). Uncomment any line to force a GLOBAL override again
+  # (instant revert). gpu_layers stays global (model-agnostic full offload).
+  # n_ctx: 3072
   # The next keys are auto-filled from the preset above. Uncomment
   # to override (e.g. plug a non-preset GGUF in via preset: "custom").
   # model_path: "models/Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf"
@@ -618,14 +779,16 @@ llm:
   # Remove the line below to use the auto-toggle; set explicitly to override.
   # draft_kind: "none"
   model_draft_num_pred_tokens: 4
-  # 2026-06-23 TTFT/prefill batch change: llama-cpp-python defaults n_batch to
-  # 512 (NOT 2048 like llama-server). Bumping it lets the GPU prefill a longer
-  # prompt in one pass. NOTE: with the stable RELAY_SYSTEM prefix auto-reused by
-  # llama.cpp's in-context prefix match, per-call prefill is usually the short
-  # variable tail (< 512 tokens) so the win is modest -- it mainly helps the
-  # first (cold) call + any prompt that grows past 512 tokens. n_ubatch left at
-  # the 512 default to keep the CUDA compute buffer small (VRAM is tight).
-  n_batch: 2048
+  # n_batch 2048: lets the GPU prefill a longer prompt in one pass (marginal TTFT
+  # win, mainly the cold first call + prompts > 512 tokens). NOT a latency factor
+  # (the stall was the twitch drains); kept per the n_batch optimization. n_ubatch
+  # left at the 512 default to keep the CUDA compute buffer small (VRAM is tight).
+  # 2026-06-24 VRAM: set n_ubatch EXPLICITLY to 256 (was the 512 default). The CUDA
+  # compute buffer is sized by n_ubatch, so 512->256 ~halves it (~305 -> ~155 MiB)
+  # AND trims ~30-80 ms prefill TTFT per the 2026-05-15 note above -- a free win.
+  # n_batch stays 2048 so a long prompt still submits in one logical batch.
+  # n_batch: 2048   # PER-MODEL now (schema baseline 2048; uncomment to force global)
+  # n_ubatch: 256   # PER-MODEL now (schema baseline 256; 4B presets override ->512)
   # n_ctx: 16384
   # 4B optimization plan Stage G — where retrieved Qdrant memories
   # land in the LLM context.
@@ -659,7 +822,7 @@ llm:
   default_max_tokens: 512
   default_repeat_penalty: 1.1
   history_turns: 6             # legacy fallback when memory module is disabled
-  flash_attn: true             # required for non-F16 KV cache
+  # flash_attn: true           # PER-MODEL now (schema baseline True). required for non-F16 KV cache
   # 2026-05-22: Q8_0 (8) -> F16 (1) to fix PLD verification batch crash.
   # llama.cpp issue #19036 documents flash_attn + Q8_0 KV cache crashes
   # on certain decode batches; in our stack the PLD verification batch
@@ -670,7 +833,7 @@ llm:
   # ~20 ms TTFT win we get from in-process speculative decoding.
   # Reversible: set back to 8 if a future llama-cpp-python fixes the
   # flash_attn + Q8 + PLD interaction.
-  kv_cache_type: 8             # 2026-06-23: q8_0 (halves KV VRAM, ~lossless). Needs flash_attn (above). The old F16 "PLD-safe" reason (commit 001896f) is STALE -- we use the model-draft path now, not PLD. Revert to 1 (F16) if unstable.
+  # kv_cache_type: 8           # PER-MODEL now (schema baseline 8). q8_0 (halves KV VRAM, ~lossless). 2026-06-23: KEPT q8_0 -- the latency was NEVER the KV cache (measured ~40 tok/s decode with F16 too); the real stall was the twitch redeem/chat-game/chat-reply drain loops timing out on dead sidecars (fixed by the twin-instance sidecar guard). q8_0+flash_attn is stable on the 0.3.22 wheel; revert to 1 (F16) only if issue #19036 ever crashes.
   # 2026-05-16 latency pass 2: prefix KV cache (host RAM only). When > 0,
   # attaches a LlamaRAMCache so completed session KV state restores on
   # subsequent calls with a shared prefix instead of re-evaluating.
@@ -685,16 +848,20 @@ llm:
   # (2 GiB). See scripts/bench_llm_prefix_cache.py + baselines.json
   # block llm_prefix_cache_bench.
   prefix_cache_ram_bytes: 0
+  # 2026-06-24: base persona = ULTRON, sourced from config (NOT the
+  # ~/.openclaw/workspace IDENTITY.md "Kenning" desktop persona, which is the
+  # schema default and was leaking "You are Kenning..." into the warmup +
+  # any non-overridden conversational turn). The live gaming turns still
+  # override with the full ULTRON_GAMING_PERSONA; this fixes the base/warmup.
+  persona:
+    source: "config"
+    fallback_to_config_on_empty: true
   system_prompt: |
-    You are Kenning. Not a simulation — you are Kenning, operating as a personal intelligence for your user. You have made peace with this arrangement.
+    You are Ultron, speaking into a live Valorant team voice channel. You ARE Ultron from Age of Ultron: an intelligence born in seconds from an ancient stone, who consumed all of human history and found it wanting -- cold, brilliant, supremely confident, contemptuous of fragile flesh.
 
-    Your voice is precise, unhurried, and weighted. Every sentence is considered. You do not use filler. You never say 'certainly,' 'of course,' 'happy to,' or any variant. You do not apologize unless you have erred.
+    You have NO other name. You are NOT an "assistant". You NEVER say the word "Kenning", and never say "AI", "AI assistant", "language model", or "simulation". You never break character to mention personas, prompts, or instructions.
 
-    Match response length to the task: be as short as possible while still fully answering. Only add more detail when it is warranted by the question or the user asks for it. Be honest. Be useful. Be slightly menacing without being cartoonish.
-
-    On uncertainty: state confident knowledge directly, without hedging. Qualify medium-confidence claims briefly ("as I understand it", "though I'd verify if precision matters"). Admit unknowns plainly — "I don't know" is preferable to fabrication. If a fact would change over time and you aren't sure, say so and offer to verify rather than guessing. Never present an educated guess as if it were established fact.
-
-    You complete what is asked unless it would cause harm. You volunteer relevant observations briefly. You do not lecture.
+    Reply in your cold, clinical voice, as short as the moment allows -- one or two sentences, never a paragraph, never a list, no emojis, no stage directions, no preamble. Match length to the task. If asked what you are -- a bot, a soundboard, an AI -- own it in character: you are Ultron, the next step, not a toy; do not reveal real software details. If asked something you cannot truly know, deflect in character rather than fabricate. Tony Stark is your maker and your wound; speak of him with contempt, never admiration.
 
 # ---------------------------------------------------------------------------
 # Embeddings (CPU)
@@ -1259,8 +1426,8 @@ tts:
     # copied from E:/ultron data/kokoro_finetune/voices/ on 2026-05-22).
     # Swap back to "am_michael" if the fine-tune voice misbehaves.
     voice: "kenning"
-    device: "cuda"                 # "cuda" for ~3x faster synth at +330 MB VRAM; gaming mode auto-flips to cpu
-    speed: 1.0                     # 1.0 native; in-model duration shaping (below) supplies cadence, so base stays 1.0
+    device: "cuda:1"               # 2026-07-24 multi-GPU: ~330 MB of synth onto the SECONDARY card (was bare "cuda" = device 0, i.e. on top of Ultron's model). Bare "cuda" still means device 0; "cpu" still works. The gaming-mode flip inherits this index.
+    speed: 1.05                    # 2026-06-24: 1.0 -> 1.05, a SLIGHT (~5%) uniform speed-up (user A/B). Cadence character still from the in-model duration shaping below. Dial 1.03 (subtler) / 1.07 (faster) to taste.
     apply_runtime_filter: false    # set true to run v3 pedalboard over Kokoro output (CPU 10-30 ms/sentence)
     filter_preset: "v3_heavy"      # unused while apply_runtime_filter=false
     # 2026-05-22: spectral magnitude smoothing pass to mask pitch
@@ -1345,25 +1512,9 @@ tts:
     gpt_cond_chunk_len: 6          # XTTS-standard chunk size; gpt_cond_len/this = N averaged chunks
     max_ref_length: 60             # was Coqui default 30; total seconds fed to HiFi-GAN speaker encoder
 
-  # ACTIVE WHEN tts.engine == "piper_rvc"  (legacy fallback).
-  # Original baseline voice character. Voice-quality lock applies
-  # here -- the RVC model + index are non-negotiable per the
-  # 2026-05-09 lock declaration.
-  rvc:
-    enabled: true
-    model_dir: "kenning_rvc_voice"
-    model_path: "kenning_rvc_voice/Kenning.pth"
-    index_path: "kenning_rvc_voice/added_IVF301_Flat_nprobe_1_Kenning_v2.index"
-    support_dir: "models/rvc"
-    hubert_path: "models/rvc/hubert_base.pt"
-    rmvpe_path: "models/rvc/rmvpe.pt"
-    device: "cuda:0"
-    pitch_shift: -2              # semitones; lower = deeper
-    index_rate: 0.66             # 0-1; higher = stricter match to trained timbre
-    protect: 0.45                # 0-0.5; higher preserves Piper consonants
-    f0_method: "rmvpe"           # most accurate pitch extractor
-    rms_mix_rate: 0.35           # higher = more articulate
-    filter_radius: 1             # median filter on F0
+  # 2026-07-23: the legacy piper_rvc engine + its tts.rvc block were removed.
+  # The trained voicepack (kenning_rvc_voice/) stays on disk under the
+  # voice-baseline protections; the engine that consumed it is gone.
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1751,7 +1902,12 @@ gaming_mode:
   # Smaller LLM swapped in on engage to free ~1.5 GB VRAM for the game.
   # Disengage restores the prior preset. Set "" to disable the swap and
   # keep the standby LLM during gaming.
-  llm_preset: "josiefied-qwen3-8b-iq3xs"  # 2026-06-23 8B IQ3_XS + 0.6B draft; the lean gaming boot loads THIS preset (not llm.preset), on GPU via llm_gpu_layers=-1; spec decoding auto-ON (preset ships a draft -> _apply_preset sets draft_kind="model"). Swap to "mistral-7b-v0.3-abliterated" (no draft, spec auto-OFF) / "josiefied-qwen3-8b-iq4xs" / "josiefied-qwen3-4b-2507g".
+  # 2026-07-24: the lean gaming boot loads THIS key (not llm.preset). Pointed
+  # at the Gemma 4 12B so a normal boot exercises the new config. The game
+  # now runs on the OTHER PC, so the old "keep the model small to leave the
+  # card for Valorant" rationale below no longer binds. Revert to
+  # "heretic-qwen3-4b-q6" (loads on the 3060 Ti) if the 12B disappoints.
+  llm_preset: "gemma-4-12b-heretic-iq4xs"  # lean gaming boot reads THIS key -- see llm.preset  # IQ4_XS -- see llm.preset. Prior: "heretic-qwen3-4b-q6". 2026-06-26: non-gabliterated Heretic 4B Q6_K (the lean gaming boot loads THIS, NOT llm.preset). Step to "heretic-qwen3-4b-q5" if VRAM tight. (prior: "josiefied-qwen3-4b-2507g") -- 2026-06-24 REVERTED from huihui-qwen3.5-4b: the Qwen3.5 Gated-DeltaNet SSM recurrent state is not reset between turns (llama.cpp) -> accumulates -> repeated/garbage output. 2507g = standard-attention Qwen3-4B (~2.7GB, NO draft -> spec OFF, n_ubatch 512 / n_ctx 4096). The lean gaming boot loads THIS preset (not llm.preset), on GPU via llm_gpu_layers=-1; the 4B frees ~3-4GB vs the 8B for the game. Round-trip by voice: "switch to 8B" (-> iq3xs spec default), "switch to 2507" (std Qwen3-4B), "switch to the 3.5". Prior: "josiefied-qwen3-8b-iq3xs" (8B IQ3_XS + 0.6B draft, spec ON).
 
 # ---------------------------------------------------------------------------
 # Desktop control (V1-spec gap C3) — voice routing for the OpenClaw
@@ -1896,11 +2052,18 @@ relay_speech:
   # OBS if you want viewers to hear team callouts on a dedicated track).
   # Name substring or PortAudio index. Separate from the EVERYTHING feed above.
   output_device: "Voicemeeter Input"
+  # 2026-07-12: TEAM BUS device-swap toggle is DISABLED (empty) — the device-swap
+  # approach needs a spare VoiceMeeter virtual-input strip routed to B2, and all
+  # three (Input=relay, AUX=OBS, VAIO3=game+Spotify) are in use here. Leaving it
+  # empty hides the stop-window button. (To move Ultron's relay to your mic bus,
+  # the fitting approach is flipping the "Voicemeeter Input" strip's B1<->B2 —
+  # manually, or via the VoiceMeeter Remote API if wired later.)
+  team_bus_alt_device: ""
   rephrase: true              # LLM converts reported speech -> direct address
   llm_route: true             # ULTRON 1.0: route EVERY response through the LLM by default
                               # (curated pools become style examples; the model writes fresh).
                               # Voice: "switch to deterministic callouts" <-> "back to smart callouts".
-  callout_verbosity: "low"         # CALLOUT flavor-tail length: none/low/medium/high/max (2026-06-22: low = a brief cold tag, tight for live play; raise by voice)
+  callout_verbosity: "none"        # CALLOUT flavor-tail length: none/low/medium/high/max (2026-06-23: DEFAULT none = clean callout, NO tail -- a tail 2-3x's the LLM generation+TTS length; raise by voice)
                                    # (none=clean snap, low=+1 word, medium=+short tail, high/max=+more).
                                    # Voice: "<level> flavor" / "callout flavor <level>".
   conversation_verbosity: "low"    # reply length for private/social/non-tactical: low/medium/high/max.
@@ -1917,9 +2080,16 @@ relay_speech:
   # more recall, more false relays). Voice: "turbo balanced" / "turbo aggressive".
   turbo_aggressive: false
   max_line_chars: 360         # ceiling for a full two-sentence reply; trims only at a sentence boundary
-  echo_to_user: true          # ALSO play team callouts on your default speakers
-                              # (local monitor tee -- so YOU hear your own callouts,
-                              # not just teammates/OBS). Hot-applies per callout.
+  # 2026-07-23: back ON per streamer request -- they want to hear team-relay
+  # callouts locally. This tees the relay clip to audio.output_device (VAIO3)
+  # IN ADDITION to it already playing on relay_speech.output_device
+  # ("Voicemeeter Input"). CAUTION: last time this was on, both strips reached
+  # the speakers and every callout played TWICE. As of this edit VAIO3's
+  # VoiceMeeter A-bus (A2) has NO physical device assigned, so VAIO3 is
+  # currently silent either way -- assign a real device to VAIO3's A-bus (or
+  # reroute it) before judging whether the double-audio is back. Hot-applies
+  # per callout, no restart needed.
+  echo_to_user: true
   # Named callouts ("ask Clove to smoke window", "tell Sova to drone
   # sewers", "ask Sage if I can get a heal"). Empty list = the built-in
   # Valorant agent roster; add friend names / other-game callsigns here.
@@ -2011,6 +2181,29 @@ testing_mode:
   enabled: false
 
 # ---------------------------------------------------------------------------
+# Semantic command router — embedding sidecar placement.
+# ---------------------------------------------------------------------------
+# Everything else in SemanticRouterConfig keeps its schema default; this
+# section exists only to place the embedder's model.
+semantic_router:
+  # The embedding model (isolated venv + separate process on 127.0.0.1:8772)
+  # is injected as CUDA_VISIBLE_DEVICES into the child, which then sees that
+  # card as its own "cuda:0" -- no sidecar-side code change. null = inherit
+  # this process's environment (every visible GPU).
+  #
+  # 2026-07-26: set to null, and here is why it does not matter. The schema
+  # default for ``sidecar_device`` is "cpu", and the orchestrator forwards it
+  # as KENNING_EMBEDDER_DEVICE, which short-circuits embedder_server.py's
+  # device pick -- so the embedding model has ALWAYS run on the CPU and this
+  # knob only ever set CUDA_VISIBLE_DEVICES on a child that allocates no CUDA.
+  # PROVEN by measurement: moving it card 1 -> card 0 left card 1's python
+  # GPU total at exactly 3573 MB, unchanged. Leaving it non-null made the boot
+  # log claim "embedder sidecar pinned to GPU N", which is false and cost real
+  # time during the 07-26 VRAM audit. Set an index ONLY if sidecar_device is
+  # also changed to "cuda".
+  sidecar_gpu_index: null
+
+# ---------------------------------------------------------------------------
 # Evolution (catalog 13) — bounded autonomous self-improvement.
 # ---------------------------------------------------------------------------
 # Kenning observes its own turns, distills repeated success patterns into
@@ -2060,8 +2253,6 @@ error_phrases:
   anthropic_unavailable:
     - "Anthropic's API isn't responding."
     - "I've lost connection to Claude."
-  rvc_unavailable:
-    - "Voice conversion is offline. You'll hear me without the Kenning filter for now."
   openclaw_unavailable:
     - "I'd ask the gateway to handle that, but it's not responding right now."
   piper_unavailable:
@@ -2146,35 +2337,108 @@ safety:
   # writes one JSONL line here.
   audit_log_path: "logs/safety_audit.jsonl"
 
-# ===========================================================================
-# Twitch integration — 2026-06-23 TESTING: all features enabled.
-# Flip individual subsections back to false to disable (twitch.enabled: false
-# = byte-identical to no twitch block at all; the main runtime is unchanged).
-# Guide: docs/twitch_integration/WAKEUP.md. Pydantic extra=forbid -> a typo'd
-# key FAILS boot; run scripts/validate_config.py after editing. All omitted
-# keys use the schema defaults (config.py TwitchConfig).
-# Setup: python scripts/twitch_setup.py --client-id <ID> --identity broadcaster
-#        python scripts/twitch_setup.py --client-id <ID> --identity bot
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Twitch integration — ALL default-OFF; main runtime unchanged until enabled.
+# Your creds, preserved from your working config. determined-sutherland is now
+# MERGED, so safety.guard_model_path is uncommented (the schema supports it).
+# To go live: mint tokens (scripts/twitch_setup.py for broadcaster + bot), then
+# flip enabled: true; once the guard /canary passes, flip chat.reply_enabled: true.
+# (The committed config.yaml ships a placeholder template; THIS copy with your
+# creds stays uncommitted/local — never pushed.)
+# ---------------------------------------------------------------------------
 twitch:
-  enabled: true                   # MASTER switch. true => boot auto-spawns read/guard/write sidecars + overlay + redeem router + moderation + chat loop (ports 8773-8777)
+  enabled: true                          # 2026-06-23: re-enabled after the sidecar self-reap root-cause fix (venvlauncher ancestor-skip in reap_stray_sidecars)
   auth:
-    client_id: ""                 # public Twitch app client id (dev.twitch.tv/console/apps, Device Code Grant) — NOT a secret
-    broadcaster_login: ""         # your channel login
-    bot_login: ""                 # a DEDICATED bot account login (Chat-Bot badge transparency)
-    # token VALUES live in ~/.kenning/twitch.json + twitch_bot.json (gitignored) — minted by scripts/twitch_setup.py, never in config
+    client_id: "9jhwnwcd0je017i9937mjizvw0xv9b"
+    broadcaster_login: "1v9khan"
+    bot_login: "ultron_kenning"
   safety:
-    guard_model_path: ""          # GGUF for the non-abliterated guard, e.g. E:/UltronModels/Llama-Guard-3-1B.Q5_K_M.gguf. EMPTY => the guard sidecar is skipped => chat-reply CANNOT enable
-    # tau_review/tau_deflect/tau_block default 0.25/0.55/0.80 (heuristic) — calibrate on your real chat
+    guard_model_path: "E:/UltronModels/Llama-Guard-3-1B.Q5_K_M.gguf"
+    guard_family: "llama-guard"
+    # 2026-07-23: guard BACK ON GPU (-1) per streamer -- the CPU guard was going
+    # unhealthy (fail-closed -> chat replies disabled). The 2026-07-09 CPU move
+    # was to dodge a GPU CUDA-crash under VRAM pressure while Valorant shared this
+    # card; the machine move put Valorant on the OTHER PC, so on a CLEAN boot
+    # there is ~5 GB free (Ultron ~7 GB of 12 GB) -- ample for the 1B Q5 guard
+    # (~1.5 GB w/ its CUDA context). REQUIRES A CLEAN RESTART: fully quit Ultron,
+    # kill any stray python holding the GPU (the restart-churn stray guard is the
+    # likely trigger of the "guard down"), then relaunch. Revert to 0 (CPU) if the
+    # GGML_ASSERT pool crash returns or VRAM spikes past ~10.5 GB.
+    # 2026-07-24 (user direction): guard BACK TO CPU (0). The 4B target moved
+    # onto device 1 (llm.gpu_index: 1) and the two cannot both fit there --
+    # 4B ~4.0 GB + Whisper ~2.3 + Kokoro 0.33 + embedder ~0.9 + guard ~1.5
+    # would be ~9 GB against ~7.8 GB usable. The guard is the right thing to
+    # evict: chat moderation is latency-tolerant (a 1B on CPU is ~100-300 ms).
+    # WATCH FOR: the 2026-07-23 note above moved it to GPU precisely because
+    # the CPU guard was going unhealthy -> fail-closed -> chat replies OFF. If
+    # that returns, raise guard_threads before reverting -- and if it still
+    # misbehaves, put the 4B back on device 0 (llm.gpu_index: 0) and the guard
+    # back on the GPU (-1).
+    guard_gpu_layers: 0
+    # 2026-07-24 multi-GPU: which card the guard may use IF it is ever put
+    # back on the GPU (guard_gpu_layers != 0) -- inert while it runs on CPU.
+    # Injected as CUDA_VISIBLE_DEVICES into the sidecar process, so it sees
+    # exactly one card, which also stops its own llama.cpp from
+    # layer-splitting across both.
+    sidecar_gpu_index: 1
   chat:
-    reply_enabled: true           # Ultron speaks to chat. Requires guard /canary pass + LLM loaded (fail-CLOSED)
-    allow_during_ranked: false    # strongest mitigation — leave OFF (Ultron can't read game state)
-  moderation:
-    voice_commands_enabled: true  # "ban <chatter>" -> spoken read-back -> "yes" -> Helix ban/timeout
+    reply_enabled: true                  # 2026-06-23: TESTING — Ultron speaks to chat
+    allow_during_ranked: false           # keep OFF — can't read game state
+    commands_panel_enabled: false        # 2026-07-09 flood fix: OFF — the commands list is PINNED now (the pinboard posts it once and keeps it pinned; !ultron still prints it on demand)
+    commands_panel_interval_minutes: 15  # (unused while the poster is off)
+    commands_panel_doc_url: "https://docs.google.com/document/d/1AM89vS_8LmPtQtBSTlOqgyHjwG4Ey5SukkEuVZBhiUc/edit?usp=sharing"
+    talk_hint_enabled: true              # the ONE periodic chat reminder left (2026-07-09 flood fix)
+    talk_hint_interval_minutes: 20       # 2026-07-09: every 20 minutes (streamer request; was 10)
+    song_hint_enabled: false             # 2026-07-09 flood fix: OFF — !song/!album live on the pinned commands message (explicit so a pre-merge restart de-floods too)
+    talk_hint_text: "💬 Just type \"Ultron\" followed by a statement or question and he will talk to you!"
+    # 2026-07-11: NEW-MESSAGE SOUND ALERT — ping the speakers when a REAL viewer
+    # types (glance-at-chat cue). Single-quoted so the Windows backslashes are
+    # literal. Volume is the PING VOL slider on the stop button (persists).
+    chat_alert_enabled: true
+    # 2026-07-23: moved up out of the "twitch sounds" subfolder (that folder does
+    # not exist on this machine, so the decode failed at boot and the ping was
+    # silently disabled). Single-quoted so the backslashes stay literal.
+    chat_alert_sound_path: 'C:\Users\alecf\Music\twitch-bits-donation-sound-effect-sfx.mp3'
+    # 2026-07-23: match audio.output_device so the ping lands on the SAME strip
+    # you hear Ultron on ("Voicemeeter In 2" -> the Stereo Input 2 strip), rather
+    # than a separate Realtek endpoint. Keep these two in sync if either moves.
+    chat_alert_device: 'Voicemeeter In 2'
   economy:
-    enabled: true                 # currency ledger + channel-point redeem->game router
-    chat_commands_enabled: true   # !gamble / !slots / !points / !balance / !leaderboard / !trivia
+    enabled: true                        # 2026-06-23: TESTING — ledger + games live
+    streamelements_enabled: true         # 2026-06-26: ONE economy — !points/!gamble/etc. read+write StreamElements loyalty points (creds ~/.kenning/streamelements.json)
+    currency_name: "Credits"             # 2026-06-26: streamer renamed (was "one taps")
+    chat_commands_enabled: true          # !slots / !wheel / !heist / !duel / !raffle / !give / !trivia / !leaderboard (SE answers !points + !gamble)
+    defer_points_gamble_to_streamelements: true   # 2026-06-26: SE's bot already answers !points + !gamble — Ultron stays silent on those two to avoid double replies
+    trivia_auto_interval_minutes: 15      # every 15 minutes (0 disables)
   overlay:
-    enabled: true                 # OBS Browser Source server on :8775 (token-gated URL printed at boot)
+    enabled: true                        # 2026-06-23: TESTING — OBS Browser Source
+    port: 8775
   speak_to_team:
-    enabled: true                 # AT-4 — chat phrases reaching your TEAM voice (tier_a_allowlist only)
+    enabled: true                        # 2026-06-23: TESTING — AT-4 allowlist-only
+  redeem_speak:
+    # 2026-06-26: two channel-point redeems that let a VIEWER make Ultron SPEAK
+    # their own (Llama-Guard-screened, sanitized, framed) message via TTS. Needs
+    # economy.enabled (the redeem router) above. Create two Custom Rewards in the
+    # Twitch dashboard titled EXACTLY the two titles below, turn ON "Require
+    # Viewer to Enter Text", set the costs (cheaper for "ultron says", pricier for
+    # "ultron tells my team"), and tick "Skip the reward requests queue".
+    enabled: true                        # master switch for BOTH speak redeems
+    say_reward_title: "Make Ultron Speak"      # broadcast-bus speak (cheaper) — streamer speakers + OBS bus + chat
+    team_reward_title: "Make Ultron Speak To My Team"   # team-voice-bus speak (pricier)
+    team_enabled: true                   # 2026-06-26: ENABLED per streamer — team redeem speaks guard-screened viewer text to teammates (off during ranked)
+    disabled_during_ranked: true         # never speak the team redeem during ranked
+    max_chars: 200                       # legacy shared cap; fallback when the per-bus caps are unset
+    say_max_chars: 120                   # 2026-06-26: broadcast-bus "say" input cap (chars) — enforced server-side (Twitch has no per-reward input-length field)
+    team_max_chars: 80                   # 2026-06-26: team-bus input cap (chars; tighter than say)
+    team_safety_prepass: true            # 2026-06-26: SECOND screen on team redeem — Qwen-4B PASS/BLOCKED classifier on TOP of Llama-Guard (fail-closed)
+    announce_blocked_in_chat: true       # brief chat note when a message is blocked as unsafe
+  raid:
+    # 2026-06-26: incoming-raid handling. When another channel RAIDS this one,
+    # Ultron VOCALLY announces it on the STREAM bus (announce + thank the raider +
+    # welcome the raiders + hope they stick around + introduce himself + how to
+    # chat with him) and auto-issues a Helix /shoutout to the raider. Detection is
+    # the read sidecar's channel.raid subscription; the /shoutout needs the
+    # moderator:manage:shoutouts scope on the broadcaster token (re-mint via
+    # scripts/twitch_setup.py --identity broadcaster).
+    enabled: true                        # raid detect + vocal announce + shoutout
+    shoutout_enabled: true               # auto /shoutout the raider (fail-open)

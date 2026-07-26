@@ -200,7 +200,7 @@ def make_output_stream(
                 **base, latency="low",
                 extra_settings=sd.WasapiSettings(auto_convert=True),
             )
-        except Exception as e:                                   # noqa: BLE001
+        except Exception as e:                               # noqa: BLE001
             logger.debug(
                 "WASAPI low-latency open failed for device %s (%s); "
                 "falling back", device, e,
@@ -208,7 +208,7 @@ def make_output_stream(
     # 2. Generic low-latency hint (MME / DirectSound honour it).
     try:
         return sd.OutputStream(**base, latency="low")
-    except Exception as e:                                       # noqa: BLE001
+    except Exception as e:                                   # noqa: BLE001
         logger.debug(
             "low-latency open failed for device %s (%s); using default",
             device, e,

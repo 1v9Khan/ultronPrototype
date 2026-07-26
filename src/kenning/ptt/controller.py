@@ -251,15 +251,20 @@ def build_ptt_controller(config=None, *, enabled=None, serial_port=None) -> PttC
                 "the key (no synthetic input on either machine)", host, port_n,
             )
             return _mk(net_backend)
-        try:
-            net_backend.close()
-        except Exception:  # noqa: BLE001
-            pass
+        # SELF-HEAL (2026-07-26): keep the NETWORK backend wired instead of
+        # swapping in a permanent null. The old behaviour froze PTT for the
+        # whole session on a single boot-time miss, so a game PC that was
+        # still starting -- or an agent task that restarted -- meant no PTT
+        # until Ultron itself was restarted. NetworkPttBackend.available
+        # re-probes while down and arms itself when the agent appears; until
+        # then press/release are fire-and-forget UDP to a dead peer, which is
+        # inert in exactly the same way the null backend was.
         logger.warning(
             "push-to-talk ENABLED (network) but the agent at %s:%d is not "
-            "answering -- PTT INERT (no synthetic-input fallback).", host, port_n,
+            "answering YET -- PTT inert (no synthetic-input fallback). Will "
+            "re-probe and arm itself if the agent comes up.", host, port_n,
         )
-        return _mk(NullPttBackend())
+        return _mk(net_backend)
 
     # RAW HID path (the HARDENED HID-only device -- no COM port). Tried first
     # under "auto" since that device has no serial port to find.

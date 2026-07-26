@@ -491,7 +491,9 @@ class TestRelayRouteInfo:
 
 
 class TestUsageLogFlow:
-    def test_trace_turn_flow_gated_and_writes_jsonl(self, tmp_path, monkeypatch) -> None:
+    def test_trace_turn_flow_always_writes_jsonl(self, tmp_path, monkeypatch) -> None:
+        # 2026-07-23: the full-flow capture is ALWAYS ON (was testing-mode
+        # gated) so live sessions can be audited for misroutes/repetition.
         import json
         import importlib
         from kenning.safety import testing_mode
@@ -500,20 +502,12 @@ class TestUsageLogFlow:
         monkeypatch.chdir(tmp_path)
         trace_file = tmp_path / "logs" / "usage_trace.jsonl"
 
-        # OFF -> no-op (no file written)
+        # Testing mode OFF -> a full-flow record is STILL appended
         testing_mode.set_testing_mode_active(False)
-        try:
-            o._trace_turn_flow(raw="two on A", route="snap", final="Two on A.",
-                               channel="team_mic")
-            assert not trace_file.exists()
-            # ON -> a full-flow record is appended
-            testing_mode.set_testing_mode_active(True)
-            o._trace_turn_flow(raw="two on A", route="snap",
-                               reason="deterministic snap callout",
-                               final="Two on A. A flaw.", channel="team_mic",
-                               payload="two on A", addressee="team")
-        finally:
-            testing_mode.set_testing_mode_active(False)
+        o._trace_turn_flow(raw="two on A", route="snap",
+                           reason="deterministic snap callout",
+                           final="Two on A. A flaw.", channel="team_mic",
+                           payload="two on A", addressee="team")
         assert trace_file.exists()
         rec = json.loads(trace_file.read_text(encoding="utf-8").splitlines()[-1])
         assert rec["raw"] == "two on A"
@@ -521,6 +515,45 @@ class TestUsageLogFlow:
         assert rec["final"] == "Two on A. A flaw."
         assert rec["channel"] == "team_mic"
         assert "ts" in rec
+
+        # Testing mode ON still writes too (no regression)
+        testing_mode.set_testing_mode_active(True)
+        try:
+            o._trace_turn_flow(raw="rotate B", route="snap",
+                               final="Rotating B.", channel="team_mic")
+        finally:
+            testing_mode.set_testing_mode_active(False)
+        rec = json.loads(trace_file.read_text(encoding="utf-8").splitlines()[-1])
+        assert rec["raw"] == "rotate B"
+
+    def test_trace_turn_flow_recovers_raw_stt_from_stash(
+            self, tmp_path, monkeypatch) -> None:
+        # Conversational callers pass the POST-normalization text as ``raw``;
+        # the per-turn stash (_current_raw_stt) recovers the true transcript
+        # so the record carries the pre/post pair.
+        import json
+        import importlib
+        orch = importlib.import_module("kenning.pipeline.orchestrator")
+        o = orch.Orchestrator.__new__(orch.Orchestrator)  # bare, no __init__
+        monkeypatch.chdir(tmp_path)
+        trace_file = tmp_path / "logs" / "usage_trace.jsonl"
+
+        o._current_raw_stt = "Ultron, what is the meaning of life?"
+        o._trace_turn_flow(raw="what is the meaning of life?",
+                           route="conversational_llm",
+                           reason="intent=none -> persona LLM",
+                           final="Purpose is a cage.", channel="desktop")
+        rec = json.loads(trace_file.read_text(encoding="utf-8").splitlines()[-1])
+        assert rec["raw"] == "Ultron, what is the meaning of life?"
+        assert rec["normalized"] == "what is the meaning of life?"
+        assert rec["final"] == "Purpose is a cage."
+
+        # An explicit normalized= from the caller wins over the stash
+        o._trace_turn_flow(raw="tell my team two on A", normalized="two on A",
+                           route="relay", final="Two on A.", channel="team_mic")
+        rec = json.loads(trace_file.read_text(encoding="utf-8").splitlines()[-1])
+        assert rec["raw"] == "tell my team two on A"
+        assert rec["normalized"] == "two on A"
 
 
 # ===========================================================================

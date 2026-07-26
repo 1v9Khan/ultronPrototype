@@ -1229,11 +1229,15 @@ def test_relay_generation_is_fully_isolated() -> None:
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        # The live leak, verbatim shape.
-        ("Clove, smoke window. / no_think", "Clove, smoke window."),
-        ("Rotate B now. /no_think", "Rotate B now."),
-        ("Push A together./think", "Push A together."),
-        ("Team: save round <|im_end|>", "save round"),
+        # The live leak, verbatim token shapes. 2026-07-23: the fixture lines
+        # are now PAYLOAD-FAITHFUL ("they are bots") -- the old tactical
+        # fixtures ("Clove, smoke window.") were exactly the invented-comms
+        # shape the fact guard now abstains on (battery turn=35), which is
+        # the guard working, not the strip failing.
+        ("They are bots. / no_think", "They are bots."),
+        ("They are bots. /no_think", "They are bots."),
+        ("They are bots./think", "They are bots."),
+        ("Team: they are bots <|im_end|>", "they are bots"),
     ],
 )
 def test_control_tokens_never_reach_the_spoken_line(

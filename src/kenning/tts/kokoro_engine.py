@@ -50,6 +50,27 @@ from kenning.utils.logging import get_logger
 logger = get_logger("tts.kokoro")
 
 
+def _is_cuda_device(device: Optional[str]) -> bool:
+    """True for ``"cuda"`` and any explicit ``"cuda:N"`` (2026-07-24).
+
+    The engine compared device strings with ``== "cuda"``, which silently
+    misclassified an indexed device -- so a ``cuda:1`` teardown skipped its
+    ``empty_cache`` and leaked the reservation on the secondary card.
+    """
+    d = (device or "").strip().lower()
+    return d == "cuda" or d.startswith("cuda:")
+
+
+def _is_valid_torch_device(device: Optional[str]) -> bool:
+    """True for ``"cpu"``, ``"cuda"``, or ``"cuda:<int>"``."""
+    d = (device or "").strip().lower()
+    if d == "cpu" or d == "cuda":
+        return True
+    if d.startswith("cuda:"):
+        return d[5:].isdigit()
+    return False
+
+
 # Process-global LIVE mute override (tri-state): None = defer to config;
 # True/False = an instant override set by the GUI's quick MUTE / UNMUTE
 # buttons. This is the FAST path -- flipping it silences the next clip onward
@@ -457,9 +478,10 @@ class KokoroSpeech:
         rendered to int16) so they keep playing without reload.
 
         Args:
-            device: ``"cpu"`` or ``"cuda"``. No-op when already there.
+            device: ``"cpu"``, ``"cuda"``, or an explicit ``"cuda:N"``
+                (2026-07-24 multi-GPU). No-op when already there.
         """
-        if device not in ("cpu", "cuda"):
+        if not _is_valid_torch_device(device):
             raise ValueError(f"Kokoro move_to_device: unknown device {device!r}")
         with self._model_lock:
             if device == self.device and self._loaded:
@@ -476,8 +498,8 @@ class KokoroSpeech:
                             "Kokoro: moved model %s -> %s in place",
                             prior_device, device,
                         )
-                        if prior_device == "cuda" and device == "cpu":
-                            self._try_empty_cuda_cache()
+                        if _is_cuda_device(prior_device) and device == "cpu":
+                            self._try_empty_cuda_cache(prior_device)
                         return
                     except Exception as e:                        # noqa: BLE001
                         logger.warning(
@@ -489,19 +511,30 @@ class KokoroSpeech:
             self._model = None
             self._loaded = False
             self._load_error = None
-            if prior_device == "cuda":
-                self._try_empty_cuda_cache()
+            if _is_cuda_device(prior_device):
+                self._try_empty_cuda_cache(prior_device)
             logger.info(
                 "Kokoro: torn down (was %s); next synth lazy-loads on %s",
                 prior_device, device,
             )
 
     @staticmethod
-    def _try_empty_cuda_cache() -> None:
-        """Best-effort ``torch.cuda.empty_cache()`` (silent on failure)."""
+    def _try_empty_cuda_cache(device: Optional[str] = None) -> None:
+        """Best-effort ``torch.cuda.empty_cache()`` (silent on failure).
+
+        ``device`` (2026-07-24 multi-GPU): free the caching allocator on the
+        card the model actually vacated -- ``empty_cache`` only releases the
+        CURRENT device, so on a two-GPU box an un-scoped call would leave the
+        secondary card's blocks reserved.
+        """
         try:
             import torch
-            if torch.cuda.is_available():
+            if not torch.cuda.is_available():
+                return
+            if device and ":" in device:
+                with torch.cuda.device(device):
+                    torch.cuda.empty_cache()
+            else:
                 torch.cuda.empty_cache()
         except Exception:
             pass
@@ -715,6 +748,41 @@ class KokoroSpeech:
         if clip[0].size > 0 and not self._stop_event.is_set():
             self._play(clip)
 
+    @staticmethod
+    def _resolve_configured_output_device():
+        """Resolve ``audio.output_device`` to a PortAudio index, or ``None``.
+
+        2026-07-23 machine-move fix: every speaker-path ``sd.OutputStream``
+        here was opened WITHOUT a ``device=`` argument, so normal conversation
+        always played to the WINDOWS DEFAULT output and ``audio.output_device``
+        was silently ignored (only the relay echo tee in
+        ``kenning.audio.monitor`` honored it). On the old machine the default
+        happened to be the right speakers; on this one it is a speakerless
+        monitor, which made every conversational reply inaudible locally while
+        the OBS broadcast mirror (an explicit-device path) kept working.
+
+        Resolved per stream-open (LIVE from the cached config, so settings-GUI
+        edits apply without restart). ``None``/empty/failure -> ``None`` ->
+        the caller omits ``device=`` and PortAudio uses the system default --
+        the exact pre-fix behaviour, so this fails OPEN and can never make
+        speech worse than it was.
+        """
+        try:
+            from kenning.config import get_config
+
+            name = getattr(get_config().audio, "output_device", None)
+            if not name:
+                return None
+            from kenning.audio.devices import resolve_device
+
+            return resolve_device(name, kind="output")
+        except Exception as e:  # noqa: BLE001 - device trouble must never kill speech
+            logger.warning(
+                "audio.output_device resolution failed (%s) -- speaker path "
+                "falling back to the system default output", e,
+            )
+            return None
+
     def prepare_output_stream(self) -> None:
         """Pre-open the PortAudio output device.
 
@@ -728,11 +796,13 @@ class KokoroSpeech:
             if self._preopened_stream is not None:
                 return
             try:
-                import sounddevice as sd
-                stream = sd.OutputStream(
-                    samplerate=self._sample_rate,
-                    channels=2,
-                    dtype="int16",
+                # Through the shared chokepoint (WASAPI auto_convert lets the
+                # 24 kHz clip open a 48 kHz VoiceMeeter endpoint; raw
+                # sd.OutputStream(device=...) rejects it with PaError -9997).
+                from kenning.audio.devices import make_output_stream
+                stream = make_output_stream(
+                    self._resolve_configured_output_device(),
+                    self._sample_rate, 2, "int16",
                 )
                 stream.start()
                 # 50 ms silence write wakes the device clock.
@@ -845,6 +915,17 @@ class KokoroSpeech:
                     pause_ms = 180
 
                 item = first_item
+                # 2026-07-26 latency: the first clip is in hand and about to be
+                # written -- this is "first audio" as the user perceives it, and
+                # the one honest endpoint for the per-turn latency report. Marked
+                # HERE rather than in the orchestrator because speak_stream
+                # returns only after the LAST sentence drains, which would
+                # measure the length of the reply instead of the wait before it.
+                try:
+                    from kenning import trace as _trace
+                    _trace.mark("first_audio")
+                except Exception:                                    # noqa: BLE001
+                    pass
                 while True:
                     if self._stop_event.is_set():
                         return
@@ -1245,8 +1326,12 @@ class KokoroSpeech:
                 stream = self._consume_preopened_stream(sr)
                 opened_here = False
                 if stream is None:
-                    stream = sd.OutputStream(
-                        samplerate=sr, channels=2, dtype="int16",
+                    # Shared chokepoint: WASAPI auto_convert for 24k on a
+                    # 48 kHz VoiceMeeter endpoint (raw open -> PaError -9997).
+                    from kenning.audio.devices import make_output_stream
+                    stream = make_output_stream(
+                        self._resolve_configured_output_device(),
+                        sr, 2, "int16",
                     )
                     stream.start()
                     opened_here = True
@@ -1454,17 +1539,22 @@ class KokoroSpeech:
         return np.column_stack((pcm, pcm)).astype(np.int16, copy=False)
 
     def _open_output_stream(self, sr: int, low_latency: bool):
-        """Open a fresh sounddevice OutputStream at ``sr``.
+        """Open a fresh output stream at ``sr`` on the configured device.
 
-        Honors ``tts.output_low_latency_mode`` for the PortAudio
-        ``latency='low'`` hint (saves 30-100 ms OS-buffering on most
-        Windows hosts; falls back gracefully if the host ignores it).
+        2026-07-23: routed through :func:`kenning.audio.devices.make_output_stream`
+        (the shared chokepoint the relay + OBS/monitor mirrors already use) so
+        ``audio.output_device`` is honored AND a 24 kHz clip can open a 48 kHz
+        WASAPI VoiceMeeter endpoint via ``WasapiSettings(auto_convert=True)`` --
+        a raw ``sd.OutputStream(device=...)`` open rejects that with
+        ``PaErrorCode -9997`` (Invalid sample rate). The chokepoint's laddered
+        strategy (WASAPI-low -> latency='low' -> plain default) subsumes the
+        ``low_latency`` flag; the parameter is kept for call-site compatibility.
         """
-        import sounddevice as sd
-        kwargs = dict(samplerate=sr, channels=2, dtype="int16")
-        if low_latency:
-            kwargs["latency"] = "low"
-        return sd.OutputStream(**kwargs)
+        del low_latency  # subsumed by make_output_stream's laddered strategy
+        from kenning.audio.devices import make_output_stream
+        return make_output_stream(
+            self._resolve_configured_output_device(), sr, 2, "int16",
+        )
 
     @staticmethod
     def _write_silence(stream, sr: int, seconds: float) -> None:

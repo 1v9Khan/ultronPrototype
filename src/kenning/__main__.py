@@ -94,10 +94,47 @@ def _ensure_utf8_stdio() -> None:
                 pass
 
 
+def _ensure_project_root_on_path() -> None:
+    """Make the repo-root ``config`` package importable without PYTHONPATH.
+
+    Several modules still do ``from config import settings`` against the
+    legacy root package at ``<repo>/config/`` (not ``kenning.config``).
+    An editable install only puts ``src/`` on sys.path, so launching
+    ``python -m kenning`` from another cwd fails with
+    ``ModuleNotFoundError: No module named 'config'`` unless PYTHONPATH
+    includes the repo root. Prepend it once at entry so a bare
+    ``.venv\\Scripts\\python.exe -m kenning`` works from any directory.
+    """
+    # src/kenning/__main__.py -> parents: kenning, src, repo root
+    from pathlib import Path
+
+    root_s = str(Path(__file__).resolve().parent.parent.parent)
+    if root_s not in sys.path:
+        sys.path.insert(0, root_s)
+
+
 def main() -> int:
     _ensure_utf8_stdio()
+    _ensure_project_root_on_path()
     configure_logging()
     logger = get_logger("main")
+
+    # CRASH FLIGHT RECORDER (2026-07-26, OPT-IN; KENNING_FLIGHT_RECORDER=1
+    # enables): snapshots every thread's stack to <root>/logs/_flight_A|B.txt
+    # at 5 Hz so a silent native fastfail (0xc0000409 -- no traceback, no
+    # stderr, no WER dump on this box) still leaves the last ~200 ms of
+    # per-thread state on disk. Stdlib-only. The path is ABSOLUTE: it was
+    # relative for one round and a real crash's snapshot went to whatever
+    # cwd the launch used, so the evidence was lost.
+    try:
+        from kenning.flight_recorder import maybe_start_from_env
+        if maybe_start_from_env():
+            from kenning.flight_recorder import resolved_dir
+            logger.info("flight recorder ON -> %s\_flight_A|B.txt "
+                        "(5 Hz all-thread stack snapshots)",
+                        resolved_dir() or "?")
+    except Exception as _fr_e:                                   # noqa: BLE001
+        logger.debug("flight recorder unavailable: %s", _fr_e)
 
     # 2026-06-19: flavor tails OFF by DEFAULT for the running app -- crisp,
     # tail-free callouts for competitive play ("Group up." not "Group up, but

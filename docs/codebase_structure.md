@@ -10,6 +10,96 @@
 > **Maintenance contract:** this file is the operating manual. Keep it
 > current — see "Maintenance contract" at the bottom.
 >
+> ## 🎛️ GPU TOPOLOGY — TWO CARDS (2026-07-24)
+>
+> The streaming PC runs **two** NVIDIA GPUs (the single-GPU "RTX 4070 Ti"
+> line elsewhere in the canon predates the 2026-07-20 machine move):
+> - **device 0 — RTX 3060 12 GB (x16):** Ultron's LLM *and nothing else*.
+> - **device 1 — RTX 3060 Ti 8 GB (x4):** every other VRAM tenant.
+>
+> **⚠ CUDA GRAPHS ARE DISABLED (`GGML_CUDA_DISABLE_GRAPHS=1`).** Set in
+> `kenning/__init__` before any CUDA touch. With Gemma 4 12B, three
+> instrumented boots died at the *identical* point — the first large
+> (~690-token) prefill, where ggml captures its CUDA graph — with a silent
+> `0xc0000409`: no traceback, no stderr, no WER dump, and **no debug event
+> even under first-chance procdump** (the signature of a C++ exception
+> escaping a native thread into `terminate()`). A faulthandler dump showed
+> the aborting thread had *no Python frame* and that no thread was inside
+> llama.cpp/Whisper/Kokoro — exonerating every model. Cause: CUDA stream
+> capture forbids CUDA calls from other threads process-wide, and in the
+> live app (never in a standalone bench) Whisper is still allocating on
+> `cuda:1` during that prefill — wake → transcribe → prefill overlap. Costs
+> a few percent of decode. Nine synthetic reproductions all survived, so
+> **do not attempt to re-enable graphs on bench evidence alone.**
+> Crash-hunt tooling: `kenning/flight_recorder.py`
+> (`KENNING_FLIGHT_RECORDER=1` → 5 Hz all-thread stacks to
+> `logs/_flight_A|B.txt`, stdlib-only, default OFF).
+>
+> **⚠ CUDA INDEX ≠ nvidia-smi INDEX.** CUDA enumerates with
+> `FASTEST_FIRST` by default; nvidia-smi uses PCI bus order. The Ti
+> benchmarks faster, so CUDA called it **device 0** while nvidia-smi calls
+> the 12 GB card 0 — inverting every placement knob in the project.
+> Measured 2026-07-24: a model pinned to "device 0" loaded onto the 8 GB Ti
+> and OOM'd on its KV cache while the 12 GB card sat idle. `kenning/__init__`
+> now sets `CUDA_DEVICE_ORDER=PCI_BUS_ID` **before any CUDA call**, so an
+> index in config means the card nvidia-smi shows. When debugging placement,
+> confirm the card NAME (`torch.cuda.get_device_properties(i).name`) — never
+> trust the bare index.
+>
+> **The pin is load-bearing.** llama.cpp defaults to
+> `split_mode=LAYER`, which spreads layers + KV across *every visible*
+> CUDA device — so installing a second card silently relocates part of
+> the model onto it and pushes each token's forward pass over the
+> secondary slot's x4 link. `llm.gpu_index` (default `0`) pins the model
+> via `main_gpu` + `split_mode=NONE`; `null` restores the split for a
+> target too large for one card.
+>
+> | Tenant | Knob | Placement seam |
+> |---|---|---|
+> | LLM (target) | `llm.gpu_index: 0` | `inference.py` → `llama_kwargs["main_gpu"/"split_mode"]` |
+> | LLM (spec-decode draft) | `llm.draft_gpu_index: null` | `draft_model._draft_gpu_kwargs` |
+> | Whisper STT | `stt.device_index: 1` | `whisper_engine` → `WhisperModel(device_index=)` |
+> | Kokoro TTS | `tts.kokoro.device: "cuda:1"` | torch `.to()`; `_is_cuda_device` / `_is_valid_torch_device` |
+> | Twitch guard sidecar | `twitch.safety.sidecar_gpu_index: 1` | `CUDA_VISIBLE_DEVICES` in the child env |
+> | Embedder sidecar | `semantic_router.sidecar_gpu_index: 1` | `CUDA_VISIBLE_DEVICES` in the child env |
+>
+> Child processes are placed by **masking** (`CUDA_VISIBLE_DEVICES`), not
+> by an index argument: the sidecar sees exactly one card as its own
+> `cuda:0`, needs no code change, and its own llama.cpp cannot
+> layer-split either. In-process tenants (Whisper, Kokoro) must use
+> explicit indices instead — they share the parent process with the LLM,
+> so masking there would move the model too.
+>
+> Draft-on-a-different-card is cheap where a layer split is not:
+> target/draft exchange only **token IDs**, not per-layer activations, so
+> the x4 link is off the critical path. That is the headroom lever for a
+> larger target model. Contract pinned by `tests/test_gpu_placement.py`.
+>
+> **Placement is PER-PRESET (2026-07-24).** `gpu_index` lives in the
+> `LLM_PRESETS` entry, so each model loads on the card it was sized for and
+> a preset swap (voice model-switch / `swap_llm_preset.py`) relocates it
+> automatically:
+>
+> | Preset | Card | Notes |
+> |---|---|---|
+> | `heretic-qwen3-4b-q6` / `-q5` | 1 | shares device 1 with the audio tenants (~7.5 GB of ~7.8 GB) — the twitch guard must run on CPU while active |
+> | `gemma-4-12b-heretic` | 0 | 12 GB card alone; drafts with the on-disk Gemma 3 1B |
+> | everything else | 0 | schema default |
+>
+> `config.yaml` deliberately leaves `llm.gpu_index` **unset** — `_apply_preset`
+> only fills fields absent from `model_fields_set`, so an explicit YAML value
+> would pin every preset to one card and defeat the mechanism.
+>
+> **Draft/target vocabulary is enforced.** llama-cpp-python's draft path is
+> Python-level: the draft greedy-samples its own logits and hands **raw token
+> IDs** to the target, which verifies them against its own vocabulary — no
+> translation layer. A mismatched tokenizer therefore yields silent garbage,
+> not an error. `draft_model.assert_draft_vocab_matches` compares the two
+> vocab sizes right after the target loads and, on mismatch, logs and clears
+> `llama.draft_model` (speculation off, model still usable) rather than
+> failing the load. This is what makes the Gemma 4 12B ↔ Gemma 3 1B pairing
+> safe to attempt: both share the 262k Gemini SentencePiece vocabulary.
+>
 > ## ⭐ ULTRON 0.1 — STABLE RESTORABLE BASELINE (`816df7c`)
 >
 > **`816df7c` is tagged `ultron-0.1`** — the designated stable, restorable baseline
@@ -92,7 +182,7 @@
 > design default (CPU; "chat moderation is latency-tolerant"); frees ~2-2.5 GB (1B model + the separate
 > process's own CUDA context) and removes the guard CUDA-crash class (it GGML_ASSERT-crashed on GPU after
 > restart churn 2026-07-09). Audit verdict: every other GPU resident (4B F16-KV, Whisper int8_fp16, Kokoro) is
-> a measured latency/quality choice; RVC is config-echo only (never constructed under Kokoro).
+> a measured latency/quality choice (RVC was config-echo only under Kokoro and the whole piper_rvc engine was retired 2026-07-23).
 >
 > **SPEC 12 — VOICE→CHAT TELL RELAY + FIRST-TIME-CHATTER WELCOME (2026-07-09)**
 >
@@ -3309,6 +3399,7 @@ result of every row. Deep narrative lives in the corresponding
 
 | Date | HEAD | Summary | Tests | Memory file |
 |------|------|---------|-------|-------------|
+| 2026-07-26 | (uncommitted) | **Silent `0xc0000409` root-caused + crash-hunt rollback.** Ultron had been dying with a native `__fastfail` that left no traceback, stderr, WER dump or debug event. Root cause: **CTranslate2 (faster-whisper) constructed with `device_index=1` corrupts memory in-process.** Found by `flight_recorder.py` (5 Hz all-thread stack snapshots, absolute path, alternating A/B) — CTranslate2 was mid-decode in every death snapshot; eight synthetic reproductions had all survived. FIX: NEW `scripts/stt_server.py` (out-of-process faster-whisper HTTP server, `CUDA_VISIBLE_DEVICES`-masked onto one card, parent-PID deadman watchdog, `_decode_lock`) + NEW `transcription/sidecar_engine.py` (stdlib-only client shim) + `make_stt_engine` sidecar branch + `Orchestrator._start_stt_sidecar`/`_await_stt_sidecar` + `stt.sidecar_*` config. `stt.device_index` documented as unsafe non-zero. ROLLED BACK (six failed theories, each shipped as 'the fix'): `GGML_CUDA_DISABLE_GRAPHS`, `llm.speculative_llm_enabled`, the PortAudio lifecycle lock (`devices.py` + `capture.py`), the Whisper in-process decode lock, the abandoned-decode warning, the `_reclaim_idle_vram` beacon, the `heretic-qwen3-8b-q6` escape preset, `n_ubatch` 128→256 on both 12B presets, and the `config.yaml` audio-mirror bisect (`broadcast_device`/`echo_to_user` restored). `CUDA_DEVICE_ORDER=PCI_BUS_ID` KEPT (a separate real fix). Flight recorder kept but flipped to OPT-IN (`KENNING_FLIGHT_RECORDER=1`) so the live process is unchanged. `tests/test_gpu_placement.py` re-pins the STT invariant to the sidecar. DECODE PARITY: a live smoke test caught the sidecar returning `'you'` for a pure tone -- it had neither the domain-biasing `initial_prompt` nor the whole-transcript non-speech blocklist. Both extracted to NEW stdlib-only `transcription/_whisper_text.py`, shared by the engine and (loaded BY FILE PATH) the sidecar; the remaining decode knobs (temperature / condition_on_previous_text / vad_filter / domain-bias / initial-prompt override) are forwarded from the parent as `KENNING_STT_*` env. NEW `tests/test_stt_sidecar.py` (10) pins both contracts. VRAM: both 12B presets go `n_ctx` 4096->3072 + `n_ubatch` 256->128 (~473 MiB back on card 0), sized from 935 measured turns (prompt tokens median 251 / p90 810 / max 1074). LATENCY: NEW per-turn stage marks in `trace.py` (`mark`/`mark_at`/`latency_stages`/`latency_line`, keyed by TURN ID in a process-global map so background speculative threads contribute) + `_emit_turn_latency` at all 48 `loop:iteration_end` sites + a `first_audio` mark at kokoro's first PCM write; and the always-listening PRIVATE_REPLY path now STREAMS into `speak_stream` (was `"".join(generate_stream)` + `_speak` = fully serial, ~2.2 s of dead air) by buffering only the first sentence to preserve the fall-through-to-`_respond` contract. NEW `tests/test_trace_latency.py` (7) + `tests/test_private_reply_streaming.py` (11). **SCENARIO ROUTER + PER-SCENARIO PROMPTS:** NEW `audio/scenario_taxonomy.py` (29 scenarios), `audio/scenario_router.py` (one-shot classifier, LLM injected, fail-safe, shadow-by-default), `audio/scenario_prompts.py` (per-scenario directives), `tests/data/routing_corpus.py` (144 labelled cases), `scripts/relay_test/scenario_scorecard.py`; wired into the orchestrator SHADOW-ONLY ahead of the ~24-matcher chain. 4B heretic Q5 measured 97.2% @ 125 ms warm. **PROMPT AUDIT FOR THE 12B:** removed the last "helpful" ban (`_SOCIAL_PERSONA`), made the shared `_PERSONA_CORE` clause context-neutral so RELAY stops being told to answer questions it should relay, and de-callout-ified `_FLAVOR_OFF` which contradicted the SOCIAL directive. | 417 targeted | [silent-fastfail-ctranslate2](file:///C:/Users/alecf/.claude/projects/E--ultronPrototype/memory/silent-fastfail-ctranslate2.md) |
 | 2026-06-21 | `main` (local) | **Enforcement layer WIRED (Option 1) + canon ON MAIN.** The canon (`CLAUDE.md`/`docs/canon/`/`docs/ultron_1_0/CONSTRAINTS.md`) + the live enforcement bundle are committed to **local `main`** so every new worktree/session auto-loads the rules + hooks (kept OFF origin by the pre-push hook). NEW `.claude/settings.json` (deny = real secrets + dangerous-git ONLY; ask = canon-edits/push/installs/curl-wget; **NO** bare-tool deny / **NO** `disableBypassPermissionsMode` → bypass/web/MCP/subagents/worktrees preserved) + 5 fail-open Node hooks `.claude/hooks/*.mjs` (pretool-guard [dangerous-git deny + WebFetch SSRF + BR-P3 one-instance ask] · posttool-advise [advisory ruff/stub/anticheat] · sessionstart-reground · precompact-snapshot · stop-advise). NEW `.github/workflows/enforce.yml` (light runner-agnostic CI backstop). ruff 0.15.18 + mypy 2.1.0 added (`pyproject` `[tool.ruff]`/`[tool.mypy]` ratchet; `orchestrator.py` grandfathered). 40-agent board design of record: `docs/ultron_1_0/02_research/enforcement_synthesis.md`. | green (ruff: orchestrator grandfathered) | [project_enforcement_bundle_2026_06_20.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_enforcement_bundle_2026_06_20.md) |
 | 2026-06-20 | branch `claude/infallible-kepler-0a865d` | **Ultron 1.0 pivot — route-all-through-8B (flag-gated, NOT on main).** Default LLM preset → `josiefied-qwen3-8b` @ `n_ctx 4096` (M0). NEW modules `audio/ultron_prompt.py` (lean ~165-word prompt assembler, M1), `audio/agent_kits.py` (version-stamped 29-agent kit injection, M3), `audio/intent_gate.py` (4-class always-listening gate CLASSIFIER, M5 — not yet loop-wired). `relay_speech` gains the `KENNING_U1_LLM_ROUTE` branch in `build_relay_line` (lean prompt + agent-kit context + compound→one-LLM-call M4) + `match_verbosity_command`/`relay_verbosity` (no/low/high, M2) + `build_private_prompt` fix (M6a). NEW harness `scripts/relay_test/u1_text_harness.py` (text-injection PRIMARY) + `trace_corpus_full.py`. Tests `tests/audio/{test_ultron_prompt,test_u1_llm_route,test_agent_kits,test_intent_gate}.py`. ALL behind `KENNING_U1_LLM_ROUTE` (default OFF) → main behavior unchanged; each increment regression-clean vs the frozen 22-fail baseline. Spec + live status: `docs/ultron_1_0/` (read `00_process_log/STATUS.md` first). | green (22 baseline) | [project_ultron_1_0_pivot.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_ultron_1_0_pivot.md) |
 | 2026-06-19 | `6064e5f` (main) | **Thinking-mode toggle + nice-try flavor parity + E3 snap-early-endpoint.** NEW `relay_speech.thinking_mode_enabled()`/`match_thinking_toggle()` (env `KENNING_THINKING_MODE`, default OFF) gates the LLM on the relay path so compose commands (soundboard/voice-changer/flame/praise) SNAP deterministically on flavor-ON unless thinking is on; `orchestrator._maybe_handle_thinking_toggle` in both dispatch points. `_name_social_snap` names the addressee on the flavor-ON nice-try render (parity). E3 latency: `relay_speech.is_complete_tactical_callout` + `orchestrator._snap_early_endpoint` (`KENNING_SNAP_EARLY_ENDPOINT`, default OFF) close capture early on a complete tactical callout (detail in the validating-HEAD header). | green | [project_thinking_mode_flavor_parity_2026_06_19.md](file:///C:/Users/alecf/.claude/projects/C--STC-ultronPrototype/memory/project_thinking_mode_flavor_parity_2026_06_19.md) |
@@ -3595,7 +3686,9 @@ For the current decisions and Foundation phase status see
 │       │
 │       ├── transcription/          ← STT
 │       │   ├── __init__.py          ← make_stt_engine + make_dual_stt_engines + DualSTTRegistry (2026-05-22) + _build_engine_by_name + _resolved_engine_name
-│       │   ├── whisper_engine.py    ← WhisperEngine (faster-whisper, CUDA fp16)
+│       │   ├── whisper_engine.py    ← WhisperEngine (faster-whisper, CUDA fp16). device_index MUST stay 0 -- see sidecar_engine.py
+│       │   ├── _whisper_text.py     ← 2026-07-26 stdlib-only shared decode rules: DOMAIN_PROMPT (Valorant biasing), WHISPER_HALLUCINATIONS blocklist, build_initial_prompt/is_whisper_hallucination. Imported by whisper_engine AND (by FILE PATH, skipping the package __init__ chain) by scripts/stt_server.py, so both STT paths decode identically.
+│       │   ├── sidecar_engine.py    ← 2026-07-26 SidecarWhisperEngine: stdlib-only HTTP client for scripts/stt_server.py. THE fix for the silent 0xc0000409 -- CTranslate2 on a non-default in-process CUDA device corrupts memory, so STT runs out-of-process on a GPU masked by CUDA_VISIBLE_DEVICES (target card = plain cuda:0 in the child). Fails open to "".
 │       │   ├── moonshine_engine.py  ← MoonshineEngine (CPU, streaming-native via moonshine-voice C++ lib); 2026-05-22 streaming protocol w/ background worker chunk-feed; 2026-06-12 clear_stream_cache() drops the stashed final-stream transcript on follow-up abort paths (discarded captures never leak into the next transcribe)
 │       │   └── parakeet_engine.py   ← ParakeetEngine (NeMo TDT via isolated .venv-parakeet HTTP server on CUDA); 2026-05-22 streaming client + lifecycle helpers (stop_parakeet_server, start_parakeet_server, is_parakeet_server_running) + CREATE_NO_WINDOW
 │       │
@@ -3640,11 +3733,10 @@ For the current decisions and Foundation phase status see
 │       │   ├── searxng.py          ← 2026-05-22 frontier: SearxNGSearchClient (local Docker JSON API); circuit-breaker protected; X-Forwarded-For header satisfies botdetection; per-call categories override
 │       │   └── trafilatura_reader.py ← 2026-05-22 frontier: TrafilaturaReaderClient (local Python lib; ~32 k char cap)
 │       │
-│       ├── tts/                    ← Piper + RVC + XTTS + Kokoro engines + ack cache
+│       ├── tts/                    ← XTTS + Kokoro engines + ack cache (2026-07-23: legacy Piper+RVC engine RETIRED — rvc.py + speech.py deleted, tts.engine ∈ {kokoro,xtts_v3}, default kokoro)
 │       │   ├── kokoro_engine.py    ← KokoroSpeech (StyleTTS2 + ISTFTNet; current default via tts.engine="kokoro"; voice kenning, fine-tune model + voicepack loaded; **on CUDA** since 2026-05-22 with move_to_device("cpu") on gaming engage; trim_and_fade + _drain_queue_with_silence + apply_trim_fade/trim_fade_threshold_db config knobs)
 │       │   ├── precomputed_ack.py  ← PrecomputedAckClipCache (NEW 2026-05-15; ~350 ms saved per cache hit)
-│       │   ├── rvc.py              ← RvcConverter (Piper PCM → Kenning timbre)
-│       │   ├── speech.py           ← TextToSpeech (legacy Piper + RVC engine; selected by tts.engine="piper_rvc"; ack cache + prepare_output_stream)
+│       │   ├── (rvc.py + speech.py DELETED 2026-07-23 with the piper_rvc engine; make_tts_engine still returns a (None, engine) 2-tuple so orchestrator/injector are unchanged; trained voicepack kenning_rvc_voice/ kept on disk under the voice-baseline protections)
 │       │   ├── spectral_smooth.py  ← spectral magnitude smoothing for partial-fine-tune (STFT median-filter ISTFT, optional); 2026-05-22 ADDED trim_and_fade(audio, sr, **kwargs) -- RMS trim + raised-cosine fades + hard silence pad + tail aggressive zero (mutes Kokoro end-of-clip blip)
 │       │   ├── kenning_filter.py    ← v3 Kenning mechanical filter (NEW 2026-05-10; pedalboard DSP chain; unused on kokoro engine when apply_runtime_filter=false)
 │       │   ├── f0_control.py        ← NEW 2026-06-12: install_f0_contour_shaping — patches Kokoro predictor.F0Ntrain to scale predicted pitch/energy curves before the ISTFTNet decoder (zero added latency)
@@ -6044,6 +6136,93 @@ is the identity/model-leak gate on the LLM answer path — TIGHTENED 2026-06-26 
 - `class AddressingClassifier` — combines rules + zero-shot
   - `classify(utterance, seconds_since_response) -> AddressingVerdict`
   - `_log(utterance, verdict)` → writes to `logs/addressing.jsonl`
+
+### `src/kenning/transcription/sidecar_engine.py`  (2026-07-26)
+
+- `class SidecarWhisperEngine` — client shim with the same surface as
+  `WhisperEngine.transcribe(audio, language) -> str`, so the orchestrator and
+  `DualSTTRegistry` cannot tell the difference.
+  - `transcribe(audio, language="en") -> str` — base64 float32 over
+    `POST /transcribe`; same 0.008 peak silence gate as the in-process engine
+    (saves the round trip); **fails open to `""`** on any transport error.
+  - `healthy()` / `wait_until_ready(timeout_s)` — `GET /healthz`.
+- Imports only `urllib` / `base64` / `json` / `numpy` — anticheat-clean
+  (BR-P1), so it is safe on the voice/relay path.
+- Selected by `make_stt_engine` FIRST when `stt.sidecar_enabled`, ahead of
+  every in-process engine.
+- **Why it exists:** `faster-whisper`/CTranslate2 constructed with
+  `device_index=1` corrupts memory in this process and kills Ultron with a
+  silent `0xc0000409` (no traceback, no stderr, no WER dump). The child is
+  masked onto one card with `CUDA_VISIBLE_DEVICES`, so inside it the target
+  GPU is plain `cuda:0` — CTranslate2's default path, never the device-index
+  path that corrupts. A repeat now kills a restartable child, not the
+  assistant. Server: `scripts/stt_server.py`; spawned + awaited by
+  `Orchestrator._start_stt_sidecar` / `_await_stt_sidecar`; config under
+  `stt.sidecar_*`.
+
+### `src/kenning/audio/scenario_taxonomy.py`  (2026-07-26)
+
+- `Scenario` — 29 labels, ONE per routable intent, covering every
+  `_maybe_handle_*` in the dispatch chain (the semantic router previously knew
+  only 5 families out of ~24 things a user can ask for).
+- `ScenarioSpec` — description (written to discriminate against NEIGHBOURING
+  scenarios, not merely to be accurate), examples, the handler it dispatches
+  to, and a `destructive` flag.
+- `scenario_by_value` — tolerant parse of what small models actually emit
+  (quotes, case, trailing punctuation, hyphens/spaces for underscores);
+  returns None rather than guessing, so an unknown label falls through.
+- `DESTRUCTIVE_SCENARIOS` (ban / scrap) — never auto-dispatched on a
+  classifier's say-so; they keep the chain's two-phase confirm.
+- stdlib only (BR-P1).
+
+### `src/kenning/audio/scenario_router.py`  (2026-07-26)
+
+- `ScenarioRouter.classify(utterance) -> RouteVerdict` — one-shot 29-way
+  classification. The LLM is **injected**, so this module never imports
+  llama-cpp onto the voice path.
+- Prompt is split for the PREFIX CACHE: the ~1.5k-token taxonomy is the
+  **system** half and is byte-identical every call; only the ~15-token
+  utterance is new. Measured ~900 ms cold, ~125 ms warm.
+- **Fail-safe by construction** — short-circuits only when the label parses,
+  the scenario is non-destructive, and shadow mode is off. Anything else falls
+  through to the unchanged chain, so a wrong/slow/missing classifier costs
+  latency, never correctness.
+- `KENNING_SCENARIO_ROUTER` (default OFF) / `KENNING_SCENARIO_ROUTER_SHADOW`
+  (default ON) — shadow logs router-vs-chain agreement without acting.
+- **Measured** (`scripts/relay_test/scenario_scorecard.py`, 144 labelled
+  cases): Qwen3-4B heretic Q5 **97.2%** @ 125 ms; Llama-3.2-3B 82.6% @ 113 ms;
+  Llama-3.2-1B 37.5%; Gemma-3-1B 25.7%. A 29-way choice is past a 1B, and the
+  3B saves 12 ms for 15 accuracy points. Grammar-constrained decoding was tried
+  and REJECTED: it fixed parsing but cost 38→268 ms and did not fix accuracy.
+
+### `src/kenning/audio/scenario_prompts.py`  (2026-07-26)
+
+- `directive_for(scenario)` — the per-scenario instruction injected into
+  `build_private_prompt`'s user turn. `answer_question` / `identity` / `social`
+  / `desktop_refuse` share one handler but need OPPOSITE instructions (commit
+  to a verdict / own being a machine / there is NO question to answer /
+  REFUSE). `None` returns "" so the prompt is byte-identical when the router is
+  off — precision can only be added, never removed.
+
+### `src/kenning/transcription/_whisper_text.py`  (2026-07-26)
+
+- `DOMAIN_PROMPT` — the closed Valorant vocabulary used as `initial_prompt`
+  (decode-time domain biasing; keeps "Sova" from decoding as "Silva").
+- `WHISPER_HALLUCINATIONS` + `is_whisper_hallucination(text)` — WHOLE-transcript
+  non-speech blocklist ("thank you", "you", "bye"…). Substrings are never
+  matched, so "thank you for the heal, Sage" survives.
+- `build_initial_prompt(user_override)` — domain vocab as the BASE, user
+  override APPENDED (a short override once shadowed the whole prompt).
+- **stdlib-only by contract** (`re`), pinned by
+  `tests/test_stt_sidecar.py::test_shared_module_is_stdlib_only`: the sidecar
+  loads it BY FILE PATH so the package `__init__` chain (config/resilience/
+  logging) never runs in the child — a config error must not be able to take
+  STT down. `whisper_engine.py` re-exports the historical private spellings
+  (`_DOMAIN_PROMPT`, `_WHISPER_HALLUCINATIONS`, `_is_whisper_hallucination`).
+- **Why it exists:** extracted when STT moved out-of-process, so moving STT to
+  another GPU could not silently cost agent-name accuracy or re-admit
+  "Thank you."-type phantom callouts. Caught in a live smoke test — the
+  sidecar returned `'you'` for a pure tone before the parity fix.
 
 ### `src/kenning/transcription/whisper_engine.py`
 

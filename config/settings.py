@@ -170,6 +170,10 @@ WAKE_WORD_COOLDOWN_SECONDS = _env_float(
 
 WHISPER_MODEL = _cfg.stt.model
 WHISPER_DEVICE = _cfg.stt.device
+# 2026-07-24 multi-GPU: which CUDA device Whisper loads onto (CTranslate2
+# ``device_index``). Ignored when WHISPER_DEVICE is "cpu".
+WHISPER_DEVICE_INDEX = _env_int(
+    "KENNING_WHISPER_DEVICE_INDEX", getattr(_cfg.stt, "device_index", 0))
 WHISPER_COMPUTE_TYPE = _cfg.stt.compute_type
 WHISPER_BEAM_SIZE = _env_int("KENNING_WHISPER_BEAM_SIZE", _cfg.stt.beam_size)
 WHISPER_TEMPERATURE = _env_float("KENNING_WHISPER_TEMPERATURE", _cfg.stt.temperature)
@@ -332,23 +336,10 @@ TTS_EDGE_FADE_MS = _env_int("KENNING_TTS_EDGE_FADE_MS", _cfg.tts.edge_fade_ms)
 
 
 # ---------------------------------------------------------------------------
-# RVC (voice conversion)
+# (The RVC voice-conversion settings shim was removed 2026-07-23 with the
+# retirement of the piper_rvc engine. The KENNING_RVC_* env vars, if still
+# set in the environment, are simply ignored now.)
 # ---------------------------------------------------------------------------
-
-RVC_ENABLED = _cfg.tts.rvc.enabled
-RVC_MODEL_DIR = resolve_path(_cfg.tts.rvc.model_dir)
-RVC_MODEL_PATH = resolve_path(_cfg.tts.rvc.model_path)
-RVC_INDEX_PATH = resolve_path(_cfg.tts.rvc.index_path)
-RVC_SUPPORT_DIR = resolve_path(_cfg.tts.rvc.support_dir)
-RVC_HUBERT_PATH = resolve_path(_cfg.tts.rvc.hubert_path)
-RVC_RMVPE_PATH = resolve_path(_cfg.tts.rvc.rmvpe_path)
-RVC_DEVICE = _cfg.tts.rvc.device
-RVC_PITCH_SHIFT = _env_int("KENNING_RVC_PITCH_SHIFT", _cfg.tts.rvc.pitch_shift)
-RVC_INDEX_RATE = _env_float("KENNING_RVC_INDEX_RATE", _cfg.tts.rvc.index_rate)
-RVC_PROTECT = _env_float("KENNING_RVC_PROTECT", _cfg.tts.rvc.protect)
-RVC_F0_METHOD = _cfg.tts.rvc.f0_method
-RVC_RMS_MIX_RATE = _env_float("KENNING_RVC_RMS_MIX_RATE", _cfg.tts.rvc.rms_mix_rate)
-RVC_FILTER_RADIUS = _env_int("KENNING_RVC_FILTER_RADIUS", _cfg.tts.rvc.filter_radius)
 
 
 # ---------------------------------------------------------------------------

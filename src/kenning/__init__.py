@@ -4,6 +4,27 @@ import os
 import sys
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# CUDA DEVICE ORDER (2026-07-24, second GPU installed). MUST run before the
+# first CUDA call in this process -- hence the top of the package __init__.
+#
+# CUDA's default enumeration is FASTEST_FIRST, which does NOT match the
+# PCI-bus order nvidia-smi prints. On this box that silently INVERTS the two
+# cards: nvidia-smi calls the RTX 3060 12 GB "0" and the RTX 3060 Ti 8 GB
+# "1", while CUDA (ranking the Ti faster) hands out the opposite indices.
+# Every placement knob in the project -- llm.gpu_index, stt.device_index,
+# tts.kokoro.device "cuda:N", and the CUDA_VISIBLE_DEVICES masks for the
+# sidecars -- is interpreted by CUDA, so under the default order they all
+# addressed the WRONG card (measured: a model pinned to "device 0" loaded
+# onto the 8 GB Ti and OOM'd, while the 12 GB card sat idle).
+#
+# Pinning PCI_BUS_ID makes CUDA agree with nvidia-smi, so a config index
+# means the card the operator sees in nvidia-smi. Also removes a silent
+# failure mode: FASTEST_FIRST ordering can change when hardware changes.
+# ``setdefault`` so an explicit environment override still wins.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+
 __version__ = "0.1.0"
 
 

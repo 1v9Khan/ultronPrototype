@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -379,6 +380,14 @@ class NetworkPttBackend(PttBackend):
         # failure mode a remote hop makes invisible.
         if probe and not self._probe():
             self._ok = False
+        # SELF-HEAL (2026-07-26): the boot probe is a SNAPSHOT. If the game PC
+        # is still booting -- or its agent restarts mid-session -- a one-shot
+        # failure used to mean PTT stayed dead for the whole Ultron run, and
+        # the only cure was a full restart. ``available`` re-probes on this
+        # interval while down, so an agent that appears later is picked up on
+        # its own. Zero cost once up (the check short-circuits on _ok).
+        self._reprobe_after = 0.0
+        self._reprobe_interval_s = 15.0
 
     def _probe(self) -> bool:
         """Round-trip a PING. True only on a valid, authenticated PONG."""
@@ -407,7 +416,31 @@ class NetworkPttBackend(PttBackend):
 
     @property
     def available(self) -> bool:  # type: ignore[override]
-        return self._ok
+        # Fast path: already up -- no syscall, no clock read beyond the flag.
+        if self._ok:
+            return True
+        # Down: re-probe at most every ``_reprobe_interval_s`` so an agent that
+        # starts AFTER Ultron (game PC still booting, or the agent's scheduled
+        # task restarting) is adopted without an Ultron restart. Fail-open: any
+        # error just leaves it down until the next attempt.
+        try:
+            if self._sock is None:
+                return False
+            now = time.monotonic()
+            if now < self._reprobe_after:
+                return False
+            self._reprobe_after = now + self._reprobe_interval_s
+            if self._probe():
+                self._ok = True
+                logger.info(
+                    "push-to-talk: remote agent at %s:%d came up -- PTT is now "
+                    "ARMED (was inert since boot)",
+                    self._addr[0], self._addr[1],
+                )
+                return True
+        except Exception:  # noqa: BLE001 - never let a probe break a callout
+            return False
+        return False
 
     def press(self) -> None:
         from kenning.ptt import netproto  # noqa: PLC0415

@@ -5,8 +5,7 @@ The factory is the canonical TTS-construction surface used by both
 Both paths route through this function so they always exercise the
 same code; these tests pin the contract down.
 
-No real model loads happen — the engine classes and the RVC helper
-are monkeypatched.
+No real model loads happen — the engine classes are monkeypatched.
 """
 
 from __future__ import annotations
@@ -39,21 +38,6 @@ class _FakeXttsV3Speech:
         type(self).constructed += 1
 
 
-class _FakeTextToSpeech:
-    last_rvc = "uninitialized"
-
-    def __init__(self, *, rvc=None) -> None:
-        type(self).last_rvc = rvc
-        self.rvc = rvc
-
-
-class _FakeRvcConverter:
-    constructed = 0
-
-    def __init__(self) -> None:
-        type(self).constructed += 1
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -66,13 +50,9 @@ def patched_engines(monkeypatch):
 
     _FakeKokoroSpeech.last_kwargs = None
     _FakeXttsV3Speech.constructed = 0
-    _FakeTextToSpeech.last_rvc = "uninitialized"
-    _FakeRvcConverter.constructed = 0
 
     monkeypatch.setattr(tts_module, "KokoroSpeech", _FakeKokoroSpeech)
     monkeypatch.setattr(tts_module, "XttsV3Speech", _FakeXttsV3Speech)
-    monkeypatch.setattr(tts_module, "TextToSpeech", _FakeTextToSpeech)
-    monkeypatch.setattr(tts_module, "RvcConverter", _FakeRvcConverter)
     yield
 
 
@@ -126,77 +106,6 @@ def test_xtts_v3_path_returns_none_rvc(patched_engines):
     assert rvc is None
     assert isinstance(tts, _FakeXttsV3Speech)
     assert _FakeXttsV3Speech.constructed == 1
-
-
-def test_piper_rvc_path_with_rvc_disabled(patched_engines, monkeypatch):
-    """When ``settings.RVC_ENABLED is False`` the factory returns
-    ``(None, TextToSpeech(rvc=None))`` -- plain Piper, no RVC."""
-    # Patch settings.RVC_ENABLED to False
-    from config import settings
-    monkeypatch.setattr(settings, "RVC_ENABLED", False)
-    cfg = SimpleNamespace(engine="piper_rvc")
-    rvc, tts = make_tts_engine(cfg)
-    assert rvc is None
-    assert isinstance(tts, _FakeTextToSpeech)
-    assert _FakeTextToSpeech.last_rvc is None
-    assert _FakeRvcConverter.constructed == 0
-
-
-def test_piper_rvc_path_with_rvc_enabled_but_model_missing(
-    patched_engines, monkeypatch, tmp_path,
-):
-    """RVC enabled but model file missing -> WARN + return (None, TTS)."""
-    from config import settings
-    monkeypatch.setattr(settings, "RVC_ENABLED", True)
-    monkeypatch.setattr(
-        settings, "RVC_MODEL_PATH", tmp_path / "missing_rvc.pth",
-    )
-    cfg = SimpleNamespace(engine="piper_rvc")
-    rvc, tts = make_tts_engine(cfg)
-    assert rvc is None
-    assert isinstance(tts, _FakeTextToSpeech)
-    assert _FakeRvcConverter.constructed == 0
-
-
-def test_piper_rvc_path_with_rvc_enabled_and_model_present(
-    patched_engines, monkeypatch, tmp_path,
-):
-    """Happy path: RVC enabled, model on disk -> RVC constructed and
-    handed to TextToSpeech."""
-    fake_model = tmp_path / "rvc.pth"
-    fake_model.write_bytes(b"\x00")
-    from config import settings
-    monkeypatch.setattr(settings, "RVC_ENABLED", True)
-    monkeypatch.setattr(settings, "RVC_MODEL_PATH", fake_model)
-    cfg = SimpleNamespace(engine="piper_rvc")
-    rvc, tts = make_tts_engine(cfg)
-    assert isinstance(rvc, _FakeRvcConverter)
-    assert isinstance(tts, _FakeTextToSpeech)
-    assert _FakeTextToSpeech.last_rvc is rvc
-
-
-def test_piper_rvc_path_with_rvc_load_failure_degrades(
-    patched_engines, monkeypatch, tmp_path,
-):
-    """If ``RvcConverter()`` raises, the factory must NOT propagate;
-    it should fall back to plain Piper. This is the fail-open contract."""
-    fake_model = tmp_path / "rvc.pth"
-    fake_model.write_bytes(b"\x00")
-    from config import settings
-    monkeypatch.setattr(settings, "RVC_ENABLED", True)
-    monkeypatch.setattr(settings, "RVC_MODEL_PATH", fake_model)
-
-    def _exploding_rvc():
-        raise RuntimeError("simulated RVC load failure")
-
-    import kenning.tts as tts_module
-    monkeypatch.setattr(tts_module, "RvcConverter", _exploding_rvc)
-
-    cfg = SimpleNamespace(engine="piper_rvc")
-    rvc, tts = make_tts_engine(cfg)
-    assert rvc is None
-    assert isinstance(tts, _FakeTextToSpeech)
-    assert _FakeTextToSpeech.last_rvc is None
 
 
 def test_unknown_engine_raises(patched_engines):

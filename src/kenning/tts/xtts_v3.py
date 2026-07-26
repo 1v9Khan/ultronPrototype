@@ -599,7 +599,6 @@ class XttsV3Speech:
         gpt_cond_len: Optional[int] = None,
         gpt_cond_chunk_len: Optional[int] = None,
         max_ref_length: Optional[int] = None,
-        rvc=None,  # accepted-but-ignored for legacy ctor compat
     ) -> None:
         # Resolve paths via config when not explicitly passed. Defaults
         # point at the layout established in the audio prep work.

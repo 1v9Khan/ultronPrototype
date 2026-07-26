@@ -200,7 +200,31 @@ def test_preset_table_contents() -> None:
         # 2026-06-22: 7B candidate (GGUF downloaded to models/) to test whether
         # the extra capacity fixes the 4B social/identity roughness.
         "mistral-7b-v0.3-abliterated",
+        # 2026-06-26: p-e-w HERETIC 4B (non-gabliterated; better instruction-
+        # following). q6 is the live default, q5 steps down when VRAM is tight.
+        # Both load on the SECONDARY card (see the 2026-07-24 note below).
+        "heretic-qwen3-4b-q6",
+        "heretic-qwen3-4b-q5",
+        # 2026-07-24: Gemma 4 12B heretic + the on-disk Gemma 3 1B draft, on
+        # the PRIMARY card alone. Paper-only until the GGUF is downloaded --
+        # swap_llm_preset.py refuses the swap while the file is absent.
+        "gemma-4-12b-heretic",
+        # 2026-07-26: IQ4_XS of the same 12B (~6.23 GB vs 6.87) -- primary-card
+        # headroom after a live mid-generation abort. The live default.
+        "gemma-4-12b-heretic-iq4xs",
     }
+    # 2026-07-24 per-preset GPU placement: each model names the card it was
+    # sized for, so a preset swap relocates it automatically. Presets without
+    # a gpu_index keep the schema default (device 0).
+    assert LLM_PRESETS["heretic-qwen3-4b-q6"]["gpu_index"] == 1
+    assert LLM_PRESETS["heretic-qwen3-4b-q5"]["gpu_index"] == 1
+    assert LLM_PRESETS["gemma-4-12b-heretic"]["gpu_index"] == 0
+    # The 12B drafts with the Gemma 3 1B -- a cross-GENERATION pair that only
+    # works because both share the 262k Gemini SentencePiece vocabulary
+    # (enforced at load by draft_model.assert_draft_vocab_matches).
+    assert LLM_PRESETS["gemma-4-12b-heretic"]["draft_model_path"].endswith(
+        "google_gemma-3-1b-it-Q4_K_M.gguf"
+    )
     nine = LLM_PRESETS["qwen3.5-9b"]
     four = LLM_PRESETS["qwen3.5-4b"]
     eight_jos = LLM_PRESETS["josiefied-qwen3-8b"]

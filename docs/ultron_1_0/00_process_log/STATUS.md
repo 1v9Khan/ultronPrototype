@@ -1,5 +1,351 @@
 # Ultron 1.0 — Live Status
 
+**ACTIVE (2026-07-26) — SILENT `0xc0000409` ROOT-CAUSED (STT sidecar) + crash-hunt ROLLBACK:**
+
+Ultron had been dying with a native `__fastfail` (`0xc0000409`, STATUS_STACK_BUFFER_OVERRUN) that left **no
+traceback, no stderr text, no WER dump and no debug event** even under first-chance procdump filtered to that
+code. ROOT CAUSE: **`faster-whisper`/CTranslate2 constructed with `device_index=1` corrupts memory in-process.**
+The 2026-07-24 multi-GPU move had put Whisper on the new 3060 Ti with exactly that knob. Moving it back to
+`device_index: 0` stopped the crashes outright but thrashed the primary card (11 828/12 288 MiB; Whisper RTF
+1.59, LLM 7.3 tok/s vs a 35.3 tok/s bench) — so STT had to get off card 0 WITHOUT the in-process device index.
+
+FIX (the only change kept from the hunt): NEW `scripts/stt_server.py` — an out-of-process faster-whisper HTTP
+server the orchestrator spawns with `CUDA_VISIBLE_DEVICES` masking it onto ONE card, so inside the child the
+target GPU is plain `cuda:0` (CTranslate2's default path, never the device-index path that corrupts). It
+deliberately does NOT pass `device_index`. Deadman watchdog on the parent PID; `_decode_lock` serialises
+decodes; `GET /healthz` + `POST /transcribe {audio_b64, language}`. Client: NEW
+`transcription/sidecar_engine.py` (`SidecarWhisperEngine`, stdlib+numpy only so it is anticheat-clean under
+BR-P1, same 0.008 silence gate, **fails open to `""`**), selected FIRST by `make_stt_engine` when
+`stt.sidecar_enabled`. Spawn/await: `Orchestrator._start_stt_sidecar` / `_await_stt_sidecar`. Config:
+`stt.sidecar_{enabled,host,port,script,gpu_index,startup_timeout_s,request_timeout_s}`; live values
+`sidecar_enabled: true`, `sidecar_gpu_index: 1`, `sidecar_port: 8779`, `device_index: 0`. A repeat of the
+corruption now kills a restartable child instead of the assistant.
+
+HOW IT WAS FOUND, after **six wrong theories and eight synthetic reproductions that all survived**:
+`src/kenning/flight_recorder.py` — 5 Hz all-thread stack snapshots, alternating A/B (a snapshot torn by the
+crash still leaves the previous one readable), written to an ABSOLUTE `logs/` path (it was relative for one
+round and a real crash's evidence went to the launch cwd and was lost). CTranslate2 was mid-decode in every
+death snapshot.
+
+ROLLED BACK this pass — every failed theory, each of which had been shipped as "the fix": the
+`GGML_CUDA_DISABLE_GRAPHS` env block (`kenning/__init__`), `llm.speculative_llm_enabled` (schema field +
+orchestrator gate + config.yaml), the PortAudio lifecycle lock (`audio/devices.py` `_PORTAUDIO_LOCK` /
+`portaudio_lock()` + the `capture.py` input-open usage), the Whisper in-process `_decode_lock` + the
+orchestrator's abandoned-decode warning, the `_reclaim_idle_vram` crash beacon, the `heretic-qwen3-8b-q6`
+escape preset (schema + Literal + preset test), `n_ubatch` 128 -> 256 on both 12B presets, and the config.yaml
+audio-mirror bisect (`audio.broadcast_device` -> `"Voicemeeter AUX Input"`, `relay_speech.echo_to_user` ->
+`true`). Deleted: `tests/audio/test_portaudio_lock.py`, `tests/test_whisper_decode_lock.py`, ten `scripts/_*`
+scratch probes. KEPT deliberately: `CUDA_DEVICE_ORDER=PCI_BUS_ID` (a separate, real fix — CUDA's FASTEST_FIRST
+default inverted both cards) and the flight recorder, flipped to **OPT-IN** (`KENNING_FLIGHT_RECORDER=1`) so
+the live process is byte-for-byte normal again. `tests/test_gpu_placement.py` re-pins the STT invariant to the
+sidecar mechanism (`sidecar_enabled` + `sidecar_gpu_index: 1` + `device_index: 0`) instead of the old, unsafe
+in-process index — the invariant "STT does not consume primary-card VRAM" is unchanged.
+
+DECODE PARITY (caught by a live smoke test, not by review): the first sidecar build returned `'you'` for a
+2 s pure tone -- it had neither the domain-biasing `initial_prompt` nor the whole-transcript non-speech
+blocklist, so moving STT off card 0 would have silently cost agent-name accuracy and re-admitted phantom
+"Thank you." callouts. Both rules extracted to NEW **stdlib-only** `transcription/_whisper_text.py`
+(`DOMAIN_PROMPT`, `WHISPER_HALLUCINATIONS`, `build_initial_prompt`, `is_whisper_hallucination`), imported
+normally by `whisper_engine.py` and **by FILE PATH** by the sidecar so the package `__init__` chain
+(config/resilience/logging) never runs in the child -- a config error must not be able to take STT down. The
+remaining decode knobs (temperature, condition_on_previous_text, vad_filter, domain-bias, initial-prompt
+override) are forwarded from the parent as `KENNING_STT_*`. NEW `tests/test_stt_sidecar.py` (10 tests) pins
+both contracts, including an AST check that the server never passes `device_index` to `WhisperModel`.
+
+LIVE SMOKE (standalone, port 8781, NOT a second Ultron): model ready in 2.8 s on `CUDA_VISIBLE_DEVICES=1`,
+`/healthz` 200 (`visible_devices: "1"`), `/transcribe` 200 in 0.39 s, card 1 1613 -> 3860 MiB (~2.25 GB, as
+sized). Process killed afterwards.
+
+EVIDENCE: `validate_config` exit 0 ("Configuration is valid."); `tests/test_gpu_placement.py` 31 pass 1 skip;
+`tests/safety/test_anticheat.py` + `tests/twitch/test_config_anticheat_invariant.py` 77 pass;
+`tests/test_stt_sidecar.py` 10 pass; the full targeted sweep (15 suites) **461 pass, 1 skip, 4 fail**;
+flavor lint 0 hard / 0 soft / 0 thin. Failure set ⊆ baseline: the two
+`test_audio_failures.py::test_whisper_*` entries are frozen-baseline items 9-10, the two
+`test_llm_preset.py::test_default_preset_is_8b_iq3xs`/`test_yaml_load_default_preset_back_compat` failures
+predate this work (HEAD already defaults to a non-8B preset), and the golden digest still diverges only on
+`_stt_correct._PHONETIC_INDEX` — the same dependency artifact already recorded below: **`jellyfish` is not
+installed in this venv**, so the metaphone index is empty (195 codes in the golden). NOT re-blessed: blessing
+it here would bake the degraded state into the committed golden. The wrapper suite was skipped at the
+streamer's explicit instruction ("just skip the wrapper... ignore it for now").
+
+VRAM RECLAIM ON CARD 0 (2026-07-26, after the reboot): the streamer flagged card 0 sitting at ~11.8/12.3 GB.
+MEASURED breakdown from this boot's llama.cpp lines -- model buffer 6365.58 MiB + KV 1280 (40 full layers) + 64
+(8 SWA layers) + compute 264.50 + ~300 CUDA context = **~8275 MiB for Ultron**, which is unchanged from the
+9238 MiB total recorded when the 12B first landed (that measurement had a ~1.2 GB desktop). What grew is the
+DESKTOP: with every Ultron process killed the card still read **3929 MiB**, and after the streamer closed apps,
+**3688 MiB** -- OBS (19 `obs-browser-page` Chromium processes across 10 browser sources, two of them 3840x2160)
+plus dwm/explorer/Chrome/Edge/Spotify, because the monitors are plugged into the 3060.
+
+APPLIED (quality-neutral, both 12B presets): `n_ctx` 4096 -> **3072** and `n_ubatch` 256 -> **128**, ~473 MiB
+back. The n_ctx figure is MEASURED, not guessed: 935 real turns in the captured run logs give prompt tokens
+median 251 / p90 810 / **max 1074**, so 3072 still leaves ~2000 tokens of headroom above the worst observed
+prompt plus the 512-token answer. `kv_cache_type` q8_0 would save ~670 MiB more but llama.cpp PR #23907 makes
+q8_0-KV + flash_attn reserve an F16 dequant scratch sized by the WHOLE KV cache (~65% decode collapse) -- NOT
+taken.
+
+OBS PLACEMENT -- RESOLVED BY AN OBS RESTART, and two of my claims here were WRONG; corrected for the record:
+
+1. WRONG: "the monitors are plugged into the 3060". They are NOT -- `nvidia-smi --query-gpu=display_active` reports
+   **Enabled on card 1 (the Ti), Disabled on card 0**. The stale claim came from a `config.py` comment written
+   before the second card existed. Consequence: OBS rendering on card 0 was paying a cross-GPU copy for Display
+   Capture (the live `game` scene carries `monitor_capture` + `window_capture`), so moving OBS to card 1 REMOVES
+   a transfer rather than adding one -- the opposite of the PCIe-x4 objection first raised. (The Ti IS on
+   `pcie.link.width.current=4` of a max 16; that part was right, it just argued the wrong way.)
+2. WRONG: "the embedder is ~996 MB of GPU". `SemanticRouterConfig.sidecar_device` defaults to **"cpu"**, the
+   orchestrator forwards it as `KENNING_EMBEDDER_DEVICE`, and that short-circuits `embedder_server.py:74` -- so
+   the embedding model has ALWAYS run on the CPU. `semantic_router.sidecar_gpu_index` only ever set
+   CUDA_VISIBLE_DEVICES on a child that allocates no CUDA, while logging the false line "embedder sidecar pinned
+   to GPU N". PROVEN: moving it card 1 -> card 0 left card 1's python GPU total at exactly 3573 MB, unchanged.
+   The knob is now `null` with the reasoning inline in config.yaml.
+
+RESOLUTION: the streamer simply restarted OBS (stream stopped). A fresh OBS picks the DISPLAY adapter, so it
+came back on the Ti with no Windows per-app GPU preference needed. Per-adapter GPU Process Memory after:
+card 0 (LUID 0x01357a8b) holds no obs entries at all; card 1 (0x01382ac5) holds obs64 341 + obs-browser-page 315.
+MEASURED RESIDENT: **card 0 8004/12288 (4284 free), card 1 4474/8192 (3718 free)** -- from 11360 on card 0.
+CAVEAT: OBS is 656 MB idle but was **4275 MB** (3257 obs-browser-page + 1018 obs64) during the live session, so
+card 1's apparent 3.7 GB of headroom is really ~0.1 GB once streaming resumes. Size card 1 for the LIVE figure.
+
+NEXT DIRECTION (streamer's proposal, task #20): put the 4B Q5 on the ROUTING hop and KEEP the CPU embedder for
+the margin gates. Evidence it is a latency WIN not a cost: `config.yaml:2039 llm_route: true` -- the 12B ALREADY
+routes every response, so a 4B prefill REPLACES a 12B prefill. `RelayIntentGate` (`audio/_relay_intent.py`) must
+KEEP the embedder: it is a margin between exemplar clouds, not a classification, and it cut corpus false-relays
+674 -> ~70. Placement: the 4B goes on CARD 0 (8004 + 3492 = 11496, 792 free), NOT the Ti, because of the live-OBS
+figure above. Needs a spec, not a config flip.
+
+LATENCY WORK STARTED (2026-07-26, streamer: "maximum optimization... without degrading quality"):
+
+FIRST, A MISREAD TO NOT REPEAT: `usage_trace.jsonl`'s `seconds` field is NOT turn latency -- it is
+`written / out_rate` at `relay_speech.py:8942`, i.e. the DURATION OF THE SPOKEN CLIP. A `seconds=4.08` on a
+deterministic snap was read as a 4-second bottleneck; it was a 4-second sentence. Verify field provenance.
+
+MEASUREMENT GAP CLOSED. The project had exactly ONE latency metric -- a `RESPONSE LATENCY` line reachable only
+on the RELAY path -- so the conversational path (the one running the 12B) was completely unmeasured and the log
+held a single sample:
+    SPEECH-END -> first audio = 1925 ms  (turn-close -> audio = 1592 ms; pre-turn-close wait = 334 ms)
+Note what that says: the VAD/Smart-Turn wait is only 334 ms (the fast path already beats the 1200 ms
+`min_silence_duration_ms` ceiling), so there is nothing to win at the front -- and the streamer's explicit
+constraint is that the first word of a command must never be clipped again, which makes pre-roll off limits
+regardless. **All optimisation is behind turn_close.**
+
+ADDED: per-turn stage marks in `kenning/trace.py` (`mark` / `mark_at` / `latency_stages` / `latency_line` /
+`reset_latency`) plus `Orchestrator._emit_turn_latency`, wired at ALL 48 `loop:iteration_end` sites so every
+exit path reports. Marks: `speech_end`, `turn_close`, `stt_foreground` vs `stt_speculative_hit` (distinct, so a
+missing speculation is visible rather than looking like slow Whisper), `llm_first_sentence`, and `first_audio`
+-- the last marked inside `kokoro_engine.speak_stream` at the first PCM write, NOT in the orchestrator, because
+`speak_stream` returns only after the last sentence drains (that would measure the length of the reply instead
+of the wait before it). Marks key off the TURN ID in a process-global map, not thread-local: speculative STT and
+speculative LLM run on daemons that inherit the turn via `restore()` but get a fresh thread-local store, so a
+thread-local map would drop exactly the stages worth measuring. Bounded to 32 turns. Pinned by
+`tests/test_trace_latency.py` (7), including the cross-thread contract.
+
+FIXED (the first real win): the always-listening PRIVATE_REPLY path was FULLY SERIAL --
+`"".join(generate_stream(...))` then `_speak(text)`, so first audio waited for the LAST token. With
+`addressing.always_listening = True` and `relay_speech.llm_route: true` this is the DEFAULT conversational path,
+and at the 12B's measured 27.7 tok/s a 60-token reply spent ~2.2 s generating before TTS started, while
+`_respond` had been streaming into `speak_stream` all along. Now streamed. It was not a one-line swap: the
+scaffolding guards decide whether to FALL THROUGH to `_respond`, and that cannot be judged on ungenerated text
+-- so the path buffers exactly ONE SENTENCE (`_SENTENCE_END_RE`, terminator + whitespace-or-end so "27.7 tok/s"
+does not cut the head; 240-char ceiling; clears a `</think>` block first), judges that, and only then speaks.
+Nothing is spoken before the decision, so the fall-through contract is exact. A test caught a real defect in the
+first version: `.strip()` on the head ate the inter-sentence space and produced "wins.Always" -- Kokoro slurs
+that into one breath. Now `lstrip()` + restore the trailing space. Pinned by
+`tests/test_private_reply_streaming.py` (7).
+
+EVIDENCE: 283 targeted pass / 1 skip (incl. `test_wake_capture_trim.py` -- the first-word-clipping guard is
+intact); `validate_config` 0. Boot verified: `STT engine: SIDECAR`, `anticheat posture OK`, `lean boot OK`,
+card 0 8232/12288, card 1 3820/8192. `turn:latency` lines appear from the first spoken turn.
+
+NEXT (task #21, user-requested full pass): collect a real battery FIRST, then cut what the report actually
+shows. Prime suspects to CHECK not assume -- whether speculative STT/LLM are hitting at all, the 4B on the
+routing hop (task #20, replaces a 12B prefill rather than adding a stage), the twitch write-sidecar round trip
+on the spoken path, and Kokoro per-sentence synth cost.
+
+RESPONSE-QUALITY REGRESSION FIXED (2026-07-26, streamer: "adhering too strongly to personality to the point
+where he is not actually answering the question... not addressing the people I am asking him to address").
+TWO independent causes, one of them self-inflicted:
+
+1. **SELF-INFLICTED, from the streaming change above.** `strip_prompt_echo` is NOT just an echo filter -- its
+   signature is `(text, *, max_sentences=3, max_chars=300)` and it also strips signatures, leaked directives
+   ("contemptuous remark:") and mouth-noises. The first streamed version applied it to the buffered HEAD only
+   and passed the tail through RAW, so the sentence cap, the char cap and the scaffolding strip silently
+   vanished from everything after sentence one -> in-persona rambling past the answer. FIXED: the stream is
+   sentence-gated, guarding each sentence as it completes and cancelling generation once the cap is hit; the
+   final text is assembled from the GUARDED sentences. Four regression tests added.
+
+2. **THE PROMPT WAS WRITTEN FOR THE 4B.** `_PERSONA_CORE` read "you are NEVER warm, HELPFUL, chirpy, or
+   chatbot-like". On the 4B "helpful" landed as register; the Gemma 4 12B follows instructions properly, so
+   "never be helpful" became a directive it OBEYED -- a SUBSTANCE claim sitting inside a list about TONE. And
+   `PRIVATE_SYSTEM` -- the DEFAULT conversational path once `addressing.always_listening` is ON -- had **no
+   answer directive at all**, while `SOCIAL_SYSTEM` has carried "ANSWER DIRECTLY -- your FIRST words are your
+   reply" all along. ~90 words of persona out-voted the single word "Answer" in the user turn. FIXED: dropped
+   "helpful"; added "your contempt is the TONE of your answer, never a substitute for it... withholding,
+   deflecting, or musing in character INSTEAD of answering is a failure"; gave PRIVATE_SYSTEM the answer-first
+   clause plus "if they told you to DO something, do it". Register untouched (BR-P2): still cold, contemptuous,
+   never warm/chirpy, no other name. `test_persona_lock` green; **golden digest UNCHANGED** (these constants are
+   not in the digested set, so no re-bless).
+
+STILL UNCONFIRMED: the "not addressing the people I am asking him to address" half. The dispatch ORDER is
+correct by construction -- `_maybe_handle_private_reply` intercepts only after Spotify / relay / router have all
+declined -- so the next suspect is the always-listening intent gate classifying an ADDRESSED command as
+PRIVATE_REPLY instead of RELAY_TO_TEAM, which would strand it on the private path. Needs a live battery to
+confirm before touching.
+
+GUARD-AS-ROUTER: asked, answered NO. The guard is `Llama-Guard-3-1B.Q5_K_M` on **CPU** (`guard_gpu_layers: 0`),
+fine-tuned to emit exactly `safe` / `unsafe
+S<n>` from a fixed hazard taxonomy -- not a general
+instruction-follower, and CPU latency on the routing hop. BUT it establishes the size class: the better
+candidate is already on disk as the 12B's (currently unloaded, `draft_kind: "none"`) draft --
+`models/google_gemma-3-1b-it-Q4_K_M.gguf`, **0.75 GB**, a general instruction-following 1B. That is the router
+model to size in task #21, not the 4B (3,492 MiB at n_ctx 2048).
+
+SCENARIO ROUTER BUILT + MODEL SELECTED BY MEASUREMENT (2026-07-26, autonomous work order: latency passes,
+reliable routing, tune every prompt for the 12B, expand routing to every scenario with per-scenario prompts).
+
+THE STRUCTURAL PROBLEM. Routing is an ordered chain of ~24 `_maybe_handle_*` matchers, and it appears TWICE
+(wake path + always-listening path). Order IS semantics: whichever regex fires first wins, so a phrasing that
+trips an earlier handler is silently stolen from its real one, every turn pays for every matcher in sequence,
+and some links make sidecar HTTP calls. The semantic router only knew 5 families (`team_callout`, `spotify`,
+`identity`, `desktop_refuse`, `conversational`) out of ~24 things a user can ask for.
+
+BUILT: `audio/scenario_taxonomy.py` -- 29 scenarios, each with a discriminative description, examples and the
+handler it dispatches to; `audio/scenario_router.py` -- a one-shot classifier, LLM INJECTED so the module never
+imports llama-cpp (BR-P1); `tests/data/routing_corpus.py` -- 144 labelled cases across all 29 scenarios,
+weighted toward the ways routing actually fails (36 confusable, 15 negative, plus the disfluent / embedded /
+compound shapes from the live failures); `scripts/relay_test/scenario_scorecard.py` -- accuracy per scenario,
+per difficulty tag, plus a confusion list and cold-vs-warm latency.
+
+DESIGN: the taxonomy lives in the SYSTEM prompt and is byte-identical every call, so llama.cpp's prefix cache
+prefills it ONCE (~1.5k tokens) and only the ~15-token utterance is new per turn. The chain is NOT replaced --
+it is the fallback and stays byte-identical. The router short-circuits ONLY when the label parses, the scenario
+is not destructive (ban/scrap keep the chain's two-phase confirm), and shadow mode is off. So a wrong or missing
+classifier costs latency, never correctness. Default OFF; shadow mode default ON when enabled, so accuracy gets
+measured on real traffic before anything is dispatched on it.
+
+MODEL SELECTED BY MEASUREMENT, not assumption (144 cases each):
+  Qwen3-4B heretic Q5   2.69 GB   **97.2%** (140/144)   warm median 125.5 ms
+  Llama-3.2-3B abl. Q4  2.09 GB     82.6%               warm median 113.1 ms
+  Llama-3.2-1B Q4       0.75 GB     37.5%               warm median  94.1 ms
+  Gemma 3 1B Q4         0.75 GB     25.7%               warm median 247.9 ms
+The streamer asked for a 1B/2B/3B "without the latency hit". ANSWERED: the 3B saves 12 ms and costs 15 accuracy
+points, and a 29-way choice is past what a 1B does at all -- the saving is not real. The 4B is the router.
+VRAM: 12B 7808 + 4B router at n_ctx 2048 ~3150 = 10958/12288, ~1.3 GB spare.
+
+TWO EARLIER ATTEMPTS AND WHY THEY FAILED (kept so they are not retried): the 1B first scored 17.4% with 28% of
+outputs not being labels at all -- it ECHOED the utterance instead of classifying, and collapsed onto one
+attractor (`tell_chat` took 72/144). GRAMMAR-CONSTRAINED DECODING (llama.cpp GBNF restricted to the 29 label
+strings) fixed parsing completely (0 unparsed) but accuracy only moved to 25.7% AND latency went 38 -> 268 ms
+(masking logits against 29 alternatives every token). The grammar is therefore NOT used with a capable model:
+the 4B emits clean labels unaided at half the latency.
+
+PROMPT WORK ON THE CLASSIFIER ITSELF: first 4B run was 91.7% with `ignore` the outlier at 40% -- the model
+answers anything that parses as a sentence. Replacing the abstract "not addressed to the assistant" with a
+CONCRETE test ("is there a question, an instruction, or something to say on the player's behalf? if not,
+ignore") plus the exclamation shapes that leaked ("wait what", "let's go", "gg everyone") took `ignore` to 93.3%
+and the overall to 97.2%. Also fixed TWO corpus mislabels found by inspecting misses rather than assuming the
+model was wrong: "no more flavor on callouts" duplicated a `verbosity_callout` case, and "chat verbosity max" is
+genuinely ambiguous between Twitch chat and conversation.
+
+EVIDENCE: `tests/test_scenario_router.py` 28 pass (taxonomy integrity, tolerant label parsing, and the
+fail-safe posture -- destructive-never-actionable, error-never-raises, shadow-never-acts, plus an anticheat
+import check on both new modules).
+
+PER-SCENARIO PROMPTS + THE 12B PROMPT AUDIT (2026-07-26, same autonomous work order).
+
+PER-SCENARIO PROMPTS (`audio/scenario_prompts.py`, NEW). Four very different conversational scenarios --
+`answer_question`, `identity`, `social`, `desktop_refuse` -- all funnel into `_maybe_handle_private_reply` and
+all got the SAME "Answer them as Ultron". One prompt cannot serve all four: told to "answer" BANTER the model
+invents a question to answer; told to "answer" a DESKTOP request it tries to comply. That is precisely the
+streamer's "not actually answering the question or addressing the people I am asking him to address". The
+router now tells them apart, so each carries its own directive, wired through a new `scenario=` kwarg on
+`build_private_prompt`. `scenario=None` (router off / unsure / shadow) yields "" and the prompt stays
+BYTE-IDENTICAL -- this can only add precision, never remove it. Directives also added for the relay family,
+including the one that closes a real hole: RELAY_TEAM now says "if they asked a QUESTION to put to the team,
+relay the question -- do not answer it yourself".
+
+PROMPT AUDIT FOR THE 12B -- every prompt constant in `ultron_prompt.py` + `llm_prompts.py` read as a LITERAL
+instruction list. THREE more defects found, one of them self-inflicted earlier tonight:
+ 1. `_SOCIAL_PERSONA` still carried the "you are NEVER warm, chirpy, HELPFUL, or chatbot-like" ban. Same bug as
+    `_PERSONA_CORE`, separate constant -- a SUBSTANCE claim inside a list about TONE, which the 12B obeys.
+    Fixed. A sweep now confirms ZERO "helpful" bans remain in either module.
+ 2. SELF-INFLICTED: the clause I added to `_PERSONA_CORE` earlier said "you ALWAYS do what was actually asked
+    and ANSWER THE ACTUAL QUESTION". But `_PERSONA_CORE` is SHARED with `RELAY_SYSTEM`, where that is actively
+    wrong -- on "tell my team should we push?" a literal 12B would ANSWER the question instead of relaying it.
+    Reworded to be context-neutral ("you ALWAYS carry out what was actually asked... withholding, deflecting or
+    musing in character INSTEAD of doing the thing is a failure"), which is correct on both paths.
+ 3. `_FLAVOR_OFF` read "Do NOT add any flavor remark, banter, or commentary -- DELIVER THE CALLOUT ONLY". It is
+    shared by the callout path AND the conversational path, so on a conversational turn it named a callout that
+    does not exist AND told the model not to add "banter" directly above the SOCIAL directive that says "this
+    IS banter". Two contradictions a literal reader has to resolve. Reworded to state the actual intent
+    ("do not append any extra flavor remark or commentary after your line -- give the substance and stop").
+Register untouched throughout (BR-P2): cold, contemptuous, never warm/chirpy, no other name. `test_persona_lock`
+green; golden digest UNCHANGED (these constants are not in the digested set).
+
+ROUTER WIRED, SHADOW-ONLY, NOT ENABLED. `Orchestrator._classify_scenario` runs BEFORE the ~24-matcher chain and
+logs a `router:scenario` line with the label, latency and reason; `_get_scenario_router` lazily builds the model
+(llama-cpp imported HERE, never in `scenario_router`, so BR-P1 holds) and warms the prefix cache at startup so
+the first real turn does not pay the ~900 ms cold prefill. Config: `llm.scenario_router_{model,n_ctx,gpu_index}`.
+DEFAULT OFF. Enable is two deliberate steps:
+    $env:KENNING_SCENARIO_ROUTER="1"          # shadow: logs agreement, dispatch UNCHANGED
+    $env:KENNING_SCENARIO_ROUTER_SHADOW="0"   # live: router dispatches
+WHY NOT ALREADY ON -- measured VRAM, card 0: desktop ~660 + 12B @ n_ctx 3072 7808 + router @ n_ctx 2048 3494 =
+11962 of 12288, only ~326 MiB spare. Too thin to leave running unattended overnight. Dropping the 12B's n_ctx
+3072 -> 2048 frees 336 MiB (measured max real prompt is 1074 tokens, so 2048 still fits) and takes headroom to
+~662. That is the streamer's call, so it is left undone.
+
+Q4 ROUTER QUANTS TESTED AND REJECTED (to save 360 MiB): Josiefied-4B Q4_K_M 90.3% / 151 ms, gemma-3-4b Q4 86.8%
+/ 325 ms -- the heretic Q5 wins on BOTH accuracy and latency at 97.2% / 125 ms, so the saving is not available
+from the quant.
+
+TEST-ISOLATION FINDING (pre-existing, NOT from this work, and NOT in the frozen-22 baseline doc): 73 tests fail
+when the full suite runs together but pass in isolation and pass across the whole `tests/audio/` directory --
+something outside `tests/audio/` mutates a shared singleton. PROVEN pre-existing by re-running the identical
+command with all three of tonight's new test files excluded: still exactly 73. Worth a separate fix; it means
+the suite currently cannot certify a change on its own.
+
+"SAY HI TO IZUMI" ROOT-CAUSED -- TWO REGEX BUGS, BOTH FIXED (2026-07-26). Streamer: "some of the answers like
+when I say 'say hi to izumi' are lacking." It was not a prompt problem at all; it was routing, and the live
+`turn:flow` lines showed it exactly:
+    raw='Say hello to Izumi in the chat.'  route='relay_llm'  channel='team_mic'  final=<the sentence verbatim>
+    raw='Say hi to Izumi.'                 route='relay_llm'  channel='team_mic'  final=<the sentence verbatim>
+i.e. the words "say hello to Izumi in the chat" were SPOKEN TO HIS TEAMMATES.
+
+BUG 1 -- TRAILING PUNCTUATION. `_TELL_CHAT_GREET_TO_RE` ("say hi to <name> in chat") ended in a bare `$`, so any
+sentence punctuation defeated it -- and Whisper puts a period on essentially every transcript. Proven:
+"Say hello to Izumi in the chat" MATCHED, "Say hello to Izumi in the chat." did NOT. So this greeting form was
+effectively NEVER reached in production; every instance fell through to the relay matcher. Fixed with a
+`_TELL_CHAT_TRAILING_PUNCT` tail on both exit paths.
+
+BUG 2 -- NO CHAT MARKER. A bare "say hi to Izumi" contains nothing that distinguishes viewer from teammate, so
+the relay matcher claimed it with `addressee='team'`. No regex can fix that -- the information is not in the
+sentence. But `data/twitch/welcomed.db` already held 28 welcomed chatters INCLUDING `izumiikiryo`. NEW
+`audio/chatter_names.py` resolves a spoken name to a login (`Izumi`->`izumiikiryo`, `IceMapple`->`icemapple14`,
+`Saltwater`->`saltwaterbottle`) -- spoken names are usually a PREFIX of the login, plus a high fuzzy floor (88)
+for STT drift. Deliberately conservative because a false positive publishes a TEAM CALLOUT to public chat:
+agent names are rejected BEFORE any lookup, names under 4 chars can never resolve (so "hi"/"yo" cannot
+prefix-match), and a spoken name matching two logins resolves to NEITHER. Wired as a LAST-RESORT branch in
+`match_tell_chat(text, chatter_resolver=...)` that runs only after every strict form has declined; with no
+resolver the behaviour is BYTE-IDENTICAL. Verified: "Say hi to Izumi."/"say hello to IceMapple" now reach chat,
+while "say hi to Sage"/"Sova"/"my team"/"Kevin"/"them" all correctly stay off it.
+
+EVIDENCE: `tests/audio/test_tell_chat_matcher.py` 96 -> **116** (20 new: punctuation variants, the extra-clause
+form, resolver hits, and the agent/team/unknown refusals, plus a test that the behaviour is unchanged without a
+resolver). test_relay_speech 134, test_team_relay_toggle 26, test_anticheat 72, test_scenario_router 28 --
+all green. `validate_config` 0.
+
+NOTE FOR THE ROUTER ARGUMENT: both of these are exactly the class of failure the scenario router does not have,
+because it reads intent rather than surface form -- it classifies both phrasings `tell_chat`. That is the case
+FOR taking the router live, but the deterministic path was fixed anyway: it is cheaper and does not depend on a
+model being loaded.
+
+NOT YET DONE (user-gated, BR-P3): the sidecar has **never been exercised live** — an Ultron instance
+(PID 31136) was already running with the old in-process-on-card-0 config when this landed, and BR-P3 forbids a
+second instance. The next boot is the test: expect `STT engine: SIDECAR` in the log, a child on port 8779,
+Whisper VRAM on card 1 in `nvidia-smi`, and card 0 back near ~9.3 GB instead of 11.8. Also open: `jellyfish`
+is absent (phonetic STT correction is silently OFF — installing it is an AT-3 dependency add and it is not on
+the BR-P1 allowlist), the Twitch bot token still needs a standalone
+`scripts/twitch_setup.py --identity bot` run, and nothing from this session is committed yet.
+
+
 **ACTIVE (2026-07-23) — MACHINE MOVE repair + REMOTE PTT over the LAN (two-PC layout):**
 
 Ultron moved to a new PC; the streamer reported three symptoms. All three root-caused from the boot log,
@@ -42,6 +388,26 @@ clean HEAD worktree): the golden digest diverges on `_stt_correct._PHONETIC_INDE
 artifact of the move), and ~97 wrapper failures trace to the streamer's own uncommitted `config.py` default
 edits whose paired tests still assert the old values (e.g. `commands_panel_interval_minutes` 15 -> 30).
 NEXT: re-paste the overlay URL in OBS, restart from the repo dir, run `scripts/ptt_agent.py` on the game PC.
+
+**RVC / piper_rvc ENGINE RETIRED (2026-07-23):** the deprecated Piper+RVC voice-conversion engine was removed
+(production ran `kokoro`; the RVC path was dormant). Mapped by an adversarial-verify workflow (`wf_eaa686d3`,
+6 agents, 128 refs classified) then executed as ONE atomic slice because two coupling traps force it: (a) the schema
+still DEFAULTED `engine="piper_rvc"` (config.py) — repoint to `kokoro` must land with the factory-branch deletion or
+`make_tts_engine` throws; (b) `extra=forbid` means a leftover `tts.rvc:`/`rvc_unavailable` key in config.yaml
+hard-fails boot with a ValidationError — so the config.py schema deletion and the config.yaml key deletion are the
+same commit. DELETED: `tts/rvc.py`, `tts/speech.py`, `utils/fairseq_compat.py`, `tests/test_rvc.py`,
+`tests/test_fairseq_compat.py`, `tests/test_tts.py`, `tests/test_tts_pipeline_parallel.py`. EDITED: `tts/__init__.py`
+(factory keeps its `(None, engine)` 2-tuple so orchestrator+injector are untouched), `tts/xtts_v3.py`, `config.py`
+(RVCConfig + rvc field + rvc_unavailable + `__all__` + engine default→kokoro/pattern), `config.yaml`, `errors.py`
+(RVCConversionError), `resilience/phrases.py`, `scripts/download_models.py`, the repo-root `config/settings.py`
+RVC_* shim (this was the ONE thing the workflow mis-classified as "not required for boot" — it reads `_cfg.tts.rvc.*`
+at import and crashed the import; caught by the post-edit import check). RETIRE-DON'T-REMOVE: the trained voicepack
+`kenning_rvc_voice/Kenning.pth` (+ index) stays ON DISK, and EVERY voice-baseline safety protection (voice_lock,
+submit_review, policy.py, category_k/s, blast_radius, checkpoints/exclusions) is KEPT — the source-file locks on the
+now-deleted rvc.py/speech.py are harmless orphans, and keeping full coverage avoids weakening a safety rule + touching
+the self-protected policy.py/category_k.py. EVIDENCE: `validate_config` 0; imports clean; 311 mapped tests pass
+(tts factory / xtts config / preopen / voice_lock / submit_review / exclusions / anticheat); the 2 whisper failures in
+test_audio_failures are PROVEN pre-existing (fail identically on the committed file via git-stash check).
 
 **STT PRECISION (2026-07-23):** `stt.compute_type` `int8_float16` -> `float16`. The old comment justifying int8
 was written for `small.en`; the model actually running is `deepdml/faster-whisper-large-v3-turbo-ct2`, which is

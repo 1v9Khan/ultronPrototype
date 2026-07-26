@@ -40,7 +40,11 @@ from typing import Iterable, Optional, Sequence
 DEFAULT_VOICE_LOCKED_PATHS: tuple[str, ...] = (
     # Persona file (workspace-side, also K8-protected when ingested).
     "~/.openclaw/workspace/SOUL.md",
-    # Legacy TTS engine + RVC wrapper.
+    # Legacy TTS engine + RVC wrapper. 2026-07-23: the piper_rvc engine was
+    # retired and speech.py/rvc.py deleted, but these source-locks are KEPT
+    # (retire-don't-remove) -- a lock on a now-absent path is a harmless
+    # orphan, and keeping the full voice-baseline coverage intact avoids
+    # weakening a safety rule.
     "src/kenning/tts/speech.py",
     "src/kenning/tts/rvc.py",
     # Reference vocal sample for XTTS. Both the legacy root-level

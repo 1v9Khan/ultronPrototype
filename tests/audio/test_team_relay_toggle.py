@@ -287,14 +287,17 @@ def test_companion_persona_selected_when_relay_off():
     from kenning.audio.llm_prompts import ULTRON_COMPANION_PERSONA
     o = Orchestrator.__new__(Orchestrator)
     set_team_relay_enabled(False)
-    assert o._gaming_conversational_prompt() == ULTRON_COMPANION_PERSONA
+    # 2026-07-24: selector appends a per-turn variety suffix -> prefix match.
+    got = o._gaming_conversational_prompt()
+    assert got is not None and got.startswith(ULTRON_COMPANION_PERSONA)
 
 
 def test_companion_persona_not_selected_when_relay_on():
     from kenning.audio.llm_prompts import ULTRON_COMPANION_PERSONA
     o = Orchestrator.__new__(Orchestrator)
     set_team_relay_enabled(True)
-    assert o._gaming_conversational_prompt() != ULTRON_COMPANION_PERSONA
+    got = o._gaming_conversational_prompt()
+    assert got is None or not got.startswith(ULTRON_COMPANION_PERSONA)
 
 
 def test_companion_persona_is_additive_on_gaming_persona():

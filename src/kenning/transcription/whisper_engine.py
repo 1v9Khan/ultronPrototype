@@ -20,38 +20,18 @@ from kenning.utils.logging import get_logger
 
 logger = get_logger("transcription.whisper")
 
-# Closed Valorant vocabulary fed to the decoder as initial_prompt (domain
-# biasing) so agent names + callout terms are recognised at the source. <=200
-# tokens; most-confusable proper nouns first. Overridable via WHISPER_INITIAL_PROMPT.
-_DOMAIN_PROMPT = (
-    "Valorant team comms. Agents: Raze, Jett, Sova, Omen, Killjoy, Cypher, Viper, "
-    "Phoenix, Sage, Reyna, Breach, Fade, Skye, Astra, Harbor, Clove, Chamber, "
-    "Brimstone, Gekko, Yoru, Iso, Deadlock, Tejo, Waylay, Vyse, Neon, KAY/O. "
-    "Calls: spike, plant, defuse, ult, smoke, flash, molly, dart, rotate, eco, "
-    "save, push, heaven, mid, long, short, A site, B site, C site, lurk, flank."
+# The decoder-priming vocabulary + the non-speech blocklist live in
+# ``_whisper_text`` (stdlib-only) so the OUT-OF-PROCESS sidecar
+# (``scripts/stt_server.py``) applies exactly the same decode-quality rules --
+# otherwise running STT on another GPU would silently cost agent-name accuracy
+# and re-admit "Thank you."-type phantom callouts. Names re-exported under the
+# historical private spellings so existing references keep working.
+from kenning.transcription._whisper_text import (          # noqa: E402
+    DOMAIN_PROMPT as _DOMAIN_PROMPT,
+    WHISPER_HALLUCINATIONS as _WHISPER_HALLUCINATIONS,
+    build_initial_prompt as _build_initial_prompt,
+    is_whisper_hallucination as _is_whisper_hallucination,
 )
-
-# faster-whisper emits stock phrases ("Thank you.", "Thanks for watching",
-# "you", ".") on near-silence / room tone / non-speech audio. On the gaming
-# relay path a false transcript would fire a bogus team callout or a
-# conversational turn, so when the WHOLE transcript normalises to one of these
-# it is dropped. Kept deliberately NARROW -- only phrases that are never a
-# meaningful standalone command (real commands like "you're welcome" untouched).
-_WHISPER_HALLUCINATIONS = frozenset({
-    "thank you", "thanks", "thank you so much", "thank you very much",
-    "thanks for watching", "thank you for watching", "thanks for watching everyone",
-    "please subscribe", "subscribe", "thanks for listening", "you", "bye",
-    "bye bye", "the", "music", "applause", "silence", "background noise",
-    "i'm sorry", "oh", "hmm", "mm", "mmm", "uh", "um", "ah",
-})
-
-
-def _is_whisper_hallucination(text: str) -> bool:
-    """True when ``text`` is, in whole, a known faster-whisper non-speech
-    artifact (case/punctuation-insensitive)."""
-    norm = re.sub(r"[^\w\s']", " ", text.lower())
-    norm = re.sub(r"\s+", " ", norm).strip()
-    return norm in _WHISPER_HALLUCINATIONS
 
 
 class WhisperEngine:
@@ -70,6 +50,7 @@ class WhisperEngine:
         device: str = settings.WHISPER_DEVICE,
         compute_type: str = settings.WHISPER_COMPUTE_TYPE,
         beam_size: int = settings.WHISPER_BEAM_SIZE,
+        device_index: int = getattr(settings, "WHISPER_DEVICE_INDEX", 0),
     ) -> None:
         from faster_whisper import WhisperModel
 
@@ -77,17 +58,23 @@ class WhisperEngine:
         self.device = device
         self.compute_type = compute_type
         self.beam_size = beam_size
+        # 2026-07-24 multi-GPU: pin Whisper to a SPECIFIC card so the primary
+        # GPU holds nothing but Ultron's model. CTranslate2 ignores this on
+        # CPU.
+        self.device_index = int(device_index)
 
         logger.info(
-            "Loading Whisper '%s' on %s (%s)…",
+            "Loading Whisper '%s' on %s%s (%s)…",
             model_name,
             device,
+            f":{self.device_index}" if device != "cpu" else "",
             compute_type,
         )
         t0 = time.monotonic()
         try:
             self._model = WhisperModel(
-                model_name, device=device, compute_type=compute_type
+                model_name, device=device, compute_type=compute_type,
+                device_index=self.device_index,
             )
         except Exception as e:
             logger.error("Whisper load failed: %s", e)
@@ -141,18 +128,8 @@ class WhisperEngine:
                 vad_filter=settings.WHISPER_VAD_FILTER,
             )
             if getattr(settings, "WHISPER_DOMAIN_BIAS", True):
-                # 2026-06-18 fix: a user-set WHISPER_INITIAL_PROMPT must AUGMENT
-                # the Valorant domain vocabulary, not REPLACE it. The previous
-                # `user or _DOMAIN_PROMPT` let a short override (e.g. .env
-                # KENNING_WHISPER_INITIAL_PROMPT='Kenning.') SHADOW the whole
-                # domain prompt -> domain biasing effectively OFF -> agent-name
-                # jargon errors (Sova->Silva) and phantom leads ("Also team ...").
-                # Keep the domain vocab as the base; append any user override.
-                _user_ip = (getattr(settings, "WHISPER_INITIAL_PROMPT", "") or "").strip()
-                _kw["initial_prompt"] = (
-                    f"{_DOMAIN_PROMPT} {_user_ip}".strip() if _user_ip
-                    else _DOMAIN_PROMPT
-                )
+                _kw["initial_prompt"] = _build_initial_prompt(
+                    getattr(settings, "WHISPER_INITIAL_PROMPT", "") or "")
             segments, info = self._model.transcribe(audio, **_kw)
             kept = []
             for seg in segments:

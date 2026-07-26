@@ -69,6 +69,25 @@ def make_stt_engine(cfg: "STTConfig | None" = None) -> STTEngine:
         from kenning.config import get_config
         cfg = get_config().stt
 
+    # OUT-OF-PROCESS SIDECAR (2026-07-26) wins over every in-process engine.
+    # It exists so STT can run on a NON-PRIMARY GPU without CTranslate2's
+    # device-index path corrupting memory in-process (silent 0xc0000409).
+    # The orchestrator spawns the child; this returns the client shim, which
+    # fails open to "" if the child is down.
+    if bool(getattr(cfg, "sidecar_enabled", False)):
+        from kenning.transcription.sidecar_engine import SidecarWhisperEngine
+        logger.info(
+            "STT engine: SIDECAR (out-of-process faster-whisper on "
+            "127.0.0.1:%s -- keeps CTranslate2 off this process's CUDA "
+            "context)", getattr(cfg, "sidecar_port", 8779),
+        )
+        return SidecarWhisperEngine(
+            host=getattr(cfg, "sidecar_host", "127.0.0.1"),
+            port=int(getattr(cfg, "sidecar_port", 8779)),
+            timeout_s=float(getattr(cfg, "sidecar_request_timeout_s", 30.0)),
+            model_name=getattr(cfg, "model", "sidecar"),
+        )
+
     selector = getattr(cfg, "engine", "whisper")
 
     if selector == "moonshine":

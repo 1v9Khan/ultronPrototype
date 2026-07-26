@@ -60,7 +60,7 @@ def phrase_for(failure_mode: str) -> Optional[str]:
 
     ``failure_mode`` is the attribute name on
     :class:`ErrorPhrasesConfig` — e.g. ``"brave_unavailable"``,
-    ``"qdrant_unavailable"``, ``"rvc_unavailable"``.
+    ``"qdrant_unavailable"``, ``"piper_unavailable"``.
     """
     cfg = get_config().error_phrases
     pool = getattr(cfg, failure_mode, None)
