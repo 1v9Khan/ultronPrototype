@@ -22,10 +22,13 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SERVER = _ROOT / "scripts" / "stt_server.py"
+
+# Committed alongside these tests, so a missing file is a real breakage,
+# not a reason to skip -- skipping would hide the sidecar disappearing.
+assert _SERVER.is_file(), f"stt_server.py missing at {_SERVER}"
 
 
 def _load_server(monkeypatch, **env):
@@ -62,7 +65,6 @@ class _FakeModel:
         return iter(self._segments), object()
 
 
-@pytest.mark.skipif(not _SERVER.is_file(), reason="stt_server.py missing")
 def test_never_passes_device_index(monkeypatch) -> None:
     """The masking mechanism -- a device_index here would reintroduce the crash."""
     import ast
@@ -84,7 +86,6 @@ def test_never_passes_device_index(monkeypatch) -> None:
             "with CUDA_VISIBLE_DEVICES instead")
 
 
-@pytest.mark.skipif(not _SERVER.is_file(), reason="stt_server.py missing")
 def test_decode_quality_helpers_load(monkeypatch) -> None:
     """The shared rules must load by FILE PATH, without the package __init__
     chain -- a config error must not be able to take STT down."""
@@ -96,7 +97,6 @@ def test_decode_quality_helpers_load(monkeypatch) -> None:
     assert mod.is_whisper_hallucination("push mid") is False
 
 
-@pytest.mark.skipif(not _SERVER.is_file(), reason="stt_server.py missing")
 def test_applies_domain_biasing(monkeypatch) -> None:
     mod = _load_server(monkeypatch, KENNING_STT_DOMAIN_BIAS="1")
     fake = _FakeModel([_Seg(" push mid ")])
@@ -114,7 +114,6 @@ def test_applies_domain_biasing(monkeypatch) -> None:
     assert kw["language"] == "en"
 
 
-@pytest.mark.skipif(not _SERVER.is_file(), reason="stt_server.py missing")
 def test_domain_bias_can_be_disabled(monkeypatch) -> None:
     mod = _load_server(monkeypatch, KENNING_STT_DOMAIN_BIAS="0")
     fake = _FakeModel([_Seg("hello")])
@@ -125,7 +124,6 @@ def test_domain_bias_can_be_disabled(monkeypatch) -> None:
     assert "initial_prompt" not in fake.calls[0]
 
 
-@pytest.mark.skipif(not _SERVER.is_file(), reason="stt_server.py missing")
 def test_drops_whole_transcript_hallucination(monkeypatch) -> None:
     """A stock non-speech phrase must not reach the parent as a command."""
     mod = _load_server(monkeypatch)
@@ -135,7 +133,6 @@ def test_drops_whole_transcript_hallucination(monkeypatch) -> None:
     assert mod._transcribe(np.zeros(16000, dtype=np.float32), "en") == ""
 
 
-@pytest.mark.skipif(not _SERVER.is_file(), reason="stt_server.py missing")
 def test_keeps_real_speech_that_merely_contains_a_stock_word(monkeypatch) -> None:
     """The blocklist is WHOLE-transcript only -- never substring."""
     mod = _load_server(monkeypatch)
@@ -146,7 +143,6 @@ def test_keeps_real_speech_that_merely_contains_a_stock_word(monkeypatch) -> Non
     assert out == "thank you for the heal, Sage"
 
 
-@pytest.mark.skipif(not _SERVER.is_file(), reason="stt_server.py missing")
 def test_drops_high_no_speech_segments(monkeypatch) -> None:
     mod = _load_server(monkeypatch)
     fake = _FakeModel([_Seg("phantom", no_speech_prob=0.99), _Seg("push mid")])

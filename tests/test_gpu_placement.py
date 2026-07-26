@@ -342,7 +342,13 @@ def test_live_config_dual_model_lands_on_separate_cards() -> None:
 
     cfg = _effective_llm_config()
     if not cfg.fast_preset:
-        pytest.skip("dual-model disabled (llm.fast_preset empty)")
+        # Dual-model is OFF. Rather than skip -- which asserts nothing and
+        # hides the day someone sets fast_preset without checking placement --
+        # pin the CURRENT documented state explicitly. The branch below is the
+        # contract that takes over the moment the feature is switched on.
+        assert cfg.fast_preset == "", (
+            "fast_preset should be empty while dual-model is disabled")
+        return
     assert cfg.fast_preset in LLM_PRESETS
     fast_card = LLM_PRESETS[cfg.fast_preset]["gpu_index"]
     assert fast_card != cfg.gpu_index, (
