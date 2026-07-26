@@ -49,8 +49,8 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
 
 from kenning.audio.scenario_taxonomy import (
     DESTRUCTIVE_SCENARIOS,
@@ -99,7 +99,7 @@ def router_shadow_mode() -> bool:
 class RouteVerdict:
     """What the classifier decided, plus everything needed to audit it."""
 
-    scenario: Optional[Scenario]
+    scenario: Scenario | None
     raw: str
     elapsed_ms: float
     #: True when the verdict may be acted on (parsed, non-destructive, not
@@ -113,7 +113,7 @@ class RouteVerdict:
 
 
 def build_classifier_system_prompt(
-    scenarios: "Sequence[Scenario] | None" = None,
+    scenarios: Sequence[Scenario] | None = None,
 ) -> str:
     """The STATIC half of the prompt -- identical every call, so it caches.
 
@@ -179,7 +179,7 @@ class ScenarioRouter:
         self,
         generate: Callable[..., str],
         *,
-        shadow: Optional[bool] = None,
+        shadow: bool | None = None,
     ) -> None:
         self._generate = generate
         self._shadow = shadow

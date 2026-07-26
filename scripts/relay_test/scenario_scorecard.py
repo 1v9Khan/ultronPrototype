@@ -48,8 +48,9 @@ def _build_generate(model_path: Path, gpu_index: int, n_ctx: int):
     Deliberately constructed HERE rather than inside ``ScenarioRouter`` so the
     router module never imports llama-cpp (BR-P1: it sits on the voice path).
     """
-    import kenning                       # noqa: F401 -- registers CUDA dll paths
     from llama_cpp import Llama, LlamaGrammar
+
+    import kenning  # noqa: F401 -- registers CUDA dll paths
     from kenning.audio.scenario_taxonomy import all_labels
 
     # GRAMMAR-CONSTRAINED DECODING. Without it the 1B does two things that
@@ -95,8 +96,9 @@ def main() -> int:
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
 
-    from routing_corpus import CASES                            # noqa: E402
-    from kenning.audio.scenario_router import ScenarioRouter    # noqa: E402
+    from routing_corpus import CASES  # noqa: E402
+
+    from kenning.audio.scenario_router import ScenarioRouter  # noqa: E402
 
     cases = list(CASES)
     if args.tag:

@@ -66,8 +66,8 @@ def main() -> int:
         return 2
 
     text = path.read_text(encoding="utf-8", errors="replace")
-    routers: "dict[str, tuple[str, float]]" = {}
-    flows: "dict[str, tuple[str, str]]" = {}
+    routers: dict[str, tuple[str, float]] = {}
+    flows: dict[str, tuple[str, str]] = {}
     for line in text.splitlines():
         m = _ROUTER_RE.search(line)
         if m:

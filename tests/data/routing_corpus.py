@@ -30,13 +30,11 @@ rather than one flat number:
 
 from __future__ import annotations
 
-from typing import List, Tuple
-
 from kenning.audio.scenario_taxonomy import Scenario as S
 
-Case = Tuple[str, S, Tuple[str, ...]]
+Case = tuple[str, S, tuple[str, ...]]
 
-CASES: List[Case] = [
+CASES: list[Case] = [
     # =====================================================================
     # RELAY_TEAM -- the competitive core. Audience = teammates.
     # =====================================================================
@@ -275,16 +273,16 @@ CASES: List[Case] = [
 ]
 
 
-def cases_for(scenario: S) -> "List[Case]":
+def cases_for(scenario: S) -> list[Case]:
     return [c for c in CASES if c[1] is scenario]
 
 
-def tagged(tag: str) -> "List[Case]":
+def tagged(tag: str) -> list[Case]:
     return [c for c in CASES if tag in c[2]]
 
 
-def coverage() -> "dict[S, int]":
-    out: "dict[S, int]" = {}
+def coverage() -> dict[S, int]:
+    out: dict[S, int] = {}
     for _, s, _ in CASES:
         out[s] = out.get(s, 0) + 1
     return out

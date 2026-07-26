@@ -18,15 +18,13 @@ from __future__ import annotations
 
 import types
 
-import pytest
-
 from kenning.pipeline import orchestrator as orch
 
 
 class _FakeTTS:
     def __init__(self) -> None:
-        self.streamed: "list[str]" = []
-        self.spoke: "list[str]" = []
+        self.streamed: list[str] = []
+        self.spoke: list[str] = []
         self.stream_calls = 0
 
     def speak_stream(self, gen) -> None:

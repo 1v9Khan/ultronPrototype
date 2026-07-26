@@ -36,9 +36,9 @@ Anticheat (BR-P1): stdlib only. This module sits on the voice path.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Dict, Sequence
+from enum import StrEnum
 
 __all__ = [
     "Scenario",
@@ -53,7 +53,7 @@ __all__ = [
 ]
 
 
-class Scenario(str, Enum):
+class Scenario(StrEnum):
     """Every routable intent, one label per handler.
 
     Values are the strings a classifier emits, so they are short, lowercase and
@@ -115,7 +115,7 @@ class ScenarioSpec:
     "say something", and the description says which audience).
     """
 
-    scenario: "Scenario"
+    scenario: Scenario
     description: str
     handler: str
     examples: Sequence[str] = field(default_factory=tuple)
@@ -132,7 +132,7 @@ def _s(scenario: Scenario, description: str, handler: str,
                         destructive=destructive)
 
 
-SCENARIOS: Dict[Scenario, ScenarioSpec] = {
+SCENARIOS: dict[Scenario, ScenarioSpec] = {
     s.scenario: s for s in (
         # ------------------------------------------------------------------
         # Team relay. The distinction from tell_chat is the AUDIENCE: teammates
@@ -433,7 +433,7 @@ DESTRUCTIVE_SCENARIOS = frozenset(
 )
 
 
-def scenario_by_value(value: str) -> "Scenario | None":
+def scenario_by_value(value: str) -> Scenario | None:
     """Map a classifier's raw string back to a Scenario, or None.
 
     Tolerant of the shapes a small model actually emits: surrounding
@@ -450,11 +450,11 @@ def scenario_by_value(value: str) -> "Scenario | None":
     return None
 
 
-def handler_for(scenario: "Scenario") -> str:
+def handler_for(scenario: Scenario) -> str:
     """The orchestrator method that implements ``scenario``."""
     return SCENARIOS[scenario].handler
 
 
-def all_labels() -> "list[str]":
+def all_labels() -> list[str]:
     """Every scenario value, in declaration order (stable for prompts)."""
     return [s.value for s in Scenario]

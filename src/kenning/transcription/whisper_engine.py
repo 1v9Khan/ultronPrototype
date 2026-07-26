@@ -7,7 +7,6 @@ the rest of the pipeline already standardizes on that, so no resampling here.
 
 from __future__ import annotations
 
-import re
 import time
 from typing import Optional
 
@@ -27,8 +26,8 @@ logger = get_logger("transcription.whisper")
 # and re-admit "Thank you."-type phantom callouts. Names re-exported under the
 # historical private spellings so existing references keep working.
 from kenning.transcription._whisper_text import (          # noqa: E402
-    DOMAIN_PROMPT as _DOMAIN_PROMPT,
-    WHISPER_HALLUCINATIONS as _WHISPER_HALLUCINATIONS,
+    DOMAIN_PROMPT as _DOMAIN_PROMPT,                       # noqa: F401 - re-export
+    WHISPER_HALLUCINATIONS as _WHISPER_HALLUCINATIONS,     # noqa: F401 - re-export
     build_initial_prompt as _build_initial_prompt,
     is_whisper_hallucination as _is_whisper_hallucination,
 )

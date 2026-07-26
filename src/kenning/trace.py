@@ -37,8 +37,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any
 
 __all__ = [
     "set_turn",
@@ -69,7 +70,7 @@ _turn_counter: int = 0
 # ---------------------------------------------------------------------------
 
 
-def set_turn(turn_id: Optional[int]) -> None:
+def set_turn(turn_id: int | None) -> None:
     """Set the per-thread turn id used by every subsequent tlog call.
 
     Pass ``None`` to clear (start-up phase logs have no turn).
@@ -77,7 +78,7 @@ def set_turn(turn_id: Optional[int]) -> None:
     _state.turn = turn_id
 
 
-def get_turn() -> Optional[int]:
+def get_turn() -> int | None:
     """Return the current turn id, or ``None`` when unset."""
     return getattr(_state, "turn", None)
 
@@ -105,12 +106,12 @@ def next_turn() -> int:
 # ---------------------------------------------------------------------------
 
 
-def set_phase(phase_name: Optional[str]) -> None:
+def set_phase(phase_name: str | None) -> None:
     """Set the per-thread phase tag (e.g. ``"capture"``, ``"stt"``)."""
     _state.phase = phase_name
 
 
-def get_phase() -> Optional[str]:
+def get_phase() -> str | None:
     """Return the current phase tag, or ``None`` when unset."""
     return getattr(_state, "phase", None)
 
@@ -235,7 +236,7 @@ def tlog(
 
 _MARKS_MAX_TURNS = 32
 _marks_lock = threading.Lock()
-_marks: "dict[int, list[tuple[str, float]]]" = {}
+_marks: dict[int, list[tuple[str, float]]] = {}
 
 
 def mark(stage: str) -> None:
@@ -262,7 +263,7 @@ def mark_at(stage: str, when: float) -> None:
         seq.append((stage, when))
 
 
-def reset_latency(turn_id: Optional[int] = None) -> None:
+def reset_latency(turn_id: int | None = None) -> None:
     """Drop the marks for a turn (defaults to the current one)."""
     tid = get_turn() if turn_id is None else turn_id
     if tid is None:
@@ -271,7 +272,7 @@ def reset_latency(turn_id: Optional[int] = None) -> None:
         _marks.pop(tid, None)
 
 
-def latency_stages(turn_id: Optional[int] = None) -> "list[tuple[str, float, float]]":
+def latency_stages(turn_id: int | None = None) -> list[tuple[str, float, float]]:
     """Return ``(stage, since_first_ms, delta_ms)`` in recorded order.
 
     ``delta_ms`` is the gap from the PREVIOUS mark, which is what identifies
@@ -285,7 +286,7 @@ def latency_stages(turn_id: Optional[int] = None) -> "list[tuple[str, float, flo
     if not seq:
         return []
     base = seq[0][1]
-    out: "list[tuple[str, float, float]]" = []
+    out: list[tuple[str, float, float]] = []
     prev = base
     for name, when in seq:
         out.append((name, (when - base) * 1000.0, (when - prev) * 1000.0))
@@ -293,7 +294,7 @@ def latency_stages(turn_id: Optional[int] = None) -> "list[tuple[str, float, flo
     return out
 
 
-def latency_line(turn_id: Optional[int] = None) -> str:
+def latency_line(turn_id: int | None = None) -> str:
     """One-line summary: total plus each stage's own cost, slowest first.
 
     Shape::
@@ -322,7 +323,7 @@ def latency_line(turn_id: Optional[int] = None) -> str:
 def phase(
     name: str,
     *,
-    log: Optional[logging.Logger] = None,
+    log: logging.Logger | None = None,
     level: int = logging.INFO,
     **kwargs: Any,
 ) -> Iterator[dict]:

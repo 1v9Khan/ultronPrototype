@@ -42,8 +42,6 @@ Anticheat (BR-P1): stdlib only.
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 from kenning.audio.scenario_taxonomy import Scenario
 
 __all__ = [
@@ -55,7 +53,7 @@ __all__ = [
 
 # Each value slots into the USER turn after the verbosity directive, so it is
 # phrased as an instruction for THIS turn rather than a persona statement.
-SCENARIO_DIRECTIVES: Dict[Scenario, str] = {
+SCENARIO_DIRECTIVES: dict[Scenario, str] = {
 
     Scenario.ANSWER_QUESTION: (
         "They asked you something. Your first sentence must contain the actual "
@@ -120,12 +118,12 @@ SCENARIO_DIRECTIVES: Dict[Scenario, str] = {
 }
 
 
-def has_directive(scenario: Optional[Scenario]) -> bool:
+def has_directive(scenario: Scenario | None) -> bool:
     """True when ``scenario`` carries a tuned directive."""
     return scenario is not None and scenario in SCENARIO_DIRECTIVES
 
 
-def directive_for(scenario: Optional[Scenario], default: str = "") -> str:
+def directive_for(scenario: Scenario | None, default: str = "") -> str:
     """The tuned directive for ``scenario``.
 
     Returns ``default`` for a scenario with no directive (the deterministic

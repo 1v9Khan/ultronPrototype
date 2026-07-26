@@ -41,7 +41,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
-from typing import Iterable, Optional, Sequence, Set
+from collections.abc import Iterable, Sequence
 
 from kenning.utils.logging import get_logger
 
@@ -62,10 +62,10 @@ _MIN_LEN = 4
 _FUZZY_FLOOR = 88
 
 _CACHE_TTL_SECONDS = 60.0
-_cache: "tuple[float, frozenset[str]] | None" = None
+_cache: tuple[float, frozenset[str]] | None = None
 
 
-def _agent_names() -> "Set[str]":
+def _agent_names() -> set[str]:
     """Valorant agent names, lowercased. These are NEVER chatters.
 
     Read from the relay roster so a future agent addition is picked up here
@@ -84,7 +84,7 @@ def invalidate_cache() -> None:
     _cache = None
 
 
-def known_chatters(db_path: "str | os.PathLike | None" = None) -> "frozenset[str]":
+def known_chatters(db_path: str | os.PathLike | None = None) -> frozenset[str]:
     """Logins the stream has welcomed, lowercased. Empty set on any problem.
 
     Cached for ``_CACHE_TTL_SECONDS`` -- this is consulted on the voice hot
@@ -101,7 +101,7 @@ def known_chatters(db_path: "str | os.PathLike | None" = None) -> "frozenset[str
             path = PROJECT_ROOT / "data" / "twitch" / "welcomed.db"
         except Exception:                                        # noqa: BLE001
             return frozenset()
-    names: "Set[str]" = set()
+    names: set[str] = set()
     try:
         if os.path.isfile(str(path)):
             # read-only + short timeout: never block a spoken turn on a lock.
@@ -124,9 +124,9 @@ def known_chatters(db_path: "str | os.PathLike | None" = None) -> "frozenset[str
 def resolve_chatter(
     spoken: str,
     *,
-    chatters: "Optional[Iterable[str]]" = None,
-    exclude: "Optional[Sequence[str]]" = None,
-) -> Optional[str]:
+    chatters: Iterable[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> str | None:
     """Resolve a spoken name to a chatter login, or None.
 
     Returns None whenever the answer is not clear-cut -- too short, an agent

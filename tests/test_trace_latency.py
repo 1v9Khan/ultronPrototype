@@ -103,9 +103,11 @@ def test_background_thread_marks_land_on_the_same_turn() -> None:
 
 def test_reset_clears_only_that_turn() -> None:
     trace.set_turn(9005)
-    trace.mark("a"); trace.mark("b")
+    trace.mark("a")
+    trace.mark("b")
     trace.set_turn(9006)
-    trace.mark("c"); trace.mark("d")
+    trace.mark("c")
+    trace.mark("d")
 
     trace.reset_latency(9005)
     assert trace.latency_stages(9005) == []

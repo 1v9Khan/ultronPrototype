@@ -19,8 +19,8 @@ import pytest
 from kenning.config import (
     KokoroConfig,
     LLMConfig,
-    STTConfig,
     SemanticRouterConfig,
+    STTConfig,
     TwitchSafetyConfig,
 )
 

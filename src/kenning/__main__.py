@@ -130,7 +130,7 @@ def main() -> int:
         from kenning.flight_recorder import maybe_start_from_env
         if maybe_start_from_env():
             from kenning.flight_recorder import resolved_dir
-            logger.info("flight recorder ON -> %s\_flight_A|B.txt "
+            logger.info(r"flight recorder ON -> %s\_flight_A|B.txt "
                         "(5 Hz all-thread stack snapshots)",
                         resolved_dir() or "?")
     except Exception as _fr_e:                                   # noqa: BLE001

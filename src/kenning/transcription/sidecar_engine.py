@@ -28,7 +28,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Optional
 
 import numpy as np
 
@@ -79,7 +78,7 @@ class SidecarWhisperEngine:
 
     # -- the WhisperEngine surface ----------------------------------------
     def transcribe(self, audio: np.ndarray,
-                   language: Optional[str] = "en") -> str:
+                   language: str | None = "en") -> str:
         if audio is None or audio.size == 0:
             return ""
         if audio.dtype != np.float32:

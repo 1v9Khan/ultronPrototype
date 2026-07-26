@@ -42,7 +42,7 @@ def enabled() -> bool:
     )
 
 
-def start(log_dir: "str | Path | None" = None, interval_s: float = 0.2) -> bool:
+def start(log_dir: str | Path | None = None, interval_s: float = 0.2) -> bool:
     """Start the recorder thread (idempotent). Returns True when running.
 
     ``log_dir`` defaults to ``<PROJECT_ROOT>/logs`` -- an ABSOLUTE path. It
