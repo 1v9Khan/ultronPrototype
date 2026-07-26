@@ -182,7 +182,7 @@
 > design default (CPU; "chat moderation is latency-tolerant"); frees ~2-2.5 GB (1B model + the separate
 > process's own CUDA context) and removes the guard CUDA-crash class (it GGML_ASSERT-crashed on GPU after
 > restart churn 2026-07-09). Audit verdict: every other GPU resident (4B F16-KV, Whisper int8_fp16, Kokoro) is
-> a measured latency/quality choice (RVC was config-echo only under Kokoro and the whole piper_rvc engine was retired 2026-07-23).
+> a measured latency/quality choice; RVC is config-echo only (never constructed under Kokoro).
 >
 > **SPEC 12 — VOICE→CHAT TELL RELAY + FIRST-TIME-CHATTER WELCOME (2026-07-09)**
 >
@@ -3733,10 +3733,11 @@ For the current decisions and Foundation phase status see
 │       │   ├── searxng.py          ← 2026-05-22 frontier: SearxNGSearchClient (local Docker JSON API); circuit-breaker protected; X-Forwarded-For header satisfies botdetection; per-call categories override
 │       │   └── trafilatura_reader.py ← 2026-05-22 frontier: TrafilaturaReaderClient (local Python lib; ~32 k char cap)
 │       │
-│       ├── tts/                    ← XTTS + Kokoro engines + ack cache (2026-07-23: legacy Piper+RVC engine RETIRED — rvc.py + speech.py deleted, tts.engine ∈ {kokoro,xtts_v3}, default kokoro)
+│       ├── tts/                    ← Piper + RVC + XTTS + Kokoro engines + ack cache
+│       │   ├── rvc.py              ← RvcConverter (Piper PCM → Kenning timbre)
 │       │   ├── kokoro_engine.py    ← KokoroSpeech (StyleTTS2 + ISTFTNet; current default via tts.engine="kokoro"; voice kenning, fine-tune model + voicepack loaded; **on CUDA** since 2026-05-22 with move_to_device("cpu") on gaming engage; trim_and_fade + _drain_queue_with_silence + apply_trim_fade/trim_fade_threshold_db config knobs)
 │       │   ├── precomputed_ack.py  ← PrecomputedAckClipCache (NEW 2026-05-15; ~350 ms saved per cache hit)
-│       │   ├── (rvc.py + speech.py DELETED 2026-07-23 with the piper_rvc engine; make_tts_engine still returns a (None, engine) 2-tuple so orchestrator/injector are unchanged; trained voicepack kenning_rvc_voice/ kept on disk under the voice-baseline protections)
+│       │   ├── speech.py           ← TextToSpeech (legacy Piper + RVC engine; selected by tts.engine="piper_rvc"; ack cache + prepare_output_stream)
 │       │   ├── spectral_smooth.py  ← spectral magnitude smoothing for partial-fine-tune (STFT median-filter ISTFT, optional); 2026-05-22 ADDED trim_and_fade(audio, sr, **kwargs) -- RMS trim + raised-cosine fades + hard silence pad + tail aggressive zero (mutes Kokoro end-of-clip blip)
 │       │   ├── kenning_filter.py    ← v3 Kenning mechanical filter (NEW 2026-05-10; pedalboard DSP chain; unused on kokoro engine when apply_runtime_filter=false)
 │       │   ├── f0_control.py        ← NEW 2026-06-12: install_f0_contour_shaping — patches Kokoro predictor.F0Ntrain to scale predicted pitch/energy curves before the ISTFTNet decoder (zero added latency)

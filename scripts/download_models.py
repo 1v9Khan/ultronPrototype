@@ -75,17 +75,6 @@ LLM_JOSIEFIED_4B_REPO = "mradermacher/Josiefied-Qwen3-4B-abliterated-v2-GGUF"
 LLM_JOSIEFIED_4B_FILE = "Josiefied-Qwen3-4B-abliterated-v2.Q4_K_M.gguf"
 LLM_JOSIEFIED_4B_Q5_FILE = "Josiefied-Qwen3-4B-abliterated-v2.Q5_K_M.gguf"
 
-# 2026-07-24 -- Gemma 4 12B, heretic abliteration (p-e-w's Heretic tool:
-# automated directional ablation, no fine-tune, minimal distribution shift).
-# The large-target upgrade: runs ALONE on the primary 12 GB card while the 4B
-# presets move to the secondary 8 GB card (see LLM_PRESETS gpu_index).
-# Q4_K_M (~6.87 GB) is the quant that leaves room for KV + compute buffers on
-# a 12 GB card. Drafts with the Gemma 3 1B already fetched below -- Gemma 3
-# and Gemma 4 share the 262k Gemini SentencePiece vocabulary, which
-# draft_model.assert_draft_vocab_matches verifies at load.
-LLM_GEMMA4_12B_REPO = "igorls/gemma-4-12B-it-heretic-GGUF"
-LLM_GEMMA4_12B_FILE = "gemma-4-12B-it-heretic-Q4_K_M.gguf"
-
 # 2026-05-19 Track 4 -- Gemma 3 4B abliterated (mradermacher quants of
 # the Goekdeniz-Guelmez abliterated fine-tune over Google's
 # gemma-3-4b-it). Designed as the candidate daily-use swap targeted
@@ -162,6 +151,11 @@ PIPER_CONFIG_URL = (
     "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
     "en/en_US/ryan/medium/en_US-ryan-medium.onnx.json"
 )
+RVC_SUPPORT_BASE_URL = (
+    "https://huggingface.co/r3gm/sonitranslate_voice_models/resolve/main/"
+)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -307,9 +301,6 @@ def main() -> int:
     print("\n[3b/12] LLM (Josiefied-Qwen3-4B-abliterated-v2 Q5_K_M) — retained for swap-back / quality A/B")
     _hf_download(LLM_JOSIEFIED_4B_REPO, LLM_JOSIEFIED_4B_Q5_FILE, settings.MODELS_DIR)
 
-    print("\n[3c/12] LLM (Gemma 4 12B heretic Q4_K_M, ~6.9 GB) — large target, primary card")
-    _hf_download(LLM_GEMMA4_12B_REPO, LLM_GEMMA4_12B_FILE, settings.MODELS_DIR)
-
     print("\n[4/12] LLM (Josiefied-Qwen3-8B-abliterated-v1 Q5_K_M) — retained for swap-back")
     _hf_download(LLM_JOSIEFIED_REPO, LLM_JOSIEFIED_FILE, settings.MODELS_DIR)
 
@@ -404,8 +395,18 @@ def main() -> int:
         print(f"  ✗ failed: {e}")
         print("    OK to ignore if memory.reranking.enabled stays False")
 
-    # (The RVC support-model download step was removed 2026-07-23 with the
-    # retirement of the piper_rvc engine.)
+    print("\n[13/13] RVC support models + voice-conversion model (legacy TTS fallback)")
+    _download(RVC_SUPPORT_BASE_URL + "hubert_base.pt", settings.RVC_HUBERT_PATH)
+    _download(RVC_SUPPORT_BASE_URL + "rmvpe.pt", settings.RVC_RMVPE_PATH)
+    if settings.RVC_MODEL_PATH.is_file() and settings.RVC_INDEX_PATH.is_file():
+        print(f"  ✓ found: {settings.RVC_MODEL_PATH.name}")
+        print(f"  ✓ found: {settings.RVC_INDEX_PATH.name}")
+    else:
+        print(f"  ! RVC model not found at {settings.RVC_MODEL_DIR}")
+        print(f"    Expected: {settings.RVC_MODEL_PATH.name}")
+        print(f"    Expected: {settings.RVC_INDEX_PATH.name}")
+        print("    Set RVC_ENABLED=False in config/settings.py to disable, "
+              "or drop the .pth + .index files into that directory.")
 
     # 2026-05-21: actually CHECK whether the wake-word ONNX is present
     # rather than unconditionally printing the "train your own" message.

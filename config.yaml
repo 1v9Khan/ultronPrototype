@@ -1426,6 +1426,161 @@ tts:
     # copied from E:/ultron data/kokoro_finetune/voices/ on 2026-05-22).
     # Swap back to "am_michael" if the fine-tune voice misbehaves.
     voice: "kenning"
+    device: "cuda:1"                 # "cuda" for ~3x faster synth at +330 MB VRAM; gaming mode auto-flips to cpu
+    speed: 1.0                     # 1.0 native; in-model duration shaping (below) supplies cadence, so base stays 1.0
+    apply_runtime_filter: false    # set true to run v3 pedalboard over Kokoro output (CPU 10-30 ms/sentence)
+    filter_preset: "v3_heavy"      # unused while apply_runtime_filter=false
+    # 2026-05-22: spectral magnitude smoothing pass to mask pitch
+    # wobble from the partial Kenning fine-tune (Stage 1 done +
+    # Stage 2 epoch 0 only; SLM joint never ran). Cost ~10 ms/sec
+    # audio; hidden by producer-consumer overlap on clips 2+ and
+    # pre-applied at ack-cache build time. Flip OFF once the
+    # fine-tune is fully trained (epochs 3-9 add WavLM smoothing at
+    # the weight level).
+    apply_spectral_smooth: false
+    spectral_smooth_window: 5      # ~107 ms STFT median window at hop=512, sr=24 kHz (post-A/B sweet spot 2026-05-22)
+    apply_trim_fade: true          # trim boundary noise + fade-in/out; ON for partial fine-tune; disable post full training
+    trim_fade_threshold_db: -40.0  # RMS frames below this are treated as silence/noise at boundaries
+    # 2026-06-12 IN-MODEL prosody shaping -- scales Kokoro/StyleTTS2's OWN
+    # predicted pitch, energy, and per-phoneme duration curves BEFORE the
+    # ISTFTNet decoder, so the trained Ultron timbre + baked-in reverb are
+    # re-rendered unchanged with a livelier, more naturally-paced delivery.
+    # ZERO added latency (a single tensor op in the existing forward pass),
+    # deterministic, and applied UNIFORMLY to every clip (snap callouts AND
+    # persona lines). All 1.0 / 0.0 = the raw trained voice. Hand-tuned + A/B
+    # approved 2026-06-12. See kenning/tts/{f0_control,duration_control}.py.
+    f0_contour_factor: 1.4         # pitch-contour expansion around the median (1.0=flat/monotone)
+    f0_shift_semitones: -0.5       # median pitch shift; slightly deeper timbre
+    f0_max_excursion: 4.5          # tanh soft-limit (semitones) on pitch excursion -> no single-word spikes
+    f0_energy_factor: 1.2          # mean-preserving energy/dynamics expansion (emphasis)
+    dur_final_factor: 1.3          # sentence-final (. ! ?) rime lengthening
+    dur_internal_factor: 1.18      # phrase-internal (, ; : --) rime lengthening
+    dur_stress_factor: 1.08        # primary-stressed vowel lift
+    max_pause_cap_ms: 520.0        # cap any internal pause so dramatic pauses stay under the 600 ms dead-air flag; 0=off
+
+  # Output-quality watcher (2026-06-11): every synthesized clip is
+  # analyzed on a DAEMON thread for audible blips -- hard un-faded
+  # onsets/tails (pop on stream open/close), isolated noise bursts at
+  # the start/end of sentences (the fine-tune artifact trim_fade
+  # mitigates), discontinuity clicks at sentence joins, internal
+  # dropouts, clipping, DC offset. Findings -> WARNING log +
+  # logs/audio_quality.jsonl. Hot path pays only a non-blocking
+  # queue put; fully fail-open.
+  output_watch:
+    enabled: true
+    jsonl_filename: "audio_quality.jsonl"
+    max_queue: 16                  # overflow drops clips, never blocks synth
+    waveform_enabled: true         # per-clip envelope stream for the panel's waveform pane
+    waveform_jsonl_filename: "audio_waveform.jsonl"
+
+  # ACTIVE WHEN tts.engine == "xtts_v3"  (swap-back).
+  # XTTS v2 streaming + v3 Kenning pedalboard filter. Engine spawns
+  # an HTTP subprocess in .venv-xtts on startup. Adds ~60 ms TTFT
+  # and ~2 GB VRAM vs Kokoro, but preserves the Kenning mechanical
+  # voice character.
+  xtts_v3:
+    # The isolated venv (gitignored, ~5.3 GB, baked-in absolute paths) and
+    # the reference WAV were NOT migrated during the 2026-06-12 Kenning
+    # rename -- they physically stay at ultronVoiceAudio/ (a real local
+    # runtime-asset path, like the C:\STC\ultronPrototype checkout dir).
+    # The server script is tracked and moved to kenningVoiceAudio/.
+    server_python: "ultronVoiceAudio/.venv-xtts/Scripts/python.exe"
+    server_script: "kenningVoiceAudio/scripts/xtts_server.py"
+    # The reference WAV lives under the "kokoro training audio"
+    # subdirectory (moved there during the disk-cleaning pass); the file
+    # keeps its original name in the gitignored asset dir.
+    reference_audio: "ultronVoiceAudio/kokoro training audio/Ultron_vocals_mono_v1.wav"
+    host: "127.0.0.1"
+    port: null                     # null = engine picks a free port
+    filter_preset: "v3_heavy"      # locked production preset
+    filter_tail_silence_ms: 200.0  # reverb-tail padding before clipping
+    speed: 1.15                    # native 1.0; safe range ~0.7-1.4
+    temperature: 0.65              # lower = sharper duration tokens (fewer phantoms)
+    # Phantom-tail trim catches residual XTTS-v2 phantom-token tails
+    # that slip past the temperature reduction. Set false for A/B.
+    phantom_tail_trim_enabled: true
+    phantom_tail_silence_threshold: 0.005
+    phantom_tail_max_event_ms: 200.0
+    phantom_tail_min_lead_silence_ms: 150.0
+    # 2026-05-20 round 9: extended reference-window conditioning.
+    # Coqui XTTS-v2 library defaults are 6 / 6 / 30 -- meaning only
+    # ~6 s of Kenning_vocals_mono_v1.wav reached the prosody encoder
+    # despite the file being 3 minutes long. Bumping these consumes
+    # more of the reference at startup (~1-2 s extra one-time cost)
+    # for a meaningfully richer speaker embedding.
+    gpt_cond_len: 30               # was Coqui default 6; total seconds fed to GPT prosody encoder
+    gpt_cond_chunk_len: 6          # XTTS-standard chunk size; gpt_cond_len/this = N averaged chunks
+    max_ref_length: 60             # was Coqui default 30; total seconds fed to HiFi-GAN speaker encoder
+
+  # ACTIVE WHEN tts.engine == "piper_rvc"  (legacy fallback).
+  # Original baseline voice character. Voice-quality lock applies
+  # here -- the RVC model + index are non-negotiable per the
+  # 2026-05-09 lock declaration.
+  rvc:
+    enabled: true
+    model_dir: "kenning_rvc_voice"
+    model_path: "kenning_rvc_voice/Kenning.pth"
+    index_path: "kenning_rvc_voice/added_IVF301_Flat_nprobe_1_Kenning_v2.index"
+    support_dir: "models/rvc"
+    hubert_path: "models/rvc/hubert_base.pt"
+    rmvpe_path: "models/rvc/rmvpe.pt"
+    device: "cuda:0"
+    pitch_shift: -2              # semitones; lower = deeper
+    index_rate: 0.66             # 0-1; higher = stricter match to trained timbre
+    protect: 0.45                # 0-0.5; higher preserves Piper consonants
+    f0_method: "rmvpe"           # most accurate pitch extractor
+    rms_mix_rate: 0.35           # higher = more articulate
+    filter_radius: 1             # median filter on F0
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging:
+  engine: "kokoro"
+
+  # Shared playback knobs (apply to ALL engines).
+  pause_ms: 50                     # silence between consecutive sentence clips
+  edge_fade_ms: 4                  # short fade prevents clicks at clip boundaries
+  sentence_flush_chars: ".!?\n"    # only strong terminators trigger TTS flush
+
+  # Legacy piper-engine-only fields (still readable by piper_rvc).
+  piper_voice_path: "models/piper/en_US-ryan-medium.onnx"
+  piper_voice_config_path: "models/piper/en_US-ryan-medium.onnx.json"
+  output_sample_rate: 22050
+  piper_length_scale: 1.15        # >1.0 = slower / more deliberate
+  # Output-stream pre-open + low-latency hints (apply to ALL engines).
+  # Pre-opens the sounddevice OutputStream during STT so the ~50 ms
+  # PortAudio handshake overlaps with Whisper; ``latency='low'`` asks
+  # PortAudio for the smallest acceptable buffer (saves 30-100 ms of
+  # OS-level audio buffering on most Windows hosts).
+  speculative_stream_open_enabled: true
+  speculative_stream_sample_rate: 48000   # Kenning RVC native; Kokoro/XTTS override at runtime
+  output_low_latency_mode: true
+
+  # Legacy piper_rvc two-stage pipeline parallelism (only consulted
+  # when tts.engine == "piper_rvc"; harmless overhead otherwise).
+  pipeline_parallel_enabled: true
+
+  # ┌────────────────────────────────────────────────────────────┐
+  # │ ENGINE SUBSECTIONS                                         │
+  # │ Each engine reads ONLY its own subsection at startup.      │
+  # └────────────────────────────────────────────────────────────┘
+
+  # ACTIVE WHEN tts.engine == "kokoro"  (current default).
+  # StyleTTS2 + ISTFTNet on CPU; ~330 MB on disk; zero VRAM. The
+  # kokoro PyPI package's KPipeline auto-downloads weights into the
+  # HF cache on first use; model_path is a sanity-gate directory.
+  # Voice character: stock am_michael (not Kenning). Round 7c/7d
+  # fine-tune path is the documented way to restore Kenning's voice.
+  kokoro:
+    model_path: "models/kokoro"
+    # 2026-05-22: switched from "am_michael" (stock) to the fine-tuned
+    # Kenning voicepack. KokoroSpeech.__init__ auto-resolves "kenning" to
+    # models/kokoro/voices/kenning.pt when the file exists (it does --
+    # copied from E:/ultron data/kokoro_finetune/voices/ on 2026-05-22).
+    # Swap back to "am_michael" if the fine-tune voice misbehaves.
+    voice: "kenning"
     device: "cuda:1"               # 2026-07-24 multi-GPU: ~330 MB of synth onto the SECONDARY card (was bare "cuda" = device 0, i.e. on top of Ultron's model). Bare "cuda" still means device 0; "cpu" still works. The gaming-mode flip inherits this index.
     speed: 1.05                    # 2026-06-24: 1.0 -> 1.05, a SLIGHT (~5%) uniform speed-up (user A/B). Cadence character still from the in-model duration shaping below. Dial 1.03 (subtler) / 1.07 (faster) to taste.
     apply_runtime_filter: false    # set true to run v3 pedalboard over Kokoro output (CPU 10-30 ms/sentence)

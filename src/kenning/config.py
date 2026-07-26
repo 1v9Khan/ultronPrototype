@@ -2637,9 +2637,21 @@ class ProjectionsConfig(_Strict):
     log_truncations: bool = True
 
 
-# RVCConfig (the legacy piper_rvc voice-conversion engine config) was removed
-# 2026-07-23 with the retirement of that engine. The trained voicepack
-# (kenning_rvc_voice/) stays on disk under the voice-baseline protections.
+class RVCConfig(_Strict):
+    enabled: bool = True
+    model_dir: str = "kenning_rvc_voice"
+    model_path: str = "kenning_rvc_voice/Kenning.pth"
+    index_path: str = "kenning_rvc_voice/added_IVF301_Flat_nprobe_1_Kenning_v2.index"
+    support_dir: str = "models/rvc"
+    hubert_path: str = "models/rvc/hubert_base.pt"
+    rmvpe_path: str = "models/rvc/rmvpe.pt"
+    device: str = "cuda:0"
+    pitch_shift: int = -2
+    index_rate: float = Field(default=0.66, ge=0.0, le=1.0)
+    protect: float = Field(default=0.45, ge=0.0, le=0.5)
+    f0_method: str = "rmvpe"
+    rms_mix_rate: float = Field(default=0.35, ge=0.0, le=1.0)
+    filter_radius: int = Field(default=1, ge=0)
 
 
 class XttsV3Config(_Strict):
@@ -2867,11 +2879,16 @@ class OutputWatchConfig(_Strict):
 class TTSConfig(_Strict):
     # ``"kokoro"`` is the lightweight StyleTTS2 + ISTFTNet engine (production
     # default); ``"xtts_v3"`` is the XTTS v2 streaming + v3 filter stack.
-    # 2026-07-23: the legacy ``"piper_rvc"`` engine was retired, so the default
-    # is now ``kokoro`` and the pattern no longer accepts ``piper_rvc``.
     # Switching engines requires a process restart (the chosen engine is
     # loaded once at orchestrator construction).
-    engine: str = Field(default="kokoro", pattern="^(xtts_v3|kokoro)$")
+    # 2026-05-10 voice swap: ``"piper_rvc"`` is the legacy stack
+    # (Piper voice + RVC timbre transfer); ``"xtts_v3"`` is the new
+    # XTTS v2 streaming + v3 filter stack. 2026-05-19 Track 5:
+    # ``"kokoro"`` is the new lightweight StyleTTS2 + ISTFTNet
+    # engine, intended as the post-fine-tune target. Switching
+    # engines requires a process restart (the chosen engine is
+    # loaded once at orchestrator construction).
+    engine: str = Field(default="piper_rvc", pattern="^(piper_rvc|xtts_v3|kokoro)$")
     piper_voice_path: str = "models/piper/en_US-ryan-medium.onnx"
     piper_voice_config_path: str = "models/piper/en_US-ryan-medium.onnx.json"
     output_sample_rate: int = 22050
@@ -2882,7 +2899,7 @@ class TTSConfig(_Strict):
     # between sentence clips by every TTS engine's speak_stream.
     pause_ms: int = Field(default=180, ge=0)
     edge_fade_ms: int = Field(default=4, ge=0)
-    # (the ``rvc`` sub-config was removed 2026-07-23 with the piper_rvc engine)
+    rvc: RVCConfig = Field(default_factory=RVCConfig)
     xtts_v3: XttsV3Config = Field(default_factory=XttsV3Config)
     # 2026-05-19 Track 5 -- Kokoro engine config (used when
     # tts.engine == "kokoro").
@@ -3294,7 +3311,9 @@ class ErrorPhrasesConfig(_Strict):
         "Anthropic's API isn't responding.",
         "I've lost connection to Claude.",
     ])
-    # (rvc_unavailable was removed 2026-07-23 with the piper_rvc engine)
+    rvc_unavailable: List[str] = Field(default_factory=lambda: [
+        "Voice conversion is offline. You'll hear me without the Kenning filter for now.",
+    ])
     openclaw_unavailable: List[str] = Field(default_factory=lambda: [
         "I'd ask the gateway to handle that, but it's not responding right now.",
     ])
@@ -5435,6 +5454,7 @@ __all__ = [
     "CodingConfig",
     "ProjectionsBudgets",
     "ProjectionsConfig",
+    "RVCConfig",
     "TTSConfig",
     "LoggingConfig",
     "ErrorPhrasesConfig",

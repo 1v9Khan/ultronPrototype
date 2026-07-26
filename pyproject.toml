@@ -24,8 +24,7 @@ dependencies = [
     "huggingface-hub>=0.23",
     "onnxruntime>=1.17",
     "torch>=2.1",
-    # The active Kokoro pipeline never constructs the legacy Piper/RVC path.
-    # Keep its source isolated, but do not make every installation build RVC.
+    "infer-rvc-python>=1.0",
     "scipy>=1.10",
     "sentence-transformers>=2.7",
     "tree_sitter>=0.21",
@@ -50,10 +49,6 @@ dev = [
     # this eliminates the "sweep keeps running into issues" failure
     # mode that recurred during the frontier-enhancement pass.
     "pytest-timeout>=2.0",
-    # The Parakeet streaming-server tests use FastAPI's TestClient.
-    "fastapi>=0.115",
-    # Coding and OpenClaw test suites construct the local FastMCP server.
-    "mcp>=1.0",
     # 2026-05-22 catalog batch 4: FATAL-only flake8 for the pre-write
     # lint cascade. Listed as a devdep because the listener is opt-in
     # via ``coding.pre_write_lint.enabled`` and gracefully degrades

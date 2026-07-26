@@ -149,9 +149,84 @@ class TestXttsV3PreOpen:
 
 
 # ---------------------------------------------------------------------------
-# (The legacy speech.py/piper_rvc engine pre-open tests were removed 2026-07-23
-# with the retirement of that engine; xtts_v3 + kokoro pre-open remain covered.)
+# Legacy speech.py engine pre-open
 # ---------------------------------------------------------------------------
+
+
+class TestLegacyPreOpen:
+
+    @staticmethod
+    def _build_engine():
+        from kenning.tts.speech import TextToSpeech
+        e = object.__new__(TextToSpeech)
+        e.piper_sample_rate = 22050
+        e._preopened_stream = None
+        e._preopened_lock = threading.Lock()
+        e._stop_event = threading.Event()
+        return e
+
+    def test_prepare_then_consume_returns_stream(self):
+        e = self._build_engine()
+        fake = _FakeOutputStream()
+        with patch.object(e, "_open_output_stream", return_value=fake):
+            e.prepare_output_stream()
+        # The legacy engine reads spec_sr from config (defaults vary in
+        # tests). Whatever it opened with, consume should match.
+        cached_sr = getattr(fake, "_kenning_sr", None)
+        assert cached_sr is not None
+        s = e._consume_preopened_stream(sr=cached_sr)
+        assert s is fake
+
+    def test_consume_on_sr_mismatch_closes(self):
+        e = self._build_engine()
+        fake = _FakeOutputStream()
+        with patch.object(e, "_open_output_stream", return_value=fake):
+            e.prepare_output_stream()
+        cached_sr = getattr(fake, "_kenning_sr", None)
+        wrong_sr = (cached_sr or 22050) + 8000
+        s = e._consume_preopened_stream(sr=wrong_sr)
+        assert s is None
+        assert fake.closed is True
+
+    def test_prepare_failure_is_swallowed(self):
+        e = self._build_engine()
+        with patch.object(
+            e, "_open_output_stream",
+            side_effect=RuntimeError("device busy"),
+        ):
+            e.prepare_output_stream()
+        assert e._preopened_stream is None
+
+    def test_prepare_writes_silence_for_device_clock_warmup(self):
+        """2026-05-16 latency pass 2: legacy engine pre-open must
+        also write 50 ms of silence to wake the audio device clock
+        (XTTS already did). Without this, the first ``speak_stream``
+        clip on the legacy stack pays the device-wake latency."""
+        e = self._build_engine()
+        fake = _FakeOutputStream()
+        with patch.object(e, "_open_output_stream", return_value=fake), \
+             patch.object(e, "_write_silence") as mock_write:
+            e.prepare_output_stream()
+        # Silence call: stream, sr, 50 ms.
+        assert mock_write.called
+        args, _kwargs = mock_write.call_args
+        assert args[0] is fake
+        assert args[2] == pytest.approx(0.05)
+
+    def test_prepare_silence_write_failure_is_swallowed(self):
+        """If _write_silence itself raises, the pre-open should still
+        succeed -- some PortAudio backends prime themselves on
+        stream.start() and don't need the explicit write."""
+        e = self._build_engine()
+        fake = _FakeOutputStream()
+        with patch.object(e, "_open_output_stream", return_value=fake), \
+             patch.object(
+                 e, "_write_silence",
+                 side_effect=RuntimeError("write failed")
+             ):
+            e.prepare_output_stream()
+        # Stream still cached.
+        assert e._preopened_stream is fake
 
 
 # ---------------------------------------------------------------------------

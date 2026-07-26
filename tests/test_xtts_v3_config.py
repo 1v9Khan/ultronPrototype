@@ -2,10 +2,10 @@
 
 Covers the 2026-05-10 voice-pipeline swap:
 
-- ``tts.engine`` defaults to ``kokoro`` (2026-07-23: was ``piper_rvc``
-  until that engine was retired).
+- ``tts.engine`` defaults to legacy ``piper_rvc`` so existing
+  installs keep working without config changes.
 - ``"xtts_v3"`` is accepted by the schema.
-- Unknown engine names (including the retired ``piper_rvc``) are rejected.
+- Unknown engine names are rejected.
 - ``XttsV3Config`` round-trips through the loader with the expected
   defaults pointing at the audio prep layout.
 - The kenning filter module imports cleanly with all three presets.
@@ -28,15 +28,9 @@ from kenning.config import (
 # ---------------------------------------------------------------------------
 
 
-def test_tts_engine_defaults_to_kokoro():
+def test_tts_engine_defaults_to_legacy_piper_rvc():
     cfg = TTSConfig()
-    assert cfg.engine == "kokoro"
-
-
-def test_tts_engine_rejects_retired_piper_rvc():
-    from pydantic import ValidationError
-    with pytest.raises(ValidationError):
-        TTSConfig(engine="piper_rvc")
+    assert cfg.engine == "piper_rvc"
 
 
 def test_tts_engine_accepts_xtts_v3():

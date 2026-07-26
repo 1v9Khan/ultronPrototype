@@ -389,26 +389,6 @@ artifact of the move), and ~97 wrapper failures trace to the streamer's own unco
 edits whose paired tests still assert the old values (e.g. `commands_panel_interval_minutes` 15 -> 30).
 NEXT: re-paste the overlay URL in OBS, restart from the repo dir, run `scripts/ptt_agent.py` on the game PC.
 
-**RVC / piper_rvc ENGINE RETIRED (2026-07-23):** the deprecated Piper+RVC voice-conversion engine was removed
-(production ran `kokoro`; the RVC path was dormant). Mapped by an adversarial-verify workflow (`wf_eaa686d3`,
-6 agents, 128 refs classified) then executed as ONE atomic slice because two coupling traps force it: (a) the schema
-still DEFAULTED `engine="piper_rvc"` (config.py) — repoint to `kokoro` must land with the factory-branch deletion or
-`make_tts_engine` throws; (b) `extra=forbid` means a leftover `tts.rvc:`/`rvc_unavailable` key in config.yaml
-hard-fails boot with a ValidationError — so the config.py schema deletion and the config.yaml key deletion are the
-same commit. DELETED: `tts/rvc.py`, `tts/speech.py`, `utils/fairseq_compat.py`, `tests/test_rvc.py`,
-`tests/test_fairseq_compat.py`, `tests/test_tts.py`, `tests/test_tts_pipeline_parallel.py`. EDITED: `tts/__init__.py`
-(factory keeps its `(None, engine)` 2-tuple so orchestrator+injector are untouched), `tts/xtts_v3.py`, `config.py`
-(RVCConfig + rvc field + rvc_unavailable + `__all__` + engine default→kokoro/pattern), `config.yaml`, `errors.py`
-(RVCConversionError), `resilience/phrases.py`, `scripts/download_models.py`, the repo-root `config/settings.py`
-RVC_* shim (this was the ONE thing the workflow mis-classified as "not required for boot" — it reads `_cfg.tts.rvc.*`
-at import and crashed the import; caught by the post-edit import check). RETIRE-DON'T-REMOVE: the trained voicepack
-`kenning_rvc_voice/Kenning.pth` (+ index) stays ON DISK, and EVERY voice-baseline safety protection (voice_lock,
-submit_review, policy.py, category_k/s, blast_radius, checkpoints/exclusions) is KEPT — the source-file locks on the
-now-deleted rvc.py/speech.py are harmless orphans, and keeping full coverage avoids weakening a safety rule + touching
-the self-protected policy.py/category_k.py. EVIDENCE: `validate_config` 0; imports clean; 311 mapped tests pass
-(tts factory / xtts config / preopen / voice_lock / submit_review / exclusions / anticheat); the 2 whisper failures in
-test_audio_failures are PROVEN pre-existing (fail identically on the committed file via git-stash check).
-
 **STT PRECISION (2026-07-23):** `stt.compute_type` `int8_float16` -> `float16`. The old comment justifying int8
 was written for `small.en`; the model actually running is `deepdml/faster-whisper-large-v3-turbo-ct2`, which is
 NOT a smaller model — turbo keeps large-v3's full 32-layer ENCODER (only the decoder is distilled 32->4 layers,

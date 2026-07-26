@@ -17,9 +17,10 @@ Hierarchy:
     │   │                              see feedback_llm_runtime_decision.md)
     │   └── OpenClawGatewayError      (anticipated; surfaces in Part 5+)
     ├── ClaudeCodeError               (subprocess failures)
-    ├── AudioPipelineError            (Whisper / wake-word)
+    ├── AudioPipelineError            (Whisper / Piper / RVC / wake-word)
     │   ├── WhisperTranscriptionError
     │   ├── PiperSynthesisError
+    │   ├── RVCConversionError
     │   ├── WakeWordModelError
     │   └── AddressingClassifierError
     ├── MCPServerError
@@ -168,7 +169,9 @@ class PiperSynthesisError(AudioPipelineError):
     speak. Caller falls back to printing to terminal."""
 
 
-# RVCConversionError was removed 2026-07-23 with the piper_rvc engine.
+class RVCConversionError(AudioPipelineError):
+    """RVC conversion failed (CUDA OOM, model corruption, etc.).
+    Caller falls back to neutral Piper."""
 
 
 class WakeWordModelError(AudioPipelineError):
@@ -213,6 +216,7 @@ __all__ = [
     "AudioPipelineError",
     "WhisperTranscriptionError",
     "PiperSynthesisError",
+    "RVCConversionError",
     "WakeWordModelError",
     "AddressingClassifierError",
     "MCPServerError",

@@ -180,9 +180,6 @@ DEFAULT_VOICE_LOCKED_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"models[\\/]Qwen3\.5-0\.8B-Q4_K_M\.gguf",
         r"models[\\/]kokoro[\\/]voices[\\/]kenning\.pt",
         r"models[\\/]kokoro[\\/]kenning_finetune\.pth",
-        # 2026-07-23: rvc.py was deleted with the piper_rvc engine, but this
-        # source-lock is KEPT (retire-don't-remove) -- a harmless orphan that
-        # keeps the voice-baseline coverage intact rather than weakening it.
         r"src[\\/]kenning[\\/]tts[\\/]rvc\.py",
         r"src[\\/]kenning[\\/]tts[\\/]kenning_filter\.py",
     )
