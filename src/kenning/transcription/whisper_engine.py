@@ -25,10 +25,16 @@ logger = get_logger("transcription.whisper")
 # otherwise running STT on another GPU would silently cost agent-name accuracy
 # and re-admit "Thank you."-type phantom callouts. Names re-exported under the
 # historical private spellings so existing references keep working.
-from kenning.transcription._whisper_text import (          # noqa: E402
-    DOMAIN_PROMPT as _DOMAIN_PROMPT,                       # noqa: F401 - re-export
-    WHISPER_HALLUCINATIONS as _WHISPER_HALLUCINATIONS,     # noqa: F401 - re-export
+from kenning.transcription._whisper_text import (  # noqa: E402
+    DOMAIN_PROMPT as _DOMAIN_PROMPT,  # noqa: F401 - re-export
+)
+from kenning.transcription._whisper_text import (
+    WHISPER_HALLUCINATIONS as _WHISPER_HALLUCINATIONS,  # noqa: F401 - re-export
+)
+from kenning.transcription._whisper_text import (
     build_initial_prompt as _build_initial_prompt,
+)
+from kenning.transcription._whisper_text import (
     is_whisper_hallucination as _is_whisper_hallucination,
 )
 
