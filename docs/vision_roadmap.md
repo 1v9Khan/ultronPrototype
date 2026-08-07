@@ -46,7 +46,7 @@ The order follows the sequence the topics were raised, which also happens to be 
 1. **Efficiency first** — everything downstream (bigger models, more personas, more concurrent
    subsystems) is paid for out of the same 12 GB card. Headroom bought early is spent many times.
 2. **Game intelligence second** — this is the actual product and the reason the rest exists. It is
-   also mostly GREEN-rung work that can proceed in parallel with everything below it.
+   also mostly `F0/P0` work (see 2.0) that can proceed in parallel with everything below it.
 3. **Post-training third** — once serving is cheap and measurable, the leverage moves to *quality per
    token*, which is a training problem, not a serving one. Game data also makes the eval sets real.
 4. **Portability fourth** — a decision best made *after* the runtime is out-of-process, because
@@ -338,32 +338,57 @@ is live on Twitch right now.
 > the seeding conversation. They are written as proposals with concrete build paths; each should be
 > confirmed or corrected before it gets a spec.
 
-### 2.0 The data-source risk ladder — read this before designing anything here — `S` (policy)
+### 2.0 Two axes, not one — the model that governs every item here — `S` (policy)
 
-Every feature in this phase is a question about **where the data comes from**, and that question is an
-anticheat question first and an engineering question second. Vanguard is a kernel host-integrity monitor
-and the project's P0 rule (`BR-P1`) is absolute. So the ladder is defined once, here, and every item below
-declares which rung it stands on.
+Every feature in this phase is a question about where the data comes from, and that question has **two
+independent answers** that are easy to conflate and expensive to confuse:
 
-| Rung | Description | Examples | Policy |
-|---|---|---|---|
-| **GREEN** | Web APIs about *past* matches, public esports data, and the streamer's own account. Zero contact with the running game or its process. | Riot Developer API, unofficial match-history APIs, vlr.gg, Liquipedia, Twitch Helix, patch notes | Allowed. Default-ON candidates. |
-| **AMBER** | Reads *local* state belonging to the Riot client — the lockfile plus localhost HTTP endpoints — to learn about the **current** lobby. No memory access, no injection, no hooks. | The local client API used by rank-checkers to show party/enemy ranks in agent select | **Explicit user decision required. Default OFF. Never on the default import path.** See the honest risk note below. |
-| **RED** | Anything that touches the game process or automates play. | Reading game memory, DLL injection, hooking, in-process overlays, input automation for gameplay, aim/trigger assistance | **Never.** Ban-class, violates `BR-P1`, and out of scope permanently. |
+- **Footprint (`BR-P1`)** — what actually runs on the machine sitting beside Vanguard. An engineering
+  property, fully under our control, and it can be driven to zero.
+- **Policy exposure (Riot's terms)** — whether the feature surfaces information that confers a
+  competitive or informational advantage. A contractual property, and it does **not** improve because the
+  plumbing got cleaner.
 
-**The honest AMBER risk note.** The local-client-API approach is technically modest — it reads a file the
-Riot client writes and makes HTTP calls to `127.0.0.1`. It does not read memory and does not inject. A
-large ecosystem of rank-checker tools uses it. However: Riot has been explicit that surfacing pre-game
-information about other players is something they can act against, and "widely tolerated" is not
-"sanctioned." The engineering risk is low; the *policy* risk is real and is the streamer's call, not the
-system's. Therefore: default OFF, a separate opt-in flag, lazy-imported inside its own gate behind the
-import firewall, excluded from the lean gaming boot, and covered by the anticheat grep scanner so it can
-never drift onto the voice path. If the answer is "not worth it," every other item in this phase still
-works — they just operate on post-match data instead of live lobby data.
+A design can be excellent on one axis and completely unchanged on the other. The same-account second
+client in 2.3 is the sharpest example: it drives footprint to literally zero while leaving policy
+exposure exactly where it was. Judging it on one axis alone gets the decision wrong in either direction.
 
-**Done-when.** The ladder is encoded as a config-level policy with per-source rung declarations, and
-`tests/safety/test_anticheat.py` is extended to assert no AMBER/RED source is reachable from the voice
-path or in gaming mode.
+#### Footprint ladder (`BR-P1` — engineering)
+
+| | What runs on the game PC | Example |
+|---|---|---|
+| **F0** | Nothing at all. | All machinery on the Ultron PC; ordinary HTTPS to Riot's regional servers |
+| **F1** | Nothing of ours — the OS file-sharing service does the I/O. | Tailing `ShooterGame.log` over the share |
+| **F2** | A helper process of ours. | A lockfile-reading agent forwarding tokens over the LAN |
+| **F3** | Contact with the game process itself. | Memory reads, injection, hooks, in-process overlays |
+
+**F3 is permanently out of scope** — ban-class, and a direct `BR-P1` violation. F2 is permitted but must
+be justified: if an F0 or F1 design yields the same data, take it. **F0/F1 are the target**, and the
+two-PC split makes them reachable in a way a single-machine setup never could.
+
+#### Policy ladder (Riot's terms — contractual)
+
+| | What the feature reveals | Example |
+|---|---|---|
+| **P0** | Past matches, your own account, public esports data. | Match history, rank history, patch notes, pro schedules |
+| **P1** | Your own live session's metadata. | Match started, map, mode, match ended |
+| **P2** | Live information about *other* players. | Enemy and teammate ranks/history during agent select |
+| **P3** | Automation of play. | Aim or trigger assistance, input automation |
+
+**P3 is permanently out of scope.** P0 and P1 are uncontested — they are your own data about your own
+account. **P2 is the contested zone**: it is what Riot has been explicit about, and it is a judgement
+call for the streamer, not a decision the system makes on its own.
+
+#### The rule
+
+Every item below declares an **`(F, P)` pair**. Anything at **F3 or P3 is never built.** Anything at
+**P2 is default-OFF behind its own flag**, lazy-imported inside its gate, excluded from the lean gaming
+boot, and pinned by the anticheat grep scanner — *regardless of how low its footprint is*. A zero-footprint
+P2 feature is still a P2 feature.
+
+**Done-when.** The `(F, P)` pair is declared per data source in config; `tests/safety/test_anticheat.py`
+asserts nothing above F1 is reachable from the voice path or in gaming mode, and that every P2 source is
+unreachable while its flag is OFF; and the boot canary reports the active pair.
 
 ### 2.1 Match history and player statistics — `L`
 
@@ -374,7 +399,7 @@ questions about it in persona, out loud, without you leaving the game.
 **Why now.** It is the foundation of the whole phase. Dossiers (2.2), coaching (2.6), stream cards (2.7)
 and tilt detection (2.8) all read from the same match store. Build the store once.
 
-**How.** GREEN rung throughout. Two source options, and the design should support both because their
+**How.** `F0/P0` throughout. Two source options, and the design should support both because their
 availability differs:
 
 - **Official Riot Developer API** — the correct long-term source. VAL endpoints exist
@@ -432,7 +457,7 @@ Tuesday."
 say "I want that." It also falls out almost free once 2.1 exists, because match participants are already
 being stored.
 
-**How.** GREEN rung when built from post-match data — the participant list of every match you played is
+**How.** `F0/P0` when built from post-match data — the participant list of every match you played is
 already in the store. Identity is the hard part: Riot IDs can change, and the same display name is not a
 stable key. Use the account PUUID where the API provides it and treat the display name as mutable
 metadata, so a rename does not fragment a dossier.
@@ -442,7 +467,7 @@ against, your win rate with/against them), and notes. Notes come from two places
 ("remember this Jett, they were smurfing") and derived observations (statistical outliers relative to the
 lobby's rank). Store notes in Qdrant so recall can be semantic rather than exact-match.
 
-If AMBER is enabled, dossiers become *pre-game* rather than post-game — Ultron recognizes a name in agent
+If the P2 decision in 2.3 goes ahead, dossiers become *pre-game* rather than post-game — Ultron recognizes a name in agent
 select. If not, recognition happens at the post-match debrief, which is still genuinely useful.
 
 **A real ethical question, flagged deliberately.** This is a local database about other people, built
@@ -469,44 +494,91 @@ collection; the fuzzy-name matching already used for chatter names in the tell-c
 **Done-when.** Ultron recognizes a repeat player from stored history and reports the relationship, with
 stream-announcement default OFF and a working "forget this player" command.
 
-### 2.3 Live match context — the AMBER tier — `M` (gated on a policy decision)
+### 2.3 Live match context — `M` (F1/P1 for lifecycle · F0/P2 for player info, gated)
 
-**What.** Knowing the *current* lobby: who is in it, their ranks, agent-select state, map, and score —
-enabling pre-game commentary and in-match awareness rather than post-match reporting.
+**What.** Knowing about the match *while it is happening* — that one started, on which map and mode, and
+(if the P2 decision goes that way) who is in the lobby and what their ranks and history are.
 
-**Why now.** It is what makes the assistant feel present rather than retrospective. It is also the only
-item in this phase that carries policy risk, which is why it is isolated behind its own decision.
+**Why now.** Live awareness is what makes the assistant feel present rather than retrospective. It also
+turns out to be reachable at **zero footprint on the game PC**, which was not obvious until the two-PC
+split made it possible.
 
-**How.** AMBER rung. Read the Riot client lockfile for local credentials, then call the client's localhost
-endpoints for pre-game and current-match state. Strictly read-only; no writes, no game process contact.
+**How — three designs. They stack, and (a) and (c) need no policy decision at all.**
 
-Everything about the implementation must make it impossible for this to leak onto the protected path:
-its own config flag defaulting OFF, lazy import inside the gate, absent from the lean gaming boot, an
-explicit entry in the anticheat scanner's expectations, and a boot-canary line stating whether it is
-active. If the streamer decides against it, the module simply never loads and the rest of the phase is
-unaffected.
+**(a) Passive log reading — `F1/P1`. Start here; no decision required.** VALORANT writes
+`%LOCALAPPDATA%\VALORANT\Saved\Logs\ShooterGame.log` as it runs. Because the two PCs share filesystems,
+the Ultron PC tails that file directly over the share. **Nothing of ours runs on the game PC** — the OS
+file-sharing service performs the read. No credentials, no API calls, no localhost server, no agent
+process, nothing beside Vanguard. Reliably yields match lifecycle: started, ended, map, mode, region.
+Does **not** reliably yield enemy rosters or ranks — Riot has trimmed that log over time and its contents
+vary by build. That limit is acceptable, because lifecycle alone already unlocks automatic debrief
+triggering (2.6), session boundaries (2.8), and live stream cards (2.7).
 
-**Alternatives.** Post-match only (GREEN, no risk, less magic — this is the fallback). Voice-driven entry,
-where the streamer simply *says* the enemy comp and Ultron remembers it (GREEN, zero risk, surprisingly
-workable given the relay already parses agent names).
+**(b) Same-account second client — `F0/P2`. The canonical live-player design, gated on policy.** The
+Ultron PC runs its own Riot Client signed into the same account, and **never launches VALORANT**. Its own
+lockfile yields the access token, entitlements token and PUUID. Those credentials are scoped to the
+**account, not the machine**, so the Ultron PC can query Riot's regional servers for that account's
+current match and expand the match id into the full player list — while the match itself is being played
+on the game PC.
 
-**Components.** `game/live/lockfile.py`, `game/live/client_api.py`, `game/live/session.py`, plus a
-dedicated `tests/game/test_live_gate.py` asserting the module is unreachable when the flag is OFF.
-**Work.** (1) Policy decision — this blocks the rest. (2) Lockfile + local client reader. (3) Session
-model. (4) Gate + firewall + canary + scanner entries. (5) Wire to dossiers and coaching.
-**Integrates with.** 2.2 dossiers, 2.6 coaching, the import firewall, the boot canary, gaming mode.
-**Leverages.** The gating pattern already proven for `kenning.desktop`; the boot canary; the anticheat
-grep scanner.
-**Risks.** The policy risk described in 2.0. Also client-API instability across patches.
-**Done-when.** A decision is recorded. If yes: the gate is proven closed by test when OFF, the scanner
-passes, and the canary reports its state.
+The decisive property: **the game PC is never touched at all.** No file read, no socket, no helper
+process. Footprint is literally zero — strictly better than the lockfile-agent design this supersedes,
+which needed an F2 process running beside Vanguard.
+
+*Reported by the streamer (~90% confidence, not yet formally verified):* two Riot Clients signed into the
+same account on two machines coexist without signing each other out — the same property that would let one
+machine launch League while another runs VALORANT on the same account. If so, the exclusivity constraint
+is **per-game, not per-session**. **The operating rule is then that only one machine ever boots VALORANT**;
+the Ultron PC's client stays credentials-only and must never launch the game. Encode that as an explicit
+operational constraint, because violating it is the one way this design breaks.
+
+**Verify this before building (b) — the entire design rests on it and the test costs five minutes.** Sign
+in on both machines, launch VALORANT on the game PC, then confirm the Ultron PC's client has kept its
+session and can still mint a valid token mid-match. If concurrent sessions do not hold, (b) is dead on
+arrival and (a) carries the phase by itself.
+
+Two caveats that survive, neither of them `BR-P1`:
+- **Policy exposure is unchanged.** This is still P2. Driving footprint to zero is an anticheat win, not
+  a terms-of-service one, and the decision in 2.0 stands exactly where it stood.
+- **Cross-IP pattern.** A client session and API polling now originate from a different address than the
+  game session — a distinctive server-side signature. It raises no `BR-P1` risk and lowers no policy risk.
+
+Riot could change concurrent-session behaviour at any patch, so the implementation must degrade to (a)
+rather than fail hard when the second client cannot hold a session.
+
+**(c) Voice-driven entry — `F0/P0`. Always available.** The streamer says the enemy comp and Ultron
+remembers it. Zero on both axes, and the relay already parses agent names and callouts. Worth wiring
+regardless of the P2 decision, as the fallback that can never be taken away.
+
+**Components.**
+- `game/live/logtail.py` — share-aware tail + lifecycle parser (a).
+- `game/live/session.py` — the live-session model every other item consumes.
+- `game/live/client_session.py` — second-client token harvest from the local lockfile (b, gated).
+- `game/live/regional.py` — current-match and roster queries against Riot's regional servers (b, gated).
+- `game/live/voice_entry.py` — spoken comp capture (c).
+- `tests/game/test_live_gate.py` — asserts the P2 modules are unreachable while the flag is OFF.
+
+**Work.** (1) Log tail + lifecycle parser over the share — no decision needed, start immediately.
+(2) Session model, consumed by 2.6/2.7/2.8. (3) Voice entry. (4) **Policy decision on P2.** (5) If yes:
+second-client token harvest, regional queries, the flag/gate/firewall/canary/scanner entries, the
+never-launch-the-game operational guard, and graceful degradation to (a).
+
+**Integrates with.** 2.2 dossiers, 2.6 coaching, 2.7 stream cards, 2.8 session boundaries, gaming mode,
+the import firewall, the boot canary.
+**Leverages.** The two-PC shared filesystem and the always-on Ultron PC; the gating pattern already proven
+for `kenning.desktop`; the boot canary; the anticheat grep scanner; the relay's agent-name parsing.
+**Risks.** Log-format drift across patches (a). A future Riot change to concurrent sessions (b) — hence
+the degradation path. Policy exposure at P2 (b).
+**Done-when.** (a) match start and end are detected on the Ultron PC with nothing running on the game PC,
+and the post-match debrief fires automatically. (b) only after a recorded decision, with the gate proven
+closed by test while the flag is OFF.
 
 ### 2.4 Meta knowledge and pro-match awareness — `M`
 
 **What.** Ultron knows the current patch, agent/map meta, tier lists, and what is happening in pro play —
 upcoming matches, recent results, standings — and can talk about it unprompted or on request.
 
-**Why now.** It is entirely GREEN, it reuses the web stack already built, and it makes Ultron a better
+**Why now.** It is entirely `F0/P0`, it reuses the web stack already built, and it makes Ultron a better
 stream companion during downtime, which is when a co-host earns its keep.
 
 **How.** Three sources, all through the existing search/reader cascade rather than new infrastructure:
@@ -538,7 +610,7 @@ from cached sources, with no network call on a repeat question inside TTL.
 **Why now.** It is a genuinely delightful feature, it is nearly free given the Twitch integration already
 built, and it creates real stream moments.
 
-**How.** GREEN on the Twitch side entirely. Take the player list (post-match from 2.1, or pre-game if 2.3
+**How.** `F0/P0` on the Twitch side entirely. Take the player list (post-match from 2.1, or pre-game if 2.3
 is enabled), then resolve names to live channels. Two mechanisms, used together:
 
 1. **Live-stream scan** — query Twitch for channels currently live playing VALORANT and match against the
@@ -572,7 +644,7 @@ performance, economy and round advice, callout coaching, and a spoken debrief af
 
 **Why now.** It converts data into value. Without it, 2.1–2.4 are a database with a voice.
 
-**How.** GREEN — all of it can run on stored data plus voice context, with no live game contact. The
+**How.** `F0/P0` — all of it can run on stored data plus voice context, with no live game contact. The
 debrief is the anchor feature and the easiest: on gaming-mode disengage, pull the match, compare against
 rolling form, and speak a short persona-correct summary of what stood out. This is a well-shaped LLM task
 with verifiable inputs, which also makes it a good candidate for the reward work in the post-training
@@ -633,7 +705,7 @@ decay across a session, time-of-day patterns — and the judgment to say somethi
 requires *continuity* and *presence*. It also needs the most data, so it should start collecting early even
 if the feature ships late.
 
-**How.** GREEN. Derived entirely from the match store plus session timing the orchestrator already knows.
+**How.** `F0/P0`. Derived entirely from the match store plus session timing the orchestrator already knows.
 Detect within-session decay (performance in the last N matches versus the session's first N), consecutive
 losses, and unusually long sessions. Then — carefully — say something.
 
@@ -1313,7 +1385,7 @@ These run continuously rather than in a phase.
 Phase 1  Inference substrate ──┬─> 1.4 serving daemon ─────┐
                                └─> 1.1/1.2/1.3/1.5/1.6     │
                                                            │
-Phase 2  Game intelligence ────> 2.0 risk ladder (gates 2.3)
+Phase 2  Game intelligence ────> 2.0 two-axis model: footprint (F) × policy (P) — gates 2.3b
          THE PRODUCT             2.1 matches ─> 2.2 dossiers ─> 2.6 coaching ─> 2.8 form
                                  2.4 meta · 2.5 streamers · 2.7 stream surfaces · 2.9 abstraction
                                                            │
@@ -1355,7 +1427,7 @@ gates every form of distribution. The trademark decision (6.1) gates every publi
 7. **How much autonomy should evolution (3.5) ever have?** Data-only is the current wall. Prompt and
    threshold proposals are a meaningful step past it and deserve an explicit decision.
 
-8. **Is the AMBER rung (2.3, live lobby data) worth the policy risk?** This is a judgement call, not an
+8. **Is P2 (2.3b, live information about other players) worth the policy exposure?** This is a judgement call, not an
    engineering one, and it is the single decision that most changes how present the assistant feels.
 9. **Should Ultron ever speak another player's history on stream?** Local dossiers (2.2) are defensible;
    broadcasting them is a different act. Decide deliberately rather than by default.
