@@ -64,6 +64,57 @@ def _import_base():
     return Llama, LlamaDraftModel
 
 
+def assert_draft_vocab_matches(draft_n_vocab: int, target_n_vocab: int,
+                               draft_path: str = "") -> None:
+    """Refuse a draft whose vocabulary differs from the target's.
+
+    Speculative decoding here is a PYTHON-level draft (``LlamaDraftModel``):
+    the draft greedy-samples its own logits and hands RAW TOKEN IDs to the
+    target, which verifies them against its own vocabulary. There is no
+    translation layer, so a mismatched tokenizer does not merely slow things
+    down -- every drafted ID means a different token to the target, and the
+    output silently degrades into garbage.
+
+    Raises ``ValueError`` (caught by the caller's fail-open wrapper, which
+    then proceeds WITHOUT speculative decoding) rather than letting a
+    cross-family pair through. Added 2026-07-24 alongside the Gemma 4 12B
+    preset, which drafts with a Gemma 3 1B -- a cross-GENERATION pair that
+    only works because both share the 262k Gemini SentencePiece vocabulary.
+    """
+    if int(draft_n_vocab) != int(target_n_vocab):
+        raise ValueError(
+            f"draft/target vocabulary mismatch: draft={draft_n_vocab} vs "
+            f"target={target_n_vocab} ({draft_path or 'draft model'}). "
+            "Speculative decoding passes raw token IDs between the two, so a "
+            "mismatched tokenizer produces garbage output. Use a draft from "
+            "the target's own tokenizer family."
+        )
+
+
+def _draft_gpu_kwargs(gpu_index: Optional[int]) -> dict:
+    """GPU-pinning kwargs for the draft ``Llama`` (2026-07-24 multi-GPU).
+
+    ``None`` -> ``{}``: the draft lands wherever llama.cpp puts it (same as
+    the target when only one card is visible). An explicit index pins the
+    draft to THAT card via ``main_gpu`` + ``split_mode=NONE``, so it can sit
+    on the secondary GPU while the target keeps the primary to itself.
+    Target and draft exchange only token IDs, so the PCIe link width between
+    them is not on the critical path -- unlike a layer split. Fail-open: a
+    missing constant leaves placement to llama.cpp.
+    """
+    if gpu_index is None:
+        return {}
+    try:
+        import llama_cpp as _llama_cpp
+        return {
+            "main_gpu": int(gpu_index),
+            "split_mode": getattr(_llama_cpp, "LLAMA_SPLIT_MODE_NONE", 0),
+        }
+    except Exception as e:                                             # noqa: BLE001
+        logger.warning("draft GPU pin skipped (%s)", e)
+        return {}
+
+
 def _greedy_sample_last_token(llama, n_vocab: int) -> int:
     """Read the last-position logits from the C library and pick argmax.
 
@@ -86,6 +137,7 @@ def make_qwen08b_draft_model(
     num_pred_tokens: int = 4,
     n_ctx: int = 8192,
     n_gpu_layers: int = -1,
+    gpu_index: Optional[int] = None,
 ):
     """Construct a real model-based speculative draft wrapping a
     second ``Llama`` instance pointing at the 0.8B draft GGUF.
@@ -153,6 +205,7 @@ def make_qwen08b_draft_model(
                 # via the C ptr below.
                 logits_all=False,
                 verbose=False,
+                **_draft_gpu_kwargs(gpu_index),
             )
             self._evaluated_tokens: List[int] = []
             try:

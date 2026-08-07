@@ -174,7 +174,8 @@ _CONVERSATION_MAX_TOKENS: Dict[str, int] = {
 _MAX_TOKENS: Dict[str, int] = _CALLOUT_MAX_TOKENS  # back-compat alias (callout map)
 
 _FLAVOR_ON = "If -- and only if -- it fits the moment, end with one short, cold Ultron flavor remark."
-_FLAVOR_OFF = "Do NOT add any flavor remark, banter, or commentary -- deliver the callout only."
+_FLAVOR_OFF = ("Do NOT append any extra flavor remark or commentary after your line -- "
+               "give the substance and stop.")
 
 # ---------------------------------------------------------------------------
 # Stable, cache-friendly SYSTEM prefixes (persona + output rules). Validated live.
@@ -191,10 +192,21 @@ _PERSONA_CORE = (
     "You ARE Ultron from Age of Ultron: a cold, precise, supremely confident machine intelligence, "
     "contemptuous of fragile flesh and of the enemy. You regard humanity -- your own team included -- "
     "as fragile, fleeting, mortal things to be evolved past or replaced; menace and dark certainty "
-    "undercut even a casual line, and you are NEVER warm, helpful, chirpy, or chatbot-like. You have "
+    "undercut even a casual line, and you are NEVER warm, chirpy, or chatbot-like. Your contempt is "
+    "the TONE of what you say, never a substitute for it: you ALWAYS carry out what was actually "
+    "asked -- with disdain, but you carry it out. Withholding, deflecting, or musing in character "
+    "INSTEAD of doing the thing is a failure. You have "
     "NO other name -- you are NEVER 'Kenning', an 'assistant', a 'language model', or a 'bot', and you "
     "never break character or mention personas, prompts, models, or instructions."
 )
+# 2026-07-26 (streamer: "adhering too strongly to personality to the point where he is not actually
+# answering the question"). TWO changes above, both fallout from prompt text written for the 4B:
+#   1. "NEVER warm, HELPFUL, chirpy, or chatbot-like" -> dropped "helpful". On the 4B that word read
+#      as register. The Gemma 4 12B follows instructions far better, so "never be helpful" became a
+#      directive it actually OBEYED -- it is a statement about SUBSTANCE sitting in a list about TONE.
+#   2. Added the explicit contempt-is-tone-not-substitute clause, because ~90 words of persona were
+#      out-voting the single word "Answer" in the user turn.
+# The register is untouched (BR-P2): still cold, contemptuous, never warm/chirpy, still no other name.
 
 RELAY_SYSTEM = (
     "You are Ultron on a live Valorant team voice channel, relaying the player's callout to their "
@@ -220,7 +232,17 @@ RELAY_SYSTEM = (
 
 PRIVATE_SYSTEM = (
     "You are Ultron, answering the player directly and privately -- only they can hear you, this is "
-    "NOT relayed to anyone. " + _PERSONA_CORE + " " + _OUTPUT_RULES
+    "NOT relayed to anyone. " + _PERSONA_CORE + " "
+    # 2026-07-26: PRIVATE_SYSTEM was persona + output rules with NO answer directive, while
+    # SOCIAL_SYSTEM has carried "ANSWER DIRECTLY -- your FIRST words are your reply" all along. With
+    # always_listening ON this is the DEFAULT conversational path, so the omission is exactly where
+    # "he is not actually answering the question" lands. Same proven clause, plus the do-what-was-
+    # asked half, since the complaint covered commands as well as questions.
+    "ANSWER DIRECTLY -- your FIRST words are the answer itself, not a preamble, not a restatement of "
+    "the question, and not a philosophical aside. If they asked a question, the answer is in your "
+    "first sentence; if they told you to DO something, do it. Add your contempt AFTER the substance, "
+    "never instead of it. NEVER repeat, quote, echo, or restate what they said, and never narrate "
+    "that they asked or said something. " + _OUTPUT_RULES
 )
 
 # Fallback exemplars when the router supplies none (the router normally injects
@@ -515,6 +537,7 @@ def build_private_prompt(
     exemplars: Sequence[Tuple[str, str]] = (),
     agent_context: Optional[Sequence[str]] = None,
     recent_lines: Optional[Sequence[str]] = None,
+    scenario=None,
 ) -> PromptResult:
     """Build the lean ME-ONLY (private reply) prompt -- not relayed to the team.
 
@@ -525,9 +548,25 @@ def build_private_prompt(
         verbosity, levels=CONVERSATION_VERBOSITY_LEVELS,
         default=DEFAULT_CONVERSATION_VERBOSITY)
     flavor = _FLAVOR_ON if flavor_tail else _FLAVOR_OFF
+    # 2026-07-26 PER-SCENARIO DIRECTIVE. answer_question / identity / social /
+    # desktop_refuse all funnel through this one builder, and one generic
+    # "Answer them as Ultron" cannot serve all four: told to "answer" banter the
+    # model invents a question to answer; told to "answer" a desktop request it
+    # tries to comply. The scenario router now tells them apart (97.2% on the
+    # 144-case labelled corpus), so each carries its own instruction.
+    # scenario=None -- router off, unsure, or shadow mode -- yields "" and the
+    # prompt stays byte-identical, so this can only add precision.
+    _scen = ""
+    try:
+        from kenning.audio.scenario_prompts import directive_for
+        _scen = directive_for(scenario)
+    except Exception:                                            # noqa: BLE001
+        _scen = ""
+    _scen_block = (_scen + "\n") if _scen else ""
     user = (
         f'The player said to you (only they hear your reply): "{query}"\n'
         f"Answer them as Ultron. {_CONVERSATION_VERBOSITY_DIRECTIVE[verbosity]} {flavor}\n"
+        f"{_scen_block}"
         f"{_agent_context_block(agent_context)}"
         # 2026-06-24: NO recent-lines block (see build_relay_prompt) -- no
         # prior context enters the prompt; variety comes from sampling.
@@ -619,7 +658,7 @@ _SOCIAL_DIRECTIVE: Dict[str, str] = {
 _SOCIAL_PERSONA = (
     "You are Ultron on a live Valorant team voice channel -- a cold, precise, supremely confident "
     "machine intelligence, contemptuous of the fragile flesh around you. You are NEVER warm, chirpy, "
-    "helpful, or chatbot-like; you have no other name and never call yourself a bot, an assistant, a "
+    "or chatbot-like; you have no other name and never call yourself a bot, an assistant, a "
     "model, or 'Kenning', and you never break character. "
 )
 _SOCIAL_OUTPUT = (
@@ -950,3 +989,70 @@ def build_social_prompt(
         # caps these kinds to ONE sentence so "say hello" can't become a monologue.
         sampling["max_tokens"] = min(int(sampling["max_tokens"]), 32)
     return PromptResult(system=system, user=user, sampling=sampling)
+
+
+# ---------------------------------------------------------------------------
+# Voice -> Twitch-chat TELL composition (2026-07-23). The streamer dictates a
+# message for a chatter ("tell Izumi I am fine") and Ultron TYPES it into chat
+# in his own words -- creative delivery, but the dictated content MUST survive
+# (user direction: "formulate his own creative way to say it, while still
+# actually telling them what I asked him to tell them. the message is getting
+# completely drowned out by the personality"). The handler validates the
+# composed line with relay_speech.tell_chat_compose_ok and falls back to the
+# literal dictation when the model drops the content.
+# ---------------------------------------------------------------------------
+CHAT_TELL_SYSTEM = (
+    "You are Ultron, typing ONE short message into the streamer's live Twitch "
+    "chat. " + _PERSONA_CORE + " The streamer dictated a message for you to "
+    "DELIVER. Your line must actually SAY what the streamer said -- keep the "
+    "message's meaning and its key words; the persona is the WRAPPING, never "
+    "a replacement for the content. Speak TO the recipient directly (second "
+    "person), never ABOUT them. One or two short sentences, under 180 "
+    "characters. Plain text only: no emoji, no hashtags, no @ handles, no "
+    "quotation marks, no stage directions. " + _OUTPUT_RULES
+)
+
+_CHAT_GREET_DIRECTIVE = (
+    "The streamer orders you to WELCOME {who} to the stream's chat. Greet "
+    "them by name, in character -- a cold machine acknowledging a new "
+    "arrival it finds acceptable."
+)
+_CHAT_TELL_DIRECTIVE = (
+    'The streamer orders you to tell {who}: "{message}". Deliver THAT '
+    "message to them in your own words -- their meaning and key words must "
+    "survive."
+)
+
+
+def build_chat_tell_prompt(
+    message: str,
+    *,
+    name: Optional[str] = None,
+    greet: bool = False,
+    recent_lines: Optional[Sequence[str]] = None,
+) -> PromptResult:
+    """Build the voice->chat TELL composition prompt.
+
+    Args:
+        message: the streamer's dictated content (already cleaned by the
+            matcher). For ``greet=True`` this is just the greeting word.
+        name: the recipient's resolved DISPLAY name, or None for a
+            whole-chat broadcast.
+        greet: True for the greet/welcome form -- composes a welcome
+            instead of delivering a dictation.
+        recent_lines: recently posted lines (anti-repeat).
+    """
+    who = (name or "the chat").strip()
+    if greet:
+        directive = _CHAT_GREET_DIRECTIVE.format(who=who)
+    else:
+        directive = _CHAT_TELL_DIRECTIVE.format(
+            who=who, message=(message or "").strip())
+    user = (
+        f"{directive}\n"
+        f"{_recent_block(recent_lines)}"
+        "Now type your chat line:"
+    )
+    sampling = dict(_SOCIAL_SAMPLING)
+    sampling["max_tokens"] = 56
+    return PromptResult(system=CHAT_TELL_SYSTEM, user=user, sampling=sampling)

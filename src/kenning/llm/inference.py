@@ -601,8 +601,14 @@ class LLMEngine:
         history_turns: Optional[int] = None,
         memory=None,
         runtime: Optional[str] = None,
+        gpu_index: Optional[int] = None,
     ) -> None:
         cfg = get_config().llm
+        # 2026-07-26 dual-model: a SECOND resident engine must be pinnable to
+        # its own card. Without this it would read ``cfg.gpu_index`` -- the
+        # MAIN model's placement -- and both models would pile onto the same
+        # GPU. ``None`` keeps the config-driven placement.
+        self._gpu_index_override = gpu_index
         if history_turns is None:
             history_turns = cfg.history_turns
         runtime = runtime or cfg.runtime
@@ -777,6 +783,35 @@ class LLMEngine:
                 llama_kwargs["n_batch"] = int(n_batch)
             if n_ubatch is not None:
                 llama_kwargs["n_ubatch"] = int(n_ubatch)
+            # MULTI-GPU PIN (2026-07-24, ``llm.gpu_index``). llama.cpp defaults
+            # to split_mode=LAYER, which spreads layers + KV across EVERY
+            # visible CUDA device. The moment a second card is installed that
+            # silently relocates part of Ultron's model onto it -- competing
+            # with the STT/TTS/sidecar tenants that now live there, and pushing
+            # each token's forward pass over the PCIe bus (x4 on the secondary
+            # slot here). The model fits on one card with room to spare, so
+            # pin it: main_gpu=<index> + split_mode=NONE. ``gpu_index=None``
+            # restores llama.cpp's own multi-GPU split for a model that
+            # genuinely needs both cards. Fail-open -- a missing constant or
+            # attribute leaves placement to llama.cpp.
+            try:
+                _gpu_index = getattr(self, "_gpu_index_override", None)
+                if _gpu_index is None:
+                    _gpu_index = getattr(cfg, "gpu_index", 0)
+                if _gpu_index is not None:
+                    import llama_cpp as _llama_cpp
+                    llama_kwargs["main_gpu"] = int(_gpu_index)
+                    llama_kwargs["split_mode"] = getattr(
+                        _llama_cpp, "LLAMA_SPLIT_MODE_NONE", 0)
+                    logger.info(
+                        "LLM pinned to GPU %d (split_mode=NONE -- no "
+                        "cross-card layer split)", int(_gpu_index),
+                    )
+            except Exception as e:                                     # noqa: BLE001
+                logger.warning(
+                    "LLM GPU pin skipped (%s); llama.cpp will place the "
+                    "model itself (may split across cards)", e,
+                )
             # 2026-06-24: template-level no-think guard for Qwen3.5. Wire a
             # chat handler that hardcodes the closed <think></think> so any
             # create_chat_completion caller also gets no-think (defense in
@@ -808,7 +843,21 @@ class LLMEngine:
             # PLD is purely N-gram-based against the prompt buffer).
             # Fail-open: if the import fails for any reason, we log
             # WARN and proceed without PLD; voice still works.
+            # 2026-07-24 live-boot fix: resolve the draft path the SAME way as
+            # the target's (line ~723). It was used RAW, so a preset carrying a
+            # project-relative draft ("models/...") died with "Model path does
+            # not exist" whenever the process cwd wasn't the project root --
+            # which silently disabled speculative decoding at boot (observed:
+            # the Gemma 4 preset's Gemma 3 1B draft never loaded, and the
+            # secondary card was ~1 GB emptier than budgeted).
             draft_model_path = getattr(cfg, "draft_model_path", None)
+            if draft_model_path:
+                try:
+                    draft_model_path = str(resolve_path(draft_model_path))
+                except Exception as e:                             # noqa: BLE001
+                    logger.warning(
+                        "draft path resolution failed for %r (%s); using it "
+                        "as-is", draft_model_path, e)
             draft_kind = getattr(cfg, "draft_kind", "none")
             if draft_kind in {"pld", "model"} and draft_model_path:
                 try:
@@ -845,6 +894,19 @@ class LLMEngine:
                             ),
                             n_ctx=int(n_ctx),
                             n_gpu_layers=n_gpu_layers,
+                            # 2026-07-24: park the draft on its own card when
+                            # configured (frees primary VRAM for a larger
+                            # target). Unset -> INHERIT the target's card:
+                            # passing None straight through would leave the
+                            # draft on llama.cpp's default split_mode=LAYER
+                            # and spread it across BOTH cards even though the
+                            # target is pinned.
+                            gpu_index=(
+                                getattr(cfg, "draft_gpu_index", None)
+                                if getattr(cfg, "draft_gpu_index", None)
+                                is not None
+                                else getattr(cfg, "gpu_index", None)
+                            ),
                         )
                         logger.info(
                             "Speculative decoding enabled (real model "
@@ -871,6 +933,37 @@ class LLMEngine:
                         "speculative decoding.", e,
                     )
             llama = Llama(**llama_kwargs)
+            # DRAFT/TARGET VOCAB GUARD (2026-07-24). Speculative decoding here
+            # is a Python-level draft: it hands RAW TOKEN IDs to the target,
+            # which verifies them against its OWN vocabulary. A mismatched
+            # tokenizer therefore yields silent garbage rather than a clean
+            # error. Both vocabs are only knowable once the target is built,
+            # so the check lives here. On mismatch we DROP speculation
+            # (llama.py reads self.draft_model per generation) and keep the
+            # model working instead of failing the whole load.
+            _draft_obj = llama_kwargs.get("draft_model")
+            if _draft_obj is not None:
+                try:
+                    from kenning.llm.draft_model import (
+                        assert_draft_vocab_matches,
+                    )
+                    assert_draft_vocab_matches(
+                        int(getattr(_draft_obj, "_n_vocab", -1)),
+                        int(llama._n_vocab),
+                        str(draft_model_path or ""),
+                    )
+                    logger.info(
+                        "speculative decoding armed: draft/target vocab "
+                        "match (%d tokens)", int(llama._n_vocab),
+                    )
+                except ValueError as _ve:
+                    logger.error(
+                        "%s -- proceeding WITHOUT speculative decoding.", _ve)
+                    llama.draft_model = None
+                except Exception as _e:                            # noqa: BLE001
+                    logger.warning(
+                        "draft vocab check skipped (%s); speculative decoding "
+                        "left armed", _e)
         except Exception as e:
             logger.error("LLM load failed: %s", e)
             raise
@@ -1912,10 +2005,11 @@ class LLMEngine:
                 prompt_chars=len(user_message or ""),
             )
         logger.info(
-            "LLM: %d chars in %.2fs (%d tokens)",
+            "LLM: %d chars in %.2fs (%d tokens) | output=%r",
             len(text),
             elapsed_s,
             completion_tokens,
+            text[:4000],
         )
         try:
             from kenning.observations import observe_llm_call
@@ -2046,7 +2140,8 @@ class LLMEngine:
         text = strip_thinking_text(raw_text).strip()
         elapsed_s = time.monotonic() - t0
         logger.info(
-            "LLM (isolated): %d chars in %.2fs", len(text), elapsed_s,
+            "LLM (isolated): %d chars in %.2fs | output=%r",
+            len(text), elapsed_s, text[:4000],
         )
         return text
 
@@ -2287,10 +2382,11 @@ class LLMEngine:
                 logger.info("Skipping interrupted LLM stream in chat history")
             elapsed_s = time.monotonic() - t0
             logger.info(
-                "LLM stream: %d chars in %.2fs (%d raw tokens)",
+                "LLM stream: %d chars in %.2fs (%d raw tokens) | output=%r",
                 len(full),
                 elapsed_s,
                 raw_token_count,
+                full[:4000],
             )
             if self._use_nothink_prefill():
                 # Robustness audit on the RAW (pre-strip) stream so an untagged

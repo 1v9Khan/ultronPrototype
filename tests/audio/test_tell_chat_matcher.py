@@ -101,62 +101,81 @@ def test_name_split_lands_on_first_in_chat() -> None:
         ("tell bob into chat see you", "bob", "see you"),
         ("tell bob in chad hi", "bob", "hi"),               # "chat" mis-heard
         ("say hi to bob and chat", "bob", "hi"),
-        ("greet bob and chat", "bob", "hi"),
     ],
 )
 def test_delimiter_mishears_still_match(text, name, msg) -> None:
     assert match_tell_chat(text) == TellChatCommand(name=name, message=msg)
 
 
+def test_delimiter_mishear_greet_verb_carries_flag() -> None:
+    # greet-verb + mishear delimiter: same match, now with greet=True
+    # (2026-07-23 -- the greet/welcome forms are also spoken aloud).
+    assert match_tell_chat("greet bob and chat") == TellChatCommand(
+        name="bob", message="hi", greet=True)
+
+
 def test_delimiter_mishears_broadcast_and_disjointness() -> None:
     # broadcast group form tolerates the delimiter mishear too
     assert match_tell_chat("tell everyone and chat gg") == TellChatCommand(
         name=None, message="gg")
-    # the broadcast HEAD stays strict: "tell chad hi" is a person, not chat
-    assert match_tell_chat("tell chad hi") is None
+    # 2026-07-23 contract change: "tell <person> <msg>" with no chat word is
+    # now the low-confidence BARE form (roster-gated in the handler), so
+    # "tell chad hi" matches as a bare tell instead of falling through at
+    # the matcher level -- the handler still routes it to the teammate-social
+    # path whenever "chad" isn't a confident chat-roster hit.
+    _chad = match_tell_chat("tell chad hi")
+    assert _chad is not None and _chad.bare is True and _chad.name == "chad"
     # group names still reject through the widened delimiter
     assert match_tell_chat("tell my team and chat the plan") is None
-    # no chat word at all -> never matches
-    assert match_tell_chat("tell bob and jane the plan") is None
+    # multi-person casual tells match bare on the FIRST name (roster-gated).
+    _bj = match_tell_chat("tell bob and jane the plan")
+    assert _bj is not None and _bj.bare is True and _bj.name == "bob"
 
 
 # ------------------------------------------------- greeting-before-name forms
 # Review 2026-07-09: the natural inverse phrasing ("say hi to <name> in chat")
 # puts the greeting BEFORE the name — the streamer's reported failing case.
 @pytest.mark.parametrize(
-    "text,name,msg",
+    "text,name,msg,greet",
     [
-        ("say hi to bob in chat", "bob", "hi"),
-        ("Ultron, say hi to dragon slayer in chat", "dragon slayer", "hi"),
-        ("say hello to timmy in chat", "timmy", "hello"),
-        ("say hey to jay dee in the chat", "jay dee", "hey"),
-        ("could you say what's up to ricky in chat", "ricky", "what's up"),
-        ("say welcome to newbie in chat", "newbie", "welcome"),
+        ("say hi to bob in chat", "bob", "hi", False),
+        ("Ultron, say hi to dragon slayer in chat", "dragon slayer", "hi",
+         False),
+        ("say hello to timmy in chat", "timmy", "hello", False),
+        ("say hey to jay dee in the chat", "jay dee", "hey", False),
+        ("could you say what's up to ricky in chat", "ricky", "what's up",
+         False),
+        # "say WELCOME to ..." is a welcome ask -> greet=True (also spoken,
+        # 2026-07-23 user direction).
+        ("say welcome to newbie in chat", "newbie", "welcome", True),
         ("say hi to bob in chat and thanks for the follow", "bob",
-         "hi and thanks for the follow"),
-        # greet / welcome verbs synthesize a greeting
-        ("greet casey in chat", "casey", "hi"),
-        ("Ultron greet dragon slayer in the chat", "dragon slayer", "hi"),
-        ("welcome timmy to chat", "timmy", "welcome"),
-        ("welcome ricky to the chat", "ricky", "welcome"),
-        ("welcome bob aboard in chat", "bob", "welcome"),
+         "hi and thanks for the follow", False),
+        # greet / welcome verbs synthesize a greeting (always greet=True)
+        ("greet casey in chat", "casey", "hi", True),
+        ("Ultron greet dragon slayer in the chat", "dragon slayer", "hi",
+         True),
+        ("welcome timmy to chat", "timmy", "welcome", True),
+        ("welcome ricky to the chat", "ricky", "welcome", True),
+        ("welcome bob aboard in chat", "bob", "welcome", True),
     ],
 )
-def test_greeting_before_name_forms(text, name, msg) -> None:
-    assert match_tell_chat(text) == TellChatCommand(name=name, message=msg)
+def test_greeting_before_name_forms(text, name, msg, greet) -> None:
+    assert match_tell_chat(text) == TellChatCommand(
+        name=name, message=msg, greet=greet)
 
 
 @pytest.mark.parametrize(
-    "text,msg",
+    "text,msg,greet",
     [
-        ("say hi to everyone in chat", "hi"),
-        ("say hello to everybody in chat", "hello"),
-        ("greet everyone in chat", "hi"),
-        ("welcome all to the chat", "welcome"),
+        ("say hi to everyone in chat", "hi", False),
+        ("say hello to everybody in chat", "hello", False),
+        ("greet everyone in chat", "hi", True),
+        ("welcome all to the chat", "welcome", True),
     ],
 )
-def test_greeting_to_whole_audience_broadcasts(text, msg) -> None:
-    assert match_tell_chat(text) == TellChatCommand(name=None, message=msg)
+def test_greeting_to_whole_audience_broadcasts(text, msg, greet) -> None:
+    assert match_tell_chat(text) == TellChatCommand(
+        name=None, message=msg, greet=greet)
 
 
 def test_greeting_to_team_falls_through() -> None:
@@ -203,13 +222,19 @@ def test_control_characters_are_stripped() -> None:
         "tell my team in chat the plan",            # "my ..." name reject
         "say to the guys we win this",
         "tell 'em to rotate",
-        # Teammate-social relay forms must fall through (no "in chat").
+        # Teammate-social relay forms must fall through — AGENT names in the
+        # tell slot belong to the team relay, never the chat tell (the
+        # 2026-07-23 bare form explicitly rejects them).
         "tell jett nice shot",
         "tell sage nice job",
         # Bare pronouns in the name slot fall through.
         "tell him in chat hello",
         "tell her in chat hello",
-        # Incomplete — no message.
+        # Function words in the bare name slot fall through.
+        "tell the team to rotate",
+        "tell someone to smoke mid",
+        # Incomplete — no message (incl. the bare form's degenerate
+        # channel-phrase leftover).
         "tell chat",
         "tell bob in chat",
         "tell chat   ",
@@ -276,6 +301,66 @@ def test_none_input_is_safe() -> None:
     assert match_tell_chat(None) is None  # type: ignore[arg-type]
 
 
+# --------------------------------------------- 2026-07-23: BARE tell form
+# Live battery ground truth: "Ultron tell Izumi I am fine" was FORCE-relayed
+# to the team as hallucinated comms and "Tell IceMapple he's wrong." was
+# answered ABOUT the person on the desktop — both are chat tells with no
+# "in chat" delimiter. The bare form matches them LOW-CONFIDENCE (the
+# handler consumes only on a confident roster hit).
+@pytest.mark.parametrize(
+    "text,name,msg",
+    [
+        ("Ultron tell Izumi I am fine", "Izumi", "I am fine"),
+        ("Tell IceMapple he's wrong.", "IceMapple", "he's wrong."),
+        ("tell 1v9con good catch", "1v9con", "good catch"),
+        ("Ultron, tell dragonslayer the raid is at nine", "dragonslayer",
+         "the raid is at nine"),
+    ],
+)
+def test_bare_tell_matches_low_confidence(text, name, msg) -> None:
+    cmd = match_tell_chat(text)
+    assert cmd == TellChatCommand(name=name, message=msg, bare=True)
+
+
+def test_bare_tell_rejects_agents_and_team_words() -> None:
+    # Valorant agents belong to the TEAM relay.
+    assert match_tell_chat("tell Sage plant the spike") is None
+    assert match_tell_chat("tell kay o to flash") is None
+    # Team-possessives / group words never match bare.
+    assert match_tell_chat("tell my team rotate B") is None
+    assert match_tell_chat("tell everyone hi") is None
+
+
+def test_greet_forms_carry_the_greet_flag() -> None:
+    # The greet/welcome-verb form is ALSO spoken aloud by the handler
+    # (user direction 2026-07-23) — the flag is its trigger.
+    cmd = match_tell_chat("Welcome 1v9con to the chat.")
+    assert cmd is not None and cmd.greet is True and cmd.name == "1v9con"
+    cmd = match_tell_chat("greet casey in chat")
+    assert cmd is not None and cmd.greet is True
+    # The dictation forms never carry it.
+    cmd = match_tell_chat("tell bob in chat hello")
+    assert cmd is not None and cmd.greet is False
+
+
+# ------------------------------------------- 2026-07-23: compose faithfulness
+def test_compose_guard_requires_content_words() -> None:
+    from kenning.audio.relay_speech import tell_chat_compose_ok
+
+    # The dictated content must survive the in-character rewrite.
+    assert tell_chat_compose_ok(
+        "he's wrong", "You are wrong, IceMapple. The math does not lie.")
+    assert tell_chat_compose_ok(
+        "I don't have to go to bed",
+        "The streamer's bed can wait. He answers to no clock.")
+    # A composition that drops the content entirely fails -> literal fallback.
+    assert not tell_chat_compose_ok(
+        "I don't have to go to bed", "Flesh is weak. I endure.")
+    assert not tell_chat_compose_ok("he's wrong", "")
+    # No content words (bare greetings) -> any non-empty composition stands.
+    assert tell_chat_compose_ok("hi", "The machine acknowledges you.")
+
+
 def test_config_defaults_exist() -> None:
     """The spec-12 chat config fields ship with the intended defaults."""
     from kenning.config import TwitchChatConfig
@@ -292,3 +377,90 @@ def test_config_defaults_exist() -> None:
     assert "{name}" in cfg.first_time_welcome_text_no_delay
     assert cfg.first_time_welcome_max_per_minute == 4
     assert cfg.stream_delay_seconds == 40
+
+
+# ---------------------------------------------------------------------------
+# LIVE BUG 2026-07-26: trailing sentence punctuation defeated the
+# "say hi to <name> in chat" greeting form. Whisper puts a period on the end of
+# essentially every transcript, so this form was effectively NEVER reached in
+# production -- the turns fell through to the relay matcher and were parroted
+# verbatim onto the TEAM MIC:
+#   raw='Say hello to Izumi in the chat.' -> route='relay_llm' channel='team_mic'
+# which is the "he isn't addressing the people I ask him to address" report.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,name,message", [
+    ("Say hello to Izumi in the chat.", "Izumi", "hello"),
+    ("Say hi to Izumi in the chat!", "Izumi", "hi"),
+    ("say hi to izumi in chat.", "izumi", "hi"),
+    ("Ultron, say hello to Izumi in the chat.", "Izumi", "hello"),
+    ("say hey to Kappa123 in the chat?", "Kappa123", "hey"),
+])
+def test_greet_to_survives_trailing_punctuation(text, name, message):
+    cmd = match_tell_chat(text)
+    assert cmd is not None, f"trailing punctuation defeated the match: {text!r}"
+    assert cmd.name == name
+    assert cmd.message.startswith(message)
+
+
+def test_greet_to_still_keeps_the_extra_clause():
+    cmd = match_tell_chat("say hi to izumi in chat, welcome them")
+    assert cmd is not None
+    assert cmd.name == "izumi"
+    assert "welcome them" in cmd.message
+
+
+@pytest.mark.parametrize("text", [
+    "say hi to my team",
+    "tell my team to push A",
+    "say hello to the enemy team in mid",
+    "Say hi to Izumi.",          # no chat marker at all -- must NOT be a chat tell
+])
+def test_greet_to_does_not_over_capture(text):
+    assert match_tell_chat(text) is None
+
+
+# ---------------------------------------------------------------------------
+# BARE greeting resolved against known chatters (2026-07-26). The other half of
+# the live "say hi to izumi" failure: with no "in chat" marker the utterance
+# says nothing about viewer-vs-teammate, so it fell to the relay matcher and
+# was parroted onto the TEAM MIC. data/twitch/welcomed.db already knew Izumi.
+# ---------------------------------------------------------------------------
+
+_FAKE_CHATTERS = {"izumiikiryo", "icemapple14", "saltwaterbottle"}
+
+
+def _resolver(name):
+    from kenning.audio.chatter_names import resolve_chatter
+    return resolve_chatter(name, chatters=_FAKE_CHATTERS)
+
+
+@pytest.mark.parametrize("text,name,message", [
+    ("Say hi to Izumi.", "Izumi", "hi"),
+    ("say hello to IceMapple", "IceMapple", "hello"),
+    ("Say hi to Izumi, welcome back", "Izumi", "hi"),
+])
+def test_bare_greeting_resolves_a_known_chatter(text, name, message):
+    cmd = match_tell_chat(text, chatter_resolver=_resolver)
+    assert cmd is not None, f"known chatter not resolved: {text!r}"
+    assert cmd.name == name
+    assert cmd.message.startswith(message)
+
+
+@pytest.mark.parametrize("text", [
+    "say hi to my team",       # the team, not a viewer
+    "say hi to Sage",          # a Valorant agent -- must stay a team callout
+    "say hi to Sova",
+    "say hi to Kevin",         # not a known chatter
+    "say hi to them",
+])
+def test_bare_greeting_refuses_everything_else(text):
+    assert match_tell_chat(text, chatter_resolver=_resolver) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Say hi to Izumi.", "say hello to IceMapple",
+])
+def test_bare_greeting_needs_the_resolver(text):
+    """With no resolver the behaviour must be byte-identical to before."""
+    assert match_tell_chat(text) is None

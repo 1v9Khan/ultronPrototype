@@ -383,6 +383,33 @@ class STTConfig(_Strict):
     # missing/edited config.yaml still boots the accurate model, NEVER small.en.
     model: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
     device: str = "cuda"
+    # Which CUDA device Whisper loads onto (CTranslate2 ``device_index``).
+    # 2026-07-24 multi-GPU: point this at the SECONDARY card so the primary
+    # holds nothing but Ultron's model. Ignored when ``device`` is "cpu".
+    #
+    # 2026-07-26 WARNING: a NON-ZERO value runs CTranslate2 on a non-default
+    # CUDA device IN-PROCESS, which corrupted memory on this box and killed
+    # Ultron with a silent 0xc0000409 fastfail. Use ``sidecar_enabled`` below
+    # to put STT on another GPU safely instead of setting this.
+    device_index: int = Field(default=0, ge=0, le=15)
+    # ---- OUT-OF-PROCESS STT SIDECAR (2026-07-26) -------------------------
+    # Runs faster-whisper in a child process (scripts/stt_server.py) that the
+    # orchestrator masks onto ONE GPU via CUDA_VISIBLE_DEVICES. Inside that
+    # child the target card is plain "cuda:0" -- CTranslate2's default path,
+    # never the device-index path that corrupts -- and a repeat of the
+    # corruption kills a restartable child instead of the assistant.
+    # This is how STT gets off the primary card without the crash.
+    sidecar_enabled: bool = False
+    sidecar_host: str = "127.0.0.1"
+    sidecar_port: int = Field(default=8779, ge=1, le=65535)
+    sidecar_script: str = "scripts/stt_server.py"
+    # Physical CUDA device for the child (CUDA_VISIBLE_DEVICES). None inherits
+    # the parent environment.
+    sidecar_gpu_index: Optional[int] = Field(default=None, ge=0, le=15)
+    # Generous: a cold CTranslate2 load on a large model can take ~30 s, and
+    # the parent blocks on /healthz only at boot.
+    sidecar_startup_timeout_s: float = Field(default=180.0, ge=5.0, le=900.0)
+    sidecar_request_timeout_s: float = Field(default=30.0, ge=1.0, le=300.0)
     compute_type: str = "int8_float16"
     # 2026-05-15 latency: default changed 5 -> 1 (greedy decoding).
     # Live bench on the 4070 Ti with small.en int8_float16 shows
@@ -695,17 +722,11 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "model_path": "models/Josiefied-Qwen3-8B-abliterated-v1.Q5_K_M.gguf",
         "n_ctx": 8192,
         "draft_model_path": None,
+        # 2026-07-26: primary card, matching the 12B's placement. Qwen3 is the
+        # MATURE llama.cpp path (the 4B ran it for months); the gemma4 path
+        # corrupts the stack inside llama_decode on a long prefill.
+        "gpu_index": 0,
     },
-    # 2026-06-23 -- the SAME Josiefied-Qwen3-8B-abliterated-v1 base at the smaller
-    # IQ4_XS imatrix quant (~4.56 GB on disk vs the Q5_K_M's ~5.85 GB), PAIRED with
-    # a Qwen3-0.6B Q4_K_M draft for in-process speculative decoding (set
-    # llm.draft_kind: "model"). Qwen3-0.6B shares the Qwen3 tokenizer (151936 vocab)
-    # with the 8B target, so draft acceptance is high. The smaller quant + the draft
-    # leave VRAM room for a Valorant match on the 4070 Ti. Persona is the already-
-    # validated Josiefied/abliterated lineage. CAVEAT: in-process draft-model spec
-    # decoding ("model") shares the llama_decode C path that has crashed (-1) on some
-    # stacks -- test-load before relying on it; fall back to draft_kind: "none"
-    # (the 8B IQ4_XS alone) if it crashes.
     "josiefied-qwen3-8b-iq4xs": {
         "model_path": "models/Josiefied-Qwen3-8B-abliterated-v1.i1-IQ4_XS.gguf",
         "n_ctx": 4096,
@@ -807,8 +828,10 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         # - kv_cache_type 1 (F16), NOT the q8_0 default: llama.cpp PR #23907 makes
         #   q8_0-KV + flash_attn reserve an F16 dequant SCRATCH sized by the WHOLE KV
         #   cache -> a ~65% decode collapse (122->42 t/s). F16 KV has no dequant scratch.
-        #   Standard-attention Qwen3 keeps KV on ALL layers, so F16 KV here is ~1.2 GB at
-        #   n_ctx 4096 (vs ~0.6 q8_0) -- worth it for the decode speed; fits beside guard.
+        #   Standard-attention Qwen3 keeps KV on ALL layers. MEASURED from the GGUF
+        #   metadata (36 layers x 8 kv_heads x 128 head_dim, K+V, 2 B/elem): F16 KV is
+        #   576 MiB at n_ctx 4096, NOT the ~1.2 GB claimed here until 2026-07-26 --
+        #   that figure was wrong and inflated every dual-model VRAM budget.
         # - n_ubatch 256 (not 512): smaller micro-batch trims ~30-80 ms prefill TTFT on
         #   short prompts + shrinks the CUDA compute buffer (matches huihui-qwen3.5-4b).
         "n_ubatch": 256,
@@ -827,6 +850,12 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "draft_model_path": None,
         "n_ubatch": 256,
         "kv_cache_type": 1,
+        # 2026-07-24 multi-GPU: the 4B loads on the SECONDARY card (RTX 3060
+        # Ti), leaving the 12 GB card entirely free for a larger target. It
+        # shares device 1 with Whisper/Kokoro/embedder -- about 7.5 GB of
+        # ~7.8 GB usable -- which is why the twitch guard runs on CPU
+        # (twitch.safety.guard_gpu_layers: 0) while this preset is active.
+        "gpu_index": 1,
     },
     # Q5_K_M fallback -- ~0.4 GB lighter than Q6_K; swap here if Q6 is VRAM-tight.
     "heretic-qwen3-4b-q5": {
@@ -835,6 +864,89 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "draft_model_path": None,
         "n_ubatch": 256,
         "kv_cache_type": 1,
+        "gpu_index": 1,                      # secondary card -- see q6 above
+    },
+    # =======================================================================
+    # 2026-07-24 -- GEMMA 4 12B (heretic abliteration), the large-target
+    # upgrade. Google released Gemma 4 on 2026-04-02; the 12B "Unified" is an
+    # encoder-free multimodal model (~11.95 B params) whose hybrid
+    # local/global attention with unified global-layer KV keeps the cache
+    # small for its size. Sits on the PRIMARY 12 GB card ALONE:
+    #   Q4_K_M weights ~7.6 GB + KV @4096 + compute/context ~= 8.5-9 GB of
+    #   ~11.8 GB usable. The 4B presets above move to device 1 so this fits.
+    #
+    # DRAFT: the Gemma 3 1B already on disk (the same file the
+    # gemma-3-4b-abliterated preset drafts with). Gemma 3 and Gemma 4 share
+    # the 262k Gemini SentencePiece vocabulary, which is the HARD requirement
+    # for llama-cpp-python's Python-level draft path -- it hands raw token IDs
+    # to the target with no translation layer. ``_assert_draft_vocab_matches``
+    # in kenning.llm.draft_model verifies this AT LOAD and refuses a
+    # mismatched pair rather than emitting silent garbage.
+    #
+    # NOT DEFAULT: the GGUF is not on disk yet (see docs -- download from a
+    # heretic GGUF repo to E:/UltronModels/). Activate with
+    # ``preset: "gemma-4-12b-heretic"`` (or the voice model-switch) once the
+    # weights are present; swap_llm_preset.py refuses the swap until then.
+    # =======================================================================
+    "gemma-4-12b-heretic": {
+        # models/ (not E:/UltronModels/) to match scripts/download_models.py's
+        # destination AND the draft below -- swap_llm_preset's
+        # _validate_preset_files checks these exact paths.
+        "model_path": "models/gemma-4-12B-it-heretic-Q4_K_M.gguf",
+        # 2048 (2026-07-26, in two steps: 4096 -> 3072 -> 2048). MEASURED over
+        # 935 real turns in the captured run logs: prompt tokens median 251,
+        # p90 810, max 1074 -- so 2048 still clears the WORST observed prompt
+        # plus a full 512-token answer with ~460 to spare, while the F16 KV
+        # drops 1008 -> 672 MiB. That 336 MiB is precisely what buys room for
+        # the 4B SCENARIO ROUTER to sit on this card beside the 12B (see
+        # llm.scenario_router_model); without it the pair leaves only ~326 MiB
+        # spare, which is too thin to run unattended.
+        "n_ctx": 2048,
+        # Already on disk (shared with the gemma-3-4b-abliterated preset).
+        "draft_model_path": "models/google_gemma-3-1b-it-Q4_K_M.gguf",
+        # 128, not the 256 baseline: measured 9292 vs 9429 MiB resident, so it
+        # hands ~137 MB back. The CUDA compute buffer is sized by n_ubatch, and
+        # the cost is a couple more micro-batches on a voice-length prefill --
+        # invisible next to TTFT, and it does not touch output quality.
+        "n_ubatch": 128,
+        "kv_cache_type": 1,
+        # PRIMARY card = RTX 3060 12 GB. NOTE this index only means that card
+        # because kenning/__init__ pins CUDA_DEVICE_ORDER=PCI_BUS_ID; under
+        # CUDA's FASTEST_FIRST default the Ti ranks first and "0" silently
+        # addressed the 8 GB card instead (measured 2026-07-24: the model
+        # loaded onto the Ti and OOM'd while the 12 GB card sat idle).
+        "gpu_index": 0,
+        # MEASURED on the correct card, full offload at n_ctx 4096:
+        #   9238 MiB of 12288 resident (incl. ~1.2 GB the Windows desktop
+        #   holds -- the monitors are plugged into this card), ~3 GB spare.
+        # Gemma 4's SWA layers carry a 256 head dim and llama.cpp allocates a
+        # FULL-SIZE SWA cache, so KV is heavier than the parameter count
+        # suggests -- hence the measured, not estimated, budget. No
+        # ``gpu_layers`` override: full offload fits.
+        #
+        # Draft on the SECONDARY card so it costs the primary nothing.
+        # Target/draft exchange only TOKEN IDs (not per-layer activations),
+        # so the x4 link is off the critical path -- this is the one split
+        # that is genuinely cheap.
+        "draft_gpu_index": 1,
+    },
+    # IQ4_XS of the same 12B (~6.23 GB vs 6.87): ~0.64 GB back on the primary
+    # card, which is the budget the 2026-07-26 mid-generation abort pointed
+    # at. IQ4_XS is the best quality-per-byte step below Q4_K_M -- Q3_K_L is
+    # barely smaller (6.12 GB) for a real quality drop, so it is not offered.
+    # Different publisher (mradermacher's heretic-abliterated) than the
+    # Q4_K_M above (igorls' heretic); both are Heretic-tool abliterations.
+    "gemma-4-12b-heretic-iq4xs": {
+        "model_path": "models/gemma-4-12b-heretic-abliterated.IQ4_XS.gguf",
+        # See the Q4_K_M preset above for the measurement behind 2048 / 128.
+        # THIS is the live preset, so this is the one that frees the 336 MiB
+        # the 4B scenario router needs on card 0.
+        "n_ctx": 2048,
+        "draft_model_path": "models/google_gemma-3-1b-it-Q4_K_M.gguf",
+        "n_ubatch": 128,
+        "kv_cache_type": 1,
+        "gpu_index": 0,
+        "draft_gpu_index": 1,
     },
     # 2026-05-19 -- Gemma 3 4B abliterated (mradermacher quants of the
     # Goekdeniz-Guelmez Josiefied abliterated fine-tune over Google's
@@ -938,6 +1050,36 @@ class IdleVramReclaimConfig(_Strict):
 class LLMConfig(_Strict):
     # Pinned to llama_cpp per feedback_llm_runtime_decision.md (2026-05-08).
     provider: Literal["llama_cpp"] = "llama_cpp"
+    # MULTI-GPU PLACEMENT (2026-07-24, second card added). llama.cpp's default
+    # ``split_mode`` is LAYER: it spreads layers + KV across EVERY visible GPU.
+    # With a second card installed that silently pushes part of Ultron's model
+    # onto the secondary GPU -- competing with the STT/TTS/sidecar tenants and
+    # forcing every token's forward pass across the PCIe bus (the secondary
+    # card sits on an x4 slot here). ``gpu_index`` pins the whole model to ONE
+    # device (main_gpu=index + split_mode=NONE): the model fits on the 12 GB
+    # card with room to spare, so splitting is pure latency loss.
+    # ``None`` restores llama.cpp's own default (multi-GPU layer split) for
+    # anyone who genuinely needs a model larger than a single card.
+    gpu_index: Optional[int] = Field(default=0, ge=0, le=15)
+    # Speculative decoding, multi-GPU (2026-07-24): the DRAFT model can live
+    # on a different card than the target. Unlike a layer split -- which
+    # sends every token's hidden state across PCIe -- target/draft exchange
+    # only TOKEN IDs, so the link width barely matters. Parking the ~0.5 GB
+    # draft on the secondary card buys that much headroom on the primary for
+    # a larger target model (the 14B upgrade path). ``None`` keeps the draft
+    # on the same device as the target (``gpu_index``).
+    draft_gpu_index: Optional[int] = Field(default=None, ge=0, le=15)
+    # SECOND RESIDENT MODEL (2026-07-26). A preset name whose model is loaded
+    # ALONGSIDE the main one and used for the latency-critical relay / snap
+    # callout path, while the main model keeps conversation. Both stay in
+    # VRAM, so a callout pays ZERO model-reload latency -- the entire point
+    # of the split (a preset swap would defeat it).
+    # Placement comes from the named preset's own ``gpu_index``, so the small
+    # model lands on the secondary card while the big one holds the primary.
+    # MEASURED on this box: 12B + draft = 10352 MiB of 12288 on the 3060;
+    # 4B Q6_K = 3726 MiB + ~3.4 GB of audio tenants = ~7.1 GB of 8192 on the
+    # Ti. Empty string = OFF (single model; byte-identical legacy behaviour).
+    fast_preset: str = ""
     # Idle-time VRAM reclaim (see class). Zero hot-path latency by design.
     idle_vram_reclaim: IdleVramReclaimConfig = Field(
         default_factory=IdleVramReclaimConfig,
@@ -991,6 +1133,11 @@ class LLMConfig(_Strict):
         # LLM_PRESETS (pinned by test_llm_presets_match_literal).
         "heretic-qwen3-4b-q6",
         "heretic-qwen3-4b-q5",
+        # 2026-07-24: Gemma 4 12B heretic + Gemma 3 1B draft, on the primary
+        # card alone. NOT default -- the GGUF must be on disk first. MUST
+        # mirror LLM_PRESETS (pinned by test_llm_presets_match_literal).
+        "gemma-4-12b-heretic",
+        "gemma-4-12b-heretic-iq4xs",
         "custom",
     ] = "heretic-qwen3-4b-q6"
     # Where the model actually runs:
@@ -1004,6 +1151,25 @@ class LLMConfig(_Strict):
     # the HTTP server exists; Phase 2 / Item 6 wires the voice path
     # through it.
     runtime: Literal["in_process", "http_server"] = "in_process"
+    # ---- SCENARIO ROUTER (2026-07-26) ------------------------------------
+    # A SMALL second model that classifies each turn into one of the 29
+    # scenarios in ``audio/scenario_taxonomy`` BEFORE the ~24-matcher dispatch
+    # chain runs, so routing stops depending on which regex happens to fire
+    # first. Empty path = disabled (the chain alone, byte-identical to before).
+    #
+    # Model chosen by MEASUREMENT over the 144-case labelled corpus
+    # (scripts/relay_test/scenario_scorecard.py), not by assumption:
+    #   Qwen3-4B heretic Q5   97.2%  warm median 125 ms   <- selected
+    #   Llama-3.2-3B          82.6%  warm median 113 ms
+    #   Llama-3.2-1B          37.5%  |  Gemma 3 1B  25.7%
+    # A 29-way choice is past what a 1B does reliably, and the 3B saves only
+    # 12 ms for 15 accuracy points -- so "use a 1B to avoid the latency hit"
+    # does not survive contact with the numbers.
+    scenario_router_model: str = ""
+    # Only needs to hold the ~1.5k-token taxonomy + a short utterance + one
+    # label. 2048 keeps the KV small (the router shares card 0 with the 12B).
+    scenario_router_n_ctx: int = Field(default=2048, ge=512, le=8192)
+    scenario_router_gpu_index: int = Field(default=0, ge=0, le=15)
     model_path: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
     # Optional draft model path. When non-None, BOTH the HTTP server
     # path AND the in-process path enable prompt-lookup-decoding (PLD)
@@ -2627,7 +2793,10 @@ class KokoroConfig(_Strict):
     # CPU is the production target -- Kokoro is fast enough on CPU
     # and keeps the GPU free for LLM + Whisper. Set "cuda" for ~3x
     # faster synthesis when the user has the VRAM budget.
-    device: str = Field(default="cpu", pattern="^(cpu|cuda)$")
+    # 2026-07-24 multi-GPU: an explicit index ("cuda:1") pins synthesis to a
+    # SPECIFIC card, so Kokoro's ~330 MB lands on the secondary GPU instead of
+    # competing with Ultron's model. Bare "cuda" still means "device 0".
+    device: str = Field(default="cpu", pattern=r"^(cpu|cuda(:\d+)?)$")
     # Speech-rate multiplier; 1.0 = native cadence.
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     # Pre-fine-tune: run the v3 Kenning pedalboard filter on Kokoro
@@ -2708,6 +2877,10 @@ class OutputWatchConfig(_Strict):
 
 
 class TTSConfig(_Strict):
+    # ``"kokoro"`` is the lightweight StyleTTS2 + ISTFTNet engine (production
+    # default); ``"xtts_v3"`` is the XTTS v2 streaming + v3 filter stack.
+    # Switching engines requires a process restart (the chosen engine is
+    # loaded once at orchestrator construction).
     # 2026-05-10 voice swap: ``"piper_rvc"`` is the legacy stack
     # (Piper voice + RVC timbre transfer); ``"xtts_v3"`` is the new
     # XTTS v2 streaming + v3 filter stack. 2026-05-19 Track 5:
@@ -4149,8 +4322,18 @@ class SemanticRouterConfig(_Strict):
     sidecar_host: str = "127.0.0.1"
     sidecar_port: int = 8772
     # Absolute path to the ISOLATED venv's python (kept OUT of the main venv).
-    sidecar_python: str = "C:/STC/ultronVoiceAudio/.venv-embedder/Scripts/python.exe"
+    # Empty -> resolve at spawn time to ``<PROJECT_ROOT>/.venv-embedder/Scripts/python.exe``
+    # (portable across machines; the old hard-coded ``C:/STC/...`` path died on
+    # the 2026-07-20 machine move). Override with an absolute path if the
+    # embedder venv lives elsewhere.
+    sidecar_python: str = ""
     sidecar_script: str = "scripts/embedder_server.py"
+    # 2026-07-24 multi-GPU: which physical CUDA device the embedder sidecar
+    # may use, injected as CUDA_VISIBLE_DEVICES into the CHILD process (it
+    # then sees that card as its own "cuda:0"). Point it at the secondary GPU
+    # so the embedding model stays off Ultron's card. ``None`` inherits the
+    # parent environment (legacy behaviour).
+    sidecar_gpu_index: Optional[int] = Field(default=None, ge=0, le=15)
     sidecar_backend: Literal["sentence_transformers", "fastembed"] = "sentence_transformers"
     sidecar_model: str = "google/embeddinggemma-300m"
     sidecar_query_prompt: str = "query"
@@ -4160,8 +4343,10 @@ class SemanticRouterConfig(_Strict):
     # short commands, so CPU latency (~tens of ms on this 32-core box) is well
     # within budget. "" -> auto (cuda if available); "cuda" forces GPU.
     sidecar_device: str = "cpu"
-    # HF cache override -- the machine's TRANSFORMERS_CACHE points at a missing D:.
-    sidecar_hf_cache: str = "C:/Users/alecf/.cache/huggingface/hub"
+    # HF cache override -- empty lets huggingface_hub use its default; set an
+    # absolute path when the machine default points at a missing drive.
+    # (Was hard-coded to a user cache path that is not portable.)
+    sidecar_hf_cache: str = ""
     # The boot-end router warmup polls for the sidecar up to this long so a COLD
     # boot still gets the embedding backend. The sidecar is spawned EARLY (loads
     # in parallel with the rest of boot), so in practice it is already ready by
@@ -4290,6 +4475,13 @@ class TwitchSafetyConfig(_Strict):
     # 1B on CPU) and guard_threads caps CPU usage so it never contends with the game.
     # Set -1 to put all layers back on the GPU if VRAM allows.
     guard_gpu_layers: int = Field(default=0, ge=-1, le=200)
+    # 2026-07-24 multi-GPU: which physical CUDA device the guard sidecar may
+    # use. Injected as CUDA_VISIBLE_DEVICES into the CHILD process, so the
+    # sidecar sees exactly one card (its own "cuda:0") -- that both places it
+    # on the secondary GPU and stops the guard's own llama.cpp from
+    # layer-splitting across both cards. ``None`` inherits the parent
+    # environment (legacy behaviour: every visible GPU).
+    sidecar_gpu_index: Optional[int] = Field(default=None, ge=0, le=15)
     guard_threads: int = Field(default=6, ge=0, le=256)   # CPU threads when on CPU (0 = llama.cpp default)
     guard_endpoint: str = "http://127.0.0.1:8774"    # loopback guard sidecar
     guard_required: bool = True                      # chat-reply refuses to enable without a healthy guard
@@ -4368,7 +4560,7 @@ class TwitchEconomyConfig(_Strict):
     # Trivia (mod-started !trivia): a house-funded prize to the first correct
     # chat answer within the window. A skill game (no per-viewer bet / no RTP).
     trivia_prize: int = 100
-    trivia_window_seconds: int = 30
+    trivia_window_seconds: int = 60
     # 2026-06-26: auto-trivia — the router auto-starts a trivia round about every
     # N minutes with NO mod command (using the same tick()/epoch clock that accrues
     # watch-time earnings), so the stream always has a game running. 0 disables it;
@@ -4441,7 +4633,7 @@ class TwitchChatConfig(_Strict):
     # always see how to play. Sent AS THE BOT via the write sidecar /say endpoint
     # (Helix POST /chat/messages, user:write:chat). Default OFF.
     commands_panel_enabled: bool = False
-    commands_panel_interval_minutes: int = Field(default=15, ge=1, le=720)
+    commands_panel_interval_minutes: int = Field(default=30, ge=1, le=720)
     commands_panel_doc_url: str = ""                 # public guide URL appended to the panel message (set when ready)
     # A SECOND periodic chat poster (independent of the commands panel): a short
     # nudge telling viewers they can simply say "Ultron <statement/question>" and
@@ -4451,6 +4643,8 @@ class TwitchChatConfig(_Strict):
     # 2026-07-09 flood fix: 10 -> 20 min (streamer: "type in the chat like
     # every 20 minutes or so"); the ONLY periodic chat reminder left — the
     # commands/song reminders live on the PINBOARD (pinned message) now.
+    # (Stash-pop conflict resolved to 20: the streamer's fresh instruction
+    # supersedes the earlier uncommitted 15.)
     talk_hint_interval_minutes: int = Field(default=20, ge=1, le=720)
     talk_hint_text: str = "💬 Just type \"Ultron\" followed by a statement or question and he will talk to you!"
     # Relay-aware chat-reply cooldown (2026-07-08): while the STOP-window RELAY
@@ -4468,8 +4662,9 @@ class TwitchChatConfig(_Strict):
     song_hint_enabled: bool = False
     song_hint_interval_minutes: int = Field(default=15, ge=1, le=720)
     song_hint_text: str = (
-        "🎵 !song <name> [by artist] (1000 Credits) queues a track on stream · "
-        "💿 !album <name> (5000 Credits) queues the whole album!"
+        "You can spend your credits on song requests!"
+        "🎵 !song [name] by [artist] (1000 Credits) queues a song on spotify· "
+        "💿 !album [name] by [artist] (5000 Credits) queues the whole album!"
     )
     # PINBOARD (2026-07-09 flood fix): instead of periodically re-posting the
     # commands/song reminders (the flood), Ultron posts the commands panel ONCE
@@ -4488,8 +4683,10 @@ class TwitchChatConfig(_Strict):
     # toggle. Templates take {name} / {message}; the match floor is the minimum
     # rapidfuzz WRatio score (0-100) an observed chatter must reach to be tagged.
     tell_chat_enabled: bool = True
-    tell_chat_template: str = "@{name} 🎙️ [streamer, live]: {message}"
-    tell_chat_broadcast_template: str = "🎙️ [streamer, live]: {message}"
+    # 2026-07-23 (user direction): no "🎙️ [streamer, live]:" framing — the
+    # message stands alone (tagged posts keep the @mention only).
+    tell_chat_template: str = "@{name} {message}"
+    tell_chat_broadcast_template: str = "{message}"
     tell_chat_match_floor: int = Field(default=60, ge=0, le=100)
     # Presence-based roster seeding (2026-07-10): every N minutes — and once
     # on a tell-chat roster MISS — the CURRENT viewer list (Helix Get

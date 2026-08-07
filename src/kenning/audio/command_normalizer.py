@@ -733,6 +733,56 @@ _NOT_A_CALLOUT = re.compile(
     re.IGNORECASE,
 )
 
+# Interrogative shape -- a question ADDRESSED TO ULTRON, never a team callout.
+# 2026-07-23 live battery: the semantic router scored "do you think they're
+# gonna go A?" as team_callout (0.608) and FORCE-relayed the question verbatim
+# to the team mic; same for "do you think I die here?". The strict relay
+# matcher already rejects questions, but the router/turbo force paths bypass
+# it -- they call this veto instead. Explicit relay phrasings ("ask my team
+# where they want me", "can you tell my team X") never reach the force paths:
+# the scaffold strip + strict matcher consume them earlier, so a leading
+# interrogative or a trailing "?" here is safe to treat as ask-Ultron.
+_QUESTION_SHAPED_RE = re.compile(
+    r"^\s*(?:what|what'?s|who|who'?s|whom|whose|where|where'?s|when|when'?s|"
+    r"why|why'?s|how|how'?s|which|is|isn'?t|are|aren'?t|am|was|wasn'?t|were|"
+    r"weren'?t|do|don'?t|does|doesn'?t|did|didn'?t|can|can'?t|could|"
+    r"couldn'?t|should|shouldn'?t|would|wouldn'?t|will|won'?t|have|haven'?t|"
+    r"has|hasn'?t|had|hadn'?t|may|might|shall)\b",
+    re.IGNORECASE,
+)
+
+
+def has_callout_signal(text: str) -> bool:
+    """True when ``text`` carries ANY tactical callout signal (strong callout
+    shape, callout keyword, or agent name). Used by the router's
+    mid-confidence force-relay band (2026-07-24): a team_callout verdict with
+    NO signal at all is banter/musing ("I'll have a good team this game"),
+    which belongs to the conversational LLM, not the team mic. Every real
+    callout probed carries at least one signal ("I push mid", "They
+    rotated", "two on A", "watch flank")."""
+    s = (text or "").strip()
+    if not s:
+        return False
+    return bool(
+        _STRONG_CALLOUT_RE.match(s)
+        or _CALLOUT_SIGNAL.search(s)
+        or _AGENT_SIGNAL.search(s)
+    )
+
+
+def question_shaped(text: str) -> bool:
+    """True when ``text`` reads as a question to Ultron (interrogative opener
+    or a trailing question mark) -- used by the force-relay paths to fall
+    through to the conversational LLM instead of speaking the question (or an
+    LLM guess at it) onto the team mic."""
+    if not text:
+        return False
+    s = text.strip()
+    if not s:
+        return False
+    return s.endswith("?") or _QUESTION_SHAPED_RE.match(s) is not None
+
+
 # Context+directive shape: a reported-speech clause ("<teammate/agent> asked /
 # said / is flaming me ...") followed by a directive to ANSWER ("respond",
 # "reply", "calm him down", "clap back", ...). Ultron should AUTHOR an

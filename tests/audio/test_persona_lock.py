@@ -34,7 +34,9 @@ def test_gaming_conversational_prompt_returns_gaming_persona_when_u1_route(monke
     )
 
     result = orch._gaming_conversational_prompt()
-    assert result == ULTRON_GAMING_PERSONA, (
+    # 2026-07-24: the selector appends a per-turn variety suffix, so the
+    # persona-lock proof is PREFIX identity (still Ultron, never "Kenning").
+    assert result is not None and result.startswith(ULTRON_GAMING_PERSONA), (
         "u1_llm_route active but _gaming_conversational_prompt returned None — "
         "workspace Kenning persona would leak (BR-P2)"
     )

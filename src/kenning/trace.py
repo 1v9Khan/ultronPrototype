@@ -37,8 +37,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any
 
 __all__ = [
     "set_turn",
@@ -51,6 +52,11 @@ __all__ = [
     "phase",
     "snapshot",
     "restore",
+    "mark",
+    "mark_at",
+    "latency_stages",
+    "latency_line",
+    "reset_latency",
 ]
 
 
@@ -64,7 +70,7 @@ _turn_counter: int = 0
 # ---------------------------------------------------------------------------
 
 
-def set_turn(turn_id: Optional[int]) -> None:
+def set_turn(turn_id: int | None) -> None:
     """Set the per-thread turn id used by every subsequent tlog call.
 
     Pass ``None`` to clear (start-up phase logs have no turn).
@@ -72,7 +78,7 @@ def set_turn(turn_id: Optional[int]) -> None:
     _state.turn = turn_id
 
 
-def get_turn() -> Optional[int]:
+def get_turn() -> int | None:
     """Return the current turn id, or ``None`` when unset."""
     return getattr(_state, "turn", None)
 
@@ -100,12 +106,12 @@ def next_turn() -> int:
 # ---------------------------------------------------------------------------
 
 
-def set_phase(phase_name: Optional[str]) -> None:
+def set_phase(phase_name: str | None) -> None:
     """Set the per-thread phase tag (e.g. ``"capture"``, ``"stt"``)."""
     _state.phase = phase_name
 
 
-def get_phase() -> Optional[str]:
+def get_phase() -> str | None:
     """Return the current phase tag, or ``None`` when unset."""
     return getattr(_state, "phase", None)
 
@@ -210,6 +216,105 @@ def tlog(
 
 
 # ---------------------------------------------------------------------------
+# Per-turn LATENCY marks (2026-07-26)
+# ---------------------------------------------------------------------------
+#
+# Why this lives here and not on the Orchestrator: the stages that matter are
+# spread across threads. Speculative STT and speculative LLM run on background
+# daemons that inherit the turn id via ``restore()`` but get a FRESH
+# thread-local store -- so a thread-local mark map would silently drop exactly
+# the stages we most want to measure. Marks are therefore held in a
+# process-global dict keyed by TURN ID, which every participating thread agrees
+# on, under a lock.
+#
+# Bounded to the last few turns so a long stream cannot leak; the report is
+# emitted at end-of-turn, well before eviction.
+#
+# Cost: one perf_counter() + a dict write per stage. Nanoseconds. Always on --
+# the whole point is that the NEXT latency question is answerable from the log
+# the streamer already has, instead of needing a re-instrumentation pass.
+
+_MARKS_MAX_TURNS = 32
+_marks_lock = threading.Lock()
+_marks: dict[int, list[tuple[str, float]]] = {}
+
+
+def mark(stage: str) -> None:
+    """Timestamp ``stage`` against the current turn. Safe from any thread."""
+    mark_at(stage, time.perf_counter())
+
+
+def mark_at(stage: str, when: float) -> None:
+    """Record ``stage`` at an explicit ``perf_counter`` value.
+
+    Used for boundaries captured before the mark point exists -- notably
+    speech-end, which the VAD observes inside the capture loop.
+    """
+    tid = get_turn()
+    if tid is None:
+        return
+    with _marks_lock:
+        seq = _marks.get(tid)
+        if seq is None:
+            if len(_marks) >= _MARKS_MAX_TURNS:
+                for old in sorted(_marks)[:len(_marks) - _MARKS_MAX_TURNS + 1]:
+                    _marks.pop(old, None)
+            seq = _marks[tid] = []
+        seq.append((stage, when))
+
+
+def reset_latency(turn_id: int | None = None) -> None:
+    """Drop the marks for a turn (defaults to the current one)."""
+    tid = get_turn() if turn_id is None else turn_id
+    if tid is None:
+        return
+    with _marks_lock:
+        _marks.pop(tid, None)
+
+
+def latency_stages(turn_id: int | None = None) -> list[tuple[str, float, float]]:
+    """Return ``(stage, since_first_ms, delta_ms)`` in recorded order.
+
+    ``delta_ms`` is the gap from the PREVIOUS mark, which is what identifies
+    the expensive stage; ``since_first_ms`` is cumulative from the first mark.
+    """
+    tid = get_turn() if turn_id is None else turn_id
+    if tid is None:
+        return []
+    with _marks_lock:
+        seq = list(_marks.get(tid, ()))
+    if not seq:
+        return []
+    base = seq[0][1]
+    out: list[tuple[str, float, float]] = []
+    prev = base
+    for name, when in seq:
+        out.append((name, (when - base) * 1000.0, (when - prev) * 1000.0))
+        prev = when
+    return out
+
+
+def latency_line(turn_id: int | None = None) -> str:
+    """One-line summary: total plus each stage's own cost, slowest first.
+
+    Shape::
+
+        total=1592ms | stt=812 | tts_synth=430 | llm=210 | route=9 ...
+
+    Empty string when the turn recorded fewer than two marks (nothing to
+    compare), so callers can skip the log line entirely.
+    """
+    stages = latency_stages(turn_id)
+    if len(stages) < 2:
+        return ""
+    total = stages[-1][1]
+    costs = [(name, delta) for name, _, delta in stages[1:]]
+    costs.sort(key=lambda kv: kv[1], reverse=True)
+    body = " | ".join(f"{name}={delta:.0f}" for name, delta in costs)
+    return f"total={total:.0f}ms | {body}"
+
+
+# ---------------------------------------------------------------------------
 # Phase context manager (bookmarks start / end with elapsed timing)
 # ---------------------------------------------------------------------------
 
@@ -218,7 +323,7 @@ def tlog(
 def phase(
     name: str,
     *,
-    log: Optional[logging.Logger] = None,
+    log: logging.Logger | None = None,
     level: int = logging.INFO,
     **kwargs: Any,
 ) -> Iterator[dict]:

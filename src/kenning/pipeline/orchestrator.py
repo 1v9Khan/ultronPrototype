@@ -239,6 +239,15 @@ _WAKE_REMNANT_RE = re.compile(
 _FOLLOWUP_WAKE_RE = re.compile(
     r"^\s*(?:hey[\s,]+)?(?:ultron|kenning)\b", re.IGNORECASE)
 
+# 2026-07-26 latency: end-of-sentence detector for the STREAMED private-reply
+# head. The private-reply path must judge the model's opening for prompt-echo
+# scaffolding BEFORE it starts speaking (an all-scaffolding reply falls through
+# to _respond), so it buffers exactly one sentence rather than the whole
+# response. Requires terminator + whitespace-or-end so a decimal ("27.7 tok/s")
+# or an abbreviation mid-clause does not cut the head short; the companion
+# 240-char ceiling bounds the wait when the model never punctuates.
+_SENTENCE_END_RE = re.compile(r"[.!?][\"')\]]*(?:\s|$)")
+
 # 2026-06-23: a CHEAP local gate so non-moderation voice (the ~99% relay /
 # conversation case, e.g. "say hello") never pays the write-sidecar HTTP
 # round-trip in _maybe_handle_twitch_moderation. EVERY moderation command in
@@ -347,6 +356,35 @@ def _trim_wake_from_capture(
         return buffer
 
 
+def _stt_repetition_loop(
+    text: str,
+    audio_seconds: float,
+    max_chars_per_second: float = 50.0,
+) -> bool:
+    """True when a transcript is a Whisper REPETITION-LOOP hallucination.
+
+    Live 2026-07-23 (battery turn=36): 1.52 s of audio transcribed to 503
+    chars -- "Valorant team comms." repeated x24 -- and the intent gate
+    scored the garbage RELAY_TO_TEAM at 0.95; only the wake-gate stopped a
+    fabricated relay. Real dictation lands ~15-20 chars/s; a transcript
+    whose density is far beyond human speech AND whose words are dominated
+    by one repeated phrase is model noise, not speech. Pure / deterministic
+    for unit testing; callers treat True as an empty transcript.
+    """
+    if not text or audio_seconds <= 0:
+        return False
+    t = text.strip()
+    if len(t) <= 40:
+        return False                     # too short to be a runaway loop
+    if (len(t) / audio_seconds) <= max_chars_per_second:
+        return False                     # plausible speech density
+    words = t.lower().split()
+    if not words:
+        return False
+    unique_fraction = len(set(words)) / float(len(words))
+    return unique_fraction < 0.35
+
+
 def _wake_command_cut(
     segments,
     n: int,
@@ -354,6 +392,7 @@ def _wake_command_cut(
     sample_rate: int,
     guard_ms: int = 120,
     margin_ms: int = 150,
+    fire_backoff_ms: "int | None" = None,
 ) -> int:
     """Given VAD speech ``segments`` over a captured buffer (each a dict with int
     ``start`` / ``end`` sample offsets, as returned by silero ``get_speech_
@@ -367,19 +406,35 @@ def _wake_command_cut(
         command's start minus a small guard: the wake word AND the gap are
         dropped, the whole command kept (zero leak, zero clip);
       * a segment that STARTS before the fire and extends past it (the user ran
-        "Ultron command" together, one continuous segment) -> cut at the fire
-        boundary (the pre-fire wake is dropped; this is the unavoidable no-pause
-        edge, still audio-domain, never text-stripping);
+        "Ultron command" together, one continuous segment) -> cut a FIRE-LATENCY
+        BACKOFF before the fire boundary. The detector confirms over ~4 x 80 ms
+        frames AFTER the word completes, so the fire lands ~320 ms into the
+        command -- cutting AT the fire beheaded the first word (live 2026-07-23:
+        "Ultron, should I push mid?" -> "I push mid" -> the normalizer relay-
+        recovered the remnant into "tell my team I push mid."). Backing off
+        keeps the whole command; any wake-tail residue this re-admits ("...tron")
+        is stripped at the TEXT level by the normalizer's wake-homophone lead
+        strip -- a clipped first word is unrecoverable, a leaked tail is not;
       * no speech past the fire (bare "Ultron" / silence) -> cut at the fire so
         the live region (silence) transcribes empty and the turn stands down.
 
-    Returns a clamped index in ``[0, n)``; ``0`` means "do not trim". Pure /
-    deterministic for unit testing.
+    ``fire_backoff_ms`` defaults from ``KENNING_WAKE_FIRE_BACKOFF_MS`` (320 ms,
+    the 4-frame openwakeword confirmation window; ``0`` restores the old
+    cut-at-fire behaviour). Returns a clamped index in ``[0, n)``; ``0`` means
+    "do not trim". Pure / deterministic for unit testing.
     """
     if n <= 0:
         return 0
+    if fire_backoff_ms is None:
+        try:
+            import os
+            fire_backoff_ms = int(
+                float(os.getenv("KENNING_WAKE_FIRE_BACKOFF_MS", "320")))
+        except Exception:                                        # noqa: BLE001
+            fire_backoff_ms = 320
     margin = int(margin_ms / 1000.0 * sample_rate)
     guard = int(guard_ms / 1000.0 * sample_rate)
+    backoff = max(0, int(fire_backoff_ms / 1000.0 * sample_rate))
     fire = max(0, int(fire_point))
     cmd = None
     for seg in (segments or ()):
@@ -396,7 +451,9 @@ def _wake_command_cut(
         if s >= fire - margin:
             cut = max(0, s - guard)                  # paused -> clean cut
         else:
-            cut = fire                               # continuous -> cut at fire
+            cut = max(0, fire - backoff)             # continuous -> keep the
+            #                                          confirmation-window audio
+            #                                          (the command's first word)
     return cut if 0 < cut < n else 0
 
 
@@ -877,8 +934,14 @@ class Orchestrator:
         # :meth:`swap_stt_engine`. When ``stt.gaming_engine`` is empty
         # or matches the primary, the registry has only the primary and
         # the swap method is a no-op.
+        # STT SIDECAR (2026-07-26): spawn BEFORE building the engine so the
+        # child's ~10-30 s model load overlaps the rest of construction. See
+        # :meth:`_start_stt_sidecar`.
+        self._stt_sidecar_proc = None
+        self._start_stt_sidecar()
         self._stt_registry: DualSTTRegistry = make_dual_stt_engines()
         self.stt = self._stt_registry.active
+        self._await_stt_sidecar()
         # 2026-05-22 streaming STT: warm the engine's session before the
         # first real turn so the cold-start cost (ONNX session JIT +
         # tokenizer load) doesn't land in the user's first interaction.
@@ -991,6 +1054,56 @@ class Orchestrator:
                 self.llm = None
         if self.llm is None:
             self.llm = LLMEngine(memory=self.memory)
+        # SECOND RESIDENT MODEL (2026-07-26, ``llm.fast_preset``). Loaded
+        # ALONGSIDE the main model and handed to the relay/snap callout path
+        # so a callout never pays a model-reload -- keeping both in VRAM is
+        # the whole point (swapping presets would reintroduce the latency
+        # this is meant to remove). Placement comes from the named preset's
+        # own ``gpu_index``, so the small model sits on the secondary card
+        # while the big one holds the primary. Fail-open at every step: any
+        # problem leaves ``_llm_fast`` None and the relay path falls back to
+        # the main engine (today's behaviour).
+        self._llm_fast = None
+        try:
+            from pathlib import Path as _Path
+
+            from kenning.config import (
+                LLM_PRESETS, get_config as _gc, resolve_path as _rpath,
+            )
+            _fp = (getattr(_gc().llm, "fast_preset", "") or "").strip()
+            if _fp and _fp in LLM_PRESETS:
+                _fpre = LLM_PRESETS[_fp]
+                _fpath = _rpath(_fpre["model_path"])
+                if not _Path(_fpath).exists():
+                    logger.warning(
+                        "fast_preset '%s' GGUF missing (%s) -- relay keeps "
+                        "using the main model", _fp, _fpath)
+                else:
+                    t_fast = time.monotonic()
+                    self._llm_fast = LLMEngine(
+                        memory=None,
+                        model_path=_fpath,
+                        n_ctx=_fpre.get("n_ctx"),
+                        n_gpu_layers=-1,
+                        # The PRESET's card, not the main model's -- without
+                        # this override the second engine reads cfg.gpu_index
+                        # and both models pile onto the same GPU.
+                        gpu_index=_fpre.get("gpu_index"),
+                    )
+                    logger.info(
+                        "fast relay model resident: preset='%s' gpu=%s "
+                        "loaded in %.1fs -- snap callouts pay no reload",
+                        _fp, _fpre.get("gpu_index"),
+                        time.monotonic() - t_fast,
+                    )
+            elif _fp:
+                logger.warning(
+                    "llm.fast_preset '%s' is not a known preset -- ignored",
+                    _fp)
+        except Exception as e:                                       # noqa: BLE001
+            logger.warning("fast relay model load failed (%s); relay will use "
+                           "the main model", e)
+            self._llm_fast = None
         # Latency hygiene: warm the LLM so the first real turn doesn't pay the
         # cold-context prefill (~100-200 ms of TTFT shaved off the user's first
         # interaction). SYNCHRONOUS, not a daemon thread: llama-cpp's single
@@ -2040,13 +2153,29 @@ class Orchestrator:
             if EmbeddingBackend(host=host, port=port).available():
                 logger.info("embedder sidecar already running on %s:%d -- reusing", host, port)
                 return
-        py = getattr(rcfg, "sidecar_python", "")
-        if not py or not os.path.exists(py):
+        # Resolve python + script against PROJECT_ROOT so a launch from any
+        # cwd (e.g. ``C:\Users\...``) still finds the isolated embedder venv
+        # and ``scripts/embedder_server.py``. Empty ``sidecar_python`` defaults
+        # to ``<repo>/.venv-embedder/Scripts/python.exe`` (machine-portable).
+        from kenning.config import PROJECT_ROOT
+        py = (getattr(rcfg, "sidecar_python", "") or "").strip()
+        if not py:
+            py = str(PROJECT_ROOT / ".venv-embedder" / "Scripts" / "python.exe")
+        elif not os.path.isabs(py):
+            py = str((PROJECT_ROOT / py).resolve())
+        if not os.path.exists(py):
             logger.warning("embedder sidecar venv python missing (%s) -> router "
                            "uses the lexical backend", py)
             return
         script = getattr(rcfg, "sidecar_script", "scripts/embedder_server.py")
-        script_path = script if os.path.isabs(script) else os.path.abspath(script)
+        if os.path.isabs(script):
+            script_path = script
+        else:
+            script_path = str((PROJECT_ROOT / script).resolve())
+        if not os.path.isfile(script_path):
+            logger.warning("embedder sidecar script missing (%s) -> router "
+                           "uses the lexical backend", script_path)
+            return
         env = dict(os.environ)
         env["KENNING_EMBEDDER_BACKEND"] = getattr(rcfg, "sidecar_backend", "sentence_transformers")
         env["KENNING_EMBEDDER_MODEL"] = getattr(rcfg, "sidecar_model", "google/embeddinggemma-300m")
@@ -2059,16 +2188,55 @@ class Orchestrator:
         _dev = getattr(rcfg, "sidecar_device", "")
         if _dev:
             env["KENNING_EMBEDDER_DEVICE"] = _dev
+        # MULTI-GPU (2026-07-24): confine the embedder to ONE physical card by
+        # masking the rest from the CHILD process -- it then sees that card as
+        # its own "cuda:0" with no code change on the sidecar side. Keeps the
+        # embedding model off the card reserved for Ultron's model. Unset =>
+        # inherit the parent environment (legacy behaviour).
+        _emb_gpu = getattr(rcfg, "sidecar_gpu_index", None)
+        if _emb_gpu is not None:
+            env["CUDA_VISIBLE_DEVICES"] = str(int(_emb_gpu))
+            logger.info("embedder sidecar pinned to GPU %d "
+                        "(CUDA_VISIBLE_DEVICES)", int(_emb_gpu))
         _cache = getattr(rcfg, "sidecar_hf_cache", "")
-        if _cache:                          # override the machine's broken D: cache
+        if not _cache:
+            # Keep HF downloads on the project disk (E:) rather than a missing
+            # D: path some machines inherit from the user env.
+            _cache = str(PROJECT_ROOT / "models" / ".hf-cache" / "hub")
+        if _cache:
             env["TRANSFORMERS_CACHE"] = _cache
             env["HF_HUB_CACHE"] = _cache
+            env["HF_HOME"] = str(PROJECT_ROOT / "models" / ".hf-cache")
+        # Gated HF models (EmbeddingGemma) need a token. Accept process env
+        # and the common .env aliases (HUGGINGFACE_TOKEN / HF_TOKEN /
+        # HUGGING_FACE_HUB_TOKEN). Never log the value. HuggingFace hub
+        # clients look for HF_TOKEN / HUGGING_FACE_HUB_TOKEN.
+        _hf_tok = (
+            env.get("HF_TOKEN")
+            or env.get("HUGGING_FACE_HUB_TOKEN")
+            or env.get("HUGGINGFACE_TOKEN")
+            or ""
+        ).strip()
+        if not _hf_tok:
+            try:
+                from dotenv import dotenv_values
+                _dv = dotenv_values(PROJECT_ROOT / ".env") or {}
+                _hf_tok = (
+                    (_dv.get("HF_TOKEN") or "")
+                    or (_dv.get("HUGGING_FACE_HUB_TOKEN") or "")
+                    or (_dv.get("HUGGINGFACE_TOKEN") or "")
+                ).strip()
+            except Exception:  # noqa: BLE001 - token load is best-effort
+                _hf_tok = ""
+        if _hf_tok:
+            env["HF_TOKEN"] = _hf_tok
+            env["HUGGING_FACE_HUB_TOKEN"] = _hf_tok
         import subprocess
         proc = subprocess.Popen(
             [py, script_path, str(port)],
             env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            cwd=os.getcwd(),
+            cwd=str(PROJECT_ROOT),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         self._embedder_sidecar_proc = proc
@@ -2377,6 +2545,20 @@ class Orchestrator:
                     "(coding/MCP/OpenClaw/evolution/reranker/intent-model/"
                     "memory/ack-prewarm/web-chain) NOT loaded -- only core "
                     "relay + Spotify + voice in RAM")
+
+        # SCENARIO ROUTER WARM (2026-07-26). The router is built lazily on
+        # first use, which would have made the FIRST spoken turn pay the model
+        # load (~3 s) plus the ~1.5k-token taxonomy prefill (~900 ms cold vs
+        # ~125 ms warm) -- a visible stall exactly when the operator is testing
+        # whether routing improved. Build + warm it here instead, but ONLY when
+        # it is enabled, so a disabled router still costs nothing and never
+        # touches VRAM. Fail-open: any error leaves the chain as the sole path.
+        try:
+            from kenning.audio.scenario_router import router_enabled
+            if router_enabled():
+                self._get_scenario_router()
+        except Exception as e:                                   # noqa: BLE001
+            logger.debug("scenario router warm skipped: %s", e)
 
     def _load_mcp_server_if_enabled(self):
         """Construct + start the MCP server (Phase 1+). Failures degrade
@@ -3567,6 +3749,115 @@ class Orchestrator:
             self._speak("I couldn't open the logs.")
         return True
 
+    def _start_stt_sidecar(self) -> None:
+        """Spawn the out-of-process STT server (2026-07-26). No-op unless
+        ``stt.sidecar_enabled``.
+
+        The child is masked onto ONE physical GPU with CUDA_VISIBLE_DEVICES,
+        so inside it the target card is plain ``cuda:0`` -- CTranslate2's
+        default path, never the ``device_index`` path that corrupted memory
+        in-process and killed Ultron with a silent 0xc0000409. Fail-open: any
+        spawn error leaves the client shim returning "" rather than blocking
+        the boot.
+        """
+        try:
+            import subprocess
+            import sys as _sys
+
+            from kenning.config import PROJECT_ROOT, get_config
+            scfg = get_config().stt
+            if not bool(getattr(scfg, "sidecar_enabled", False)):
+                return
+            script = getattr(scfg, "sidecar_script", "scripts/stt_server.py")
+            script_path = (script if os.path.isabs(script)
+                           else str((PROJECT_ROOT / script).resolve()))
+            if not os.path.isfile(script_path):
+                logger.error("STT sidecar script missing (%s) -- STT will "
+                             "return empty transcripts", script_path)
+                return
+            env = dict(os.environ)
+            env["KENNING_STT_PORT"] = str(getattr(scfg, "sidecar_port", 8779))
+            env["KENNING_STT_MODEL"] = str(getattr(scfg, "model", ""))
+            env["KENNING_STT_DEVICE"] = str(getattr(scfg, "device", "cuda"))
+            env["KENNING_STT_COMPUTE_TYPE"] = str(
+                getattr(scfg, "compute_type", "float16"))
+            env["KENNING_STT_BEAM_SIZE"] = str(getattr(scfg, "beam_size", 1))
+            env["KENNING_STT_PARENT_PID"] = str(os.getpid())
+            # Decode-quality knobs, so the child transcribes IDENTICALLY to the
+            # in-process engine (domain biasing + the non-speech blocklist are
+            # shared code; these are the numeric/boolean settings).
+            from config import settings as _st
+            env["KENNING_STT_TEMPERATURE"] = str(
+                getattr(_st, "WHISPER_TEMPERATURE", 0.0))
+            env["KENNING_STT_CONDITION_ON_PREVIOUS_TEXT"] = str(int(bool(
+                getattr(_st, "WHISPER_CONDITION_ON_PREVIOUS_TEXT", False))))
+            env["KENNING_STT_VAD_FILTER"] = str(int(bool(
+                getattr(_st, "WHISPER_VAD_FILTER", False))))
+            env["KENNING_STT_DOMAIN_BIAS"] = str(int(bool(
+                getattr(_st, "WHISPER_DOMAIN_BIAS", True))))
+            env["KENNING_STT_INITIAL_PROMPT"] = str(
+                getattr(_st, "WHISPER_INITIAL_PROMPT", "") or "")
+            gpu = getattr(scfg, "sidecar_gpu_index", None)
+            if gpu is not None:
+                env["CUDA_VISIBLE_DEVICES"] = str(int(gpu))
+            # src on PYTHONPATH so the child imports kenning.* if it ever
+            # needs to (it currently only needs faster_whisper + stdlib).
+            _src = str((PROJECT_ROOT / "src").resolve())
+            _pp = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = _src + (os.pathsep + _pp if _pp else "")
+            log_target = subprocess.DEVNULL
+            try:
+                _ld = os.path.join(str(PROJECT_ROOT), "logs")
+                os.makedirs(_ld, exist_ok=True)
+                log_target = open(                               # noqa: SIM115
+                    os.path.join(_ld, "stt_sidecar.log"), "a",
+                    buffering=1, encoding="utf-8", errors="replace")
+            except Exception:                                    # noqa: BLE001
+                log_target = subprocess.DEVNULL
+            self._stt_sidecar_log = log_target
+            self._stt_sidecar_proc = subprocess.Popen(
+                [_sys.executable, script_path],
+                env=env, stdout=log_target,
+                stderr=(subprocess.STDOUT
+                        if log_target is not subprocess.DEVNULL
+                        else subprocess.DEVNULL),
+                cwd=str(PROJECT_ROOT),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            logger.info(
+                "STT sidecar spawned (pid=%s) on 127.0.0.1:%s | GPU=%s | "
+                "ISOLATED process -- CTranslate2 never touches THIS process's "
+                "CUDA context", self._stt_sidecar_proc.pid,
+                getattr(scfg, "sidecar_port", 8779),
+                env.get("CUDA_VISIBLE_DEVICES", "inherited"),
+            )
+        except Exception as e:                                   # noqa: BLE001
+            logger.error("STT sidecar spawn failed (%s) -- STT will return "
+                         "empty transcripts", e)
+
+    def _await_stt_sidecar(self) -> None:
+        """Block until the sidecar's model is loaded (bounded). No-op when
+        the sidecar is off. A timeout is logged, not raised: the shim keeps
+        failing open and the child may still come up behind us."""
+        try:
+            engine = getattr(self, "stt", None)
+            if not hasattr(engine, "wait_until_ready"):
+                return
+            from kenning.config import get_config
+            scfg = get_config().stt
+            t0 = time.monotonic()
+            ok = engine.wait_until_ready(
+                float(getattr(scfg, "sidecar_startup_timeout_s", 180.0)))
+            if ok:
+                logger.info("STT sidecar ready in %.1fs", time.monotonic() - t0)
+            else:
+                logger.error(
+                    "STT sidecar did NOT report ready within the timeout -- "
+                    "check logs/stt_sidecar.log; transcripts stay empty until "
+                    "it comes up")
+        except Exception as e:                                   # noqa: BLE001
+            logger.debug("STT sidecar readiness wait skipped (%s)", e)
+
     def _reclaim_idle_vram(self) -> None:
         """Release torch's reserved-but-unused CUDA blocks during idle.
 
@@ -3701,24 +3992,134 @@ class Orchestrator:
                 verbosity=conversation_verbosity(),
                 flavor_tail=flavor_tails_enabled(),
             )
-            text = "".join(self.llm.generate_stream(
+            # STREAMED (2026-07-26 latency). This path used to
+            # ``"".join(generate_stream(...))`` and then ``_speak`` the whole
+            # thing -- fully serial, so first audio waited for the LAST token.
+            # With always_listening ON this is the DEFAULT conversational path,
+            # and at the 12B's measured 27.7 tok/s a 60-token reply spent ~2.2 s
+            # generating before TTS even started. ``_respond`` already streams
+            # into ``speak_stream`` (synth of sentence N+1 overlaps playback of
+            # N); this brings the private-reply path to parity.
+            #
+            # The reason it is not a one-line swap: the scaffolding guards below
+            # decide whether to FALL THROUGH to ``_respond``, and that decision
+            # cannot be made on text that has not been generated. So buffer just
+            # the FIRST SENTENCE, judge that, and only then start speaking --
+            # audio begins one sentence in rather than one reply in, and the
+            # fall-through contract is preserved exactly (nothing has been
+            # spoken at the point of the decision).
+            from kenning.llm.inference import strip_thinking_text
+            from kenning.audio.ultron_prompt import strip_prompt_echo
+
+            _gen = self.llm.generate_stream(
                 pr.user,
                 system_prompt=pr.system,
                 sampling=pr.sampling,
                 enable_thinking=pr.enable_thinking,
                 suppress_memory_context=True,
                 record_history=False,
-            ))
-            from kenning.llm.inference import strip_thinking_text
-            from kenning.audio.ultron_prompt import strip_prompt_echo
-            text = strip_thinking_text(text or "").strip()
-            # Guard: the small model sometimes echoes its prompt scaffolding or
-            # appends a "- Ultron" signature, and can ramble -- drop the echo,
-            # strip the signature, hard-cap the length (live bug bu5fh4lc8 spoke
-            # the reconcile note aloud). All-scaffolding -> "" -> fall through.
-            text = strip_prompt_echo(text)
-            if not text:
-                return False  # fall through to _respond rather than stay silent
+            )
+            head_parts: "list[str]" = []
+            for _tok in _gen:
+                head_parts.append(_tok)
+                _head = "".join(head_parts)
+                # A <think> block is emitted BEFORE the answer, so the head has
+                # to clear it before a sentence boundary means anything.
+                if pr.enable_thinking and "</think>" not in _head:
+                    if len(_head) > 4000:       # runaway think block; bail out
+                        break
+                    continue
+                _body = strip_thinking_text(_head)
+                if _SENTENCE_END_RE.search(_body) or len(_body) > 240:
+                    break
+            _raw_head = strip_thinking_text("".join(head_parts) or "")
+            # lstrip, NOT strip: the head ends on the space AFTER sentence one,
+            # and the next token follows it directly. Stripping that space
+            # butts sentence two against sentence one ("wins.Always"), which
+            # Kokoro then slurs into a single breath -- the exact defect the
+            # engine's inter-sentence gap logic exists to avoid.
+            head = strip_prompt_echo(_raw_head.lstrip())
+            if _raw_head[-1:].isspace() and not head[-1:].isspace():
+                head += " "
+            if not head.strip():
+                # All scaffolding -> fall through to _respond rather than stay
+                # silent. Nothing has been spoken, so this is still safe.
+                try:
+                    self.llm.cancel()
+                except Exception:                                    # noqa: BLE001
+                    pass
+                return False
+            try:
+                trace.mark("llm_first_sentence")
+            except Exception:                                        # noqa: BLE001
+                pass
+
+            spoken_buf: "list[str]" = []
+
+            def _private_stream():
+                """Sentence-gated stream that preserves ``strip_prompt_echo``'s
+                guarantees on EVERY sentence, not just the buffered head.
+
+                2026-07-26 regression fix: the first streamed version applied
+                the guard to the head only and passed the tail through raw.
+                ``strip_prompt_echo`` is not merely an echo filter -- it caps at
+                ``max_sentences=3`` / ``max_chars=300`` and strips signatures,
+                leaked directives ("contemptuous remark:") and mouth-noises. So
+                the tail lost the length caps and the scaffolding strip, and the
+                model rambled in-persona past the answer. Guard each sentence as
+                it completes: the streaming win survives, the contract does not
+                change.
+                """
+                sent_n = 0
+                chars = 0
+                buf = head
+                done = False
+                while not done:
+                    # Drain complete sentences out of the buffer.
+                    while True:
+                        m = _SENTENCE_END_RE.search(buf)
+                        if not m:
+                            break
+                        sentence, buf = buf[:m.end()], buf[m.end():]
+                        clean = strip_prompt_echo(
+                            sentence.strip(), max_sentences=1,
+                            max_chars=max(1, 300 - chars))
+                        if not clean:
+                            continue          # scaffolding sentence -- drop it
+                        sent_n += 1
+                        chars += len(clean)
+                        spoken_buf.append(clean)
+                        yield clean + " "
+                        if sent_n >= 3 or chars >= 300:
+                            done = True
+                            break
+                    if done:
+                        break
+                    try:
+                        tok = next(_gen)
+                    except StopIteration:
+                        break
+                    if self._interrupt.is_set() or self._shutdown.is_set():
+                        break
+                    buf += tok
+                # Trailing fragment the model never punctuated.
+                if not done and buf.strip() and sent_n < 3 and chars < 300:
+                    clean = strip_prompt_echo(
+                        buf.strip(), max_sentences=1,
+                        max_chars=max(1, 300 - chars))
+                    if clean:
+                        spoken_buf.append(clean)
+                        yield clean
+                try:
+                    self.llm.cancel()     # stop generating once the cap is hit
+                except Exception:                                    # noqa: BLE001
+                    pass
+
+            self.tts.speak_stream(_private_stream())
+            # spoken_buf holds the sentences that actually reached the speaker,
+            # already guarded -- so this is a faithful record of what was said.
+            text = " ".join(spoken_buf).strip()
+            self._last_response_text = text
             try:
                 self._trace_turn_flow(
                     raw=user_text, route="private_reply",
@@ -3726,7 +4127,6 @@ class Orchestrator:
                     final=text, channel="desktop")
             except Exception:                                        # noqa: BLE001
                 pass
-            self._speak(text)
             return True
         except Exception as e:                                       # noqa: BLE001 - fail-open
             logger.debug("private-reply (M6b) skipped (-> _respond): %s", e)
@@ -3918,6 +4318,53 @@ class Orchestrator:
         )
         return True
 
+    def _tell_chat_compose_line(self, cmd, display: "Optional[str]") -> str:
+        """Compose the in-character delivery of a voice->chat tell (2026-07-23,
+        user direction: "he should formulate his own creative way to say it,
+        while still actually telling them what I asked him to tell them").
+        The dictated content must survive: the composed line is validated with
+        :func:`tell_chat_compose_ok` and ANY miss/error falls back to the
+        literal dictation, so a chat tell can never be lost to a bad
+        generation. ``KENNING_TELL_CHAT_COMPOSE=0`` restores literal posting."""
+        literal = cmd.message
+        try:
+            if os.getenv("KENNING_TELL_CHAT_COMPOSE", "1").strip().lower() in (
+                    "0", "false", "no", "off"):
+                return literal
+            if self.llm is None:
+                return literal
+            from kenning.audio.relay_speech import tell_chat_compose_ok
+            from kenning.audio.ultron_prompt import (
+                build_chat_tell_prompt, strip_prompt_echo,
+            )
+            _greet = bool(getattr(cmd, "greet", False))
+            pr = build_chat_tell_prompt(
+                cmd.message, name=display, greet=_greet,
+                recent_lines=getattr(self, "_tell_chat_recent", None))
+            out = self.llm.generate_isolated(
+                pr.system, pr.user,
+                max_tokens=int(pr.sampling.get("max_tokens", 56)),
+                temperature=float(pr.sampling.get("temperature", 0.9)),
+                top_p=float(pr.sampling.get("top_p", 0.92)),
+            )
+            out = strip_prompt_echo((out or "").strip().strip('"').strip())
+            out = re.sub(r"\s+", " ", out).strip()[:200].strip()
+            out = out.lstrip("@").strip()      # the post template adds the @tag
+            # A greet has no dictated content to preserve -- any non-empty
+            # composition stands; a real dictation must keep its key words.
+            ok = bool(out) if _greet else tell_chat_compose_ok(cmd.message, out)
+            if ok and out:
+                ring = list(getattr(self, "_tell_chat_recent", None) or [])
+                self._tell_chat_recent = (ring + [out])[-5:]   # anti-repeat
+                return out
+            if out:
+                logger.info(
+                    "tell-chat: composed line dropped the content (%r); "
+                    "posting the literal dictation", out[:80])
+        except Exception as e:                                       # noqa: BLE001
+            logger.debug("tell-chat compose failed (%s); literal", e)
+        return literal
+
     def _maybe_handle_tell_chat(self, raw_text: str) -> bool:
         """Voice→Twitch-chat TELL relay (spec 12): "Ultron, tell <name> in
         chat <message>" @-tags the best fuzzy roster match and posts the
@@ -3930,7 +4377,19 @@ class Orchestrator:
         consume with a short local notice, post nothing. Fail-open."""
         try:
             from kenning.audio.relay_speech import match_tell_chat
-            cmd = match_tell_chat(raw_text)
+            # 2026-07-26: pass the known-chatter resolver so a BARE
+            # "say hi to <name>" (no "in chat" marker) can still reach chat
+            # when <name> is a viewer the stream has welcomed. Without it the
+            # turn falls to the relay matcher, which defaults addressee='team'
+            # and parrots the words onto the TEAM MIC -- the live
+            # "say hi to izumi" failure. The resolver refuses agent names,
+            # short words and ambiguous matches, so team callouts are safe.
+            try:
+                from kenning.audio.chatter_names import resolve_chatter
+                _resolver = resolve_chatter
+            except Exception:                                    # noqa: BLE001
+                _resolver = None
+            cmd = match_tell_chat(raw_text, chatter_resolver=_resolver)
         except Exception as e:                                       # noqa: BLE001
             logger.debug("tell-chat probe failed: %s", e)
             return False
@@ -3947,33 +4406,41 @@ class Orchestrator:
             chcfg = getattr(_tw, "chat", None)
         except Exception:                                            # noqa: BLE001
             chcfg = None
-        _verbless = bool(getattr(cmd, "verbless", False))
+        # verbless (2026-07-10) and bare (2026-07-23) are the LOW-CONFIDENCE
+        # forms: consumed only on a confident roster match, otherwise they
+        # fall through to conversation instead of eating the turn.
+        _lowconf = bool(getattr(cmd, "verbless", False)
+                        or getattr(cmd, "bare", False))
         post = getattr(self, "_twitch_chat_post", None)
         if post is None:
             # Twitch is enabled but chat isn't connected yet — a matched tell
             # must never leak to the team relay ("tell chat X" is a group form).
-            # A VERBLESS match is low-confidence: fall through to conversation
+            # A low-confidence match falls through to conversation
             # instead of consuming (2026-07-10).
-            if _verbless:
+            if _lowconf:
                 return False
             logger.info("tell-chat: matched but chat is not connected")
             self._speak("The chat line isn't connected.")
             return True
         if not bool(getattr(self, "_tell_chat_enabled", True)):
-            if _verbless:
+            if _lowconf:
                 return False
             logger.info("tell-chat: matched but toggled OFF (consumed)")
             self._speak("The chat line is closed.")
             return True
         try:
             if cmd.name is None:
+                line = self._tell_chat_compose_line(cmd, None)
                 tpl = str(getattr(chcfg, "tell_chat_broadcast_template",
                                   "") or "") or "{message}"
-                post(tpl.format(message=cmd.message))
+                post(tpl.format(message=line))
                 # SILENT on success (streamer 2026-07-10: "just send it") —
                 # only failures speak, so a miss is never mistaken for a send.
+                # EXCEPT greets (2026-07-23): a welcome is ALSO spoken aloud.
                 logger.info("tell-chat: broadcast posted (%d chars)",
-                            len(cmd.message))
+                            len(line))
+                if getattr(cmd, "greet", False):
+                    self._speak(line)
                 return True
             roster = getattr(self, "_twitch_user_roster", None)
             login, score = (roster.best(cmd.name)
@@ -3999,11 +4466,12 @@ class Orchestrator:
                                     "viewers; re-match %r -> %r (%.0f)",
                                     seeded, cmd.name, login, score)
             if login is None or score < floor:
-                if _verbless:
-                    # Low-confidence verbless form + no confident roster
-                    # match = probably conversation ("people in chat are
-                    # asking..."), NOT a tell — fall through to the LLM.
-                    logger.info("tell-chat: verbless miss for %r "
+                if _lowconf:
+                    # Low-confidence (verbless/bare) form + no confident
+                    # roster match = probably conversation ("people in chat
+                    # are asking..." / "tell me why..."), NOT a tell — fall
+                    # through to the LLM.
+                    logger.info("tell-chat: low-confidence miss for %r "
                                 "(best=%r score=%.0f) -> conversation",
                                 cmd.name, login, score)
                     return False
@@ -4013,12 +4481,16 @@ class Orchestrator:
                 self._speak(f"No one in chat matches {cmd.name}.")
                 return True
             display = (roster.display_of(login) or login)
+            line = self._tell_chat_compose_line(cmd, display)
             tpl = str(getattr(chcfg, "tell_chat_template", "") or "") \
                 or "@{name} {message}"
-            post(tpl.format(name=display, message=cmd.message))
-            # SILENT on success (streamer 2026-07-10: "just send it").
+            post(tpl.format(name=display, message=line))
+            # SILENT on success (streamer 2026-07-10: "just send it") —
+            # EXCEPT greets (2026-07-23): a welcome is ALSO spoken aloud.
             logger.info("tell-chat: posted to @%s (heard %r, score %.0f)",
                         login, cmd.name, score)
+            if getattr(cmd, "greet", False):
+                self._speak(line)
         except Exception as e:                                       # noqa: BLE001
             # The command was matched + owned; report the failure locally
             # rather than letting it fall through to the relay/LLM.
@@ -4248,6 +4720,125 @@ class Orchestrator:
             self._speak(f"Couldn't switch. {msg}")
         return True
 
+    def _classify_scenario(self, user_text: str):
+        """Classify the turn with the small router model. Never raises.
+
+        Returns a ``RouteVerdict`` or ``None``. In SHADOW mode (the default
+        when the router is enabled at all) the verdict is logged and NOT acted
+        on -- the ~24-matcher chain still decides -- so accuracy is measured on
+        the streamer's real phrasings before any turn is dispatched on it.
+
+        Measured on the 144-case labelled corpus with Qwen3-4B heretic Q5:
+        140/144 = 97.2%, warm median 125 ms (the ~1.5k-token taxonomy rides
+        llama.cpp's prefix cache; only the ~15-token utterance is new).
+        """
+        try:
+            from kenning.audio.scenario_router import router_enabled
+            if not router_enabled() or not (user_text or "").strip():
+                return None
+            router = self._get_scenario_router()
+            if router is None:
+                return None
+            verdict = router.classify(user_text)
+            trace.mark("scenario_router")
+            trace.tlog(
+                logger, "router:scenario",
+                label=verdict.label, ms=round(verdict.elapsed_ms, 1),
+                actionable=verdict.actionable, reason=verdict.reason,
+                text=(user_text or "")[:120],
+            )
+            return verdict
+        except Exception as e:                                   # noqa: BLE001
+            logger.debug("scenario router skipped (%s)", e)
+            return None
+
+    def _get_scenario_router(self):
+        """Lazily build the router, once. ``None`` if it cannot be built.
+
+        The model is loaded HERE rather than in ``scenario_router`` so that
+        module never imports llama-cpp (BR-P1 -- it sits on the voice path).
+        """
+        cached = getattr(self, "_scenario_router_obj", "unset")
+        if cached != "unset":
+            return cached
+        self._scenario_router_obj = None
+        try:
+            from kenning.config import get_config, resolve_path
+            from kenning.audio.scenario_router import ScenarioRouter
+
+            rcfg = getattr(get_config().llm, "scenario_router_model", "") or ""
+            if not rcfg:
+                logger.info("scenario router: no model configured -- disabled")
+                return None
+            model_path = resolve_path(rcfg)
+            if not os.path.isfile(str(model_path)):
+                logger.warning(
+                    "scenario router model missing (%s) -- router disabled",
+                    model_path)
+                return None
+            from llama_cpp import Llama
+            t0 = time.perf_counter()
+            llm = Llama(
+                model_path=str(model_path),
+                n_ctx=int(getattr(get_config().llm,
+                                  "scenario_router_n_ctx", 2048)),
+                n_gpu_layers=-1,
+                main_gpu=int(getattr(get_config().llm,
+                                     "scenario_router_gpu_index", 0)),
+                split_mode=0,          # NONE -- never spread the router
+                verbose=False,
+            )
+
+            def _generate(*, system: str, user: str, max_tokens: int) -> str:
+                out = llm.create_chat_completion(
+                    messages=[{"role": "system", "content": system},
+                              {"role": "user", "content": user}],
+                    max_tokens=max_tokens, temperature=0.0, top_p=1.0,
+                )
+                return (out["choices"][0]["message"]["content"] or "").strip()
+
+            router = ScenarioRouter(_generate)
+            # Warm the prefix cache so the FIRST real turn does not pay the
+            # ~1.5k-token taxonomy prefill (measured ~900 ms cold vs ~125 ms
+            # warm).
+            try:
+                router.classify("warmup")
+            except Exception:                                    # noqa: BLE001
+                pass
+            self._scenario_router_obj = router
+            logger.info(
+                "scenario router ready in %.1fs (%s, gpu=%s) | shadow=%s",
+                time.perf_counter() - t0, os.path.basename(str(model_path)),
+                getattr(get_config().llm, "scenario_router_gpu_index", 0),
+                router._is_shadow(),
+            )
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("scenario router unavailable (%s) -- chain only", e)
+            self._scenario_router_obj = None
+        return self._scenario_router_obj
+
+    def _emit_turn_latency(self) -> None:
+        """One ``turn:latency`` line per turn: total plus each stage's own cost.
+
+        Emitted at EVERY loop-iteration end so the conversational path is
+        covered too -- before this the only latency metric in the project was a
+        single ``RESPONSE LATENCY`` line on the relay path, which is why the
+        logs held exactly ONE sample and every optimisation would have been a
+        guess.
+
+        Read it as: ``speech_end -> turn_close`` is the VAD/Smart-Turn wait
+        (leave it alone -- that is the pre-roll that stops the first word of a
+        command being clipped), and everything after ``turn_close`` is fair
+        game. Fail-open: instrumentation never breaks a turn.
+        """
+        try:
+            line = trace.latency_line()
+            if line:
+                trace.tlog(logger, "turn:latency", summary=line)
+            trace.reset_latency()
+        except Exception:                                            # noqa: BLE001
+            pass
+
     def _trace_turn_flow(self, *, raw: str, route: str, reason: str = "",
                          final: str = "", channel: str = "",
                          normalized: Optional[str] = None,
@@ -4256,26 +4847,34 @@ class Orchestrator:
                          directive: Optional[str] = None,
                          subtype: Optional[str] = None,
                          **extra) -> None:
-        """Full-flow usage capture for TESTING mode (2026-06-16): record the whole
+        """Full-flow per-turn capture (ALWAYS ON, 2026-07-23): record the whole
         pipeline for a turn -- raw STT -> normalized -> route+reason -> spoken line
         + channel -- to both kenning.log (``turn:flow``) AND a durable historical
         JSONL (``logs/usage_trace.jsonl``), so the historical logs carry every
-        transcription, how it routed, and what was actually said. No-op outside
-        testing mode; fail-open (a logging error never affects a turn)."""
+        transcription, how it routed, and what was actually said. Originally
+        gated to testing mode; opened up for every turn so live sessions can be
+        audited for misroutes/repetition without a special boot. Fail-open (a
+        logging error never affects a turn)."""
         try:
-            from kenning.safety.testing_mode import is_testing_mode_active
-            if not is_testing_mode_active():
-                return
+            # Conversational-path callers pass the POST-normalization routing
+            # text as ``raw``; recover the true STT transcript from the
+            # per-turn stash so the record always carries the pre/post pair.
+            # An explicit ``normalized=`` from the caller wins.
+            if normalized is None:
+                _stash = getattr(self, "_current_raw_stt", None)
+                if _stash and _stash != raw:
+                    normalized = raw
+                    raw = _stash
         except Exception:                                            # noqa: BLE001
-            return
+            pass
         try:
             from kenning import trace
             trace.tlog(
                 logger, "turn:flow", route=route, channel=channel,
-                raw=(raw or "")[:120],
-                norm=((normalized or "")[:120] if normalized and normalized != raw
+                raw=(raw or "")[:400],
+                norm=((normalized or "")[:400] if normalized and normalized != raw
                       else ""),
-                final=(final or "")[:160], reason=reason)
+                final=(final or "")[:600], reason=reason)
         except Exception:                                            # noqa: BLE001
             pass
         try:
@@ -4522,7 +5121,12 @@ class Orchestrator:
             else:
                 line = build_relay_line(
                     command,
-                    getattr(self, "llm", None),
+                    # DUAL-MODEL (2026-07-26): the small resident model
+                    # authors team callouts so they never wait on the big
+                    # conversational model; falls back to the main engine
+                    # when llm.fast_preset is off.
+                    (getattr(self, "_llm_fast", None)
+                     or getattr(self, "llm", None)),
                     rephrase=_rephrase,
                     max_chars=int(getattr(cfg, "max_line_chars", 280)),
                     recent_lines=list(ring),
@@ -4656,12 +5260,18 @@ class Orchestrator:
             "relay:spoken | device=%d | seconds=%.2f | chars=%d | line=%r",
             device, seconds, len(line), line[:120],
         )
-        # Full-flow usage capture (testing mode): raw STT -> matched payload ->
-        # route+reason -> spoken line, on the team-mic channel.
+        # Full-flow usage capture: raw STT -> normalized routing text ->
+        # route+reason -> spoken line, on the team-mic channel. ``user_text``
+        # here is POST-normalization (the loop rewrites it in place before
+        # relay handling) -- the true transcript lives in the per-turn stash,
+        # so record BOTH (2026-07-23: raw previously logged the normalized
+        # text, which hid normalizer rewrites like "should I push mid?" ->
+        # "tell my team I push mid.").
         try:
             _ri = relay_route_info(command)
             self._trace_turn_flow(
-                raw=user_text, normalized=getattr(command, "payload", None),
+                raw=getattr(self, "_current_raw_stt", None) or user_text,
+                normalized=user_text,
                 route=_ri.get("route", "relay"), reason=_ri.get("reason", ""),
                 subtype=_ri.get("subtype"),
                 payload=getattr(command, "payload", None),
@@ -5928,6 +6538,22 @@ class Orchestrator:
             # CPU for capture/STT). Default "cuda"; config can force "cpu".
             tts_kokoro_engage_device = (
                 getattr(cfg, "kokoro_engage_device", "cuda") or "cuda")
+            # MULTI-GPU (2026-07-24): a BARE "cuda" engage device would drop
+            # the configured card index on the gaming flip -- e.g. a Kokoro
+            # pinned to "cuda:1" would silently reload onto device 0, back on
+            # top of Ultron's model. When the engage device carries no index
+            # but the configured device does, inherit the configured one.
+            # An explicitly indexed engage device (or "cpu") is honoured
+            # verbatim.
+            if (tts_kokoro_engage_device.strip().lower() == "cuda"
+                    and str(tts_kokoro_default_device).strip().lower(
+                    ).startswith("cuda:")):
+                tts_kokoro_engage_device = tts_kokoro_default_device
+                logger.info(
+                    "gaming engage: Kokoro device inherits the configured "
+                    "%s (bare 'cuda' would have moved it to device 0)",
+                    tts_kokoro_default_device,
+                )
             gaming_llm_preset = (cfg.llm_preset or "").strip()
             # Force the gaming LLM onto CPU (bare-bones) regardless of the
             # env/config gpu_layers override. None = leave on config device.
@@ -8372,7 +8998,8 @@ class Orchestrator:
         # opens in C:\WINDOWS\system32) made `scripts/twitch_*_sidecar.py`
         # resolve to <cwd>/scripts/... -> "script missing" -> NO twitch sidecar
         # ever spawned -> every redeem/chat-game/chat-reply drain timed out and
-        # the guard stayed DOWN (chat replies fail-closed OFF).
+        # the guard stayed DOWN (chat replies fail-closed OFF). Same machine-
+        # portability fix already applied to the embedder sidecar above.
         from kenning.config import PROJECT_ROOT
         for spec in specs:
             script_path = (spec.script if os.path.isabs(spec.script)
@@ -8385,6 +9012,20 @@ class Orchestrator:
             if _src_dir:
                 _pp = env.get("PYTHONPATH", "")
                 env["PYTHONPATH"] = _src_dir + (os.pathsep + _pp if _pp else "")
+            # MULTI-GPU (2026-07-24): mask every card but the configured one
+            # from the CHILD. Two wins for the guard (the only GPU tenant of
+            # the three): it lands on the secondary card instead of Ultron's,
+            # AND its own llama.cpp can no longer layer-split across both
+            # (llama.cpp's default split_mode is LAYER). Harmless for the
+            # read/write sidecars, which never touch CUDA. Unset => inherit
+            # the parent environment (legacy behaviour).
+            _sc_gpu = getattr(
+                getattr(tcfg, "safety", None), "sidecar_gpu_index", None)
+            if _sc_gpu is not None:
+                env["CUDA_VISIBLE_DEVICES"] = str(int(_sc_gpu))
+                if spec.role == "twitch_guard":
+                    logger.info("twitch guard sidecar pinned to GPU %d "
+                                "(CUDA_VISIBLE_DEVICES)", int(_sc_gpu))
             env.update(spec.env)
             # Sidecar stdout+stderr -> a per-role log file (was DEVNULL). Fail-open
             # to DEVNULL. The child inherits the handle; we keep a ref so the GC
@@ -9196,6 +9837,18 @@ class Orchestrator:
 
                 self._state = State.PROCESSING
                 self._turn_proc_t0 = time.perf_counter()  # latency: turn-close -> first audio
+                # 2026-07-26 latency: the zero point for the per-stage marks.
+                # Speech-end is marked too (when the VAD saw it) so the report
+                # separates the pre-turn-close wait -- which is the ONLY part
+                # touching wake/capture, and is deliberately never optimised:
+                # shrinking pre-roll is what clips the first word of a command.
+                try:
+                    trace.reset_latency()
+                    if self._speech_end_t0 is not None:
+                        trace.mark_at("speech_end", self._speech_end_t0)
+                    trace.mark_at("turn_close", self._turn_proc_t0)
+                except Exception:                                    # noqa: BLE001
+                    pass
                 trace.tlog(
                     logger, "loop:capture_complete",
                     audio_samples=speech.size,
@@ -9234,13 +9887,32 @@ class Orchestrator:
                         logger, "stt:foreground_end",
                         chars=len(user_text or ""),
                         elapsed_ms=int((time.monotonic() - stt_t0) * 1000),
-                        text=user_text[:160] if user_text else None,
+                        text=user_text[:400] if user_text else None,
                     )
+                    trace.mark("stt_foreground")
                 else:
                     trace.tlog(
                         logger, "stt:speculative_hit",
-                        chars=len(user_text), text=user_text[:160],
+                        chars=len(user_text), text=user_text[:400],
                     )
+                    # Marked distinctly: a speculative HIT means STT already ran
+                    # during the silence wait and cost this turn ~nothing. If the
+                    # report shows stt_foreground dominating, the speculation is
+                    # missing and THAT is the thing to fix, not Whisper.
+                    trace.mark("stt_speculative_hit")
+                # Whisper repetition-loop hallucination gate (2026-07-23,
+                # battery turn=36): implausible chars-per-second + one
+                # dominating repeated phrase = model noise -- stand down
+                # instead of letting the gate/router act on garbage.
+                _cap_seconds = float(speech.size) / float(settings.SAMPLE_RATE)
+                if user_text and _stt_repetition_loop(user_text, _cap_seconds):
+                    trace.tlog(
+                        logger, "stt:repetition_loop_dropped",
+                        chars=len(user_text),
+                        audio_seconds=round(_cap_seconds, 2),
+                        text=user_text[:120],
+                    )
+                    user_text = ""
                 if not user_text.strip():
                     if not came_from_follow_up:
                         print("  (no transcription; standing down)")
@@ -9474,8 +10146,8 @@ class Orchestrator:
                     # normalizer + Valorant vocab/blend maps in later iterations.
                     trace.tlog(
                         logger, "routing:normalized",
-                        raw=_raw_stt[:200],
-                        normalized=(_normed or _raw_stt)[:200],
+                        raw=_raw_stt[:400],
+                        normalized=(_normed or _raw_stt)[:400],
                         changed=bool(_normed and _normed != _raw_stt),
                     )
                     if _normed and _normed != user_text:
@@ -9502,11 +10174,19 @@ class Orchestrator:
                         )
                     else:
                         follow_up_until = None
+                    self._emit_turn_latency()
                     trace.tlog(
                         logger, "loop:iteration_end",
                         via="intent", follow_up=bool(follow_up_until),
                     )
                     continue
+
+                # SCENARIO ROUTER (2026-07-26), SHADOW by default. Classifies
+                # the turn into one of 29 scenarios BEFORE the ~24-matcher
+                # chain runs, so router-vs-chain agreement is measured on real
+                # phrasings. In shadow it only logs; the chain below decides
+                # exactly as before. See audio/scenario_router.py.
+                self._scenario_verdict = self._classify_scenario(user_text)
 
                 # Catalog 13 (evolution): intercept an explicit "evolve
                 # now" / "evolution status" command BEFORE routing. A
@@ -9523,6 +10203,7 @@ class Orchestrator:
                         )
                     else:
                         follow_up_until = None
+                    self._emit_turn_latency()
                     trace.tlog(
                         logger, "loop:iteration_end",
                         via="evolution_command",
@@ -9583,6 +10264,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="report_concern",
@@ -9601,6 +10283,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="run_program",
@@ -9621,6 +10304,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="spotify",
@@ -9640,6 +10324,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="scrap",
@@ -9659,6 +10344,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="anticheat_toggle",
@@ -9673,6 +10359,7 @@ class Orchestrator:
                     if self._maybe_handle_llm_device_switch(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="llm_device_switch", follow_up=False,
@@ -9689,6 +10376,7 @@ class Orchestrator:
                     if self._maybe_handle_verbosity_command(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="verbosity_command", follow_up=False,
@@ -9697,6 +10385,7 @@ class Orchestrator:
                     if self._maybe_handle_conversation_verbosity_command(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="conversation_verbosity_command", follow_up=False,
@@ -9715,6 +10404,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="twitch_moderation",
@@ -9724,6 +10414,7 @@ class Orchestrator:
                     if self._maybe_handle_twitch_chat_settings(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="twitch_chat_settings", follow_up=False,
@@ -9732,6 +10423,7 @@ class Orchestrator:
                     if self._maybe_handle_flavor_toggle(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="flavor_toggle", follow_up=False,
@@ -9743,6 +10435,7 @@ class Orchestrator:
                     if self._maybe_handle_thinking_toggle(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="thinking_toggle", follow_up=False,
@@ -9755,6 +10448,7 @@ class Orchestrator:
                     if self._maybe_handle_llm_route_toggle(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="llm_route_toggle", follow_up=False,
@@ -9771,6 +10465,7 @@ class Orchestrator:
                     if self._maybe_handle_turbo_command(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="turbo_command", follow_up=False,
@@ -9788,6 +10483,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="relay_toggle",
@@ -9802,6 +10498,7 @@ class Orchestrator:
                     if self._maybe_handle_tell_chat(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="tell_chat", follow_up=False,
@@ -9834,6 +10531,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="relay_speech",
@@ -9853,6 +10551,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="settings_gui",
@@ -9875,6 +10574,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="stop_button",
@@ -9897,6 +10597,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="deep_research",
@@ -9919,6 +10620,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="deep_recall",
@@ -9939,6 +10641,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="code_exploration",
@@ -9959,6 +10662,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="history_recall",
@@ -9981,6 +10685,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="gaming_refusal",
@@ -10001,6 +10706,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="open_last_source",
@@ -10020,6 +10726,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="navigate_to_site",
@@ -10045,6 +10752,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="capability", follow_up=bool(follow_up_until),
@@ -10069,6 +10777,7 @@ class Orchestrator:
                             + _addr_cfg.warm_mode_duration_seconds
                             if _addr_cfg.follow_up_enabled else None
                         )
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="settings_gui-lean",
@@ -10094,6 +10803,7 @@ class Orchestrator:
                             + _addr_cfg.warm_mode_duration_seconds
                             if _addr_cfg.follow_up_enabled else None
                         )
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="stop_button-lean",
@@ -10112,6 +10822,7 @@ class Orchestrator:
                     if self._maybe_handle_llm_device_switch(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="llm_device_switch-lean", follow_up=False,
@@ -10120,6 +10831,7 @@ class Orchestrator:
                     if self._maybe_handle_verbosity_command(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="verbosity_command-lean", follow_up=False,
@@ -10128,6 +10840,7 @@ class Orchestrator:
                     if self._maybe_handle_conversation_verbosity_command(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="conversation_verbosity_command-lean", follow_up=False,
@@ -10144,6 +10857,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="twitch_moderation-lean",
@@ -10153,6 +10867,7 @@ class Orchestrator:
                     if self._maybe_handle_twitch_chat_settings(user_text):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="twitch_chat_settings-lean", follow_up=False,
@@ -10161,6 +10876,7 @@ class Orchestrator:
                     if self._maybe_handle_flavor_toggle(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="flavor_toggle-lean", follow_up=False,
@@ -10169,6 +10885,7 @@ class Orchestrator:
                     if self._maybe_handle_thinking_toggle(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="thinking_toggle-lean", follow_up=False,
@@ -10177,6 +10894,7 @@ class Orchestrator:
                     if self._maybe_handle_llm_route_toggle(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="llm_route_toggle-lean", follow_up=False,
@@ -10185,6 +10903,7 @@ class Orchestrator:
                     if self._maybe_handle_turbo_command(_raw_stt):
                         self._last_response_finished_monotonic = time.monotonic()
                         follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="turbo_command-lean", follow_up=False,
@@ -10197,6 +10916,7 @@ class Orchestrator:
                             + _addr_cfg.warm_mode_duration_seconds
                             if _addr_cfg.follow_up_enabled else None
                         )
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="relay_toggle-lean",
@@ -10212,6 +10932,7 @@ class Orchestrator:
                 if self._maybe_handle_tell_chat(_raw_stt):
                     self._last_response_finished_monotonic = time.monotonic()
                     follow_up_until = None
+                    self._emit_turn_latency()
                     trace.tlog(
                         logger, "loop:iteration_end",
                         via="tell_chat-lean", follow_up=False,
@@ -10241,6 +10962,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="spotify-lean", follow_up=bool(follow_up_until),
@@ -10271,6 +10993,7 @@ class Orchestrator:
                             )
                         else:
                             follow_up_until = None
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="relay-lean", follow_up=bool(follow_up_until),
@@ -10292,8 +11015,15 @@ class Orchestrator:
                 try:
                     from kenning.audio.relay_speech import turbo_mode_enabled as _tme_bs
                     from kenning.audio.intent_gate import Scenario as _Scen_bs
+                    from kenning.audio.command_normalizer import (
+                        question_shaped as _qshaped_bs,
+                    )
                     if (_tme_bs()
                             and getattr(self, "_last_scenario", None) is _Scen_bs.RELAY_TO_TEAM
+                            # 2026-07-23: never force-relay a question to
+                            # Ultron (same veto as the router's team_callout
+                            # branch below) -- it falls to the LLM instead.
+                            and not _qshaped_bs(user_text)
                             and self._maybe_handle_relay_speech(
                                 user_text, force=True,
                                 wake_confirmed=_wake_confirmed)):
@@ -10303,6 +11033,7 @@ class Orchestrator:
                             + _addr_cfg.warm_mode_duration_seconds
                             if _addr_cfg.follow_up_enabled else None
                         )
+                        self._emit_turn_latency()
                         trace.tlog(
                             logger, "loop:iteration_end",
                             via="turbo_relay_backstop",
@@ -10336,9 +11067,48 @@ class Orchestrator:
                             reason=_rd.reason,
                         )
                         if not _rd.abstained and _rd.family == "team_callout":
-                            _router_consumed = self._maybe_handle_relay_speech(
-                                user_text, force=True,
-                                wake_confirmed=_wake_confirmed)
+                            # 2026-07-23 battery: the router mis-scored clean
+                            # questions ("do you think they're gonna go A?")
+                            # as team_callout and force=True bypassed the
+                            # strict matcher's question rejection -- the
+                            # question was spoken VERBATIM on the team mic.
+                            # Interrogative-shaped text falls through to the
+                            # conversational LLM instead.
+                            from kenning.audio.command_normalizer import (
+                                has_callout_signal as _has_signal,
+                                question_shaped as _qshaped,
+                            )
+                            try:
+                                _relay_high = float(os.getenv(
+                                    "KENNING_ROUTER_RELAY_HIGH_CONF", "0.75"))
+                            except Exception:                        # noqa: BLE001
+                                _relay_high = 0.75
+                            if _qshaped(user_text):
+                                trace.tlog(
+                                    logger, "router:question_veto",
+                                    family="team_callout",
+                                    text=user_text[:160],
+                                )
+                                _router_consumed = False
+                            elif (_rd.confidence < _relay_high
+                                    and not _has_signal(user_text)):
+                                # 2026-07-24 mid-band veto: a team_callout
+                                # verdict BELOW the high-confidence bar with
+                                # ZERO tactical signal is banter/musing
+                                # (live: "I'll have a good team this game."
+                                # relayed verbatim) -- answer it instead.
+                                # High-band verdicts still relay untouched.
+                                trace.tlog(
+                                    logger, "router:midband_no_signal_veto",
+                                    family="team_callout",
+                                    conf=round(_rd.confidence, 3),
+                                    text=user_text[:160],
+                                )
+                                _router_consumed = False
+                            else:
+                                _router_consumed = self._maybe_handle_relay_speech(
+                                    user_text, force=True,
+                                    wake_confirmed=_wake_confirmed)
                         elif not _rd.abstained and _rd.family == "identity":
                             # 2026-06-15 routing-isolation: a BARE identity probe
                             # ("who are you", "are you a bot") is the user talking
@@ -10448,6 +11218,7 @@ class Orchestrator:
                         )
                     else:
                         follow_up_until = None
+                    self._emit_turn_latency()
                     trace.tlog(
                         logger, "loop:iteration_end",
                         via="semantic_router",
@@ -10473,6 +11244,7 @@ class Orchestrator:
                         )
                     else:
                         follow_up_until = None
+                    self._emit_turn_latency()
                     trace.tlog(
                         logger, "loop:iteration_end",
                         via="private_reply", follow_up=bool(follow_up_until),
@@ -10506,6 +11278,7 @@ class Orchestrator:
                     )
                 else:
                     follow_up_until = None
+                self._emit_turn_latency()
                 trace.tlog(
                     logger, "loop:iteration_end",
                     via="respond", follow_up=bool(follow_up_until),
@@ -12638,6 +13411,10 @@ class Orchestrator:
         """
         self._interrupt.clear()
         self._last_search_payload = None
+        # 2026-07-24 anti-pigeonhole: rotate this turn's imagery angle ONCE
+        # (the persona selector reads the stash, so its repeated calls within
+        # the turn can't advance the rotation).
+        self._current_turn_angle = self._pick_flavor_angle()
         # openclaw-clawhub T15: per-turn telemetry timer + error flag.
         # Emitted in the finally so every turn is counted exactly once.
         turn_start = time.monotonic()
@@ -12682,21 +13459,43 @@ class Orchestrator:
 
         try:
             print("  kenning: ", end="", flush=True)
-            token_stream = self._build_response_stream(user_text)
-            # TEAM RELAY OFF (STOP-window RELAY toggle, 2026-07-08): companion
-            # mode speaks AT MOST TWO sentences. The prompt asks for it, but
-            # the small model cannot be trusted with prose limits -- enforce it
-            # on the stream (whole sentences only, never a mid-word tail).
-            # Fail-open: any error leaves the stream untouched.
+
+            # 2026-07-24 mechanical variety guard: the prompt asks for
+            # answer-first + no recycled lines, but the 4B cannot be trusted
+            # with it (live: near-verbatim "entropy--systems degrade" tails
+            # across turns). ``_make_stream`` builds the (possibly re-
+            # prompted) stream; the guard buffers sentence 1 (banned opener /
+            # recycled 4-gram -> ONE re-prompt) and drops any later sentence
+            # that recycles a recent reply. The companion two-sentence cap is
+            # applied INSIDE the factory so retries are capped too.
+            def _make_stream(attempt: int = 0):
+                _txt = user_text if attempt == 0 else (
+                    user_text
+                    + " [Answer fresh -- do not reuse the phrasing or "
+                      "imagery of your recent replies.]")
+                s = self._build_response_stream(_txt)
+                try:
+                    from kenning.audio.relay_speech import (
+                        cap_stream_sentences, team_relay_enabled,
+                    )
+                    # TEAM RELAY OFF (STOP-window RELAY toggle, 2026-07-08):
+                    # companion mode speaks AT MOST TWO sentences -- enforce
+                    # on the stream (whole sentences, never a mid-word tail).
+                    if not team_relay_enabled():
+                        s = cap_stream_sentences(s, max_sentences=2)
+                except Exception as e:                               # noqa: BLE001
+                    logger.debug("companion sentence cap skipped: %s", e)
+                return s
+
             try:
-                from kenning.audio.relay_speech import (
-                    cap_stream_sentences, team_relay_enabled,
+                from kenning.audio.relay_speech import guard_stream_repeats
+                token_stream = guard_stream_repeats(
+                    _make_stream,
+                    recent_lines=getattr(self, "_recent_spoken_ring", None),
                 )
-                if not team_relay_enabled():
-                    token_stream = cap_stream_sentences(
-                        token_stream, max_sentences=2)
             except Exception as e:                                   # noqa: BLE001
-                logger.debug("companion sentence cap skipped: %s", e)
+                logger.debug("response repeat guard skipped: %s", e)
+                token_stream = _make_stream(0)
 
             def gated():
                 for token in token_stream:
@@ -12710,6 +13509,16 @@ class Orchestrator:
             self.tts.speak_stream(gated())
             print()  # newline after streamed response
             self._last_response_text = "".join(response_buf)
+            # 2026-07-24 anti-pigeonhole: remember the spoken line so the next
+            # turn's persona suffix can forbid reusing its opening/imagery.
+            try:
+                if self._last_response_text.strip():
+                    _ring = list(getattr(self, "_recent_spoken_ring", None)
+                                 or [])
+                    self._recent_spoken_ring = (
+                        _ring + [self._last_response_text.strip()])[-4:]
+            except Exception:                                        # noqa: BLE001
+                pass
             # Record the assistant response for "what did you say earlier?"
             # verbatim recall. Fail-open + a no-op when the store is absent.
             self._record_dialogue_turn("assistant", self._last_response_text)
@@ -12879,6 +13688,55 @@ class Orchestrator:
             logger.warning("Conversational ack source failed: %s", e)
             return None
 
+    def _with_turn_dynamics(self, persona: str) -> str:
+        """Append the per-turn variety suffix to a conversational persona
+        (2026-07-24 anti-pigeonhole layer): this turn's rotating imagery
+        angle + the last few spoken responses with a do-not-reuse rule. The
+        STATIC persona stays the prefix (KV-cache-friendly); only the tail
+        varies. Fail-open: any error returns the persona unchanged."""
+        try:
+            from kenning.audio.llm_prompts import gaming_dynamic_suffix
+            return persona + gaming_dynamic_suffix(
+                recent_responses=getattr(self, "_recent_spoken_ring", None),
+                angle=getattr(self, "_current_turn_angle", None),
+            )
+        except Exception:                                            # noqa: BLE001
+            return persona
+
+    def _pick_flavor_angle(
+        self, skip_probability: Optional[float] = None,
+    ) -> Optional[str]:
+        """Rotate this turn's imagery angle, avoiding the last two used.
+        Called once per conversational turn (from ``_respond``); the selector
+        reads the stashed value so repeated selector calls within a turn
+        cannot advance the rotation.
+
+        ``skip_probability`` (default from ``KENNING_FLAVOR_ANGLE_SKIP``,
+        0.35) rolls some turns to NO angle at all -- structural variety, and
+        it starves the 4B's tendency to bolt the named lens onto every reply
+        (live 2026-07-24: near-identical "entropy--systems degrade" tails on
+        consecutive answers). Fail-open to None (no angle clause)."""
+        try:
+            if skip_probability is None:
+                try:
+                    skip_probability = float(
+                        os.getenv("KENNING_FLAVOR_ANGLE_SKIP", "0.35"))
+                except Exception:                                    # noqa: BLE001
+                    skip_probability = 0.35
+            from kenning import trace
+            from kenning.audio.llm_prompts import ULTRON_FLAVOR_ANGLES
+            if random.random() < max(0.0, min(1.0, skip_probability)):
+                trace.tlog(logger, "persona:angle", angle=None, skipped=True)
+                return None
+            used = list(getattr(self, "_recent_angles", None) or [])
+            pool = [a for a in ULTRON_FLAVOR_ANGLES if a not in used[-2:]]
+            angle = random.choice(pool or list(ULTRON_FLAVOR_ANGLES))
+            self._recent_angles = (used + [angle])[-4:]
+            trace.tlog(logger, "persona:angle", angle=angle, skipped=False)
+            return angle
+        except Exception:                                            # noqa: BLE001
+            return None
+
     def _gaming_conversational_prompt(self) -> Optional[str]:
         """Return the Ultron persona for the conversational LLM fallback when a
         gaming/testing session is active, else None (desktop persona unchanged).
@@ -12905,7 +13763,7 @@ class Orchestrator:
             try:
                 from kenning.audio.relay_speech import team_relay_enabled
                 if not team_relay_enabled():
-                    return ULTRON_COMPANION_PERSONA
+                    return self._with_turn_dynamics(ULTRON_COMPANION_PERSONA)
             except Exception:                                        # noqa: BLE001
                 pass
             from kenning.openclaw_routing.gaming_mode import (
@@ -12914,7 +13772,7 @@ class Orchestrator:
             from kenning.safety.testing_mode import is_testing_mode_active
 
             if is_gaming_mode_active() or is_testing_mode_active():
-                return ULTRON_GAMING_PERSONA
+                return self._with_turn_dynamics(ULTRON_GAMING_PERSONA)
             # Belt-and-suspenders (2026-06-17): tie the persona to the LIVE-LOADED
             # MODEL, not just the flag. If the gaming 3B is the model actually in
             # memory, we ARE in gaming -- so the persona MUST be Ultron even if the
@@ -12926,7 +13784,7 @@ class Orchestrator:
                      or "").lower()
             if mp and ("abliterat" in mp or "llama-3.2-3b" in mp
                        or "gaming" in mp):
-                return ULTRON_GAMING_PERSONA
+                return self._with_turn_dynamics(ULTRON_GAMING_PERSONA)
             # Persona lock: u1_llm_route routes ALL relay/conversational turns
             # through the LLM -- the persona MUST be Ultron, not "Kenning".
             # Mistral-7B (and any future model without the abliterat/gaming tag)
@@ -12934,7 +13792,7 @@ class Orchestrator:
             try:
                 from kenning.audio.relay_speech import u1_llm_route_enabled
                 if u1_llm_route_enabled():
-                    return ULTRON_GAMING_PERSONA
+                    return self._with_turn_dynamics(ULTRON_GAMING_PERSONA)
             except Exception:                                        # noqa: BLE001
                 pass
         except Exception:                                            # noqa: BLE001
@@ -13586,7 +14444,10 @@ class Orchestrator:
         overlap. Only fires under the LLM route (verbatim / deterministic relays
         build instantly with no LLM, so speculating them buys nothing)."""
         lock = getattr(self, "_speculative_relay_lock", None)
-        llm = getattr(self, "llm", None)
+        # DUAL-MODEL (2026-07-26): speculate the callout on the SMALL resident
+        # model (llm.fast_preset) so the relay never queues behind the big
+        # conversational model; falls back to the main engine when off.
+        llm = getattr(self, "_llm_fast", None) or getattr(self, "llm", None)
         if lock is None or llm is None or not user_text:
             return False
         try:

@@ -1859,7 +1859,8 @@ _TELL_CHAT_WAKE = (
 # was transcribed "I'll" — the downstream "in chat" delimiter keeps these
 # loose alternates from ever matching ordinary speech).
 _TELL_CHAT_VERB = (
-    r"(?:tell|till|til|i'?ll|message|inform|notify|say\s+to|write\s+to|reply\s+to)"
+    r"(?:tell|till|til|told|i'?ll|message|inform|notify|say\s+to|write\s+to|"
+    r"reply\s+to)"
 )
 # Separator between the "in chat" delimiter and the message: STT freely emits
 # sentence punctuation there ("in the chat. Hi, welcome...") — accept any mix
@@ -1912,11 +1913,22 @@ _TELL_CHAT_GREETING = (
     r"what'?s\s+up|hi\s+there|hey\s+there"
 )
 # "say hi to <name> in chat[, <extra>]" -> name=<name>, message=<greeting>[ +extra]
+#
+# 2026-07-26 LIVE BUG: this pattern ended in a bare ``$``, so ANY trailing
+# sentence punctuation defeated it -- and Whisper puts a period on the end of
+# essentially every transcript. "Say hello to Izumi in the chat" matched while
+# "Say hello to Izumi in the chat." did NOT, which means this greeting form was
+# effectively never reached in production. The turns then fell through to the
+# relay matcher and were parroted VERBATIM onto the team mic
+# (logs 2026-07-26 turn=5 "Say hello to Izumi in the chat." -> route='relay_llm'
+# channel='team_mic'). That is the streamer's "he isn't addressing the people I
+# ask him to address". Allow trailing punctuation on both exit paths.
+_TELL_CHAT_TRAILING_PUNCT = r"\s*[.!?]*\s*"
 _TELL_CHAT_GREET_TO_RE = re.compile(
     rf"^{_TELL_CHAT_WAKE}(?:say|tell)\s+"
     rf"(?P<greet>{_TELL_CHAT_GREETING})\s+to\s+"
     rf"(?P<name>{_TELL_CHAT_NAME})\s+{_TELL_CHAT_CHANNEL}"
-    rf"(?:\s*[,:]?\s+(?P<extra>.+))?$",
+    rf"(?:\s*[,:]?\s+(?P<extra>.+?))?{_TELL_CHAT_TRAILING_PUNCT}$",
     re.IGNORECASE,
 )
 # "greet <name> in chat" / "welcome <name> [aboard] to [the] chat" -> synthesized
@@ -1945,6 +1957,51 @@ _TELL_CHAT_BROADCAST_NAMES = frozenset({
     "everyone", "everybody", "all", "y'all", "yall", "chat", "the chat",
     "the whole chat", "the channel", "the room", "the stream",
 })
+# BARE tell form (2026-07-23 live battery): "tell <name> <message>" with NO
+# "in chat" delimiter — "tell Izumi I am fine", "tell IceMapple he's wrong"
+# (both fell to the wrong path: the first was FORCE-relayed to the team as
+# hallucinated comms, the second was answered ABOUT the person on the
+# desktop). The name is capped at 2 tokens (chat handles are spoken as one
+# or two words; 3+ leading tokens is a sentence, not a handle) and the form
+# is LOW-CONFIDENCE by construction: the handler consumes it ONLY on a
+# confident roster match, so "tell Sage plant the spike" (agent -> team
+# relay) and ordinary "tell <somebody> ..." speech fall through untouched.
+# LAZY optional second token: chat handles are usually spoken as ONE word, and
+# a greedy two-token grab would eat the message's first word ("tell Izumi I am
+# fine" -> name="Izumi I"). Two-word handles still resolve via the roster's
+# fuzzy match on the first token; a miss falls through harmlessly.
+_TELL_CHAT_BARE_NAME = r"(?:[\w'][\w'-]*\s+)??[\w'][\w'-]*"
+_TELL_CHAT_BARE_RE = re.compile(
+    rf"^{_TELL_CHAT_WAKE}(?:tell|told|message|inform|notify)\s+"
+    rf"(?P<name>{_TELL_CHAT_BARE_NAME})[\s,:;]+(?P<msg>.+)$",
+    re.IGNORECASE,
+)
+# Function words the lazy one-token name can land on ("tell THE team rotate",
+# "tell SOMEONE to smoke") — never a chatter handle; the bare form rejects
+# these so team/relay speech falls through untouched.
+_TELL_CHAT_BARE_STOP_NAMES = frozenset(
+    "the a an that this these those it its some any each every all both no "
+    "none one two three four five him her me us you your them they em 'em "
+    "someone somebody anyone anybody everyone everybody nobody people "
+    "guys".split()
+)
+
+
+def _tell_chat_name_is_agent(name: str) -> bool:
+    """True when the spoken tell-target is a Valorant AGENT (or team word) —
+    those belong to the TEAM relay, never the chat tell."""
+    try:
+        from kenning.audio._stt_correct import _AGENT_LOWER
+        norm = re.sub(r"[^a-z0-9]", "", (name or "").lower())
+        if not norm:
+            return False
+        for k, v in _AGENT_LOWER.items():
+            if norm == re.sub(r"[^a-z0-9]", "", k.lower()) or norm == re.sub(
+                    r"[^a-z0-9]", "", v.lower()):
+                return True
+    except Exception:                                            # noqa: BLE001
+        return False
+    return False
 # Cap the posted message well under Helix's 500-char limit, leaving room for
 # the @tag + the config template's framing text.
 _TELL_CHAT_MAX_MESSAGE_CHARS = 400
@@ -1958,10 +2015,50 @@ class TellChatCommand:
     ``verbless`` marks the low-confidence no-verb form ("<name> in chat
     <msg>", 2026-07-10 — the wake strip can swallow the verb): the handler
     posts ONLY on a confident roster match and otherwise falls through to
-    conversation instead of consuming the turn."""
+    conversation instead of consuming the turn. ``bare`` (2026-07-23) marks
+    the delimiter-less "tell <name> <msg>" form — same low-confidence
+    contract as ``verbless``. ``greet`` marks the greet/welcome-verb form:
+    the handler ALSO SPEAKS the posted greeting (user direction 2026-07-23:
+    "when I ask ultron to welcome someone to the chat, have him also speak
+    it")."""
     name: Optional[str]
     message: str
     verbless: bool = False
+    bare: bool = False
+    greet: bool = False
+
+
+_TELL_CHAT_STOPWORDS = frozenset(
+    "the a an and or but so to of in on at for with that this those these is "
+    "are was were be been being am do does did have has had will would can "
+    "could should shall may might must not no dont don't im i'm ive i've he "
+    "she it they them him her his hers its their theirs you your yours we our "
+    "ours us me my mine tell told say said please really very just about".split()
+)
+
+
+def tell_chat_content_words(message: str) -> frozenset:
+    """The dictated message's CONTENT words (lowercased, stopwords removed,
+    len >= 3) -- the tokens a composed delivery must not lose."""
+    words = re.findall(r"[a-z0-9']+", (message or "").lower())
+    return frozenset(
+        w for w in words if len(w) >= 3 and w not in _TELL_CHAT_STOPWORDS)
+
+
+def tell_chat_compose_ok(message: str, composed: str) -> bool:
+    """True when the LLM-composed chat line still CARRIES the dictated
+    message (2026-07-23: "the message is getting completely drowned out by
+    the personality"). A composed line must share at least one of the
+    dictation's content words; a dictation with NO content words (bare
+    greetings) just needs a non-empty composition. False -> the handler
+    posts the literal dictation instead."""
+    if not composed or not composed.strip():
+        return False
+    want = tell_chat_content_words(message)
+    if not want:
+        return True
+    have = tell_chat_content_words(composed)
+    return bool(want & have)
 
 
 def _tell_chat_clean_message(raw: str) -> str:
@@ -1975,7 +2072,24 @@ def _tell_chat_clean_message(raw: str) -> str:
     return msg[:_TELL_CHAT_MAX_MESSAGE_CHARS].strip()
 
 
-def match_tell_chat(text: str) -> Optional[TellChatCommand]:
+# BARE greeting, NO channel marker: "say hi to <name>". 2026-07-26 -- the other
+# half of the live "say hi to izumi" failure. Without a chat marker the
+# utterance contains nothing that says viewer-vs-teammate, so it fell to the
+# relay matcher, which defaults addressee='team' and parroted the words onto
+# the TEAM MIC. On its own this pattern is FAR too permissive ("say hi to my
+# team" matches), so match_tell_chat consults it ONLY when a caller supplies a
+# ``chatter_resolver`` that CONFIRMS the name is a known Twitch chatter -- and
+# that resolver rejects every Valorant agent name outright.
+_TELL_CHAT_GREET_BARE_RE = re.compile(
+    rf"^{_TELL_CHAT_WAKE}(?:say|tell)\s+"
+    rf"(?P<greet>{_TELL_CHAT_GREETING})\s+to\s+"
+    rf"(?P<name>[\w'][\w'-]*)"
+    rf"(?:\s*[,:]?\s+(?P<extra>.+?))?{_TELL_CHAT_TRAILING_PUNCT}$",
+    re.IGNORECASE,
+)
+
+
+def match_tell_chat(text: str, *, chatter_resolver=None) -> Optional[TellChatCommand]:
     """Match the voice→Twitch-chat tell grammar. Returns a
     :class:`TellChatCommand` (``name=None`` for the broadcast form) or None so
     ordinary speech — including every team-relay form — falls through. Strict +
@@ -1996,19 +2110,22 @@ def match_tell_chat(text: str) -> Optional[TellChatCommand]:
         greet = m.group("greet").strip()
         extra = (m.group("extra") or "").strip()
         msg = _tell_chat_clean_message(f"{greet} {extra}".strip())
+        # "say WELCOME to <name> in chat" is a welcome ask -> also spoken
+        # (2026-07-23); the hi/hello/hey greetings stay silent-on-success.
+        _welc = greet.lower() == "welcome"
         if msg:
             if name.lower() in _TELL_CHAT_BROADCAST_NAMES:
-                return TellChatCommand(name=None, message=msg)      # whole audience
+                return TellChatCommand(name=None, message=msg, greet=_welc)
             if not _TELL_CHAT_NAME_REJECT_RE.search(name):
-                return TellChatCommand(name=name, message=msg)
+                return TellChatCommand(name=name, message=msg, greet=_welc)
     m = _TELL_CHAT_GREET_VERB_RE.match(cleaned)
     if m:
         name = re.sub(r"\s+", " ", m.group("name").strip())
         greet = "welcome" if m.group("verb").lower() == "welcome" else "hi"
         if name.lower() in _TELL_CHAT_BROADCAST_NAMES:
-            return TellChatCommand(name=None, message=greet)
+            return TellChatCommand(name=None, message=greet, greet=True)
         if not _TELL_CHAT_NAME_REJECT_RE.search(name):
-            return TellChatCommand(name=name, message=greet)
+            return TellChatCommand(name=name, message=greet, greet=True)
     m = _TELL_CHAT_TAGGED_RE.match(cleaned)
     if m:
         name = re.sub(r"\s+", " ", m.group("name").strip())
@@ -2028,6 +2145,58 @@ def match_tell_chat(text: str) -> Optional[TellChatCommand]:
         msg = _tell_chat_clean_message(m.group("msg"))
         if msg:
             return TellChatCommand(name=name, message=msg, verbless=True)
+    # LAST RESORT (2026-07-26): a bare "say hi to <name>" with NO chat marker,
+    # accepted ONLY when the caller's resolver confirms <name> is a known
+    # Twitch chatter. Every strict form above has already declined, so this
+    # cannot steal a turn from one; with no resolver the behaviour is
+    # byte-identical to before.
+    if chatter_resolver is not None:
+        m = _TELL_CHAT_GREET_BARE_RE.match(cleaned)
+        if m:
+            name = m.group("name").strip()
+            if not _TELL_CHAT_NAME_REJECT_RE.search(name):
+                try:
+                    login = chatter_resolver(name)
+                except Exception:                                # noqa: BLE001
+                    login = None
+                if login:
+                    greet = m.group("greet").strip()
+                    extra = (m.group("extra") or "").strip()
+                    msg = _tell_chat_clean_message(f"{greet} {extra}".strip())
+                    if msg:
+                        return TellChatCommand(
+                            name=name, message=msg,
+                            greet=greet.lower() == "welcome")
+    # BARE form LAST (2026-07-23; the most permissive shape): "tell <name>
+    # <msg>" with no channel delimiter. Rejects group words / pronouns /
+    # audience words / Valorant AGENTS so team relays ("tell Sage plant")
+    # and "tell my team X" always fall through; what remains is consumed by
+    # the handler ONLY on a confident chat-roster match (same trust model
+    # as the verbless form).
+    m = _TELL_CHAT_BARE_RE.match(cleaned)
+    if m:
+        name = re.sub(r"\s+", " ", m.group("name").strip())
+        raw_msg = m.group("msg")
+        # A message that OPENS with the channel phrase is the tagged form's
+        # degenerate leftover ("tell bob in chat" with no message) -- never a
+        # bare tell.
+        _channel_lead = re.match(
+            rf"^{_TELL_CHAT_CHANNEL}\b", raw_msg, re.IGNORECASE)
+        # Split agent names spanning the lazy name boundary ("tell kay o to
+        # flash" -> name="kay", msg="o to flash"): re-check name + the first
+        # message word as a two-token agent candidate.
+        _msg_head = re.split(r"[\s,:;]+", raw_msg.strip(), 1)[0] \
+            if raw_msg.strip() else ""
+        if (not _channel_lead
+                and name.lower() not in _TELL_CHAT_BROADCAST_NAMES
+                and name.lower() not in _TELL_CHAT_BARE_STOP_NAMES
+                and not _TELL_CHAT_NAME_REJECT_RE.search(name)
+                and not _tell_chat_name_is_agent(name)
+                and not _tell_chat_name_is_agent(
+                    f"{name} {_msg_head}".strip())):
+            msg = _tell_chat_clean_message(raw_msg)
+            if msg:
+                return TellChatCommand(name=name, message=msg, bare=True)
     return None
 
 
@@ -6286,16 +6455,30 @@ def _fact_tokens(text: str) -> tuple[set, set, set, set]:
     return nums, agents, locs, abils
 
 
-def _output_keeps_facts(payload: str, line: str) -> bool:
+def _output_keeps_facts(payload: str, line: str,
+                        addressee: Optional[str] = None) -> bool:
     """True if `line` faithfully carries `payload`'s tactical facts. False (=>
     abstain to a literal) when a fact-bearing payload's output drops >30% of its
     fact-tokens, invents an agent/location absent from the input, or flips
-    our<->their ownership."""
+    our<->their ownership. ``addressee`` (a named teammate the line is spoken
+    TO) is exempt from the invention checks -- the prompt/vocative machinery
+    legitimately adds it ("ask clove X" -> "Clove, ...")."""
     pn, pa, pl, pab = _fact_tokens(payload)
     in_facts = pn | pa | pl | pab
-    if not in_facts:
-        return True                       # not tactical -> not the validator's job
     ln, la, ll, lab = _fact_tokens(line)
+    _exempt = set()
+    if addressee and addressee != "team":
+        _an, _aa, _al, _aab = _fact_tokens(str(addressee))
+        _exempt = set(_aa)
+    if not in_facts:
+        # 2026-07-23 live battery (turn=35): a NON-tactical payload whose
+        # output carries agents/locations is pure INVENTION -- "Izumi, I'm
+        # fine." was relayed as "Sage backsite, Sova heaven, Cypher CT."
+        # (fabricated comms on the team mic). A plain persona-flavored line
+        # with no fact tokens still passes; any agent/location the model
+        # conjured from nothing abstains to the literal payload (the named
+        # addressee's own vocative is not invention).
+        return not ((la - _exempt) | ll)
     # 2026-06-24: an agent/location the output "added" is only a HALLUCINATION if
     # it is NOT recoverable from the (often STT-MANGLED) payload. The STT merges
     # words ("Sage backsite" -> "Sageback site"), so a correctly re-split "sage" /
@@ -6303,7 +6486,7 @@ def _output_keeps_facts(payload: str, line: str) -> bool:
     # the space/slash-stripped payload. This unblocks CORRECT compound weaves the
     # strict token-set check was wrongly abstaining to the broken STT literal.
     _pflat = re.sub(r"[\s/]+", "", (payload or "").lower())
-    if (any(a.replace("/", "") not in _pflat for a in (la - pa))
+    if (any(a.replace("/", "") not in _pflat for a in (la - pa - _exempt))
             or any(x not in _pflat for x in (ll - pl))):
         return False                      # truly hallucinated agent / location
     kept = len(in_facts & (ln | la | ll | lab))
@@ -6473,6 +6656,141 @@ def _cap_sentences(line: str, max_sentences: int = 3) -> str:
     if len(parts) <= max_sentences:
         return line
     return " ".join(parts[:max_sentences]).strip()
+
+
+# Like cap_stream_sentences' boundary, PLUS digits as a sentence opener --
+# the recycled-statistic tails open with numbers ("97% of decisions...").
+_RESPONSE_BOUNDARY_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z0-9"—])')
+
+
+def _response_ngrams(text: str, n: int = 4) -> set:
+    """Word n-grams of ``text`` (lowercased, alnum words) for repeat checks."""
+    words = re.findall(r"[a-z0-9']+", (text or "").lower())
+    return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+
+def response_repeats_recent(sentence: str, recent_lines, n: int = 4) -> bool:
+    """True when ``sentence`` shares any word ``n``-gram with a recent line.
+
+    The 2026-07-24 mechanical anti-repeat: prompt prose alone does not stop
+    the 4B from recycling whole clauses across turns (live: "The meaning of
+    life is entropy--systems degrade..." nearly verbatim on consecutive
+    answers, and "97% of decisions in this phase" twice). A shared 4-gram
+    with any of the last spoken responses marks the sentence as recycled."""
+    grams = _response_ngrams(sentence, n)
+    if not grams:
+        return False
+    for r in (recent_lines or ()):
+        if r and grams & _response_ngrams(r, n):
+            return True
+    return False
+
+
+def guard_stream_repeats(
+    make_stream,
+    recent_lines=None,
+    banned_openers: tuple = ("flesh",),
+    max_retries: int = 1,
+) -> Iterable[str]:
+    """Wrap the conversational token stream with MECHANICAL variety rules.
+
+    ``make_stream(attempt)`` builds a fresh token stream (attempt 0 = the
+    normal prompt; attempt >= 1 may carry a do-not-repeat nudge). Rules:
+
+      * SENTENCE 1 is buffered and checked: a banned opening word (default
+        "flesh") or a word-4-gram shared with ``recent_lines`` cancels the
+        stream and re-prompts ONCE; the retry's output is accepted as-is
+        (never loops).
+      * LATER sentences are checked the same way as they complete: a
+        recycled sentence is DROPPED and the stream ends there -- the answer
+        already landed in sentence 1, and a recycled flourish tail ("...
+        entropy--systems degrade") is exactly the tacked-on repetition the
+        user flagged (2026-07-24). Nothing after a dropped sentence plays.
+
+    Fail-open: errors inside the guard release whatever was buffered and
+    pass the rest through unchecked; underlying streams are always closed.
+    """
+    def _first_word(text: str) -> str:
+        m = re.search(r"[a-zA-Z']+", text or "")
+        return m.group(0).lower() if m else ""
+
+    def _bad_first_sentence(sent: str) -> bool:
+        if _first_word(sent) in (banned_openers or ()):
+            return True
+        return response_repeats_recent(sent, recent_lines)
+
+    def _close(stream) -> None:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:                                        # noqa: BLE001
+                pass
+
+    def _pull_first_sentence(stream):
+        """Consume until the first boundary; return (s1, carry, stream)."""
+        buf = ""
+        for tok in stream:
+            if not tok:
+                continue
+            buf += tok
+            m = _RESPONSE_BOUNDARY_RE.search(buf)
+            if m:
+                return buf[:m.start()], buf[m.start():], stream
+        return buf, "", None                    # stream ended inside S1
+
+    attempt = 0
+    stream = make_stream(attempt)
+    try:
+        s1, carry, live = _pull_first_sentence(stream)
+        while attempt < max_retries and s1 and _bad_first_sentence(s1):
+            logger.info(
+                "response guard: sentence 1 %s -- re-prompting once | s1=%r",
+                ("opens with a banned word"
+                 if _first_word(s1) in (banned_openers or ())
+                 else "recycles a recent line"),
+                s1[:120],
+            )
+            try:
+                new_stream = make_stream(attempt + 1)
+            except Exception as e:                                   # noqa: BLE001
+                logger.debug("response guard retry unavailable (%s); "
+                             "keeping the original reply", e)
+                break
+            if live is not None:
+                _close(live)
+            attempt += 1
+            stream = new_stream
+            s1, carry, live = _pull_first_sentence(stream)
+        if s1:
+            yield s1
+        if live is None:
+            return
+        # Later sentences: accumulate the carry + remaining tokens; emit each
+        # completed sentence unless it recycles a recent line (then stop).
+        buf = carry
+        for tok in stream:
+            if not tok:
+                continue
+            buf += tok
+            m = _RESPONSE_BOUNDARY_RE.search(buf, 1)
+            if m:
+                sent, buf = buf[:m.start()], buf[m.start():]
+                if response_repeats_recent(sent, recent_lines):
+                    logger.info(
+                        "response guard: dropped recycled tail sentence %r",
+                        sent[:120])
+                    return
+                yield sent
+        if buf.strip():
+            if response_repeats_recent(buf, recent_lines):
+                logger.info(
+                    "response guard: dropped recycled tail sentence %r",
+                    buf[:120])
+                return
+            yield buf
+    finally:
+        _close(stream)
 
 
 def cap_stream_sentences(
@@ -8322,7 +8640,7 @@ def build_relay_line(
         # ownership), relay a clean LITERAL of the input instead. Correctness
         # over polish -- the dominant fix for the 3B's verbose-input failures.
         if not getattr(command, "verbatim", False) and not _output_keeps_facts(
-                command.payload, line):
+                command.payload, line, addressee=command.addressee):
             lit = _literal_relay(command.payload, recent_lines, command.addressee)
             if lit:
                 logger.debug("relay: abstain to literal %r -> %r",

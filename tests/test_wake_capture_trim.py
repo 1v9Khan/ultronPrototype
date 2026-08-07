@@ -84,9 +84,31 @@ def test_cut_paused_command_drops_wake_and_gap():
     assert cut(segs, 32000, FIRE, SR) == 12000 - GUARD     # clean cut at command
 
 
-def test_cut_continuous_wake_command_cuts_at_fire():
-    # one segment spanning the fire (no pause) -> cut at the fire boundary.
+BACKOFF = int(0.320 * SR)  # default fire-latency backoff 320 ms
+
+
+def test_cut_continuous_backs_off_fire_latency():
+    # 2026-07-23: one segment spanning the fire (no pause) -> cut a fire-latency
+    # BACKOFF before the fire. The detector confirms ~320 ms after the word
+    # ends, so cutting AT the fire beheaded the command's first word (live:
+    # "Ultron, should I push mid?" -> "I push mid").
+    assert cut([{"start": 1000, "end": 28000}], 32000, FIRE, SR) == FIRE - BACKOFF
+
+
+def test_cut_continuous_backoff_env_tunable(monkeypatch: pytest.MonkeyPatch):
+    # 0 restores the old cut-at-fire behaviour; a custom value is honored.
+    monkeypatch.setenv("KENNING_WAKE_FIRE_BACKOFF_MS", "0")
     assert cut([{"start": 1000, "end": 28000}], 32000, FIRE, SR) == FIRE
+    monkeypatch.setenv("KENNING_WAKE_FIRE_BACKOFF_MS", "100")
+    assert cut([{"start": 1000, "end": 28000}], 32000, FIRE, SR) == FIRE - int(
+        0.100 * SR)
+
+
+def test_cut_continuous_backoff_clamps_at_zero():
+    # backoff larger than the fire offset -> 0 (contract: "do not trim"),
+    # fail-open to the text-level wake strip.
+    segs = [{"start": 0, "end": 28000}]
+    assert cut(segs, 32000, 2000, SR, fire_backoff_ms=500) == 0
 
 
 def test_cut_bare_wake_returns_fire():
@@ -110,3 +132,40 @@ def test_cut_no_segments_cuts_at_fire():
 def test_cut_clamped_in_range():
     # a degenerate cut beyond the buffer clamps to 0 (no trim).
     assert cut([{"start": 99000, "end": 99999}], 1000, FIRE, SR) == 0
+
+
+# ---------------------------------------------------------------------------
+# _stt_repetition_loop: Whisper repetition-hallucination gate (2026-07-23)
+# ---------------------------------------------------------------------------
+
+from kenning.pipeline.orchestrator import _stt_repetition_loop as loop  # noqa: E402
+
+
+def test_live_valorant_team_comms_loop_is_dropped():
+    # THE battery turn=36 line: 1.52 s of audio -> 503 chars of one phrase.
+    text = ("Valorant team comms. " * 24).strip()
+    assert loop(text, 1.52) is True
+
+
+def test_real_speech_density_passes():
+    assert loop("tell my team they're pushing B main right now", 2.4) is False
+    assert loop("Ultron, what is the meaning of life?", 1.7) is False
+
+
+def test_long_but_plausible_dictation_passes():
+    text = ("okay so the plan is we take mid control then split A through "
+            "heaven and tree while sova recons the site")
+    assert loop(text, 6.0) is False       # ~17 chars/s -- human
+
+
+def test_dense_but_varied_text_passes():
+    # Density alone is not enough -- only phrase-dominated text drops.
+    text = ("alpha bravo charlie delta echo foxtrot golf hotel india juliet "
+            "kilo lima mike november oscar papa quebec romeo sierra tango")
+    assert loop(text, 1.0) is False       # unique words -> not a loop
+
+
+def test_degenerate_inputs_pass_through():
+    assert loop("", 1.0) is False
+    assert loop("short loop", 0.5) is False
+    assert loop("anything", 0.0) is False
