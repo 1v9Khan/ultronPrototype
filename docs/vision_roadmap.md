@@ -11,6 +11,14 @@
 > **Nothing here is committed work.** Each item becomes real only when it gets a spec
 > (`REQUIREMENTS` → `DESIGN` with ≥2 alternatives → `TASKS` + `tasks_manifest.json`) under
 > `docs/ultron_1_0/` or a successor directory.
+>
+> **Sources.** Phases 1 and 3–8 derive from a recorded planning conversation covering inference
+> efficiency (MoE, low-precision, speculative decoding), post-training methods, a WSL-migration question,
+> the "make the system incapable of harm" permission-layer argument, and the Kenning-as-platform /
+> Ultron-as-persona branding conclusion. **Phase 2 (game intelligence) derives from the streamer's own
+> feature list**, not from that conversation, and is written as proposals to be confirmed. Where this
+> document contradicts the conversation it is deliberate and says so — notably on MoE (an unfavourable
+> trade at 12 GB), FP4 (a Blackwell feature, unavailable on Ada), and the WSL migration (see 4.1).
 
 ---
 
@@ -37,16 +45,18 @@ The order follows the sequence the topics were raised, which also happens to be 
 
 1. **Efficiency first** — everything downstream (bigger models, more personas, more concurrent
    subsystems) is paid for out of the same 12 GB card. Headroom bought early is spent many times.
-2. **Post-training second** — once serving is cheap and measurable, the leverage moves to *quality per
-   token*, which is a training problem, not a serving one.
-3. **Portability third** — a decision best made *after* the runtime is out-of-process, because
+2. **Game intelligence second** — this is the actual product and the reason the rest exists. It is
+   also mostly GREEN-rung work that can proceed in parallel with everything below it.
+3. **Post-training third** — once serving is cheap and measurable, the leverage moves to *quality per
+   token*, which is a training problem, not a serving one. Game data also makes the eval sets real.
+4. **Portability fourth** — a decision best made *after* the runtime is out-of-process, because
    out-of-process is most of what portability actually requires.
-4. **The capability broker fourth** — the gate on every form of public distribution. Nothing ships to a
-   third party before this exists.
-5. **Kenning identity fifth** — the rename is cheap while the user base is one person and expensive
+5. **The capability broker fifth** — the gate on every form of public distribution. Nothing ships to a
+   third party before this exists. (Bring it forward if game APIs start touching the network broadly.)
+6. **Kenning identity sixth** — the rename is cheap while the user base is one person and expensive
    after. It must land before any public surface.
-6. **Platform surface sixth** — plugins, APIs, creator tools. Only safe on top of the broker.
-7. **Productization last** — packaging, editions, support.
+7. **Platform surface seventh** — plugins, APIs, creator tools. Only safe on top of the broker.
+8. **Productization last** — packaging, editions, support.
 
 ### Non-negotiables carried forward from `CONSTRAINTS.md`
 
@@ -91,7 +101,7 @@ system must measure and self-disable rather than trust a config value.
 Alternatives considered: **n-gram / prompt-lookup decoding** (no draft model, no extra VRAM — genuinely
 attractive for the relay path, where callouts are highly repetitive and much of the output is copied from
 the prompt); **Medusa/EAGLE-style heads** (better accept rates but requires training heads per model,
-which belongs in Phase 2); **no speculation** (the current state). Prompt-lookup is the best first move
+which belongs in Phase 3); **no speculation** (the current state). Prompt-lookup is the best first move
 for relay specifically because it costs zero VRAM and the callout corpus is small and repetitive.
 
 **Components.**
@@ -136,7 +146,7 @@ work here is to *stop guessing* and build the measurement rig, so that when hard
 support changes, the answer is a benchmark run rather than a rewrite.
 
 Alternatives: per-model hand-tuning (status quo — works but does not generalize); AWQ/GPTQ-style
-calibrated quantization (better quality per bit, needs a calibration set — a natural fit once Phase 2
+calibrated quantization (better quality per bit, needs a calibration set — a natural fit once Phase 3
 gives us trace corpora); keeping everything at Q5+ (safe, wasteful).
 
 **Components.**
@@ -208,7 +218,7 @@ serving daemon rather than owning `llama_cpp` in its own address space.
 
 **Why now.** This is the keystone of the phase. It independently enables: crash isolation, model hot-swap
 without restarting the voice loop, multiple consumers (voice + chat + coding + future plugins) sharing one
-resident model, the portability work in Phase 3, and the plugin surface in Phase 6.
+resident model, the portability work in Phase 4, and the plugin surface in Phase 7.
 
 **How.** PR #1 already proved the pattern under duress: `faster-whisper`/CTranslate2 with `device_index=1`
 corrupted memory in-process and killed Ultron with no traceback; `scripts/stt_server.py` fixed it by
@@ -316,7 +326,359 @@ diffed on one command.
 
 ---
 
-## Phase 2 — Post-training: an Ultron that improves from its own traces
+## Phase 2 — Game intelligence: the Valorant assistant
+
+This is the product. Everything else on this list is infrastructure that serves it or packaging that
+sells it. Ultron already *hears* the game (voice), *speaks into* it (team relay + PTT), and *broadcasts
+around* it (Twitch + overlay). What it does not yet have is **knowledge of the game being played** — who
+is in the lobby, how the last match went, what the meta is, who these people are, and whether one of them
+is live on Twitch right now.
+
+> **Provenance note.** The items in this phase come from the streamer's own feature list rather than from
+> the seeding conversation. They are written as proposals with concrete build paths; each should be
+> confirmed or corrected before it gets a spec.
+
+### 2.0 The data-source risk ladder — read this before designing anything here — `S` (policy)
+
+Every feature in this phase is a question about **where the data comes from**, and that question is an
+anticheat question first and an engineering question second. Vanguard is a kernel host-integrity monitor
+and the project's P0 rule (`BR-P1`) is absolute. So the ladder is defined once, here, and every item below
+declares which rung it stands on.
+
+| Rung | Description | Examples | Policy |
+|---|---|---|---|
+| **GREEN** | Web APIs about *past* matches, public esports data, and the streamer's own account. Zero contact with the running game or its process. | Riot Developer API, unofficial match-history APIs, vlr.gg, Liquipedia, Twitch Helix, patch notes | Allowed. Default-ON candidates. |
+| **AMBER** | Reads *local* state belonging to the Riot client — the lockfile plus localhost HTTP endpoints — to learn about the **current** lobby. No memory access, no injection, no hooks. | The local client API used by rank-checkers to show party/enemy ranks in agent select | **Explicit user decision required. Default OFF. Never on the default import path.** See the honest risk note below. |
+| **RED** | Anything that touches the game process or automates play. | Reading game memory, DLL injection, hooking, in-process overlays, input automation for gameplay, aim/trigger assistance | **Never.** Ban-class, violates `BR-P1`, and out of scope permanently. |
+
+**The honest AMBER risk note.** The local-client-API approach is technically modest — it reads a file the
+Riot client writes and makes HTTP calls to `127.0.0.1`. It does not read memory and does not inject. A
+large ecosystem of rank-checker tools uses it. However: Riot has been explicit that surfacing pre-game
+information about other players is something they can act against, and "widely tolerated" is not
+"sanctioned." The engineering risk is low; the *policy* risk is real and is the streamer's call, not the
+system's. Therefore: default OFF, a separate opt-in flag, lazy-imported inside its own gate behind the
+import firewall, excluded from the lean gaming boot, and covered by the anticheat grep scanner so it can
+never drift onto the voice path. If the answer is "not worth it," every other item in this phase still
+works — they just operate on post-match data instead of live lobby data.
+
+**Done-when.** The ladder is encoded as a config-level policy with per-source rung declarations, and
+`tests/safety/test_anticheat.py` is extended to assert no AMBER/RED source is reachable from the voice
+path or in gaming mode.
+
+### 2.1 Match history and player statistics — `L`
+
+**What.** Ultron knows how you actually played: per-match results, per-agent and per-map performance,
+K/D/A, headshot rate, first-blood rate, econ rating, rank and RR movement over time — and can answer
+questions about it in persona, out loud, without you leaving the game.
+
+**Why now.** It is the foundation of the whole phase. Dossiers (2.2), coaching (2.6), stream cards (2.7)
+and tilt detection (2.8) all read from the same match store. Build the store once.
+
+**How.** GREEN rung throughout. Two source options, and the design should support both because their
+availability differs:
+
+- **Official Riot Developer API** — the correct long-term source. VAL endpoints exist
+  (match, content, ranked, status). The practical catch is access: personal keys are short-lived and the
+  richer VALORANT endpoints are gated behind an application/approval process. Plan for it, do not depend
+  on it landing quickly.
+- **Community match-history APIs** — the pragmatic near-term source, keyed by Riot ID (`name#tag`),
+  returning match lists, per-round detail, and MMR/RR history. Rate-limited and unofficial, so they must
+  sit behind the existing circuit-breaker pattern and degrade to "I do not have that yet" rather than
+  failing loudly mid-game.
+
+Poll after a match ends rather than during play — the natural trigger already exists, because the system
+knows when the streamer stops issuing callouts and gaming mode disengages. Store normalized matches in
+SQLite (the durable-store pattern already used for the welcomed-chatter store), and write a compact
+natural-language match summary into Qdrant so the existing RAG path can answer fuzzy questions ("how do I
+do on Ascent lately?") without bespoke query code.
+
+Alternatives: OCR the in-game scoreboard (rejected — needs screen capture, which is anticheat-gated and
+strictly worse than an API); manual entry (rejected — nobody will do it).
+
+**Components.**
+- `src/kenning/game/` — NEW package, the whole phase lives here.
+- `game/riot_client.py` — official API client, circuit-broken, key-rotation aware.
+- `game/match_source.py` — source abstraction so official/community/offline-fixture are interchangeable.
+- `game/store.py` — SQLite schema: `matches`, `rounds`, `participants`, `rank_history`.
+- `game/stats.py` — derived aggregates: per-agent, per-map, per-side, rolling form.
+- `game/summarize.py` — match → short natural-language summary for Qdrant.
+- `scripts/game/backfill_matches.py` — one-shot history import.
+- `tests/game/` — with recorded API fixtures so tests never hit the network.
+
+**Work.** (1) Store schema + migrations. (2) Source abstraction + fixtures. (3) Community client behind a
+circuit breaker. (4) Official client + the access application. (5) Post-match poll trigger on gaming-mode
+disengage. (6) Aggregates. (7) Qdrant summaries. (8) Voice scenarios for the top ~10 questions.
+
+**Integrates with.** Gaming-mode engage/disengage, Qdrant memory, the scenario router (new scenarios),
+`agent_kits.py` for agent naming, the capability broker once it exists (external HTTP = T3).
+
+**Leverages.** The circuit-breaker + error-phrase machinery already wrapping Brave/Jina; the durable
+SQLite store pattern; the RAG retrieval path; the existing agent vocabulary and STT gazetteer, which
+already knows agent and map names.
+
+**Risks.** Unofficial API terms and rate limits; Riot ID changes; region/shard handling. Key material must
+follow the existing secrets rules — never committed, env or `~/.kenning/` only.
+**Done-when.** After a real match, Ultron answers "how did I just do" and "what's my Ascent win rate" from
+stored data, with the network path circuit-broken and tests running offline on fixtures.
+
+### 2.2 The player dossier — remembering teammates and enemies — `L`
+
+**What.** A persistent memory of the people you play with and against: who they were, what they played,
+whether you won, how often you have crossed paths, and freeform notes — so Ultron can say "you have
+queued with this one four times, you have never lost" or "this is the Chamber who dropped 30 on you last
+Tuesday."
+
+**Why now.** It is the single most distinctive feature on the list and the one most likely to make people
+say "I want that." It also falls out almost free once 2.1 exists, because match participants are already
+being stored.
+
+**How.** GREEN rung when built from post-match data — the participant list of every match you played is
+already in the store. Identity is the hard part: Riot IDs can change, and the same display name is not a
+stable key. Use the account PUUID where the API provides it and treat the display name as mutable
+metadata, so a rename does not fragment a dossier.
+
+The dossier record accrues: encounters (match id, side, agent, outcome), aggregates (times allied, times
+against, your win rate with/against them), and notes. Notes come from two places — explicit voice
+("remember this Jett, they were smurfing") and derived observations (statistical outliers relative to the
+lobby's rank). Store notes in Qdrant so recall can be semantic rather than exact-match.
+
+If AMBER is enabled, dossiers become *pre-game* rather than post-game — Ultron recognizes a name in agent
+select. If not, recognition happens at the post-match debrief, which is still genuinely useful.
+
+**A real ethical question, flagged deliberately.** This is a local database about other people, built
+without their knowledge, on a system that broadcasts to a live audience. Local storage is defensible;
+*announcing* it on stream is a different act. The design should separate "Ultron knows" from "Ultron says
+it out loud on stream," default the second to OFF, and never speak another player's statistics to chat
+without an explicit toggle. This is worth deciding on purpose rather than discovering later.
+
+**Components.**
+- `game/dossier.py` — record model, identity resolution, merge-on-rename.
+- `game/encounters.py` — derive encounters from stored matches.
+- `game/notes.py` — voice-captured and derived notes; Qdrant-backed.
+- `game/privacy.py` — what may be spoken, to which channel (private vs team vs stream).
+
+**Work.** (1) Identity model on PUUID with display-name history. (2) Encounter derivation backfill.
+(3) Aggregates. (4) Voice command to attach a note. (5) Semantic note recall. (6) Channel-aware privacy
+gate. (7) Retention/forget command.
+
+**Integrates with.** The match store, Qdrant, the relay/private-reply channel split (which already
+distinguishes team mic from private reply from chat), the Twitch chat path.
+**Leverages.** The channel routing already built for relay vs private vs chat; the Qdrant facts
+collection; the fuzzy-name matching already used for chatter names in the tell-chat feature.
+**Risks.** Identity fragmentation on rename; the privacy/ethics dimension above; storage growth.
+**Done-when.** Ultron recognizes a repeat player from stored history and reports the relationship, with
+stream-announcement default OFF and a working "forget this player" command.
+
+### 2.3 Live match context — the AMBER tier — `M` (gated on a policy decision)
+
+**What.** Knowing the *current* lobby: who is in it, their ranks, agent-select state, map, and score —
+enabling pre-game commentary and in-match awareness rather than post-match reporting.
+
+**Why now.** It is what makes the assistant feel present rather than retrospective. It is also the only
+item in this phase that carries policy risk, which is why it is isolated behind its own decision.
+
+**How.** AMBER rung. Read the Riot client lockfile for local credentials, then call the client's localhost
+endpoints for pre-game and current-match state. Strictly read-only; no writes, no game process contact.
+
+Everything about the implementation must make it impossible for this to leak onto the protected path:
+its own config flag defaulting OFF, lazy import inside the gate, absent from the lean gaming boot, an
+explicit entry in the anticheat scanner's expectations, and a boot-canary line stating whether it is
+active. If the streamer decides against it, the module simply never loads and the rest of the phase is
+unaffected.
+
+**Alternatives.** Post-match only (GREEN, no risk, less magic — this is the fallback). Voice-driven entry,
+where the streamer simply *says* the enemy comp and Ultron remembers it (GREEN, zero risk, surprisingly
+workable given the relay already parses agent names).
+
+**Components.** `game/live/lockfile.py`, `game/live/client_api.py`, `game/live/session.py`, plus a
+dedicated `tests/game/test_live_gate.py` asserting the module is unreachable when the flag is OFF.
+**Work.** (1) Policy decision — this blocks the rest. (2) Lockfile + local client reader. (3) Session
+model. (4) Gate + firewall + canary + scanner entries. (5) Wire to dossiers and coaching.
+**Integrates with.** 2.2 dossiers, 2.6 coaching, the import firewall, the boot canary, gaming mode.
+**Leverages.** The gating pattern already proven for `kenning.desktop`; the boot canary; the anticheat
+grep scanner.
+**Risks.** The policy risk described in 2.0. Also client-API instability across patches.
+**Done-when.** A decision is recorded. If yes: the gate is proven closed by test when OFF, the scanner
+passes, and the canary reports its state.
+
+### 2.4 Meta knowledge and pro-match awareness — `M`
+
+**What.** Ultron knows the current patch, agent/map meta, tier lists, and what is happening in pro play —
+upcoming matches, recent results, standings — and can talk about it unprompted or on request.
+
+**Why now.** It is entirely GREEN, it reuses the web stack already built, and it makes Ultron a better
+stream companion during downtime, which is when a co-host earns its keep.
+
+**How.** Three sources, all through the existing search/reader cascade rather than new infrastructure:
+patch notes from the official site (the Trafilatura → Jina reader chain already handles this shape);
+pro-match data from community esports APIs and wikis; and aggregate meta statistics from public stat
+sites. Cache aggressively — the existing web-results cache already distinguishes volatile from stable TTLs,
+and patch notes are extremely stable while live scores are not.
+
+Fold the result into the LLM context the same way search results already are, and let the existing
+freshness-intent detection ("needs fresh data") route meta questions to a refresh automatically.
+
+**Components.** `game/meta/patch_notes.py`, `game/meta/esports.py`, `game/meta/tierlist.py`,
+`game/meta/cache.py` (thin wrapper on the existing web cache with game-specific TTLs).
+**Work.** (1) Patch-note ingestion + change summarization. (2) Esports schedule/results client.
+(3) Meta-stat ingestion. (4) TTL policy. (5) Prompt injection format. (6) Scenario-router entries.
+(7) Optional proactive "match starting in 10 minutes" notice.
+**Integrates with.** The web search gate and executor, the reader cascade, the results cache, the intent
+recognizer's freshness phrases, the Twitch chat path for posting schedules.
+**Leverages.** SearxNG → Brave → DuckDuckGo cascade, Trafilatura → Jina readers, the volatile/stable TTL
+cache, the deep-research loop for "explain this patch" style questions.
+**Risks.** Scraping fragility and terms-of-use on stat sites; prefer APIs where they exist and cache hard.
+**Done-when.** Ultron correctly answers "what changed in the last patch" and "who is playing tonight"
+from cached sources, with no network call on a repeat question inside TTL.
+
+### 2.5 Finding streamers in your games — `M`
+
+**What.** When someone in your lobby is live on Twitch, Ultron tells you — and optionally tells chat.
+
+**Why now.** It is a genuinely delightful feature, it is nearly free given the Twitch integration already
+built, and it creates real stream moments.
+
+**How.** GREEN on the Twitch side entirely. Take the player list (post-match from 2.1, or pre-game if 2.3
+is enabled), then resolve names to live channels. Two mechanisms, used together:
+
+1. **Live-stream scan** — query Twitch for channels currently live playing VALORANT and match against the
+   lobby's names. This is the cheap, high-precision direction: the live set is bounded, and a normalized
+   name match against it is fast.
+2. **Channel search** — for names that do not match the live set, a targeted channel lookup catches
+   streamers whose Twitch handle differs from their Riot ID.
+
+Name matching is the hard part and the repo already has the right tool: the fuzzy chatter-name resolution
+built for tell-chat, which deliberately refuses agent names, short names, and ambiguous matches. Reuse
+that discipline — a false positive here ("this player is streamer X") is worse than a miss, especially on
+stream.
+
+**Components.** `game/streamers/finder.py`, `game/streamers/namematch.py`,
+`game/streamers/announce.py` (channel-aware: private voice vs stream).
+**Work.** (1) Live-stream scan by game id. (2) Normalized name matcher with confidence floors. (3) Channel
+search fallback. (4) Confidence gate — announce only above a threshold. (5) Announcement templates.
+(6) Optional auto-shoutout with an explicit toggle.
+**Integrates with.** The existing Twitch Helix client and token/refresh machinery, the raid/shoutout path
+already built, the overlay for a "streamer in your game" card, the dossier.
+**Leverages.** The Twitch API client with proactive OAuth refresh and 401 self-heal; the `/shoutout`
+implementation; `chatter_names.py`-style fuzzy resolution with its refusal rules; the overlay card system.
+**Risks.** False positives are the main failure mode — gate hard on confidence. Rate limits on search.
+**Done-when.** A known live streamer in a real lobby is correctly identified and announced, and a
+deliberately ambiguous name is correctly refused.
+
+### 2.6 In-game coaching and the post-match debrief — `L`
+
+**What.** Ultron uses everything above to actually help: agent and comp suggestions grounded in your own
+performance, economy and round advice, callout coaching, and a spoken debrief after each match.
+
+**Why now.** It converts data into value. Without it, 2.1–2.4 are a database with a voice.
+
+**How.** GREEN — all of it can run on stored data plus voice context, with no live game contact. The
+debrief is the anchor feature and the easiest: on gaming-mode disengage, pull the match, compare against
+rolling form, and speak a short persona-correct summary of what stood out. This is a well-shaped LLM task
+with verifiable inputs, which also makes it a good candidate for the reward work in the post-training
+phase.
+
+Coaching during play must respect the hard constraint that already governs the relay: **latency and
+brevity beat completeness.** The existing callout budget (~370–620 ms) and sentence caps apply. Coaching
+that arrives late or long is worse than silence, so it should be opt-in, rare, and interruptible.
+
+Agent/comp suggestions combine your per-agent stats (2.1), the current meta (2.4), and the map — a small,
+well-scoped recommendation problem that does not need a large model.
+
+**Components.** `game/coach/debrief.py`, `game/coach/suggest.py`, `game/coach/economy.py`,
+`game/coach/prompts.py` (per-scenario prompt registry, following the existing per-pool pattern).
+**Work.** (1) Debrief on disengage. (2) Rolling-form comparison. (3) Persona-correct templates + tests.
+(4) Agent/comp suggestion. (5) Opt-in in-match tips with a hard rate limit. (6) Scenario-router entries.
+**Integrates with.** Gaming mode, the relay path and its caps, the scenario router, the flavor/verbosity
+system, the persona lock.
+**Leverages.** The per-pool prompt registries, the verbosity axes, the sentence/char caps and
+`strip_prompt_echo`, the callout latency work, the agent kits.
+**Risks.** Coaching that is generic is worse than none — ground every claim in the streamer's own numbers.
+Persona drift when the content is analytical; pin with persona-lock tests.
+**Done-when.** A post-match debrief speaks within seconds of match end, cites real numbers from the store,
+and passes the persona lock.
+
+### 2.7 Game intelligence on stream — `M`
+
+**What.** Surface all of the above to the audience: overlay cards for live stats and rank, chat commands
+(`!rank`, `!stats`, `!lastmatch`, `!record`), and automatic milestone callouts.
+
+**Why now.** The stream stack is the most built-out part of the system and this is the cheapest way to
+make the game intelligence visible to someone other than the streamer.
+
+**How.** The overlay already renders compact unified cards with hi-DPI density and an operator `&scale=`
+knob; adding stat cards is a template and a data feed, not new infrastructure. Chat commands slot into the
+existing command router alongside `!song`/`!album`/trivia. Milestones (rank up, personal best, win streak)
+fire from the match store on ingest and post through the existing pinboard/poster consolidation so they
+never become a chat flood — a lesson already learned and fixed once.
+
+**Components.** `game/stream/cards.py`, `game/stream/commands.py`, `game/stream/milestones.py`, plus
+overlay templates.
+**Work.** (1) Card templates. (2) Data feed to the overlay. (3) Chat commands with the existing cooldown
+discipline. (4) Milestone detection + throttling. (5) Economy hooks if stats become redeemable content.
+**Integrates with.** The overlay server, the Twitch chat command router, the economy/redeem system, the
+pinboard, the relay-aware chat cooldown.
+**Leverages.** The entire Twitch subsystem — overlay cards, command routing, cooldowns, pinboard,
+StreamElements economy, the write sidecar.
+**Risks.** Chat flooding (already solved once — reuse the pinboard pattern, do not reinvent it).
+**Done-when.** `!rank` and `!lastmatch` answer from the store, a stat card renders in OBS, and a milestone
+fires without flooding chat.
+
+### 2.8 Performance and tilt tracking — `M`
+
+**What.** Longitudinal awareness of how you are actually doing — form trends, session length, performance
+decay across a session, time-of-day patterns — and the judgment to say something about it.
+
+**Why now.** It is the highest-value thing a personal assistant can do that a stat site cannot, because it
+requires *continuity* and *presence*. It also needs the most data, so it should start collecting early even
+if the feature ships late.
+
+**How.** GREEN. Derived entirely from the match store plus session timing the orchestrator already knows.
+Detect within-session decay (performance in the last N matches versus the session's first N), consecutive
+losses, and unusually long sessions. Then — carefully — say something.
+
+The delivery is the hard part, not the detection. A cold machine intelligence observing that your aim has
+degraded for three straight matches is either excellent or insufferable depending entirely on frequency
+and tone. Rate-limit hard, make it private-channel by default (never team, never chat), and make it
+switchable off in one command.
+
+**Components.** `game/form/trends.py`, `game/form/session.py`, `game/form/nudge.py`.
+**Work.** (1) Session model. (2) Trend detection with statistical floors so noise does not trigger it.
+(3) Nudge policy — rate limits, channel, opt-out. (4) Persona-correct phrasing. (5) Long-horizon reporting
+("your best month on Jett").
+**Integrates with.** The match store, gaming mode session boundaries, the private-reply channel, the
+verbosity system.
+**Leverages.** Gaming-mode engage/disengage as natural session boundaries; the private-reply path; the
+existing cooldown patterns.
+**Risks.** Being annoying is the primary failure mode and it is a product risk, not a technical one.
+Default conservative.
+**Done-when.** A simulated declining session triggers exactly one private nudge, and an opt-out command
+silences it permanently.
+
+### 2.9 Beyond Valorant — the game abstraction — `M` (defer until 2.1–2.8 are real)
+
+**What.** Factor the game-specific parts behind an interface so a second title becomes a data/adapter job
+rather than a rewrite.
+
+**Why now.** Deliberately *last* in this phase. Premature generalization here would slow down the thing
+that actually matters. But the eventual shape is worth knowing while building 2.1–2.8, so the seams end
+up in sensible places.
+
+**How.** The natural seams: a match-source adapter, a game vocabulary (agents/maps/roles → champions/maps,
+or whatever the next title calls them), a meta source, and a coaching prompt set. The relay, dossier,
+store, streamer-finder and stream surfaces are all game-agnostic once those four are pluggable.
+
+**Components.** `game/adapters/base.py`, `game/adapters/valorant/`, `game/vocab.py`.
+**Work.** (1) Extract the interface from the working Valorant implementation. (2) Move vocabulary out of
+the STT gazetteer into the adapter. (3) Prove it with a second title's read-only match history.
+**Integrates with.** The STT gazetteer and routing vocabulary, `agent_kits.py`, the scenario taxonomy.
+**Risks.** Doing this too early. The rule is: build one game properly first.
+**Done-when.** A second title's match history imports and answers basic stat questions with no change to
+the core.
+
+---
+
+## Phase 3 — Post-training: an Ultron that improves from its own traces
 
 The seeding conversation landed on the right answer: pretraining is still next-token prediction, but the
 frontier for *behavior* is post-training — outcome-based RL with verifiable rewards, combined with
@@ -324,7 +686,7 @@ supervised tuning and distillation. This phase makes that concrete for a local, 
 the enormous advantage is that **we own the entire trace of every turn** and a great many of our tasks
 have *checkable* answers.
 
-### 2.1 The evaluation harness comes first — `L`
+### 3.1 The evaluation harness comes first — `L`
 
 **What.** A single, versioned evaluation suite that scores a candidate model or prompt change across
 every pool the system actually serves, producing one comparable scorecard.
@@ -357,7 +719,7 @@ flavor lint, `scripts/run_tests.py`.
 **Risks.** Eval sets rot; version them and treat a change as a deliberate re-bless like the golden digest.
 **Done-when.** One command produces a scorecard comparable to any historical scorecard, and CI runs it.
 
-### 2.2 Trace capture and dataset construction — `M`
+### 3.2 Trace capture and dataset construction — `M`
 
 **What.** Turn the system's own operation into a clean, labelled, privacy-respecting training corpus.
 
@@ -394,7 +756,7 @@ stop window. (4) Redaction. (5) Curation CLI. (6) Retention policy.
 **Risks.** Disk growth; PII. Both handled by rotation, retention, and redaction-by-default.
 **Done-when.** A week of live play yields a curated, redacted dataset that the eval suite can consume.
 
-### 2.3 Distillation — shrink the good model into the fast one — `L`
+### 3.3 Distillation — shrink the good model into the fast one — `L`
 
 **What.** Use a large model (local 12B, or an offline larger one) as a teacher to fine-tune a small fast
 student for the specific, narrow jobs the system does constantly.
@@ -431,7 +793,7 @@ Persona drift — pin with the persona-lock tests and golden digest.
 **Done-when.** A distilled student matches or beats the current model on its pool's scorecard at lower
 latency and VRAM, with the persona lock intact.
 
-### 2.4 Outcome-based RL with verifiable rewards — `XL`
+### 3.4 Outcome-based RL with verifiable rewards — `XL`
 
 **What.** Apply RL where the reward is *checkable by a program*, not by a human or a learned reward model.
 
@@ -480,7 +842,7 @@ incident is the cautionary tale.
 **Done-when.** Reward functions ship as evaluators with tests, and at least one pool shows a measured
 quality gain from preference training with no regression on the control set.
 
-### 2.5 Continual, safe self-improvement — `L`
+### 3.5 Continual, safe self-improvement — `L`
 
 **What.** Close the loop: the system proposes its own improvements from observed failures, and a walled
 process decides whether to adopt them.
@@ -490,7 +852,7 @@ data-only self-improvement subsystem — Tier-3-walled, zero network/shell/eval,
 feature-request capture, command-failure capture, recurrence thresholds, guardrail monitoring over a
 rolling metrics window, and an auto-revert on post-apply regression.
 
-**How.** Feed the evolution subsystem from the Phase 2.2 trace corpus and the FLAG taxonomy rather than
+**How.** Feed the evolution subsystem from the Phase 3.2 trace corpus and the FLAG taxonomy rather than
 only from in-session signals, and extend its proposal space from data-only to *prompt* and *threshold*
 changes — still data, still no code execution, but higher leverage. Every proposal runs through the eval
 suite before adoption, and the guardrail brake reverts regressions automatically.
@@ -511,9 +873,9 @@ scorecard — with a demonstrated auto-revert on an induced regression.
 
 ---
 
-## Phase 3 — Portability: WSL, containers, and the honest verdict
+## Phase 4 — Portability: WSL, containers, and the honest verdict
 
-### 3.1 The question, answered directly — `S` (analysis)
+### 4.1 The question, answered directly — `S` (analysis)
 
 The original question — *"how feasible is the WSL migration without breaking any of its functionality, and
 how much work would that be?"* — never got an answer. Here it is.
@@ -542,7 +904,7 @@ better answer than WSL, and it is already live.
 
 So the item is **not** "migrate to WSL". It is:
 
-### 3.2 Split-plane architecture: Windows edge, portable core — `L`
+### 4.2 Split-plane architecture: Windows edge, portable core — `L`
 
 **What.** Draw an explicit line between the *portable core* (routing, prompting, LLM serving, memory,
 evaluation, plugins) and the *Windows edge* (audio devices, VoiceMeeter, HID, Win32 desktop control, OBS),
@@ -575,7 +937,7 @@ by the existing suite, in small reversible slices.
 **Done-when.** The core suite runs green headless on a non-Windows CI runner with null platform
 implementations, and Windows behavior is byte-identical.
 
-### 3.3 Containerize the portable core — `M`
+### 4.3 Containerize the portable core — `M`
 
 **What.** A container image for the portable core (serving, routing, memory, eval), with the Windows edge
 outside it.
@@ -584,7 +946,7 @@ outside it.
 cloud-optional services tractable.
 
 **How.** CUDA base image, the core package, no audio or Win32. The voice edge talks to it over the same
-local protocol used in Phase 1.4. This is also the natural artifact for renting GPU time for Phase 2
+local protocol used in Phase 1.4. This is also the natural artifact for renting GPU time for Phase 3
 training runs.
 
 **Components.** `docker/core.Dockerfile`, `docker/compose.yaml`, `docs/vision/container_runbook.md`.
@@ -596,7 +958,7 @@ identical scorecard inside and outside the container.
 
 ---
 
-## Phase 4 — The capability broker: the safety layer that unlocks distribution
+## Phase 5 — The capability broker: the safety layer that unlocks distribution
 
 This is the load-bearing item of the entire document. The framing from the seeding conversation is
 exactly right and worth restating: **do not try to pick a "safe" model — make the system structurally
@@ -605,9 +967,9 @@ approved, typed capabilities. Confirmations for sensitive actions. Audit logs by
 layer may role-play freely; the tool layer stays locked down.
 
 That separation is what makes an *Ultron-voiced* assistant safe to hand to someone else — and nothing in
-Phases 5–7 can ship without it.
+Phases 6–8 can ship without it.
 
-### 4.1 The capability broker core — `XL`
+### 5.1 The capability broker core — `XL`
 
 **What.** A single mandatory chokepoint through which every side-effecting action must pass, expressed as
 typed capability requests rather than code or shell.
@@ -668,7 +1030,7 @@ defeats the guarantee, so the deny-by-default test is essential.
 greps for direct call sites), every capability has a declared tier, and the ledger records every action
 with its decision path.
 
-### 4.2 Prompt-injection resistance — `M`
+### 5.2 Prompt-injection resistance — `M`
 
 **What.** Treat all external content — Twitch chat, web pages, file contents, tool output — as untrusted
 data that can never become instructions.
@@ -694,7 +1056,7 @@ action" in the broker. (3) Tier escalation rule. (4) Build the adversarial corpu
 **Done-when.** The adversarial corpus passes in CI and no untrusted span can reach the broker as an
 originator.
 
-### 4.3 Blast-radius containment — `M`
+### 5.3 Blast-radius containment — `M`
 
 **What.** Even permitted actions get bounded: filesystem scope, rate limits, spend limits, kill switches.
 
@@ -710,14 +1072,14 @@ in-flight capability execution.
 
 ---
 
-## Phase 5 — Kenning: platform identity and the persona system
+## Phase 6 — Kenning: platform identity and the persona system
 
 The conclusion of the seeding conversation: **Kenning is the platform; Ultron is one persona under it.**
 The architecture already reflects this — the package is `src/kenning/`, and the Ultron persona is a layer
 (`audio/ultron_prompt.py`, `_ultron_social.py`, `_ultron_answer.py`, `_ultron_identity.py`, agent kits,
 flavor library). The work is to make that structural truth explicit and swappable.
 
-### 5.1 Name diligence — `S` (but blocking)
+### 6.1 Name diligence — `S` (but blocking)
 
 **What.** Trademark search, domain and handle acquisition, and a decision on the public name.
 
@@ -738,7 +1100,7 @@ the public product name and the internal package name need to match — they do 
 prevent. **Done-when.** A decision is recorded with the search evidence behind it, and the namespaces are
 held.
 
-### 5.2 The persona system — `L`
+### 6.2 The persona system — `L`
 
 **What.** Promote personas from hardcoded to a registered, swappable, user-selectable pack format.
 
@@ -776,7 +1138,7 @@ golden digest is the guard.
 **Done-when.** Two personas ship, switching is a config change, each has its own scorecard, and the Ultron
 pack is byte-identical in behavior to today.
 
-### 5.3 User-facing string audit and the rename — `M`
+### 6.3 User-facing string audit and the rename — `M`
 
 **What.** Separate internal identifiers from user-visible branding, then rename the public surface.
 
@@ -795,12 +1157,12 @@ product chrome. **Done-when.** No user-visible surface hardcodes a product name,
 
 ---
 
-## Phase 6 — The platform surface: plugins, APIs, creator tools
+## Phase 7 — The platform surface: plugins, APIs, creator tools
 
-Only safe on top of Phase 4. This is where "Kenning could hold multiple personalities, creator tools,
+Only safe on top of Phase 5. This is where "Kenning could hold multiple personalities, creator tools,
 APIs, plugins, maybe cloud services" becomes buildable.
 
-### 6.1 Plugin SDK and capability manifest — `L`
+### 7.1 Plugin SDK and capability manifest — `L`
 
 **What.** A third-party extension format: a plugin declares capabilities it provides and requests, and the
 broker enforces the contract.
@@ -818,7 +1180,7 @@ capabilities, shown as a readable list.
 for in-process.
 **Done-when.** An example third-party plugin installs, is granted a capability set, and cannot exceed it.
 
-### 6.2 Local API and client libraries — `M`
+### 7.2 Local API and client libraries — `M`
 
 **What.** A documented local HTTP/WS API exposing turns, events, capabilities, and state.
 
@@ -832,7 +1194,7 @@ internals.
 **Leverages.** The bus, the overlay token convention, the existing sidecar HTTP servers.
 **Done-when.** The overlay and stop-window are themselves API clients — dogfooding proves the surface.
 
-### 6.3 The creator tier — `L`
+### 7.3 The creator tier — `L`
 
 **What.** Productize the streaming stack that already exists into a coherent creator-facing feature set.
 
@@ -852,7 +1214,7 @@ knob, StreamElements economy integration, moderation, the pinboard, welcome/ban-
 broker and the secrets rules.
 **Done-when.** A second broadcaster can be onboarded without editing YAML or sharing credentials.
 
-### 6.4 The desktop assistant tier — `L`
+### 7.4 The desktop assistant tier — `L`
 
 **What.** Finish the original Kenning vision — the present, local assistant that controls the computer and
 runs workflows — now safely, behind the broker.
@@ -876,7 +1238,7 @@ the import firewall and the boot canary, not by convention.
 **Done-when.** A recorded workflow replays through the broker with per-step tiering, and the anticheat
 scanner confirms none of it is reachable in gaming mode.
 
-### 6.5 Configuration as a product surface — `M`
+### 7.5 Configuration as a product surface — `M`
 
 **What.** Replace hand-edited YAML with a real settings experience, keeping YAML as the source of truth.
 
@@ -894,31 +1256,31 @@ settings panel.
 
 ---
 
-## Phase 7 — Productization
+## Phase 8 — Productization
 
-### 7.1 Packaging and install — `L`
+### 8.1 Packaging and install — `L`
 Signed Windows installer; bundled or first-run-downloaded models with checksums; a preflight that checks
 GPU, VRAM, driver, and audio devices and explains failures in plain language. Leverages the existing
 launcher scripts and boot canary. **Done-when** a clean Windows machine reaches a working first turn
 without touching a terminal.
 
-### 7.2 Editions and licensing — `M`
+### 8.2 Editions and licensing — `M`
 Decide the boundary between a free local core and paid tiers. The defensible split given this
 architecture: the local engine free/source-available; paid for the creator tier, persona packs, plugin
 distribution, and support. Requires a license decision — the repo is currently MIT, which is generous and
 hard to walk back for already-published code, so any change applies going forward and needs care.
 
-### 7.3 Telemetry stance — `S`
+### 8.3 Telemetry stance — `S`
 Privacy-first is a *feature* here and should be stated loudly: no cloud, no telemetry, everything local.
 If diagnostics are ever added they must be opt-in, local-first, and show exactly what would be sent.
 This is consistent with the existing no-cloud/no-telemetry constraint and is a genuine differentiator.
 
-### 7.4 Update channel — `M`
+### 8.4 Update channel — `M`
 Signed updates with rollback, honoring the retire-don't-remove principle. The `E:\Ultron-0.1\` standalone
 backup pattern — a known-good build that stays runnable while the dev build is under maintenance — is
 already the right instinct and should become a product feature.
 
-### 7.5 Cloud-optional services — `XL`
+### 8.5 Cloud-optional services — `XL`
 Only ever *optional*, never required: persona pack distribution, plugin registry, encrypted config sync,
 and optionally hosted inference for users without a capable GPU. Each must degrade to fully-local
 operation. This is the last thing to build and the easiest to build wrong.
@@ -951,23 +1313,27 @@ These run continuously rather than in a phase.
 Phase 1  Inference substrate ──┬─> 1.4 serving daemon ─────┐
                                └─> 1.1/1.2/1.3/1.5/1.6     │
                                                            │
-Phase 2  Post-training ────────> 2.1 eval suite (gates 1.x verdicts)
-                                 2.2 traces ─> 2.3 distill ─> 2.4 RL ─> 2.5 evolution
+Phase 2  Game intelligence ────> 2.0 risk ladder (gates 2.3)
+         THE PRODUCT             2.1 matches ─> 2.2 dossiers ─> 2.6 coaching ─> 2.8 form
+                                 2.4 meta · 2.5 streamers · 2.7 stream surfaces · 2.9 abstraction
                                                            │
-Phase 3  Portability ──────────> 3.2 platform split <──────┘ (needs 1.4)
-                                 3.3 containers
+Phase 3  Post-training ────────> 3.1 eval suite (gates 1.x and 2.x quality claims)
+                                 3.2 traces ─> 3.3 distill ─> 3.4 RL ─> 3.5 evolution
                                                            │
-Phase 4  Capability broker ────> 4.1 broker ─> 4.2 injection ─> 4.3 blast radius
-                                     │  (BLOCKS all distribution)
-Phase 5  Identity ─────────────> 5.1 trademark (blocking) ─> 5.2 personas ─> 5.3 rename
+Phase 4  Portability ──────────> 4.2 platform split <──────┘ (needs 1.4)
+                                 4.3 containers
+                                                           │
+Phase 5  Capability broker ────> 5.1 broker ─> 5.2 injection ─> 5.3 blast radius
+                                     │  (BLOCKS all distribution; also tiers 2.x network calls)
+Phase 6  Identity ─────────────> 6.1 trademark (blocking) ─> 6.2 personas ─> 6.3 rename
                                      │
-Phase 6  Platform surface ─────> 6.1 plugins ─> 6.2 API ─> 6.3 creator ─> 6.4 desktop ─> 6.5 settings
+Phase 7  Platform surface ─────> 7.1 plugins ─> 7.2 API ─> 7.3 creator ─> 7.4 desktop ─> 7.5 settings
                                      │
-Phase 7  Productization ───────> 7.1 packaging ─> 7.2 editions ─> 7.4 updates ─> 7.5 cloud-optional
+Phase 8  Productization ───────> 8.1 packaging ─> 8.2 editions ─> 8.4 updates ─> 8.5 cloud-optional
 ```
 
-**The three hard gates:** the eval suite (2.1) gates every quality claim in Phases 1–2. The broker (4.1)
-gates every form of distribution. The trademark decision (5.1) gates every public surface.
+**The three hard gates:** the eval suite (3.1) gates every quality claim in Phases 1–3. The broker (5.1)
+gates every form of distribution. The trademark decision (6.1) gates every public surface.
 
 ---
 
@@ -976,15 +1342,22 @@ gates every form of distribution. The trademark decision (5.1) gates every publi
 1. **Is the desktop-assistant tier or the creator tier the real product?** They imply different customers,
    different pricing, and different roadmap weight. The creator tier is far more built; the desktop tier
    is the original vision and the larger market.
-2. **How much does the Ultron persona matter commercially?** If a neutral persona sells as well, 5.2 gets
+2. **How much does the Ultron persona matter commercially?** If a neutral persona sells as well, 6.2 gets
    simpler. If the character *is* the appeal, the persona-pack format has to be genuinely good and the
    naming work becomes more delicate.
 3. **Single-user local, or multi-user from the start?** Multi-tenancy is much cheaper to design in than to
    retrofit, but it is dead weight if the product stays personal.
 4. **Does MoE change anything for us at 12 GB?** Answered by 1.3, and the answer may well be no.
 5. **Is a Linux-native deployment ever a goal**, or is the portable core only for CI, containers, and
-   training? This determines how much rigor 3.2 needs.
+   training? This determines how much rigor 4.2 needs.
 6. **What is the licensing intent?** The current MIT grant on published code cannot be retracted, so the
-   edition strategy in 7.2 must be designed around that.
-7. **How much autonomy should evolution (2.5) ever have?** Data-only is the current wall. Prompt and
+   edition strategy in 8.2 must be designed around that.
+7. **How much autonomy should evolution (3.5) ever have?** Data-only is the current wall. Prompt and
    threshold proposals are a meaningful step past it and deserve an explicit decision.
+
+8. **Is the AMBER rung (2.3, live lobby data) worth the policy risk?** This is a judgement call, not an
+   engineering one, and it is the single decision that most changes how present the assistant feels.
+9. **Should Ultron ever speak another player's history on stream?** Local dossiers (2.2) are defensible;
+   broadcasting them is a different act. Decide deliberately rather than by default.
+10. **Which game after Valorant, if any?** The answer changes how much abstraction 2.9 deserves — and
+    whether it deserves any.
