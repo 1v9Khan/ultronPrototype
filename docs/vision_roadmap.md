@@ -525,17 +525,18 @@ The decisive property: **the game PC is never touched at all.** No file read, no
 process. Footprint is literally zero — strictly better than the lockfile-agent design this supersedes,
 which needed an F2 process running beside Vanguard.
 
-*Reported by the streamer (~90% confidence, not yet formally verified):* two Riot Clients signed into the
-same account on two machines coexist without signing each other out — the same property that would let one
-machine launch League while another runs VALORANT on the same account. If so, the exclusivity constraint
-is **per-game, not per-session**. **The operating rule is then that only one machine ever boots VALORANT**;
-the Ultron PC's client stays credentials-only and must never launch the game. Encode that as an explicit
-operational constraint, because violating it is the one way this design breaks.
+**Verified on this setup (2026-08-07).** Two Riot Clients signed into the same account on two machines
+coexist: with VALORANT booted on the game PC only, neither client signed the other out and both held their
+sessions. The exclusivity constraint is therefore **per-game, not per-session** — the same property that
+lets one machine run League while another runs VALORANT on a single account. **The operating rule is that
+only one machine ever boots VALORANT**; the Ultron PC's client stays credentials-only and must never launch
+the game. Encode that as an explicit operational constraint, because violating it is the one way this
+design breaks.
 
-**Verify this before building (b) — the entire design rests on it and the test costs five minutes.** Sign
-in on both machines, launch VALORANT on the game PC, then confirm the Ultron PC's client has kept its
-session and can still mint a valid token mid-match. If concurrent sessions do not hold, (b) is dead on
-arrival and (a) carries the phase by itself.
+**Still unproven — the next test, and the one that actually decides (b).** Session coexistence is
+confirmed. What remains is whether the Ultron PC's client can *mint a valid token mid-match*, and whether
+a regional query carrying it returns the match currently being played on the game PC. Until that passes,
+treat (b) as promising rather than proven, and keep the degradation path to (a) mandatory.
 
 Two caveats that survive, neither of them `BR-P1`:
 - **Policy exposure is unchanged.** This is still P2. Driving footprint to zero is an anticheat win, not
