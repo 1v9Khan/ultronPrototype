@@ -379,6 +379,31 @@ two-PC split makes them reachable in a way a single-machine setup never could.
 account. **P2 is the contested zone**: it is what Riot has been explicit about, and it is a judgement
 call for the streamer, not a decision the system makes on its own.
 
+#### The practical test for P1 vs P2 — *does the official client already show you this?*
+
+The P-ladder above states the principle; this is how to actually apply it, and it is sharper than any
+abstract wording because it maps onto what Riot has demonstrably objected to. Rank-checkers draw fire
+precisely because agent select **deliberately withholds** enemy information and those tools surface it
+anyway. Conversely, information the first-party client already puts on your screen carries essentially no
+argument against reproducing it.
+
+So for any proposed data point, ask: **can I see this in the Riot Client or in-game right now?**
+
+| Data point | Client shows it? | Rung |
+|---|---|---|
+| A friend's live match state and current round (friends list presence) | Yes | **P1** |
+| Your own match: map, mode, score, round | Yes | **P1** |
+| Your own match history, rank and RR movement | Yes | **P0** |
+| Enemy/teammate ranks and history during agent select | **No — deliberately hidden** | **P2** |
+
+This test also settles a related question: **concurrent access is not itself the issue.** Two Riot
+Clients on one account both render live friends-list presence at the same time, which is ordinary
+supported behaviour — so the number of connected clients is not what distinguishes a safe feature from a
+contested one. *Which information about whom* is.
+
+Where the test is ambiguous for a given data point, check the live client before writing the spec rather
+than reasoning about it.
+
 #### The rule
 
 Every item below declares an **`(F, P)` pair**. Anything at **F3 or P3 is never built.** Anything at
@@ -494,7 +519,7 @@ collection; the fuzzy-name matching already used for chatter names in the tell-c
 **Done-when.** Ultron recognizes a repeat player from stored history and reports the relationship, with
 stream-announcement default OFF and a working "forget this player" command.
 
-### 2.3 Live match context — `M` (F1/P1 for lifecycle · F0/P2 for player info, gated)
+### 2.3 Live match context — `M` (F1/P1 lifecycle · F0/P1 friends presence · F0/P2 player info, gated)
 
 **What.** Knowing about the match *while it is happening* — that one started, on which map and mode, and
 (if the P2 decision goes that way) who is in the lobby and what their ranks and history are.
@@ -538,11 +563,17 @@ confirmed. What remains is whether the Ultron PC's client can *mint a valid toke
 a regional query carrying it returns the match currently being played on the game PC. Until that passes,
 treat (b) as promising rather than proven, and keep the degradation path to (a) mandatory.
 
-Two caveats that survive, neither of them `BR-P1`:
-- **Policy exposure is unchanged.** This is still P2. Driving footprint to zero is an anticheat win, not
-  a terms-of-service one, and the decision in 2.0 stands exactly where it stood.
-- **Cross-IP pattern.** A client session and API polling now originate from a different address than the
-  game session — a distinctive server-side signature. It raises no `BR-P1` risk and lowers no policy risk.
+**The one caveat that survives, and it is not `BR-P1`: policy exposure is unchanged.** This is still P2
+under the 2.0 test — agent select deliberately hides enemy ranks, so surfacing them is the contested act
+regardless of how the data was fetched. Driving footprint to zero is an anticheat win, not a
+terms-of-service one, and the decision stands exactly where it stood.
+
+*A cross-IP signature was previously listed here as a second caveat. It does not apply:* both machines sit
+on the same LAN behind one NAT, so Riot sees a single public address for both. The concern would only
+arise if the second box were on a separate connection — a different ISP line, a VPN, or a cloud host.
+Note also the distinction worth preserving: minimizing footprint is defensive engineering, whereas
+deliberately making traffic indistinguishable from the official client would be evasion — a materially
+worse posture than the thing it conceals, and one this project does not need and will not adopt.
 
 Riot could change concurrent-session behaviour at any patch, so the implementation must degrade to (a)
 rather than fail hard when the second client cannot hold a session.
@@ -551,26 +582,46 @@ rather than fail hard when the second client cannot hold a session.
 remembers it. Zero on both axes, and the relay already parses agent names and callouts. Worth wiring
 regardless of the P2 decision, as the fallback that can never be taken away.
 
+**(d) Friends presence — `F0/P1`. Uncontested, live, and currently unexploited.** The Riot Client's
+friends list already renders live presence for your friends: whether they are in a match, the queue/mode,
+and the current round score. It passes the 2.0 test outright — the first-party client puts this on your
+screen, and presence is mutually opted-in by virtue of being friends. It is served to concurrent clients
+on the same account simultaneously, which is exactly what the 2026-08-07 test observed.
+
+Read via the second client's own local presence surface (so it inherits (b)'s `F0` footprint) *without*
+inheriting (b)'s P2 exposure — this is friend data the client already shows, not hidden information about
+strangers. It therefore needs **no policy decision** and can ship alongside (a).
+
+What it unlocks: a live "who of your friends is playing right now, and how are they doing" view — good on
+its own, a natural overlay card (2.7), and a strong feeder for 2.5, since a friend who is both in a match
+and live on Twitch is the highest-confidence streamer match you can get. Note that if (b) is declined
+outright, (d) still needs a signed-in second client to read presence from; that is the only coupling.
+
 **Components.**
 - `game/live/logtail.py` — share-aware tail + lifecycle parser (a).
 - `game/live/session.py` — the live-session model every other item consumes.
-- `game/live/client_session.py` — second-client token harvest from the local lockfile (b, gated).
+- `game/live/client_session.py` — second-client token harvest from the local lockfile (b and d, gated).
 - `game/live/regional.py` — current-match and roster queries against Riot's regional servers (b, gated).
 - `game/live/voice_entry.py` — spoken comp capture (c).
-- `tests/game/test_live_gate.py` — asserts the P2 modules are unreachable while the flag is OFF.
+- `game/live/presence.py` — friends-presence reader and change stream (d).
+- `tests/game/test_live_gate.py` — asserts the P2 modules are unreachable while the flag is OFF, and that
+  (d) remains reachable independently of that flag.
 
 **Work.** (1) Log tail + lifecycle parser over the share — no decision needed, start immediately.
-(2) Session model, consumed by 2.6/2.7/2.8. (3) Voice entry. (4) **Policy decision on P2.** (5) If yes:
-second-client token harvest, regional queries, the flag/gate/firewall/canary/scanner entries, the
-never-launch-the-game operational guard, and graceful degradation to (a).
+(2) Session model, consumed by 2.6/2.7/2.8. (3) Voice entry. (4) Second-client sign-in + friends-presence
+reader (d) — also no policy decision, and it proves the token path that (b) would later need.
+(5) **Policy decision on P2.** (6) If yes: regional current-match and roster queries, the
+flag/gate/firewall/canary/scanner entries, the never-launch-the-game operational guard, and graceful
+degradation to (a).
 
 **Integrates with.** 2.2 dossiers, 2.6 coaching, 2.7 stream cards, 2.8 session boundaries, gaming mode,
 the import firewall, the boot canary.
 **Leverages.** The two-PC shared filesystem and the always-on Ultron PC; the gating pattern already proven
 for `kenning.desktop`; the boot canary; the anticheat grep scanner; the relay's agent-name parsing.
-**Risks.** Log-format drift across patches (a). A future Riot change to concurrent sessions (b) — hence
-the degradation path. Policy exposure at P2 (b).
-**Done-when.** (a) match start and end are detected on the Ultron PC with nothing running on the game PC,
+**Risks.** Log-format drift across patches (a). A future Riot change to concurrent sessions (b, d) — hence
+the degradation path. Policy exposure at P2 (b only; d is P1 and carries none).
+**Done-when.** (d) friends presence streams live on the Ultron PC and feeds 2.5 and 2.7. (a) match start
+and end are detected on the Ultron PC with nothing running on the game PC,
 and the post-match debrief fires automatically. (b) only after a recorded decision, with the gate proven
 closed by test while the flag is OFF.
 
@@ -619,6 +670,10 @@ is enabled), then resolve names to live channels. Two mechanisms, used together:
    name match against it is fast.
 2. **Channel search** — for names that do not match the live set, a targeted channel lookup catches
    streamers whose Twitch handle differs from their Riot ID.
+3. **Friends presence (2.3d)** — the highest-confidence path by a wide margin, and uncontested. A friend
+   who is both in a match (from first-party presence) and live on Twitch is a near-certain match, because
+   the Riot-side identity is known rather than inferred from a display name. Run this first and let 1 and
+   2 handle everyone else.
 
 Name matching is the hard part and the repo already has the right tool: the fuzzy chatter-name resolution
 built for tell-chat, which deliberately refuses agent names, short names, and ambiguous matches. Reuse
